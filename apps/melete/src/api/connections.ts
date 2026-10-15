@@ -84,7 +84,7 @@ import {
   mcpServerConfig,
 } from '../connectors/mcp.ts';
 import { catalogAppMissing, RETURN_ADDRESS_NEEDED } from '../connectors/mcp-catalog-ready.ts';
-import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
+import { mcpCredentials, tokenMayTravel } from '../connectors/mcp-credentials.ts';
 import { clientMetadataDocument, McpSignInFailure } from '../connectors/mcp-oauth.ts';
 import { McpSignIns } from '../connectors/mcp-sign-in.ts';
 import { microsoftProvider } from '../connectors/microsoft.ts';
@@ -1037,7 +1037,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         400,
       );
     const token = parsed.data.access_token;
-    if (token && !parsed.data.url.startsWith('https://'))
+    if (token && !tokenMayTravel(parsed.data.url))
       throw new ServiceError(
         'invalid_request',
         'A token is only sent to an https:// address. Use the server’s https:// address.',
@@ -2012,15 +2012,22 @@ async function requestedShape(
   if (installation.kind === 'mcp') {
     const { url, ...policy } = installation.config;
     const config = mcpServerConfig.parse({ ...policy, endpoint: { transport: 'http', url } });
+    // A token goes over TLS, or over plain http only to this machine or to an
+    // internal host the operator listed. It is checked before the credential is
+    // read, so the refusal says why rather than which field failed.
+    if (installation.credentials) {
+      const { token_url: tokenUrl, resource } = installation.credentials;
+      for (const address of [url, tokenUrl, resource])
+        if (address !== undefined && !tokenMayTravel(address))
+          throw new ServiceError(
+            'invalid_request',
+            'A token is only sent to an https:// address. Use the server’s https:// address.',
+            400,
+          );
+    }
     const credential = installation.credentials
       ? mcpCredentials.parse(installation.credentials)
       : undefined;
-    if (credential && !mcpCredentialUrl.safeParse(url).success)
-      throw new ServiceError(
-        'invalid_request',
-        'A token is only sent to an https address, or to http on this machine (localhost). Use https for this server, or connect it without a token.',
-        400,
-      );
     // Named verbs must also be explicitly granted; tool discovery cannot add them for the operator.
     if (
       !config.tools.every((tool) =>

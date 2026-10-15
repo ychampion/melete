@@ -17,6 +17,11 @@
  *   model or a server on this machine or their own network, so private,
  *   loopback and link-local answers are accepted.
  *
+ * The operator may open internal hosts to the `public` reach too, by listing
+ * them in MELETE_PRIVATE_HOSTS (see private-hosts.ts): a private answer is then
+ * accepted when it falls in a listed range, and every other answer is still
+ * held to the public rule.
+ *
  * Cloud metadata (`isMetadataAddress`) is refused to both. An operator who
  * really runs a model there sets MELETE_ALLOW_CLOUD_METADATA=true, which opens
  * it to the `installation` reach only. Addresses from the deployment's own
@@ -28,7 +33,8 @@ import { isIP } from 'node:net';
 import { Readable } from 'node:stream';
 import type { Sql } from 'postgres';
 import { ConnectorFaultError } from './faults.ts';
-import { isMetadataAddress, publicPin, type ResolvedAddress, resolveHost } from './web.ts';
+import { inPrivateRange, type PrivateHosts, privateHostsFromEnv } from './private-hosts.ts';
+import { isMetadataAddress, isPublicAddress, type ResolvedAddress, resolveHost } from './web.ts';
 
 export type PublicFetch = (url: string, init: RequestInit) => Promise<Response>;
 export type PinnedRequest = (
@@ -60,22 +66,26 @@ export type ReachOptions = {
   resolve?: Resolve;
   /** Defaults to what the operator set; see `metadataAllowed`. */
   allowMetadata?: boolean;
+  /** Defaults to what the operator listed; see `privateHostsFromEnv`. */
+  privateHosts?: PrivateHosts;
 };
 
 /**
  * The addresses a request may be sent to, or undefined when any answer is out
- * of reach. Public reach pins the first answer, as `publicPin` does; the
- * installation's reach keeps every answer, all of them checked, so a name that
- * answers on both IPv6 and IPv4 loopback still finds the server.
+ * of reach. Public reach pins the first answer, as `publicPin` does, and takes
+ * a private answer only inside a range the operator listed; the installation's
+ * reach keeps every answer, all of them checked, so a name that answers on both
+ * IPv6 and IPv4 loopback still finds the server.
  */
 export function reachPin(
   addresses: readonly ResolvedAddress[],
   reach: Reach,
   allowMetadata = metadataAllowed(),
+  privateHosts: PrivateHosts = privateHostsFromEnv(),
 ): ResolvedAddress[] | undefined {
   if (!addresses.length) return undefined;
   if (reach === 'public') {
-    const pinned = publicPin(addresses);
+    const pinned = listedPin(addresses, privateHosts);
     return pinned ? [pinned] : undefined;
   }
   if (
@@ -87,6 +97,28 @@ export function reachPin(
   )
     return undefined;
   return [...addresses];
+}
+
+/**
+ * The first answer, when every answer is public or in a range of `privateHosts`;
+ * with no ranges listed this is `publicPin`. Cloud metadata is never in reach,
+ * whatever range holds it.
+ */
+export function listedPin(
+  addresses: readonly ResolvedAddress[],
+  privateHosts: PrivateHosts,
+): ResolvedAddress | undefined {
+  if (
+    !addresses.length ||
+    addresses.some(
+      (entry) =>
+        isIP(entry.address) !== entry.family ||
+        isMetadataAddress(entry.address) ||
+        !(isPublicAddress(entry.address) || inPrivateRange(entry.address, privateHosts)),
+    )
+  )
+    return undefined;
+  return addresses[0];
 }
 
 /** A host as it is checked: no brackets, no trailing dot, lower case. */
@@ -116,7 +148,12 @@ export async function reachAddresses(
   } catch {
     return undefined;
   }
-  return reachPin(addresses, reach, options.allowMetadata ?? metadataAllowed());
+  return reachPin(
+    addresses,
+    reach,
+    options.allowMetadata ?? metadataAllowed(),
+    options.privateHosts ?? privateHostsFromEnv(),
+  );
 }
 
 /**
@@ -139,7 +176,13 @@ export async function outOfReach(
     return false;
   }
   return (
-    addresses.length > 0 && !reachPin(addresses, reach, options.allowMetadata ?? metadataAllowed())
+    addresses.length > 0 &&
+    !reachPin(
+      addresses,
+      reach,
+      options.allowMetadata ?? metadataAllowed(),
+      options.privateHosts ?? privateHostsFromEnv(),
+    )
   );
 }
 
@@ -293,9 +336,19 @@ export async function isReachableEndpoint(
   }
 }
 
-/** Whether an address resolves, right now, to public addresses only. For install-time checks. */
-export async function isPublicEndpoint(address: string, resolve: Resolve = resolveHost) {
-  return isReachableEndpoint(address, 'public', { resolve });
+/**
+ * Whether an address resolves, right now, to public addresses only, or to the
+ * internal ranges the operator listed. For install-time checks.
+ */
+export async function isPublicEndpoint(
+  address: string,
+  resolve: Resolve = resolveHost,
+  privateHosts?: PrivateHosts,
+) {
+  return isReachableEndpoint(address, 'public', {
+    resolve,
+    ...(privateHosts ? { privateHosts } : {}),
+  });
 }
 
 /**
@@ -303,7 +356,8 @@ export async function isPublicEndpoint(address: string, resolve: Resolve = resol
  * point a server at an address inside it. A space that names no owner predates
  * accounts and is the setup owner's, and before setup there is nobody else. A
  * room the setup owner made is not their own: its requests come from everyone
- * in it, so its servers are held to public addresses like anyone else's.
+ * in it, so its servers are held to public addresses like anyone else's, and
+ * to the internal hosts the operator listed in MELETE_PRIVATE_HOSTS.
  */
 export async function setupOwnersSpace(sql: Sql, spaceId: string): Promise<boolean> {
   const [row] = await sql`select s.kind = 'personal'

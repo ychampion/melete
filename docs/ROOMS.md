@@ -206,15 +206,22 @@ is waiting for.
 ## Connections in a room
 
 A room's requests act only through the connections marked for the room. Its own
-tools (files, the web, its computer) are marked so from the start, and so is
-a connection an owner adds to the room's space. An owner can keep one for
-their own work there instead, or share it with the room again
+tools (files, the web, its computer) are marked so from the start. A connection
+an owner installs into the room's space (`space_id` set to the room's space)
+serves the room from the start too: everyone's requests in the room can use it
+as soon as it is installed, with nothing more to switch on. An owner can keep
+one for their own work there instead, or share it with the room again
 (`PUT /rooms/{id}/connections/{connection}` with `shared_use: "owner"` or
 `"room"`); everyone in the room can see the connections
 that serve the room (`GET /rooms/{id}/connections`); owners also see the ones
 kept for them. Changing what a connection
 serves starts work under way in the room again and withdraws the permissions
 waiting in it.
+
+A room's connections are held to public addresses, because its requests come
+from everyone in it. A team that runs its own MCP servers, calendars or mail on
+an internal network can open those to rooms with `MELETE_PRIVATE_HOSTS`; see
+[Internal hosts](CONNECTORS.md#internal-hosts).
 
 ## What the agent reads in a room
 

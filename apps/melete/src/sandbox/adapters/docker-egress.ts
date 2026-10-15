@@ -9,7 +9,10 @@
  * HTTP, other ports, private, loopback and link-local addresses (the host,
  * other containers, cloud metadata) are refused. These are the public-address
  * floor and pinned DNS the web connector, the browser worker's relay and the
- * stdio egress proxy already hold, applied to one more client.
+ * stdio egress proxy already hold, applied to one more client. The one
+ * exception is the operator's own: an answer inside a range listed in
+ * MELETE_PRIVATE_HOSTS is accepted as a public one is, so a team's computer can
+ * reach its internal HTTPS hosts. Cloud metadata stays refused.
  *
  * A sandbox is known by its address on its own network: no secret it holds
  * opens another sandbox's grant, and a container without network capabilities
@@ -31,7 +34,9 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { connect, isIP, type Socket } from 'node:net';
-import { publicPin, type ResolvedAddress, resolveHost } from '../../connectors/web.ts';
+import { type PrivateHosts, privateHostsFromEnv } from '../../connectors/private-hosts.ts';
+import { listedPin } from '../../connectors/public-fetch.ts';
+import { type ResolvedAddress, resolveHost } from '../../connectors/web.ts';
 import type { EgressCredentialPort } from '../../egress/credentials.ts';
 import {
   type BodyBudget,
@@ -75,6 +80,11 @@ export type SandboxEgressOptions = {
   credentials?: EgressCredentialPort;
   /** Limits and test routes for terminated tunnels. */
   intercept?: InterceptOptions;
+  /**
+   * The internal hosts the operator opened to everyone, read at each
+   * connection; MELETE_PRIVATE_HOSTS unless given.
+   */
+  privateHosts?: () => PrivateHosts;
 };
 
 /** How long a record budget lasts, and how often coalesced counts are written. */
@@ -583,8 +593,9 @@ export class SandboxEgressGuard {
     let pinned: ResolvedAddress | undefined;
     try {
       const family = isIP(host);
-      pinned = publicPin(
+      pinned = listedPin(
         family ? [{ address: host, family: family as 4 | 6 }] : await this.resolve(host),
+        (this.options.privateHosts ?? privateHostsFromEnv)(),
       );
     } catch {
       pinned = undefined;
