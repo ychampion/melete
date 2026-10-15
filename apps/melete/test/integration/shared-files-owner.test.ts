@@ -20,6 +20,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { CapabilityClaims, JsonObject } from '@melete/contracts';
 import { createArtifactRecorder } from '../../src/artifact/record.ts';
 import { recordId } from '../../src/broker/records.ts';
@@ -245,7 +246,60 @@ async function sharedSpace() {
     };
   };
   const files = (...names: string[]) => path.join(spacesRoot, spaceId, 'artifacts', ...names);
-  return { sql, owner, member, request, files, others };
+  return { sql, owner, member, request, files, others, spaceId, roots: { workRoot, spacesRoot } };
+}
+
+/**
+ * Another instance of the service on this database and spaces volume, in a
+ * process of its own, ready to run one files step for `jobId` when told.
+ */
+async function otherInstance(
+  space: Awaited<ReturnType<typeof sharedSpace>>,
+  jobId: string,
+  kind: string,
+  payload: JsonObject,
+) {
+  if (!fixture) throw new Error('Postgres fixture unavailable');
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      fileURLToPath(new URL('../helpers/files-instance-child.ts', import.meta.url)),
+      JSON.stringify({
+        url: fixture.url,
+        ...space.roots,
+        spaceId: space.spaceId,
+        jobId,
+        kind,
+        payload,
+      }),
+    ],
+    { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' },
+  );
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  let out = '';
+  const line = async () => {
+    while (!out.includes('\n')) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`the other instance stopped: ${out}`);
+      out += decoder.decode(value);
+    }
+    const [first = '', ...rest] = out.split('\n');
+    out = rest.join('\n');
+    return first;
+  };
+  if ((await line()) !== 'ready') throw new Error('the other instance did not start');
+  return {
+    /** Run the step there; resolves with how it ended. */
+    go: async (): Promise<string> => {
+      child.stdin.write('go\n');
+      await child.stdin.flush();
+      const result = JSON.parse(await line()) as { outcome: string };
+      await child.exited;
+      return result.outcome;
+    },
+    stop: () => child.kill(),
+  };
 }
 
 const text = (file: string) => readFile(file, 'utf8');
@@ -562,6 +616,90 @@ databaseTest(
     // member's workspace.
     expect(await text(again.work('notes.md'))).toBe('mine');
     expect(await text(space.files('notes.md'))).toBe("owner's");
+  },
+  SLOW,
+);
+
+databaseTest(
+  "with two instances on one database, a member's save never overwrites what the owner saved through the other while it ran",
+  async () => {
+    const space = await sharedSpace();
+    const members = await space.request(space.member);
+    expect(
+      (await members.run('files.write', { path: 'notes.md', area: 'artifacts', content: 'mine' }))
+        .status,
+    ).toBe('succeeded');
+    const again = await space.request(space.member);
+    const save = await again.later('files.write', {
+      path: 'notes.md',
+      area: 'artifacts',
+      content: 'mine again',
+    });
+    // The owner's agent saves over the same file through the other instance,
+    // once the member's save here has found it theirs and before it writes.
+    const owners = await space.request(space.owner);
+    const other = await otherInstance(space, owners.jobId, 'files.write', {
+      path: 'notes.md',
+      area: 'artifacts',
+      content: "owner's",
+    });
+    try {
+      const done = await meanwhileAt(space.files('notes.md'), 'truncate', other.go, 4000);
+      let saved: string;
+      let owner: unknown;
+      try {
+        saved = await save.go();
+      } finally {
+        owner = await await done();
+      }
+      expect(owner).toBe('succeeded');
+      expect(saved).toBe('succeeded');
+      expect(await text(space.files('notes.md'))).toBe("owner's");
+    } finally {
+      other.stop();
+    }
+  },
+  SLOW,
+);
+
+databaseTest(
+  "with two instances on one database, a member's move never takes what the owner saved through the other while it ran",
+  async () => {
+    const space = await sharedSpace();
+    const members = await space.request(space.member);
+    expect(
+      (await members.run('files.write', { path: 'notes.md', area: 'artifacts', content: 'mine' }))
+        .status,
+    ).toBe('succeeded');
+    const again = await space.request(space.member);
+    const takeOut = await again.later('files.move', {
+      from: 'notes.md',
+      to: 'notes.md',
+      area: 'artifacts',
+      to_area: 'work',
+    });
+    const owners = await space.request(space.owner);
+    const other = await otherInstance(space, owners.jobId, 'files.write', {
+      path: 'notes.md',
+      area: 'artifacts',
+      content: "owner's",
+    });
+    try {
+      const done = await meanwhileAt(space.files('notes.md'), 'readFile', other.go, 4000);
+      let moved: string;
+      let owner: unknown;
+      try {
+        moved = await takeOut.go();
+      } finally {
+        owner = await await done();
+      }
+      expect(owner).toBe('succeeded');
+      expect(moved).toBe('succeeded');
+      expect(await text(again.work('notes.md'))).toBe('mine');
+      expect(await text(space.files('notes.md'))).toBe("owner's");
+    } finally {
+      other.stop();
+    }
   },
   SLOW,
 );

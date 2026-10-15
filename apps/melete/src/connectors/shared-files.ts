@@ -13,25 +13,90 @@
  * twin of `spaceAuthority`), and `managesSharedFiles` is the one rule both the
  * files tools and the Files routes apply to it.
  */
+import type { Sql, TransactionSql } from 'postgres';
 import type { Query } from '../broker/records.ts';
 import { segmentsFor } from '../paths.ts';
 import { type MembershipRole, spaceStanding } from '../principals/authority.ts';
 import { beneath } from './files-ownership.ts';
 
+/**
+ * The advisory lock that holds a space's Files turn across every instance on
+ * the database, with the space's hashed id as its second key. Its two-key form
+ * keeps it apart from the single-key locks the service takes elsewhere (the
+ * event order lock among them); two spaces that hash alike only take turns.
+ */
+export const FILES_TURN_LOCK = 31003104;
+
+/**
+ * How long a step waits for another instance to finish its turn in the same
+ * space's Files. A turn takes milliseconds of file work, so a wait this long
+ * means the holder is stuck: the step fails rather than hold its connection.
+ */
+export const FILES_TURN_LOCK_TIMEOUT = '30s';
+
+/** Take the space's Files turn in a postgres.js transaction, with its wait limit in force first. */
+export async function lockFilesTurnIn(tx: TransactionSql, spaceId: string): Promise<void> {
+  await tx`select pg_advisory_xact_lock(${FILES_TURN_LOCK}, hashtext(${spaceId}))
+    from (select set_config('lock_timeout', ${FILES_TURN_LOCK_TIMEOUT}, true) as timeout) limits
+    where limits.timeout is not null`;
+}
+
+/**
+ * Runs a turn's work while the database holds it for this instance. The work
+ * is handed the transaction that holds it, and sends its own statements
+ * through it: a turn never waits on a second pool connection while it holds
+ * one, so turns in many spaces at once cannot use up the pool between them.
+ * Null where the turn is not held in the database.
+ */
+export type FilesHold = <T>(
+  spaceId: string,
+  work: (query: Query | null) => Promise<T>,
+) => Promise<T>;
+
+/** Held in this process only: for a connector with no database, as in tests. */
+const inThisProcess: FilesHold = (_spaceId, work) => work(null);
+
+/**
+ * The turn held through `sql` as well: one short transaction per turn that
+ * takes the space's lock and does the turn's work in it. Nothing but the
+ * file work and its own reads runs in it, and never under the event order
+ * lock. Slow work stays outside the turn (asking the agent's computer to drop
+ * a moved file's copy among it): Postgres ends a transaction left idle for a
+ * minute (`IDLE_IN_TRANSACTION_TIMEOUT_MS`). Without a database, the turn is
+ * this process's alone.
+ */
+export function filesHold(sql: Sql | null | undefined): FilesHold {
+  if (!sql) return inThisProcess;
+  return <T>(spaceId: string, work: (query: Query | null) => Promise<T>) =>
+    sql.begin(async (tx) => {
+      await lockFilesTurnIn(tx, spaceId);
+      return work(tx);
+    }) as Promise<T>;
+}
+
 const turns = new Map<string, Promise<unknown>>();
 
 /**
- * Runs `work` in its turn in a space's Files: after every change there this
- * service started before it, and before any it starts after. A step that
- * checks what is at a name and then changes it does both in one turn, so no
- * other step can save over, move or replace that file in between. Every
- * step that saves over, moves, replaces or deletes something already in a
- * space's Files takes its turn here, whoever it works for.
+ * Runs `work` in its turn in a space's Files: after every change there that
+ * any instance of the service started before it, and before any started
+ * after. A step that checks what is at a name and then changes it does both
+ * in one turn, so no other step can save over, move or replace that file in
+ * between. Every step that saves over, moves, replaces or deletes something
+ * already in a space's Files takes its turn here, whoever it works for.
+ *
+ * Steps in this process queue here first, so a space has at most one of
+ * them waiting on `hold` (the database lock) at a time; `hold` then makes
+ * steps on other instances wait too.
  */
-export function inFilesTurn<T>(spaceId: string, work: () => Promise<T>): Promise<T> {
+export function inFilesTurn<T>(
+  spaceId: string,
+  work: (query: Query | null) => Promise<T>,
+  hold: FilesHold = inThisProcess,
+): Promise<T> {
   const previous = turns.get(spaceId) ?? Promise.resolve();
+  const run = () => hold(spaceId, work);
   // The queue carries on whether the one before succeeded or failed.
-  const result = previous.then(work, work);
+  const result = previous.then(run, run);
   const settled = result.then(
     () => undefined,
     () => undefined,

@@ -46,6 +46,7 @@ import {
 } from './files-trash.ts';
 import {
   ANY_FILE,
+  filesHold,
   filesPath,
   inFilesTurn,
   mayChange,
@@ -997,13 +998,19 @@ export function createFilesConnector(options: FilesOptions): Connector {
     query: Query | Sql | null | undefined,
   ): Promise<SharedFilesRule> =>
     query ? sharedFilesRule(query, ctx.job_id, ctx.space_id) : Promise.resolve(ANY_FILE);
+  /** Where a turn in a space's Files is held beyond this process: the database, when there is one. */
+  const hold = filesHold(options.sql);
   /**
    * A change that reaches the space's Files runs its check and its change in
-   * one turn there (`inFilesTurn`), so the file it checked is the one it
-   * changes; one only in the job's workspace runs at once.
+   * one turn there (`inFilesTurn`), on every instance at once, so the file it
+   * checked is the one it changes; one only in the job's workspace runs at
+   * once. The work reads the database through the `query` it is given.
    */
-  const changing = <T>(inFiles: boolean, ctx: ConnectorContext, work: () => Promise<T>) =>
-    inFiles ? inFilesTurn(ctx.space_id, work) : work();
+  const changing = <T>(
+    inFiles: boolean,
+    ctx: ConnectorContext,
+    work: (query: Query | null) => Promise<T>,
+  ) => (inFiles ? inFilesTurn(ctx.space_id, work, hold) : work(options.sql ?? null));
   /**
    * Refuse a save over, or a move of, a file in a shared space's Files that
    * this job may not change. A name with nothing at it is a new file, or a
@@ -1780,71 +1787,80 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const target = await resolveFile(ctx, toArea, to);
         // The file checked is the file moved: in or out of the space's Files,
         // nothing else saves over or replaces it from the check to the move.
-        hash = await changing(area === 'artifacts' || toArea === 'artifacts', ctx, async () => {
-          // Out of a shared space's Files, only a file this job's person put there, as they left it.
-          const rule = area === 'artifacts' ? await sharedRule(ctx, options.sql) : ANY_FILE;
-          // Both directories are walked and held from here to the move, so
-          // neither can be swapped for a link anywhere else meanwhile.
-          const fromDirectory = await holdBeneath(source.base, source.segments.slice(0, -1)).catch(
-            (error: unknown) => {
+        hash = await changing(
+          area === 'artifacts' || toArea === 'artifacts',
+          ctx,
+          async (query) => {
+            // Out of a shared space's Files, only a file this job's person put there, as they left it.
+            const rule = area === 'artifacts' ? await sharedRule(ctx, query) : ANY_FILE;
+            // Both directories are walked and held from here to the move, so
+            // neither can be swapped for a link anywhere else meanwhile.
+            const fromDirectory = await holdBeneath(
+              source.base,
+              source.segments.slice(0, -1),
+            ).catch((error: unknown) => {
               throw notInWorkspace(error, area, from);
-            },
-          );
-          try {
-            const toDirectory = await holdBeneath(target.base, target.segments.slice(0, -1), true);
+            });
             try {
-              const sourceName = path.basename(source.target);
-              const targetName = path.basename(target.target);
-              const sourceAt = fromDirectory.at(sourceName);
-              const targetAt = toDirectory.at(targetName);
-              const content = await readOpened(fromDirectory, sourceName).catch(
-                (error: unknown) => {
-                  throw notInWorkspace(error, area, from);
-                },
+              const toDirectory = await holdBeneath(
+                target.base,
+                target.segments.slice(0, -1),
+                true,
               );
-              const moved = digest(content);
-              if (!mayChange(rule, from, moved)) throw new Error(notTheirs('files.move', from));
-              if (payload.content_hash !== undefined && payload.content_hash !== moved) {
-                // Nothing was moved. The file on disk is not the content this action
-                // recorded, which is a question for a person, not a retry.
-                throw new ConnectorFaultError({
-                  kind: 'bad_output',
-                  detail: 'the file to move is not the content the action recorded',
-                });
+              try {
+                const sourceName = path.basename(source.target);
+                const targetName = path.basename(target.target);
+                const sourceAt = fromDirectory.at(sourceName);
+                const targetAt = toDirectory.at(targetName);
+                const content = await readOpened(fromDirectory, sourceName).catch(
+                  (error: unknown) => {
+                    throw notInWorkspace(error, area, from);
+                  },
+                );
+                const moved = digest(content);
+                if (!mayChange(rule, from, moved)) throw new Error(notTheirs('files.move', from));
+                if (payload.content_hash !== undefined && payload.content_hash !== moved) {
+                  // Nothing was moved. The file on disk is not the content this action
+                  // recorded, which is a question for a person, not a retry.
+                  throw new ConnectorFaultError({
+                    kind: 'bad_output',
+                    detail: 'the file to move is not the content the action recorded',
+                  });
+                }
+                if (area === 'work' && toArea === 'artifacts') {
+                  // Into the person's Files, the bytes checked here go into a new
+                  // file, never the workspace's own: a second name for it, or a
+                  // handle a command still holds open, would let the agent's
+                  // computer change the person's file after they agreed to it.
+                  await createWith(targetAt, target.target, content);
+                  await unlink(sourceAt).catch(async (error: unknown) => {
+                    if (missing(error)) return;
+                    await unlink(targetAt).catch(() => {});
+                    throw error;
+                  });
+                } else {
+                  await moveWithoutReplacing(sourceAt, targetAt);
+                  // Out of the person's Files, the file is the agent's again: one
+                  // the service kept to itself (0600) is made readable to the
+                  // agent's computer, as a synchronised file would be.
+                  if (area === 'artifacts' && toArea === 'work')
+                    await readableToAgent(toDirectory, targetName);
+                }
+                // Done only when the file is at its new place with the bytes that were moved.
+                if (digest(await readOpened(toDirectory, targetName)) !== moved)
+                  throw new ConnectorFaultError({
+                    kind: 'bad_output',
+                    detail: 'the file at the new place does not match the file that was moved',
+                  });
+                return moved;
+              } finally {
+                await toDirectory.close();
               }
-              if (area === 'work' && toArea === 'artifacts') {
-                // Into the person's Files, the bytes checked here go into a new
-                // file, never the workspace's own: a second name for it, or a
-                // handle a command still holds open, would let the agent's
-                // computer change the person's file after they agreed to it.
-                await createWith(targetAt, target.target, content);
-                await unlink(sourceAt).catch(async (error: unknown) => {
-                  if (missing(error)) return;
-                  await unlink(targetAt).catch(() => {});
-                  throw error;
-                });
-              } else {
-                await moveWithoutReplacing(sourceAt, targetAt);
-                // Out of the person's Files, the file is the agent's again: one
-                // the service kept to itself (0600) is made readable to the
-                // agent's computer, as a synchronised file would be.
-                if (area === 'artifacts' && toArea === 'work')
-                  await readableToAgent(toDirectory, targetName);
-              }
-              // Done only when the file is at its new place with the bytes that were moved.
-              if (digest(await readOpened(toDirectory, targetName)) !== moved)
-                throw new ConnectorFaultError({
-                  kind: 'bad_output',
-                  detail: 'the file at the new place does not match the file that was moved',
-                });
-              return moved;
             } finally {
-              await toDirectory.close();
+              await fromDirectory.close();
             }
-          } finally {
-            await fromDirectory.close();
-          }
-        });
+          },
+        );
         detail = { from, to, area, to_area: toArea, content_hash: hash };
         if (area === 'work' && toArea === 'artifacts')
           detail = { ...detail, ...(await removeFromComputer(action, ctx, source, target, hash)) };
@@ -1933,8 +1949,8 @@ export function createFilesConnector(options: FilesOptions): Connector {
           // is still as they left it (shared-files.ts). What it checks there is
           // what it writes over: the check, the write and the read-back are one
           // turn in the space's Files.
-          const { madeNow, replaced } = await changing(area === 'artifacts', ctx, async () => {
-            const rule = area === 'artifacts' ? await sharedRule(ctx, options.sql) : ANY_FILE;
+          const { madeNow, replaced } = await changing(area === 'artifacts', ctx, async (query) => {
+            const rule = area === 'artifacts' ? await sharedRule(ctx, query) : ANY_FILE;
             const theirs = rule.limited ? rule.theirs.get(filesPath(relative) ?? '') : undefined;
             let onlyNew =
               area === 'artifacts' && (ctx.only_new === true || (rule.limited && !theirs));
