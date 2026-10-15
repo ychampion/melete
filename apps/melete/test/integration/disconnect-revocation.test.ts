@@ -592,4 +592,253 @@ withDb('removing a space', () => {
     expect(calls).toBe(2);
     expect(lines).toHaveLength(2);
   });
+
+  test('never writes down what a failed withdrawal said, which can quote the token', async () => {
+    if (!handle || !secrets) return;
+    const space = await newSpace();
+    // Not what a sign-in seals: reading it fails, and the failure quotes it.
+    const made = await connect(
+      space,
+      'imap',
+      { kind: 'gmail', account: 'quoted@example.test' },
+      'ya29SECRETVALUE',
+    );
+    const lines: string[] = [];
+    await spaceAccessWithdrawal({
+      sql: handle.sql,
+      secrets,
+      log: (line) => lines.push(line),
+      fetcher: async () => new Response(null, { status: 200 }),
+      google: { client: { clientId: 'client', clientSecret: 'secret' } },
+    })(space);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(made.id);
+    expect(lines.join('\n')).not.toContain('SECRETVALUE');
+  });
+
+  test('withdraws an MCP sign-in whole, because the other connections on its server go too', async () => {
+    if (!handle || !secrets) return;
+    const issuer = rfc7009Issuer();
+    const leaving = await newSpace();
+    for (const token of ['one', 'two'])
+      await connect(
+        leaving,
+        'mcp',
+        issuer.configuration,
+        issuer.credential(token, 'shared-client'),
+      );
+    await spaceAccessWithdrawal({
+      sql: handle.sql,
+      secrets,
+      log: () => {},
+      mcpFetch: async () => (request) => fetch(request),
+    })(leaving);
+    expect(issuer.received.map((form) => [form.token, form.token_type_hint]).sort()).toEqual([
+      ['rt-one', 'refresh_token'],
+      ['rt-two', 'refresh_token'],
+    ]);
+  });
+});
+
+/**
+ * An MCP server's own sign-in on this machine, with an RFC 7009 revocation
+ * endpoint, that records each token it is asked to revoke.
+ */
+function rfc7009Issuer() {
+  const received: Record<string, string>[] = [];
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(request): Promise<Response> {
+      const url = new URL(request.url);
+      if (request.method === 'GET' && url.pathname === '/.well-known/oauth-authorization-server')
+        return Response.json({
+          issuer: url.origin,
+          authorization_endpoint: `${url.origin}/authorize`,
+          token_endpoint: `${url.origin}/token`,
+          revocation_endpoint: `${url.origin}/revoke`,
+          code_challenge_methods_supported: ['S256'],
+        });
+      if (request.method === 'POST' && url.pathname === '/revoke') {
+        received.push(Object.fromEntries(new URLSearchParams(await request.text())));
+        return new Response(null, { status: 200 });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  closers.push(() => server.stop(true));
+  const base = `http://127.0.0.1:${server.port}`;
+  return {
+    received,
+    configuration: { server: { endpoint: { transport: 'http', url: `${base}/mcp` } } },
+    credential: (token: string, clientId: string) =>
+      JSON.stringify({
+        access_token: `at-${token}`,
+        refresh_token: `rt-${token}`,
+        token_url: `${base}/token`,
+        client_id: clientId,
+        resource: `${base}/mcp`,
+        status: 'active',
+      }),
+  };
+}
+
+/** The sealed store, noting each copy opened through it. */
+function noticingStore() {
+  if (!handle) throw new Error('Postgres unavailable');
+  const opened: string[] = [];
+  class Noticing extends SealedSecretStore {
+    override withSecret<T>(id: string, spaceId: string, use: (value: string) => Promise<T>) {
+      opened.push(id);
+      return super.withSecret(id, spaceId, use);
+    }
+  }
+  return {
+    opened,
+    store: new Noticing(new PostgresSecretRepository(handle.sql), () => MASTER_KEY),
+  };
+}
+
+/** A policy whose revocation reads sealed copies only through `store`. */
+function policyReading(store: SealedSecretStore) {
+  if (!handle || !jobs) throw new Error('Postgres unavailable');
+  return new PolicyService(jobs, undefined, {
+    afterRevoke: connectionRevocation({
+      sql: handle.sql,
+      secrets: store,
+      log: () => {},
+      mcpFetch: async () => (request) => fetch(request),
+    }),
+  });
+}
+
+/** The client id a sign-in by Client ID Metadata Document carries: the same for every one. */
+const METADATA_CLIENT = 'https://melete.example.test/api/oauth/client-metadata.json';
+
+withDb('removing an MCP sign-in whose server another connection signs in to', () => {
+  test('withdraws only its access token while another connection uses the same server and client', async () => {
+    const issuer = rfc7009Issuer();
+    // Another person's space, signed in to the same server as the same client.
+    const theirs = await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('theirs', METADATA_CLIENT),
+    );
+    const mine = await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('mine', METADATA_CLIENT),
+    );
+    const { opened, store } = noticingStore();
+    const answer = await policyReading(store).changeConnection(mine.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    expect(issuer.received).toEqual([
+      { token: 'at-mine', token_type_hint: 'access_token', client_id: METADATA_CLIENT },
+    ]);
+    expect(await sealed(mine.secretRef)).toBe(0);
+    // The other person's copy is never opened to find this out.
+    expect(opened).not.toContain(theirs.secretRef);
+    expect(new Set<string | null>(opened)).toEqual(new Set([mine.secretRef]));
+  });
+
+  test("withdraws a dynamically registered sign-in whole, without opening another connection's copy", async () => {
+    const issuer = rfc7009Issuer();
+    // Registered dynamically, a client is one sign-in's own; another
+    // connection's copy is not opened to compare it.
+    const theirs = await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('theirs', 'dcr-issued'),
+    );
+    const mine = await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('mine', 'dcr-issued'),
+    );
+    const { opened, store } = noticingStore();
+    const answer = await policyReading(store).changeConnection(mine.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    expect(issuer.received).toEqual([
+      { token: 'rt-mine', token_type_hint: 'refresh_token', client_id: 'dcr-issued' },
+    ]);
+    expect(opened).not.toContain(theirs.secretRef);
+  });
+
+  test('withdraws a metadata-document sign-in whole when no other connection uses its server', async () => {
+    const issuer = rfc7009Issuer();
+    const elsewhere = rfc7009Issuer();
+    await connect(
+      await newSpace(),
+      'mcp',
+      elsewhere.configuration,
+      elsewhere.credential('elsewhere', METADATA_CLIENT),
+    );
+    const mine = await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('mine', METADATA_CLIENT),
+    );
+    const answer = await policyReading(noticingStore().store).changeConnection(mine.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    expect(issuer.received).toEqual([
+      { token: 'rt-mine', token_type_hint: 'refresh_token', client_id: METADATA_CLIENT },
+    ]);
+    expect(elsewhere.received).toEqual([]);
+  });
+
+  test('withdraws its refresh token when the other connections there are other clients', async () => {
+    const issuer = rfc7009Issuer();
+    await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('theirs', 'dcr-a'),
+    );
+    // The same client, but on another server, and one already removed.
+    const elsewhere = rfc7009Issuer();
+    await connect(
+      await newSpace(),
+      'mcp',
+      elsewhere.configuration,
+      elsewhere.credential('elsewhere', 'dcr-b'),
+    );
+    const gone = await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('gone', 'dcr-b'),
+    );
+    if (!handle) return;
+    await handle.sql`update connection set status = 'revoked' where id = ${gone.id}`;
+    const mine = await connect(
+      await newSpace(),
+      'mcp',
+      issuer.configuration,
+      issuer.credential('mine', 'dcr-b'),
+    );
+    const policy = policyWith({ mcpFetch: async () => (request) => fetch(request) });
+    const answer = await policy.changeConnection(mine.id, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect(answer.provider_access).toBe('withdrawn');
+    expect(issuer.received).toEqual([
+      { token: 'rt-mine', token_type_hint: 'refresh_token', client_id: 'dcr-b' },
+    ]);
+    expect(elsewhere.received).toEqual([]);
+  });
 });
