@@ -4,7 +4,7 @@
  * message that asked for it, and the live stream folded in. Pure functions, so
  * the same view comes out of a reload and of a stream.
  */
-import type { RoomFrame, RoomMessage, RoomRequest, ThreadView } from './api.ts';
+import type { RoomFrame, RoomMember, RoomMessage, RoomRequest, ThreadView } from './api.ts';
 
 /**
  * A person in a room is labelled `Name <handle>` by the service, always. The
@@ -249,6 +249,21 @@ const ACTIVE = new Set<Turn['status']>([
   'needs_you',
   'paused',
 ]);
+
+/**
+ * The role an owner can move someone in the room to: a member can be made an
+ * owner, and an owner made a member again. The person who made the room stays
+ * an owner, and a guest stays a guest, so neither has a choice.
+ */
+export function nextRole(
+  viewerRole: string | null,
+  member: Pick<RoomMember, 'role' | 'made_room'>,
+): 'owner' | 'member' | null {
+  if (viewerRole !== 'owner' || member.made_room) return null;
+  if (member.role === 'member') return 'owner';
+  if (member.role === 'owner') return 'member';
+  return null;
+}
 
 /** A request under way can be stopped by the person who asked it, or by an owner of the room. */
 export function canStop(request: RoomRequest, me: string | null, role: string | null): boolean {

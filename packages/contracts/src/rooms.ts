@@ -51,6 +51,11 @@ export const roomMember = z.strictObject({
   expires_at: timestamp.nullable().optional(),
   /** Looking at the room now. Display only. */
   present: z.boolean(),
+  /**
+   * The person who made the room. They stay one of its owners: nobody else can
+   * make them a member or remove them, and the room goes only with them.
+   */
+  made_room: z.boolean().optional(),
 });
 export type RoomMember = z.infer<typeof roomMember>;
 
@@ -105,7 +110,22 @@ export const createRoomRequest = z.strictObject({
   name: z.string().trim().min(1).max(120),
   purpose: z.string().trim().max(500).optional(),
 });
-export const addRoomMemberRequest = z.strictObject({ principal_id: principalId });
+/**
+ * The place an owner gives a person with an account: `member`, or `owner`,
+ * who manages the room as its maker does. Guests come in through an invite.
+ */
+export const roomMemberRole = z.enum(['owner', 'member']);
+export type RoomMemberRole = z.infer<typeof roomMemberRole>;
+/** Add a person to a room, as a member unless `role` says owner. */
+export const addRoomMemberRequest = z.strictObject({
+  principal_id: principalId,
+  role: roomMemberRole.optional(),
+});
+/**
+ * Make someone in a room an owner, or an owner a member again. A room always
+ * keeps at least one owner, and its maker always stays one.
+ */
+export const updateRoomMemberRequest = z.strictObject({ role: roomMemberRole });
 
 export const person = z.strictObject({
   id: principalId,
