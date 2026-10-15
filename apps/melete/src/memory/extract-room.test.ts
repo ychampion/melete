@@ -99,4 +99,20 @@ describe('what the extraction model is told about a room message', () => {
       expect(JSON.parse(content).evidence).not.toHaveProperty('speaker');
     }
   });
+
+  // A structured answer can only name what its schema offers: a personal chat
+  // is never offered shared work, which would only drop a detail there.
+  const offered = (speaker: string | null) => {
+    const { format } = extractionMessages(batch(speaker));
+    const schema = format.schema as {
+      properties: { proposals: { items: { properties: { about: { enum: unknown[] } } } } };
+    };
+    return schema.properties.proposals.items.properties.about.enum;
+  };
+
+  test('only a room message is offered shared work as an answer', () => {
+    expect(offered('Bob <k3mxq7ab>')).toContain('shared_work');
+    expect(offered(null)).not.toContain('shared_work');
+    expect(offered(null)).toContain('this_task_only');
+  });
 });

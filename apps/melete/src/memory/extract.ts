@@ -153,53 +153,66 @@ You have no database or action tools. Propose no more than 32 changes supported 
  * rather than one branch per operation, because every provider's strict mode
  * accepts a flat object: fields an operation does not use are null, and are
  * removed before the answer is checked against `extractionProposal`. A source
- * is only its quote; the service finds where it is.
+ * is only its quote; the service finds where it is. Only a message said in a
+ * room is offered `shared_work`: anywhere else it would only drop a detail.
  */
-export const EXTRACTION_FORMAT: StructuredFormat = {
-  name: 'memory_extraction',
-  schema: strictObject({
-    proposals: {
-      type: 'array',
-      items: strictObject({
-        op: { type: 'string', enum: ['add', 'supersede', 'retract', 'no-op'] },
-        claim_id: nullable({
-          type: 'string',
-          description: 'null unless op is supersede or retract',
-        }),
-        expected_revision: nullable({
-          type: 'integer',
-          description: 'null unless op is supersede or retract',
-        }),
-        domain_key: nullable({ type: 'string', description: 'null unless op is add or supersede' }),
-        content: nullable({ type: 'string', description: 'null unless op is add or supersede' }),
-        kind: nullable({
-          type: 'string',
-          enum: [...claimKind.options],
-          description: 'null unless op is add or supersede',
-        }),
-        factual_status: nullable({
-          type: 'string',
-          enum: [...factualStatus.options],
-          description: 'null unless op is add or supersede',
-        }),
-        valid_from: nullable({ type: 'string', description: 'null unless op is add or supersede' }),
-        valid_until: nullable({ type: 'string', description: 'null when open-ended or unused' }),
-        lasting: nullable({
-          type: 'boolean',
-          description:
-            'For add and supersede: true for a preference, a fact about the person or someone they know, or a standing instruction; false for a one-time task or request. null otherwise',
-        }),
-        about: nullable({
-          type: 'string',
-          enum: [...PROPOSAL_ABOUT],
-          description: 'For add and supersede: what it is. null otherwise',
-        }),
+function extractionFormat(about: readonly string[]): StructuredFormat {
+  return {
+    name: 'memory_extraction',
+    schema: strictObject({
+      proposals: {
+        type: 'array',
+        items: strictObject({
+          op: { type: 'string', enum: ['add', 'supersede', 'retract', 'no-op'] },
+          claim_id: nullable({
+            type: 'string',
+            description: 'null unless op is supersede or retract',
+          }),
+          expected_revision: nullable({
+            type: 'integer',
+            description: 'null unless op is supersede or retract',
+          }),
+          domain_key: nullable({
+            type: 'string',
+            description: 'null unless op is add or supersede',
+          }),
+          content: nullable({ type: 'string', description: 'null unless op is add or supersede' }),
+          kind: nullable({
+            type: 'string',
+            enum: [...claimKind.options],
+            description: 'null unless op is add or supersede',
+          }),
+          factual_status: nullable({
+            type: 'string',
+            enum: [...factualStatus.options],
+            description: 'null unless op is add or supersede',
+          }),
+          valid_from: nullable({
+            type: 'string',
+            description: 'null unless op is add or supersede',
+          }),
+          valid_until: nullable({ type: 'string', description: 'null when open-ended or unused' }),
+          lasting: nullable({
+            type: 'boolean',
+            description:
+              'For add and supersede: true for a preference, a fact about the person or someone they know, or a standing instruction; false for a one-time task or request. null otherwise',
+          }),
+          about: nullable({
+            type: 'string',
+            enum: [...about],
+            description: 'For add and supersede: what it is. null otherwise',
+          }),
 
-        sources: { type: 'array', items: strictObject({ quote: { type: 'string' } }) },
-      }),
-    },
-  }),
-};
+          sources: { type: 'array', items: strictObject({ quote: { type: 'string' } }) },
+        }),
+      },
+    }),
+  };
+}
+export const EXTRACTION_FORMAT = extractionFormat(
+  PROPOSAL_ABOUT.filter((about) => about !== 'shared_work'),
+);
+export const ROOM_EXTRACTION_FORMAT = extractionFormat(PROPOSAL_ABOUT);
 
 /**
  * What the extraction model is told and handed for one batch. A message said
@@ -207,12 +220,13 @@ export const EXTRACTION_FORMAT: StructuredFormat = {
  */
 export function extractionMessages(
   batch: Pick<ExtractionBatch, 'work' | 'source' | 'text' | 'claims' | 'speaker'>,
-): { system: string; content: string } {
+): { system: string; content: string; format: StructuredFormat } {
   const room = typeof batch.speaker === 'string';
   return {
     system: room
       ? `${EXTRACTION_INSTRUCTIONS}\n${ROOM_EXTRACTION_INSTRUCTIONS}`
       : EXTRACTION_INSTRUCTIONS,
+    format: room ? ROOM_EXTRACTION_FORMAT : EXTRACTION_FORMAT,
     content: JSON.stringify({
       policy: batch.work.policy_version,
       evidence: {
@@ -235,7 +249,7 @@ export async function proposeExtraction(
   gateway: ExtractionGateway,
 ): Promise<ExtractionProposal[]> {
   await reserveExtractionCall(sql, scope, batch);
-  const { system, content } = extractionMessages(batch);
+  const { system, content, format } = extractionMessages(batch);
   if (content.length > EXTRACTION_LIMITS.context_characters + 4000)
     throw new MemoryError('extraction_input_size');
   let response: string;
@@ -248,7 +262,7 @@ export async function proposeExtraction(
         ],
         max_tokens: EXTRACTION_LIMITS.output_tokens,
         signal: AbortSignal.timeout(EXTRACTION_LIMITS.timeout_ms),
-        format: EXTRACTION_FORMAT,
+        format,
       },
       {
         ownerId: scope.ownerId,
