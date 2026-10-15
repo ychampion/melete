@@ -424,16 +424,17 @@ export class ConnectorFactory {
    * are opened with a credential's id. A person can switch the connection to
    * another credential while its connector stays registered, so the id it was
    * opened with is not trusted: the next call reads the row and uses the new
-   * one. A connection left with none is refused as a sign-in that ended.
+   * one. A connection left with none, or revoked, is refused as a sign-in
+   * that ended.
    */
   private currentCredential(row: ConnectionSource): SecretAccess {
     const sql = this.options.sql;
     const secrets = this.secrets;
     return {
       async withSecret(_opened, spaceId, use) {
-        const [current] = await sql`select secret_ref from connection
+        const [current] = await sql`select status, secret_ref from connection
           where id = ${row.id} and space_id = ${spaceId}`;
-        if (!current?.secret_ref) throw new SignInEnded();
+        if (!current?.secret_ref || current.status === 'revoked') throw new SignInEnded();
         return secrets.withSecret(String(current.secret_ref), spaceId, use);
       },
     };
