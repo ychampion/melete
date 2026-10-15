@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { type AttemptBundle, EMPTY_SINCE_LAST, type RuntimeAdapter } from '@melete/contracts';
 import { withMemoryRuntime } from './context.ts';
-import type { MemorySql } from './db.ts';
+import type { MemoryScope, MemorySql } from './db.ts';
 
 const attempt: AttemptBundle = {
   attempt: {
@@ -40,21 +40,35 @@ const engine: RuntimeAdapter = {
   },
 };
 
-test("the engine is got ready before the attempt's memory is read, and given up when the attempt never starts", async () => {
+test("an attempt's memory scope, privacy and agent are read together, not one after another", async () => {
   const order: string[] = [];
+  // Answers the question about the agent, then has nothing more: the recall after it fails.
+  const sql = ((strings: TemplateStringsArray) => {
+    if (strings.join('?').includes('reads_memory')) {
+      order.push('agent');
+      return Promise.resolve([{ reads_memory: true }]);
+    }
+    return Promise.reject(new Error('no more database here'));
+  }) as unknown as MemorySql;
   const runtime = withMemoryRuntime(
     engine,
-    (() => {
-      throw new Error('no database here');
-    }) as unknown as MemorySql,
+    sql,
     async () => {
-      order.push('memory');
-      throw new Error('memory unavailable');
+      order.push('scope asked');
+      await Bun.sleep(20);
+      order.push('scope answered');
+      return {
+        ownerId: 'own_01J00000000000000000000000',
+        spaceId: 'sp_01J00000000000000000000000',
+        publisher: 'service',
+        audience: 'private',
+        role: 'owner',
+      } satisfies MemoryScope;
     },
     {
-      prepareEngine: (bundle) => {
-        order.push(`prepare ${bundle.attempt.id}`);
-        return () => order.push('give up');
+      recallsPrivateMemory: async () => {
+        order.push('privacy');
+        return false;
       },
     },
   );
@@ -62,5 +76,5 @@ test("the engine is got ready before the attempt's memory is read, and given up 
     .start(attempt, { emit: async () => {} }, new AbortController().signal)
     .catch((error: unknown) => error);
   expect(failure).toBeInstanceOf(Error);
-  expect(order).toEqual([`prepare ${attempt.attempt.id}`, 'memory', 'give up']);
+  expect(order.slice(0, 4)).toEqual(['scope asked', 'privacy', 'agent', 'scope answered']);
 });
