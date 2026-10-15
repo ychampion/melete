@@ -7,6 +7,7 @@ import {
   createFeedbackRequest,
   FEEDBACK_ID_ALPHABET,
   type FeedbackReport,
+  feedbackForwarding,
   feedbackListQuery,
   feedbackListResponse,
   feedbackResponse,
@@ -130,6 +131,9 @@ export function mountFeedbackMock(app: Hono, deps: AppDeps, reporter: () => stri
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
     return c.json(feedbackListResponse.parse({ reports: list, can_manage: true }));
   });
+
+  // The demo forwards nowhere: reports stay in the app.
+  app.get('/feedback/forwarding', (c) => c.json(feedbackForwarding.parse({ forwarded: false })));
 
   app.get('/feedback/:id', (c) => {
     const report = reports.get(c.req.param('id').toUpperCase());

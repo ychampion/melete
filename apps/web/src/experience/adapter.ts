@@ -62,6 +62,7 @@ import type {
   EngineSkill,
   ExperienceEvent,
   FeedbackCreate,
+  FeedbackForwarding,
   FeedbackList,
   FeedbackReport,
   FeedbackStatus,
@@ -1100,6 +1101,7 @@ export const adapter = {
     guard<FeedbackList>(() =>
       api.GET('/feedback', { params: { query: status ? { status } : {} } }),
     ),
+  feedbackForwarding: () => guard<FeedbackForwarding>(() => api.GET('/feedback/forwarding')),
   feedbackReport: (id: string) =>
     guard<{ report: FeedbackReport }>(() => api.GET('/feedback/{id}', path(id))),
   setFeedbackStatus: (id: string, status: FeedbackStatus, note?: string | null) =>
