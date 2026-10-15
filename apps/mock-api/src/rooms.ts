@@ -1182,7 +1182,7 @@ Thanks`,
         throw new RoomError(404, 'not_found', 'That connection is not in this room.');
       const use = input.shared_use ?? useOf(entry.id);
       const own = use === 'room' && (input.per_member ?? perMember.has(entry.id));
-      if (own && entry.provider !== 'command_line')
+      if ((own || input.per_member) && entry.provider !== 'command_line')
         throw new RoomError(
           400,
           'invalid_request',

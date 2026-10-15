@@ -227,11 +227,14 @@ export function postgresEgressCredentials(options: {
   };
   /**
    * A person's own account of this adapter's kind that covers the host: in
-   * their own space, active, and holding the read scope. Only ever theirs.
+   * their own space, active, and holding the read scope. Only ever theirs. A
+   * personal space that names no owner is the installation owner's, as
+   * `personalSpaceOf` in `rooms/handoffs.ts` reads it.
    */
   const ownAccount = async (principalId: string, adapterId: string, host: string) => {
     const spaces = await sql`select id from space where kind = 'personal'
-      and owner_principal_id = ${principalId} and coalesce(audience, 'owner') = 'owner'
+      and coalesce(owner_principal_id, (select id from owner limit 1)) = ${principalId}
+      and coalesce(audience, 'owner') = 'owner'
       and removed_at is null order by created_at, id`;
     for (const each of spaces) {
       const own = String(each.id);

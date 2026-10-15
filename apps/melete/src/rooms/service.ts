@@ -828,7 +828,7 @@ export class RoomService {
         throw new ServiceError('not_found', 'That connection is not in this room.', 404);
       const sharedUse = change.shared_use ?? (source.sharedUse === 'room' ? 'room' : 'owner');
       const perMember = sharedUse === 'room' && (change.per_member ?? source.perMember);
-      if (perMember && source.provider !== 'command_line')
+      if ((perMember || change.per_member) && source.provider !== 'command_line')
         throw new ServiceError(
           'invalid_request',
           "Only a command-line account (GitHub, GitLab, npm or AWS for the agent's computer) can use each person's own account.",

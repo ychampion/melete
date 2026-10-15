@@ -43,5 +43,11 @@ describe('approverRuleFor', () => {
     expect(waitingFor(authority, new Map([['prn_ana', 'Ana']]))).toBe(
       "It goes through Ana's own account. Waiting for Ana to answer it.",
     );
+    expect(waitingFor(authority, new Map())).toBe(
+      'It goes through the own account of the person who asked, who is no longer in the room, so nobody can answer it.',
+    );
+    expect(waitingFor({ ...authority, requestedBy: null }, new Map())).toBe(
+      "It goes through each person's own account, and no person asked for it, so nobody can answer it.",
+    );
   });
 });

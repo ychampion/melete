@@ -497,6 +497,31 @@ withDb('where an account is offered', () => {
       where space_id = ${room} and principal_id = ${ben}`;
     expect((await ask(bens))?.missing).toContain('only a person who is a member of the room');
 
+    // The installation's owner's own space may name no owner; it is still theirs.
+    await sql`insert into owner (id, email) values (${recordId('own')}, 'installation@example.test')
+      on conflict do nothing`;
+    const [installation] = await sql`select id from owner limit 1`;
+    const first = String(installation?.id);
+    await sql`insert into principal (id, email, kind, display_name)
+      values (${first}, ${`${first.toLowerCase()}@example.test`}, 'person', 'Ivy')
+      on conflict (id) do update set kind = 'person'`;
+    await sql`insert into space_membership (principal_id, space_id, role)
+      values (${first}, ${room}, 'member')`;
+    const ivySecret = `tok_${randomBytes(18).toString('hex')}`;
+    const unnamed = recordId('sp');
+    // Older than any other space here, so it is the one their account is read from.
+    await sql`insert into space (id, name, git_path, kind, audience, created_at)
+      values (${unnamed}, 'Own', ${`spaces/${unnamed}`}, 'personal', 'owner', '2000-01-01')`;
+    await sql`insert into connection (id, space_id, provider, label, scopes, status, secret_ref,
+        configuration)
+      values (${recordId('conn')}, ${unnamed}, 'command_line', 'Own account',
+        '["egress.test_read", "egress.test_write"]'::jsonb, 'active',
+        ${await secrets.put(unnamed, ivySecret)},
+        ${JSON.stringify({ kind: 'command_line', adapter: 'test', config: { hosts: [HOST] } })}::jsonb)`;
+    expect(await secretOf(await request(first))).toBe(ivySecret);
+    // Nobody else ever reads from it.
+    expect((await ask(await request(cal)))?.missing).toContain('Cal has not connected one yet');
+
     // Through the relay: Ana's request carries Ana's token, and Cal's sends nothing.
     await sql`update job set audience = 'room', principal_id = ${agent},
       requested_by_principal_id = ${ana} where id = ${claims.job_id}`;

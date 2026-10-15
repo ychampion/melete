@@ -227,10 +227,12 @@ export async function mayDecide(
 /** Who the room is waiting for, in a person's words. */
 export function waitingFor(authority: RoomAuthority, names: ReadonlyMap<string, string>): string {
   if (authority.rule === 'own_account') {
-    const asker = authority.requestedBy ? names.get(authority.requestedBy) : undefined;
+    if (!authority.requestedBy)
+      return "It goes through each person's own account, and no person asked for it, so nobody can answer it.";
+    const asker = names.get(authority.requestedBy);
     return asker
       ? `It goes through ${asker}'s own account. Waiting for ${asker} to answer it.`
-      : 'It goes through the own account of someone who is no longer here, so nobody can answer it.';
+      : 'It goes through the own account of the person who asked, who is no longer in the room, so nobody can answer it.';
   }
   if (authority.rule === 'team_accounts')
     return authority.approvers === 'owners'
