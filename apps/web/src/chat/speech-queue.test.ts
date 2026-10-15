@@ -6,6 +6,7 @@ import {
   SPEECH_AHEAD,
   type SpeechAnswer,
   type SpeechQueueOptions,
+  STILL_BUSY,
 } from './speech-queue.ts';
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -166,7 +167,7 @@ describe('reading a reply aloud', () => {
     await run.answer('two');
     expect(run.waits).toEqual([BUSY_RETRY_MS]);
     expect(run.played).toEqual(['two']);
-    expect(run.problems).toEqual(['The speech service is busy just now. Try again in a moment.']);
+    expect(run.problems).toEqual([STILL_BUSY]);
   });
 
   test('stopping drops what is queued and cancels the open requests; new pieces play after', async () => {

@@ -16,6 +16,8 @@ export const BUSY_RETRY_MS = 1500;
 export const BUSY = 'voice_busy';
 
 const FAILED = 'The reply could not be read aloud.';
+/** Shown when a piece was still turned away after the second ask, and skipped. */
+export const STILL_BUSY = 'The speech service was busy, so part of the reply was skipped.';
 
 export type SpeechAnswer = {
   data: Blob | null;
@@ -79,10 +81,15 @@ export function createSpeechQueue(options: SpeechQueueOptions): SpeechQueue {
       }
       if (signal.aborted) return null;
       if (answer.data) return answer.data;
-      if (answer.code === BUSY && attempt === 0) {
-        await wait(BUSY_RETRY_MS, signal);
-        if (signal.aborted) return null;
-        continue;
+      if (answer.code === BUSY) {
+        if (attempt === 0) {
+          await wait(BUSY_RETRY_MS, signal);
+          if (signal.aborted) return null;
+          continue;
+        }
+        // The service's own words ask the person to try again; here nothing is left to try.
+        options.onProblem?.(STILL_BUSY);
+        return null;
       }
       options.onProblem?.(answer.error ?? FAILED);
       return null;

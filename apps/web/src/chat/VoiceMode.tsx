@@ -176,10 +176,17 @@ export function VoicePanel({
           audio.play().catch(done);
         }),
       onSpeaking: () => setPhase('speaking'),
-      // Back to the work, or to listening, once the last piece has been read.
+      // Back to the work, or to listening, once the last piece has been read. When every
+      // piece was skipped nothing was spoken, so a finished reply goes back to listening too.
       onIdle: () =>
         setPhase((current) =>
-          current === 'speaking' ? (workingRef.current ? 'thinking' : 'listening') : current,
+          current === 'speaking'
+            ? workingRef.current
+              ? 'thinking'
+              : 'listening'
+            : current === 'thinking' && !workingRef.current && !replying.current
+              ? 'listening'
+              : current,
         ),
       onProblem: setProblem,
     }),
