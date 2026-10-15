@@ -1,8 +1,10 @@
 /**
  * Room → People: who is in the room and who is looking at it now, the name
  * the person goes by here, adding people (owners), inviting guests for a while
- * (owners), removing people (owners) and leaving. Everyone is shown as
- * `Name <handle>`: the handle is the room's own code for a person.
+ * (owners), making someone an owner or a member again (owners), removing people
+ * (owners) and leaving. The person who made the room always stays an owner.
+ * Everyone is shown as `Name <handle>`: the handle is the room's own code for a
+ * person.
  */
 import { useEffect, useState } from 'react';
 import { Button, Dialog, Field, Input, Select } from '../design/primitives.tsx';
@@ -18,7 +20,7 @@ import {
   roomsApi,
 } from './api.ts';
 import { PersonAvatar, Who } from './parts.tsx';
-import { dayOf, splitLabel } from './reduce.ts';
+import { dayOf, nextRole, splitLabel } from './reduce.ts';
 
 const ROLE_WORDS = { owner: 'Owner', member: 'Member', guest: 'Guest' } as const;
 
@@ -66,6 +68,28 @@ export function People({
     onChanged();
   };
 
+  const changeRole = async (principalId: string, label: string, role: 'owner' | 'member') => {
+    setBusy(`${principalId}:role`);
+    const result = await roomsApi.setMemberRole(detail.room.id, principalId, role);
+    setBusy(null);
+    if (!result.data) {
+      toast({
+        kind: 'err',
+        title: result.error ?? result.unavailable ?? 'Couldn’t change their role',
+      });
+      return;
+    }
+    const { name } = splitLabel(label);
+    toast({
+      kind: 'ok',
+      title:
+        role === 'owner'
+          ? `${name} is now an owner of ${detail.room.name}`
+          : `${name} is now a member of ${detail.room.name}`,
+    });
+    onChanged();
+  };
+
   const leave = async () => {
     if (!me) return;
     setBusy(me.id);
@@ -105,7 +129,7 @@ export function People({
           </>
         ) : (
           <>
-            {mine && mine.role !== 'owner' ? (
+            {mine && !mine.made_room ? (
               <Button id="room-leave" variant="ghost" onClick={() => setLeaving(true)}>
                 Leave room
               </Button>
@@ -120,8 +144,9 @@ export function People({
         <ul className="people-list" aria-label="People in this room">
           {detail.members.map((member) => {
             const self = member.principal_id === me?.id;
+            const role = nextRole(detail.room.my_role, member);
             const meta = [
-              ROLE_WORDS[member.role],
+              member.made_room ? 'Owner, made this room' : ROLE_WORDS[member.role],
               member.role === 'guest' && member.expires_at
                 ? `until ${dayOf(member.expires_at)}`
                 : null,
@@ -138,17 +163,36 @@ export function People({
                   </span>
                   <span className="people-meta">{meta.join(' · ')}</span>
                 </span>
-                {owner && !self && member.role !== 'owner' ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    loading={busy === member.principal_id}
-                    aria-label={`Remove ${member.display_name}`}
-                    onClick={() => void remove(member.principal_id, member.display_name)}
-                  >
-                    Remove
-                  </Button>
-                ) : null}
+                <span className="people-actions">
+                  {role ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      loading={busy === `${member.principal_id}:role`}
+                      aria-label={
+                        role === 'owner'
+                          ? `Make ${member.display_name} an owner`
+                          : `Make ${member.display_name} a member`
+                      }
+                      onClick={() =>
+                        void changeRole(member.principal_id, member.display_name, role)
+                      }
+                    >
+                      {role === 'owner' ? 'Make owner' : 'Make member'}
+                    </Button>
+                  ) : null}
+                  {owner && !self && !member.made_room ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={busy === member.principal_id}
+                      aria-label={`Remove ${member.display_name}`}
+                      onClick={() => void remove(member.principal_id, member.display_name)}
+                    >
+                      Remove
+                    </Button>
+                  ) : null}
+                </span>
               </li>
             );
           })}
