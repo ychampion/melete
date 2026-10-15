@@ -118,6 +118,21 @@ const SPACE_OWNER_SURFACES = new Set([
   'DELETE /space/members/{id}',
 ]);
 
+/**
+ * These routes answer for the space the session is in. A request that names a
+ * different space, even a room the person is in, is refused rather than
+ * answered for the session's space as if it were the one asked about.
+ */
+function requireSessionSpace(c: Context, spaceId: string) {
+  const named = c.req.header('x-melete-space');
+  if (named && named !== spaceId)
+    throw new ServiceError(
+      'scope_denied',
+      'This works only in the space you are signed in to.',
+      400,
+    );
+}
+
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   if (deps.attachments) service.attachments = deps.attachments;
@@ -703,6 +718,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     app.on(method, path.replace(/\{([^}]+)\}/g, ':$1'), async (c) => {
       const spaceId = c.get('experienceSpaceId');
       if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+      requireSessionSpace(c, spaceId);
       // Anyone who is not the space's owner, whatever their role.
       const member = !ownsSessionSpace(c.get('sessionSpace'));
       const ownerOnly = () =>
@@ -760,6 +776,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     if (c.req.query('view') !== 'experience') return next();
     const spaceId = c.get('experienceSpaceId');
     if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+    requireSessionSpace(c, spaceId);
     const since = readEventCursor(
       c.req.header('Last-Event-ID'),
       c.req.query('since') ?? c.req.query('after'),

@@ -464,6 +464,7 @@ export class ConnectorFactory {
       if (row.configuration?.builtin === 'transcription') {
         if (!configured.transcription) return undefined;
         return createTranscriptionConnector({
+          sql: options.sql,
           workRoot: options.workRoot,
           spacesRoot: options.spacesRoot,
           adapter: configured.transcription,
@@ -473,6 +474,7 @@ export class ConnectorFactory {
       }
       if (!configured.speech) return undefined;
       return createCapabilityConnector({
+        sql: options.sql,
         spacesRoot: options.spacesRoot,
         adapter: configured.speech,
         provider: configured.provider,
