@@ -100,7 +100,11 @@ export function gatewayChatClient(
     },
   };
 }
-/** What a proposal is about, as the model says it. Only `this_task_only` changes what is kept. */
+/**
+ * What a proposal is about, as the model says it. Only `this_task_only` and
+ * `shared_work` change what is kept: shared work is kept in a room and, like
+ * one task's details, nowhere else.
+ */
 export const PROPOSAL_ABOUT = [
   'the_person',
   'someone_they_know',
@@ -108,7 +112,17 @@ export const PROPOSAL_ABOUT = [
   'standing_instruction',
   'temporary_exception',
   'this_task_only',
+  'shared_work',
 ] as const;
+
+/**
+ * Read with a message said in a room. Who in the room is doing what, and by
+ * when, is the room's own memory: a person in it asks "who's on the vendor
+ * contract?" days later, in another thread. Read as a personal chat, that was
+ * one week's work and nothing was kept, and "I" read as the room's owner.
+ */
+export const ROOM_EXTRACTION_INSTRUCTIONS = `This message was said in a shared room, by the person named in evidence.speaker. "I", "me" and "my" in it are that person, never anyone else in the room. Write their name, the part before the angle brackets, into each detail about them: "Bob is taking the vendor contract review, due Thursday", never "Taking the vendor contract review".
+In a room, who is doing or owns what, what is due when, and what the room agreed are kept, even though they are about one task or one week: the room's people ask about them later. Mark them "about":"shared_work" and "lasting":true, and keep a due date in the content, not in valid_until. When the message hands work to someone else or moves it ("Carol has it now", "pushed to Monday"), supersede the detail it changes.`;
 
 export const EXTRACTION_INSTRUCTIONS = `Return only JSON, with no prose and no code fence, in exactly this shape:
 {"proposals":[{"op":"add","claim_id":null,"expected_revision":null,"domain_key":"person.maya.city","content":"Sister Maya lives in Lisbon","kind":"user_statement","factual_status":"attributed","valid_from":"2026-09-30T10:00:00Z","valid_until":null,"lasting":true,"about":"someone_they_know","sources":[{"quote":"My sister Maya lives in Lisbon"}]},{"op":"add","claim_id":null,"expected_revision":null,"domain_key":"health.allergy","content":"Allergic to peanuts","kind":"user_statement","factual_status":"attributed","valid_from":"2026-09-30T10:00:00Z","valid_until":null,"lasting":true,"about":"the_person","sources":[{"quote":"I'm allergic to peanuts"}]}]}
@@ -187,6 +201,32 @@ export const EXTRACTION_FORMAT: StructuredFormat = {
   }),
 };
 
+/**
+ * What the extraction model is told and handed for one batch. A message said
+ * in a room comes with who said it, and with how a room's words are read.
+ */
+export function extractionMessages(
+  batch: Pick<ExtractionBatch, 'work' | 'source' | 'text' | 'claims' | 'speaker'>,
+): { system: string; content: string } {
+  const room = typeof batch.speaker === 'string';
+  return {
+    system: room
+      ? `${EXTRACTION_INSTRUCTIONS}\n${ROOM_EXTRACTION_INSTRUCTIONS}`
+      : EXTRACTION_INSTRUCTIONS,
+    content: JSON.stringify({
+      policy: batch.work.policy_version,
+      evidence: {
+        source: batch.source,
+        ...(room ? { speaker: batch.speaker } : {}),
+        start: batch.work.segment_start,
+        end: batch.work.segment_end,
+        text: batch.text,
+      },
+      claims: batch.claims,
+    }),
+  };
+}
+
 /** Inference happens outside any database transaction, after a durable bounded call reservation. */
 export async function proposeExtraction(
   sql: MemorySql,
@@ -195,16 +235,7 @@ export async function proposeExtraction(
   gateway: ExtractionGateway,
 ): Promise<ExtractionProposal[]> {
   await reserveExtractionCall(sql, scope, batch);
-  const content = JSON.stringify({
-    policy: batch.work.policy_version,
-    evidence: {
-      source: batch.source,
-      start: batch.work.segment_start,
-      end: batch.work.segment_end,
-      text: batch.text,
-    },
-    claims: batch.claims,
-  });
+  const { system, content } = extractionMessages(batch);
   if (content.length > EXTRACTION_LIMITS.context_characters + 4000)
     throw new MemoryError('extraction_input_size');
   let response: string;
@@ -212,7 +243,7 @@ export async function proposeExtraction(
     response = await gateway.chat(
       {
         messages: [
-          { role: 'system', content: EXTRACTION_INSTRUCTIONS },
+          { role: 'system', content: system },
           { role: 'user', content },
         ],
         max_tokens: EXTRACTION_LIMITS.output_tokens,
@@ -261,6 +292,7 @@ export async function proposeExtraction(
     source_version: batch.source.source_version,
     start: batch.work.segment_start,
     text: batch.text,
+    room: typeof batch.speaker === 'string',
   });
   for (const item of reply.dropped) {
     const id = `mr_${stableId(scope.spaceId, batch.work.id, item.index, 'invalid_shape')}`;
@@ -693,7 +725,7 @@ export function readExtractionReply(
   for (const [index, entry] of list.slice(0, 32).entries()) {
     let normalized = normalizeProposal(entry, evidence);
     // A one-time task or request holds nothing to remember: kept as read, not as a belief.
-    if (record(normalized) && oneOff(entry, normalized))
+    if (record(normalized) && oneOff(entry, normalized, evidence?.room === true))
       normalized = { op: 'no-op', sources: normalized.sources };
     if (
       record(normalized) &&
@@ -739,8 +771,11 @@ const LASTING =
  * standing instruction or carries a lasting detail. Only adds are judged; a
  * supersede or a retract changes something already held.
  */
-function oneOff(entry: unknown, proposal: Record<string, unknown>): boolean {
+function oneOff(entry: unknown, proposal: Record<string, unknown>, room: boolean): boolean {
   if (proposal.op !== 'add') return false;
+  // Who in a room is doing what, and by when, is the room's to keep however
+  // short-lived it is; anywhere else it is one task's detail.
+  if (record(entry) && entry.about === 'shared_work') return !room;
   // A temporary exception is kept even when the model calls it not lasting.
   if (record(entry) && entry.lasting === false && proposal.kind !== 'exception') return true;
   const strict = !memorySeams().keepNoisyProposals;
@@ -804,6 +839,8 @@ export type ExtractionEvidence = {
   /** Where `text` begins in its source. */
   start: number;
   text: string;
+  /** Said in a room, where who is doing what is kept (`shared_work`). */
+  room?: boolean;
 };
 
 /** Marks a span whose quote is not in the segment, so its proposal is refused as that. */
