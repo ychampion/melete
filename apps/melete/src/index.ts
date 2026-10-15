@@ -201,6 +201,7 @@ import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
+import { requestFailureText } from './request-failure.ts';
 import { mountMultiplayerGate, multiplayerEnabled } from './rooms/preview.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
@@ -353,7 +354,7 @@ export function createApp(deps: AppDeps) {
         { error: { code: 'invalid_request', message: 'Request data is invalid.' } },
         400,
       );
-    process.stderr.write(`request failed: ${error.message}\n`);
+    process.stderr.write(`request failed: ${requestFailureText(error)}\n`);
     return c.json(
       { error: { code: 'internal_error', message: 'The request could not be completed.' } },
       500,
