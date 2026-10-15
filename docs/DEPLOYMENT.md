@@ -282,7 +282,13 @@ instead, as described above.
 Docker can still make, and `docker.network_pool`, how many are left in
 `MELETE_NETWORK_POOL` (not reported with `off`). Each warns below 8 and fails
 at none. `docker.network_pool` also fails when the setting is one the service
-refuses, and `bun run melete set` does not write such a value.
+refuses, and `bun run melete set` does not write such a value. A
+`MELETE_NETWORK_POOL` set in the shell `doctor` runs in is the one Compose
+gives the service, over `deploy/.env`'s, so it is the one judged, and
+`docker.network_pool_shell` says so, warning when the two differ. A value in
+`deploy/.env` that refers to another setting (`${OTHER}` or `$OTHER`) is filled
+in by Compose, not by `doctor`, so it is not judged: `docker.network_pool`
+warns instead.
 `docker.address_pools` also fails when `daemon.json` names only IPv6 pools:
 Docker then has no pool for an IPv4 network that names no subnet, and does not
 fall back to its built-in ones. To give Docker more, choose a private range
@@ -316,7 +322,12 @@ installation's computers are never listed; they are told apart by the
 project of the installation that made them. While that project still has a
 container or a volume on this engine they are its own, even with the
 installation down (`docker compose down` removes its service container but
-keeps its volumes); once it has neither, they are listed. Computers made before
+keeps its volumes); once it has neither, they are listed. They are listed too
+when that installation's service container is here and runs with another
+sandbox project, while no service on this engine runs with theirs: an
+installation whose `MELETE_SANDBOX_PROJECT` changed leaves the earlier
+project's computers behind. When the sandbox project in that container cannot
+be read, they stay its own. Computers made before
 they carried that label are listed with an unknown owner when their sandbox
 project is not in use, since an installation that is down cannot be told from
 one that was removed that way; check those before
@@ -549,6 +560,16 @@ copied. A key belongs in your local `deploy/.env` (`bun run melete set
    run `bun run melete set MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem`.
    `?sslmode=require` also encrypts, and accepts the server's certificate
    without a check; `check` reports that as a warning.
+   Give Melete a separate, empty database of its own, not the provider's
+   default one: a default database can already hold the provider's own tables
+   (Supabase's `postgres` database does, and so does any database made from a
+   `template1` where TimescaleDB or PostGIS is installed), and a restore or a
+   rollback loads only into a database that holds no table, so it refuses that
+   one. If the provider sets Postgres 17's `transaction_timeout` for the user or
+   the database, raise it or set it to `0` for the user `DATABASE_URL` names
+   before a restore or a rollback (`alter role <user> set transaction_timeout = 0`):
+   the load runs as one transaction, so a timeout shorter than the load cuts it
+   off, and the database is left empty again.
 2. Set it, keeping it out of your shell history, and turn the database on in
    the deploy file:
 
@@ -1405,6 +1426,12 @@ container's default gateway from its routing table and believes the header
 only on a connection from that address, and only when it holds one
 well-formed address; anything else is attributed to the socket as before. A
 proxy on another machine is named by its address instead of `gateway`.
+With `gateway`, keep the web port published on `127.0.0.1` only, as
+`deploy/docker-compose.yml` does (`127.0.0.1:${WEB_PORT}`), and never on every
+address in an override: every program on the host and every SSH tunnel to it
+arrives from the gateway and is believed, and with the port published on every
+address, Docker's userland proxy can make clients from outside arrive from the
+gateway too, so they could name any address they like.
 
 **Per client address.** A burst of five attempts, then 1, 2, 4, up to 60
 seconds between attempts. A refusal is 429 `login_rate_limited` with
@@ -1496,7 +1523,10 @@ links point at `MELETE_PUBLIC_URL`, so email sign-in and mailed resets are
 offered only once it is set. Every link signs in to an account, so `smtp://`
 must upgrade to TLS with STARTTLS before anything is sent, unless the server
 is on this machine; add `?requireTLS=false` to the URL only for a relay on a
-network you trust that cannot.
+network you trust that cannot. Leave `?opportunisticTLS=true` and
+`?ignoreTLS=true` out of the URL: the first sends in plain text whenever the
+server refuses the upgrade, and the second never asks for it, so either one
+turns the requirement off as `?requireTLS=false` does, without saying so.
 This sender carries nothing but these two kinds of mail, for any account;
 what Melete sends for a person still leaves from their own connected
 accounts, after their approval. The answer to a request is the same whether or
@@ -2275,6 +2305,13 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 - the error rate spikes: over the last fifteen minutes, at least five attempts
   or model calls and half or more of them failed, were lost, or were refused by
   the provider;
+- background work is stuck on one item: a pass that walks many spaces or
+  accounts, such as the trash sweep, failed on the same one three times in a
+  row (`background_work`, which names the pass, the item and the error). Each
+  service instance counts only its own passes, so with several instances on one
+  database a stuck item shows only on the instance whose pass is stuck: the
+  alert comes only when that is the instance holding the `health-alerts` lease,
+  and `/health/detail` shows it only when the request reaches that instance;
 - where set, spending runs high: the last hour's model calls cost more than
   `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` times the installation's usual hour (the
   median hour of the week before), or one person accounts for more than
@@ -2286,7 +2323,7 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 | --- | --- |
 | `MELETE_ALERT_WEBHOOK_URL` | Receives a JSON POST: `text` (a sentence chat webhooks show), `status` (`unhealthy` or `recovered`), `service`, `version`, `checks` and `time` |
 | `MELETE_ALERT_EMAIL_TO`, `MELETE_ALERT_EMAIL_FROM` | Where alert email goes, and its sender (default: the same address) |
-| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465`. As with `MELETE_SMTP_URL`, a plain `smtp://` server elsewhere must upgrade to TLS with STARTTLS; add `?requireTLS=false` only for a relay that cannot |
+| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465`. As with `MELETE_SMTP_URL`, a plain `smtp://` server elsewhere must upgrade to TLS with STARTTLS; add `?requireTLS=false` only for a relay that cannot, and never `?opportunisticTLS=true` or `?ignoreTLS=true`, which send in plain text without saying so |
 | `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
 | `MELETE_ALERT_DISK_MIN_FREE_MB` | The free space, in MB, below which the `disk` check fails (default `2048`; `0` turns it off) |
 | `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
@@ -2307,7 +2344,9 @@ relay on another host without TLS must add `?requireTLS=false` to
 logs `alert not sent` each time.
 
 `GET /health/detail` (through the web server, `/api/health/detail`) returns
-each check with what it found, `200` while all pass and `503` while any fails:
+each check with what it found, `200` while all pass and `503` while any fails.
+That includes `background_work`, so one space whose background work is stuck
+makes it answer `503` while everything else works:
 
 ```bash
 curl -fsS -H "Authorization: Bearer $MELETE_OPERATOR_TOKEN" https://melete.example.com/api/health/detail
@@ -2319,9 +2358,11 @@ uptime check as well: point a monitor such as UptimeRobot, Better Stack or
 Healthchecks.io at `https://<your host>/api/health` every minute, alerting
 when it fails twice in a row. `/api/health` answers `503`, with the same body
 and `database` `unreachable`, while the database is down, so a monitor that
-only reads the status code sees that too. With
-the operator token, a monitor that can send a header can watch
-`/api/health/detail` instead and alert on any non-200 answer.
+only reads the status code sees that too. Page on `/api/health`. With the
+operator token, a monitor that can send a header can watch
+`/api/health/detail` beside it, but its `503` can mean one stuck space as well
+as an outage: treat it as a reason to read the checks it lists, not as the
+uptime page.
 
 ## Memory extraction
 
@@ -2676,8 +2717,9 @@ their content, unless they are in an S3 bucket), `work.tar` (the shared
 `computer-<name>-work.tar` and `computer-<name>-home.tar` (its `/work` and its
 home folder, browser profile included); `contents.json`, which lists those
 archives and each computer volume's labels; and a `SHA256SUMS` list. The
-runtime's attempt homes are left out: they are disposable, and jobs recover
-from the database into fresh attempts. Each new backup removes the older ones
+`runtime-home` volume, the home folder of the warm runtime container that no
+job runs in, and each attempt's own home are left out: they keep no job's
+work, and jobs recover from the database into fresh attempts. Each new backup removes the older ones
 beyond the newest `backup.keep` (3 by default), and every one older than
 `backup.max_age_days` (30 by default), from `backup.dir`; the one just made
 always stays. Each holds the files, so the disk they take is at most about
@@ -2714,8 +2756,9 @@ volumes; replaces the database volume and loads the dump; puts the newest
 restriction journal back where the journal volume is missing or holds no entry,
 as on a machine that never ran the installation or after a restore that stopped
 before that step (keeping its file ownership); empties each file volume and
-unpacks its archive into it, after asking the engine that no running container uses that volume; makes any
-missing computer volume with its labels; and only then starts the stack.
+unpacks its archive into it, after asking the engine that no running container
+uses that volume; makes any missing computer volume with its labels; and only
+then starts the stack.
 
 A step that fails stops the restore there, and the report says what that left:
 
@@ -2758,33 +2801,54 @@ and each matches. `backup.keep` never removes the backup the last deploy took,
 which `rollback` restores from; `backup.max_age_days` does, once it is that old,
 and says so.
 
-The same backup by hand: back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
-artifacts, workspaces, and restrictions. Preserve ownership and permissions.
-Stop Melete and runtime work before taking the database and volume snapshot so
-their durable state is consistent. An installation started with an override
-names the same files on each Compose command below, and one running the browser
-worker stops `browser` with the others, since it writes into a space. From the
-repository root:
+The same backup by hand: back up `deploy/.env`, Postgres, the named volumes
+containing knowledge, artifacts, workspaces, and restrictions, and the two
+volumes of each of the agents' computers (`melete-sbx-<name>-work` and
+`melete-sbx-<name>-home`, labelled with this installation's
+`MELETE_SANDBOX_PROJECT`). Preserve ownership and permissions. Stop Melete,
+runtime work and the agents' computers before taking the database and volume
+snapshot so their durable state is consistent; a stopped computer starts again
+when it is next used. An installation started with an override names the same
+files on each Compose command below, and one running the browser worker stops
+`browser` with the others, since it writes into a space. From the repository
+root:
 
 ```bash
 backup_dir="$HOME/melete-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -m 700 "$backup_dir"
 docker compose -f deploy/docker-compose.yml stop melete runtime web
+project="$(sed -n 's/^MELETE_SANDBOX_PROJECT=//p' deploy/.env)"
+computers="label=com.melete.sandbox=v1"
+if [ -n "$project" ]; then
+  docker ps --quiet --filter "$computers" --filter "label=melete.project=$project" \
+    | xargs -r docker stop
+fi
 docker compose -f deploy/docker-compose.yml exec -T postgres sh -c \
   'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
   > "$backup_dir/database.dump"
 cp -p deploy/.env "$backup_dir/deploy.env"
 docker compose -f deploy/docker-compose.yml cp -a melete:/data - > "$backup_dir/data.tar"
 docker compose -f deploy/docker-compose.yml cp -a melete:/work - > "$backup_dir/work.tar"
+image="$(docker inspect --format '{{.Config.Image}}' \
+  "$(docker compose -f deploy/docker-compose.yml ps --all --quiet melete)")"
+if [ -n "$project" ]; then
+  for volume in $(docker volume ls --quiet --filter "$computers" \
+      --filter "label=melete.project=$project"); do
+    docker run --rm --network none --user 0:0 --entrypoint tar \
+      --mount "type=volume,src=$volume,dst=/v,readonly" "$image" \
+      -C /v --numeric-owner -cf - . > "$backup_dir/computer-$volume.tar"
+  done
+fi
 chmod 600 "$backup_dir"/*
 docker compose -f deploy/docker-compose.yml up -d --wait --wait-timeout 180
 ```
 
 The [Compose copy command](https://docs.docker.com/reference/cli/docker/compose/cp/)
-uses archive mode to retain ownership. The `/data` archive includes spaces,
-artifacts, and the current restriction
-journal. Keep a current independent journal copy as described below. Runtime
-attempt homes are disposable; jobs recover from Postgres into fresh attempts.
+uses archive mode to retain ownership, and the computers' archives keep each
+file's numeric owner. The `/data` archive includes spaces, artifacts, and the
+current restriction journal. Keep a current independent journal copy as
+described below. `runtime-home` and each attempt's home are left out: they
+keep no job's work, and jobs recover from Postgres into fresh attempts.
 
 The `restrictions` volume must be retained **independently of older database
 snapshots**. It contains the append-only removal journal. When restoring an old
