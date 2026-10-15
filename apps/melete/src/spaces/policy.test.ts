@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { ToolSpec } from '@melete/contracts';
 import { grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Connector } from '../connectors/types.ts';
+import { NO_ROUTING, serviceFallback } from '../gateway/routing.ts';
 import {
   allowedChoices,
   allowedRoutes,
@@ -36,6 +37,18 @@ describe('models a space allows', () => {
       fallback: [big],
     });
     expect(allowedRoutes(only, { vision: fast })).toBeUndefined();
+  });
+
+  test("a side call's fallbacks keep to the list its space's rules hold it to", () => {
+    const other = { provider: 'fireworks', model: 'accounts/fireworks/models/other' };
+    const routing = { ...NO_ROUTING, fallback: [other, fast] };
+    // Held to nothing, every fallback that speaks its protocol.
+    expect(serviceFallback(routing, fast)).toEqual([other]);
+    const held = { ...fast, allowed: [`${fast.provider}/${fast.model}`] };
+    expect(serviceFallback(routing, held)).toEqual([]);
+    expect(
+      serviceFallback(routing, { ...held, allowed: [...held.allowed, `fireworks/${other.model}`] }),
+    ).toEqual([other]);
   });
 
   test('the refusal names what is allowed and what was not used', () => {

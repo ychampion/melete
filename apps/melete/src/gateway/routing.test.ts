@@ -657,7 +657,7 @@ describe('a safety check stays off the secondary', () => {
     activeChoice: async () => ({ ...STRONG, vision: false }),
     servesLocally: async () => false,
     // A space with no rules of its own keeps whatever was picked.
-    allowedModelFor: async (_spaceId: string, picked: ModelRouting['fallback'][number]) => picked,
+    sideModelFor: async (_spaceId: string, picked: ModelRouting['fallback'][number]) => picked,
   } as unknown as ModelSettingsService;
 
   test('sideTask: false keeps the operator’s fast model even when the space is passed', async () => {

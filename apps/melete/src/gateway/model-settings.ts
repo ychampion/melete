@@ -355,19 +355,42 @@ export class ModelSettingsService {
    * The model work in this space runs on in place of `picked`: `picked` itself
    * when the space's rules allow it, else the first model they list whose
    * provider is connected. With none connected, `refused` says why in words
-   * the person reads.
+   * the person reads. Where the rules name models, `allowed` lists them, so a
+   * call's fallbacks keep to them too.
    */
   async allowedModelFor(
     spaceId: string,
     picked: { provider: string; model: string },
     db: Runner = this.options.db,
-  ): Promise<{ provider: string; model: string; refused?: string }> {
+  ): Promise<{ provider: string; model: string; refused?: string; allowed?: readonly string[] }> {
     const rules = await readSpaceRules(db, spaceId);
-    if (modelAllowed(rules, picked)) return picked;
+    if (!rules.allowedModels.length) return { provider: picked.provider, model: picked.model };
+    const allowed = rules.allowedModels;
+    if (modelAllowed(rules, picked))
+      return { provider: picked.provider, model: picked.model, allowed };
     const rows = await this.keyRows(db);
     for (const choice of allowedChoices(rules))
-      if (await this.connected(choice.provider, rows)) return choice;
-    return { ...picked, refused: modelRefusal(rules, picked) };
+      if (await this.connected(choice.provider, rows)) return { ...choice, allowed };
+    return {
+      provider: picked.provider,
+      model: picked.model,
+      refused: modelRefusal(rules, picked),
+      allowed,
+    };
+  }
+
+  /**
+   * A side call's model as the space's rules allow it, carrying the list they
+   * allow so its fallbacks keep to it; throws the sentence that says why when
+   * none of them can be used.
+   */
+  async sideModelFor(
+    spaceId: string,
+    picked: { provider: string; model: string },
+  ): Promise<ServiceModel> {
+    const { provider, model, refused, allowed } = await this.allowedModelFor(spaceId, picked);
+    if (refused) throw new Error(refused);
+    return { provider, model, ...(allowed ? { allowed } : {}) };
   }
 
   /**
@@ -1173,8 +1196,12 @@ export class ModelSettingsService {
   }
 }
 
-/** The provider and model one service-side model call uses. */
-export type ServiceModel = { provider: string; model: string };
+/**
+ * The provider and model one service-side model call uses. `allowed`, set,
+ * is the `provider/model` list the space's rules hold the call to, so its
+ * fallbacks take none outside it.
+ */
+export type ServiceModel = { provider: string; model: string; allowed?: readonly string[] };
 
 /** The attempt being claimed, as far as choosing its model needs it. */
 export type AttemptWork = { spaceId: string; usageClass: UsageClass };
@@ -1270,9 +1297,7 @@ export function serviceModelSource(options: {
       const picked = await pick(whose);
       if (!settings || !whose) return picked;
       // Work about a space keeps to the models its rules allow.
-      const allowed = await settings.allowedModelFor(whose.spaceId, picked);
-      if (allowed.refused) throw new Error(allowed.refused);
-      return { provider: allowed.provider, model: allowed.model };
+      return settings.sideModelFor(whose.spaceId, picked);
     },
     providers: async (configured) => (settings ? settings.providers(configured) : configured),
     connected: async (provider) => (settings ? settings.isConnected(provider) : true),

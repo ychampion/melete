@@ -14,7 +14,7 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { attempt } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
-import { ModelSettingsService } from '../../src/gateway/model-settings.ts';
+import { ModelSettingsService, serviceModelSource } from '../../src/gateway/model-settings.ts';
 import { NO_ROUTING } from '../../src/gateway/routing.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -23,6 +23,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { triageModelSource } from '../../src/triage/classifier.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -261,6 +262,27 @@ describeWithDb('rules for what a space may use', () => {
     expect(
       await api.settings.allowedModelFor(spaceId, { provider: 'fireworks', model: FAST }),
     ).toMatchObject({ refused: expect.stringContaining("This space's rules") });
+
+    // A side call carries the list its space allows, so its fallbacks keep to
+    // it, and a model the operator pinned for one use is held to it as well.
+    const only = [`fireworks/${PRIMARY}`];
+    await set(rules({ allowed_models: only }));
+    const env = { MELETE_DEFAULT_PROVIDER: 'fireworks', MELETE_DEFAULT_MODEL: PRIMARY };
+    expect(await serviceModelSource({ env, settings: api.settings }).current({ spaceId })).toEqual({
+      provider: 'fireworks',
+      model: PRIMARY,
+      allowed: only,
+    });
+    const triage = triageModelSource({
+      env: { ...env, MELETE_MODEL_TRIAGE: `fireworks/${FAST}` },
+      settings: api.settings,
+      routing: NO_ROUTING,
+    });
+    expect(await triage.current(spaceId)).toEqual({
+      provider: 'fireworks',
+      model: PRIMARY,
+      allowed: only,
+    });
 
     // Cleared, everything is allowed again.
     await set(rules({}));

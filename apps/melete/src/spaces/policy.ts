@@ -170,21 +170,23 @@ async function view(db: Database, spaceId: string): Promise<SpacePolicy> {
  * the space admits them and changes them only as its owner.
  */
 async function standing(
-  db: Database,
+  reader: Database | Transaction,
   spaceId: string,
   actor: string,
+  lock = false,
 ): Promise<{ canChange: boolean }> {
-  const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
+  const [installation] = await reader.select({ id: owner.id }).from(owner).limit(1);
   if (installation?.id === actor) {
-    const [row] = await db
+    const query = reader
       .select({ removedAt: space.removedAt })
       .from(space)
       .where(eq(space.id, spaceId));
+    const [row] = lock ? await query.for('share') : await query;
     if (!row) throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
     if (row.removedAt) throw new ServiceError('scope_denied', SPACE_BEING_CLEARED, 403);
     return { canChange: true };
   }
-  const access = await spaceAuthority(db, spaceId, actor);
+  const access = await spaceAuthority(reader, spaceId, actor, lock);
   return { canChange: access.role === 'owner' };
 }
 
@@ -208,13 +210,14 @@ export function mountSpacePolicy(app: Hono, deps: { db: Database }): void {
   app.put('/spaces/:id/policy', async (c) => {
     const spaceId = c.req.param('id');
     const actor = actorOf(c);
-    const { canChange } = await standing(db, spaceId, actor);
-    if (!canChange)
+    const refuse = () => {
       throw new ServiceError(
         'scope_denied',
         "Only this space's owner, or whoever set up this installation, can change its rules.",
         403,
       );
+    };
+    if (!(await standing(db, spaceId, actor)).canChange) refuse();
     const input: SpacePolicyRules = spacePolicyRules.parse(await c.req.json());
     const values = {
       allowedModels: once(input.allowed_models),
@@ -223,10 +226,16 @@ export function mountSpacePolicy(app: Hono, deps: { db: Database }): void {
       updatedBy: actor,
       updatedAt: new Date(),
     };
-    await db
-      .insert(spacePolicy)
-      .values({ spaceId, ...values })
-      .onConflictDoUpdate({ target: spacePolicy.spaceId, set: values });
+    // Checked again and written under a share lock on the space, so a removal
+    // that starts meanwhile waits for this write and then clears it, rather
+    // than leaving rules behind on a space it has emptied.
+    await db.transaction(async (tx) => {
+      if (!(await standing(tx, spaceId, actor, true)).canChange) refuse();
+      await tx
+        .insert(spacePolicy)
+        .values({ spaceId, ...values })
+        .onConflictDoUpdate({ target: spacePolicy.spaceId, set: values });
+    });
     return c.json(spacePolicyResponse.parse({ policy: await view(db, spaceId), can_change: true }));
   });
 }

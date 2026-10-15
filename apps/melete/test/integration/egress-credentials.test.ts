@@ -308,6 +308,36 @@ withDb('where an account is offered', () => {
     expect(await ask()).toBeNull();
   });
 
+  test('a space whose rules keep command-line accounts out is offered none of them', async () => {
+    const { claims, credentials, sql } = await setup({ holdSeconds: 0 });
+    const ask = () =>
+      credentials.find({
+        space: claims.space_id,
+        attribution: {
+          kind: 'command',
+          sessionId: 'sbx_one',
+          jobId: claims.job_id,
+          attemptId: claims.attempt_id,
+          actionId: 'act_cmd',
+        },
+        host: HOST,
+      });
+    const deny = (kinds: string[]) =>
+      sql`insert into space_policy (space_id, denied_connector_kinds)
+        values (${claims.space_id}, ${JSON.stringify(kinds)}::jsonb)
+        on conflict (space_id) do update set denied_connector_kinds = excluded.denied_connector_kinds`;
+    // Another kind kept out leaves the account in use.
+    await deny(['mcp']);
+    expect((await ask())?.connectionId).toBeString();
+    expect(await credentials.hosts(claims.space_id)).toContain(HOST);
+    await deny(['command_line']);
+    expect(await ask()).toBeNull();
+    expect(await credentials.computer(claims.space_id)).toBeNull();
+    expect(await credentials.hosts(claims.space_id)).toEqual([]);
+    await deny([]);
+    expect((await ask())?.connectionId).toBeString();
+  });
+
   test("a room's own account serves the requests made of the room, and no one's own work there", async () => {
     const { claims, credentials, sql, connectionId } = await setup({ holdSeconds: 0 });
     const room = claims.space_id;
