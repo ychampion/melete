@@ -133,3 +133,43 @@ test('what a model returns is held to what one stored summary may hold', () => {
   expect(read?.story.length).toBe(4000);
   expect(HISTORY_SUMMARY_FORMAT.schema).toMatchObject({ additionalProperties: false });
 });
+
+test('a rule in the wrong shape never costs the rest of the summary', () => {
+  // A model held to no schema may give a rule as plain text, leave out its
+  // topic, or return something that is not a rule at all.
+  const read = readSummary(
+    JSON.stringify({
+      standing_instructions: [
+        'Only use euros from now on.',
+        { rule: 'Keep replies short.' },
+        { topic: 'format', rule: 'Put every total in a table.' },
+        { topic: 'nothing' },
+        42,
+      ],
+      facts: ['The container number is MSCU-7741-ZQ.'],
+      decisions: [],
+      open_tasks: [],
+      names: [],
+      story: 'They planned a shipment.',
+    }),
+  );
+  expect(read?.facts).toEqual(['The container number is MSCU-7741-ZQ.']);
+  expect(read?.standing_instructions).toEqual([
+    { topic: '', rule: 'Only use euros from now on.' },
+    { topic: '', rule: 'Keep replies short.' },
+    { topic: 'format', rule: 'Put every total in a table.' },
+  ]);
+  // Not a list at all: no rules, and the summary still reads.
+  const odd = readSummary(
+    JSON.stringify({
+      standing_instructions: 'Only use euros.',
+      facts: [],
+      decisions: [],
+      open_tasks: [],
+      names: [],
+      story: '',
+    }),
+  );
+  expect(odd?.standing_instructions).toEqual([]);
+  expect(odd?.story).toBe('');
+});

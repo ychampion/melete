@@ -41,10 +41,29 @@ export const KEEP_SHARE = 0.5;
 export const standingInstruction = z.object({ topic: z.string(), rule: z.string() });
 export type StandingInstruction = z.infer<typeof standingInstruction>;
 
+/**
+ * The rules as read, entry by entry. A model held to no answer schema may give
+ * a rule as plain text or without a topic, and one entry in the wrong shape
+ * must never cost the rest of the summary: what is not a rule is left out.
+ * Absent, as in a summary stored before rules were kept apart, there are none.
+ */
+const standingList = z.preprocess(
+  (value) =>
+    Array.isArray(value)
+      ? value.flatMap((entry: unknown) => {
+          if (typeof entry === 'string') return [{ topic: '', rule: entry }];
+          const { topic, rule } = (entry ?? {}) as { topic?: unknown; rule?: unknown };
+          return typeof entry === 'object' && typeof rule === 'string'
+            ? [{ topic: typeof topic === 'string' ? topic : '', rule }]
+            : [];
+        })
+      : [],
+  z.array(standingInstruction),
+);
+
 /** What one summary keeps. Each list item is one line; the story is a short account in order. */
 export const conversationSummary = z.object({
-  /** Absent from a summary stored before rules were kept apart. */
-  standing_instructions: z.array(standingInstruction).default([]),
+  standing_instructions: standingList,
   facts: z.array(z.string()),
   decisions: z.array(z.string()),
   open_tasks: z.array(z.string()),

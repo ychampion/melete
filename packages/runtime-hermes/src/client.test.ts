@@ -544,6 +544,7 @@ describe('context assembly', () => {
     expect(text).toContain('# Standing instructions from the person');
     expect(text).toContain('- Keep every reply short.\n- Only use euros from now on.');
     expect(text).toContain('unless a newer message from the person changes one');
+    expect(text).toContain('Where two of them disagree, the later one holds.');
     // The input carries the summary; the rules are not repeated there.
     expect(renderInput(ruled)).toContain('They planned a shipment.');
     expect(renderInput(ruled)).not.toContain('Only use euros');

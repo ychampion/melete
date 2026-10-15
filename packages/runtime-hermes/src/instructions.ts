@@ -103,7 +103,7 @@ export function renderStanding(earlier: AttemptBundle['earlier']): string[] {
     [
       '# Standing instructions from the person',
       '',
-      'The person set these earlier in this conversation. The messages they came from are no longer shown, but the instructions still hold: follow them in everything you do, unless a newer message from the person changes one.',
+      'The person set these earlier in this conversation, oldest first. The messages they came from are no longer shown, but the instructions still hold: follow them in everything you do, unless a newer message from the person changes one. Where two of them disagree, the later one holds.',
       '',
       ...rules.map((rule) => `- ${rule}`),
     ].join('\n'),
