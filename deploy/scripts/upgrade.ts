@@ -65,7 +65,7 @@ const CLIENT_TLS = UPGRADE_CLIENT_TLS;
  * packages/cli/src/database.ts's EXTERNAL_LOAD, repeated for the same reason: it
  * loads a dump only into an empty database, in one transaction.
  */
-export const UPGRADE_EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
+export const UPGRADE_EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')") || exit 1; if [ "$n" != 0 ]; then s=$(psql --dbname="$DATABASE_URL" -X -At -c "select string_agg(schemaname, ', ' order by schemaname) || case when max(total) > 5 then ' and ' || (max(total) - 5) || ' more' else '' end from (select schemaname, count(*) over () as total from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema') group by schemaname order by schemaname limit 5) as held" 2>/dev/null); echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; [ -z "$s" ] || echo "The schemas that hold them: $s. A provider's default database can hold tables of its own; load into a new, empty database." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
 
 export const USAGE =
   'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile name] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
@@ -329,8 +329,34 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
     },
     {
       phase: 'backup',
-      title: 'Archive spaces, artifacts and the current restriction journal',
-      command: [...compose, 'cp', '-a', 'melete:/data', '-'],
+      title:
+        "Archive spaces, artifacts and the current restriction journal, without each space's search index and staged writes",
+      // As packages/cli's backup leaves them out (files.ts LEFT_OUT; a test keeps them equal):
+      // the service rebuilds an index from the space's files, and an old index can hold the
+      // words of a record removed since. A one-off container of the stopped service reads
+      // its volumes, as `cp` did, with the same names in the archive (data/...).
+      command: [
+        ...compose,
+        'run',
+        '--rm',
+        '--no-deps',
+        '-T',
+        '--user',
+        '0:0',
+        '--entrypoint',
+        'tar',
+        'melete',
+        '-C',
+        '/',
+        '--numeric-owner',
+        '--anchored',
+        '--no-wildcards-match-slash',
+        '--exclude=data/spaces/*/.index',
+        '--exclude=data/spaces/*/.proposed',
+        '-cf',
+        '-',
+        'data',
+      ],
       stdoutFile: backup('data.tar'),
     },
     {
@@ -1005,8 +1031,9 @@ if (import.meta.main) {
     // Only to name a directory that does not exist; git decides whether it is a checkout's top.
     options.repositoryRoot = realpathSync(options.repositoryRoot).replaceAll('\\', '/');
   } catch {
-    process.stderr.write(`${options.repositoryRoot} does not exist. ${USAGE}\n`);
-    process.exit(2);
+    // Not 2: `melete upgrade` reads 2 as options an older release does not know.
+    process.stderr.write(`repository not found: ${options.repositoryRoot}\n`);
+    process.exit(3);
   }
   const result = await runUpgrade(options, {
     ...installationDependencies(options.repositoryRoot),
