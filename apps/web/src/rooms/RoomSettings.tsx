@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Toggle } from '../design/primitives.tsx';
+import { href } from '../router.ts';
 import { AddConnection } from '../screens/ConnectionInstall.tsx';
 import { toast } from '../shell/Shell.tsx';
 import { type RoomConnection, type RoomDetail, type RoomPolicy, roomsApi } from './api.ts';
@@ -110,6 +111,17 @@ export function RoomSettings({
       footer={<Button onClick={onClose}>Done</Button>}
     >
       <div className="col" style={{ gap: 18 }}>
+        {owner ? (
+          <div className="col" style={{ gap: 4 }}>
+            <a className="settings-choice-title" href={href(`/rooms/${detail.room.id}/activity`)}>
+              Activity log
+            </a>
+            <span className="people-hint">
+              Everything {detail.room.agent_name} did through a connected account in this room: who
+              asked, who approved, and when. Only owners see it.
+            </span>
+          </div>
+        ) : null}
         <fieldset className="settings-group" disabled={!owner}>
           <legend className="people-field-label">Who answers permissions</legend>
           <span className="people-hint">

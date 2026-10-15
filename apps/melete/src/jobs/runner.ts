@@ -461,6 +461,8 @@ export class AttemptRunner {
       await tx.insert(attempt).values({
         id: attemptId,
         principalId: access.principalId,
+        // A room request runs as the room; this keeps who asked for it.
+        requestedByPrincipalId: row.requestedByPrincipalId,
         membershipGeneration: access.generation,
         jobId: row.id,
         epoch,

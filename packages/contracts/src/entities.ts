@@ -214,6 +214,11 @@ export const job = z
     id: prefixedId(ID_PREFIXES.job),
     space_id: prefixedId(ID_PREFIXES.space),
     principal_id: prefixedId(ID_PREFIXES.owner).nullable().optional(),
+    /**
+     * For a request made of a room's agent, the member who asked. The job's
+     * `principal_id` is the room's own principal then. Null for anyone's own work.
+     */
+    requested_by: prefixedId(ID_PREFIXES.owner).nullable().optional(),
     title: z.string().min(1).max(200),
     objective: z.string().min(1),
     constraints: jobConstraints,
