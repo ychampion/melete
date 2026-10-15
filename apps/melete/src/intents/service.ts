@@ -52,7 +52,7 @@ import type { RunService } from '../runs/service.ts';
 import type { SituationService } from '../situations/service.ts';
 import { intentStateNow } from '../situations/service.ts';
 import { dueOf, GUESS, intentLeadSeconds, markOrigins, readBack } from './origins.ts';
-import type { Span } from './said.ts';
+import { pastedSpans } from './said.ts';
 import { intent, intentEffect } from './schema.ts';
 
 const HOUR = 3_600_000;
@@ -85,16 +85,6 @@ export type IntentDeps = {
 const rows = <T>(value: unknown) => value as T[];
 const iso = (at: Date | null | undefined) => (at ? at.toISOString() : null);
 const missing = () => new ServiceError('not_found', 'That was not found.', 404);
-
-/** The stretches a message records as pasted, as far as they read as stretches at all. */
-function pastedSpans(raw: unknown): Span[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((span) => {
-    const start = (span as { start?: unknown } | null)?.start;
-    const end = (span as { end?: unknown } | null)?.end;
-    return typeof start === 'number' && typeof end === 'number' ? [{ start, end }] : [];
-  });
-}
 
 /** What the run is asked to do, from the intent: the person's words, and every guess marked. */
 function goalOf(row: {

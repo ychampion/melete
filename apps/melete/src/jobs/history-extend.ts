@@ -38,9 +38,11 @@ import {
   chunkMessages,
   EMPTY_SUMMARY,
   isToolIdentity,
+  mergeStanding,
   planExtension,
   renderSummary,
   type StoredSummary,
+  standingRules,
   summaryPayload,
 } from './history-summary.ts';
 import type { JobService } from './service.ts';
@@ -154,7 +156,10 @@ export async function extendHistory(
         limits.maxTokens -
         estimateInputTokens(JSON.stringify(fresh)) -
         (read.stored
-          ? estimateInputTokens(JSON.stringify(renderSummary(read.stored.summary)))
+          ? estimateInputTokens(JSON.stringify(renderSummary(read.stored.summary))) +
+            (standingRules(read.stored.summary).length
+              ? estimateInputTokens(JSON.stringify(standingRules(read.stored.summary)))
+              : 0)
           : 0) -
         SUMMARY_GROWTH_TOKENS,
       messages: limits.maxMessages - fresh.length,
@@ -165,7 +170,11 @@ export async function extendHistory(
   // Tool results are not summarised: they are outside text, and what the
   // assistant made of them is in its own messages. Their identities stay.
   const said = plan.summarise.filter((message) => !isToolIdentity(message));
-  const chunks = chunkMessages(said, deps.chunkTokens ?? HISTORY_SUMMARY_LIMITS.chunk_tokens);
+  const chunks = chunkMessages(
+    said,
+    deps.chunkTokens ?? HISTORY_SUMMARY_LIMITS.chunk_tokens,
+    read.personWords,
+  );
   const deadline =
     Date.now() + Math.min(SUMMARY_WALL_MS, bundle.budget.max_wall_ms * SUMMARY_WALL_SHARE);
   let summary = read.stored?.summary ?? EMPTY_SUMMARY;
@@ -184,7 +193,19 @@ export async function extendHistory(
       deps.log?.(`history: summary_not_made:${answer.reason}`);
       break;
     }
-    summary = answer.summary;
+    // The person's rules are merged, never just replaced: one the summariser
+    // left out stays, and only words the person wrote become one.
+    const merged = mergeStanding(
+      summary.standing_instructions,
+      answer.summary.standing_instructions,
+      chunk.person,
+      answer.summary.facts,
+    );
+    summary = {
+      ...answer.summary,
+      standing_instructions: merged.standing,
+      facts: [...answer.summary.facts, ...merged.demoted],
+    };
     completed = chunk.completes;
   }
   if (completed === 0 && said.length > 0) return bundle;

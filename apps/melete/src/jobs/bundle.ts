@@ -73,11 +73,14 @@ import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import {
   EMPTY_SUMMARY_TEXT,
+  EMPTY_SUMMARY_WITH_STANDING_TEXT,
   HISTORY_SUMMARY_KIND,
   isToolIdentity,
   madeUnder,
+  personWords,
   renderSummary,
   type StoredSummary,
+  standingRules,
   storedSummary,
 } from './history-summary.ts';
 import { localNow } from './local-now.ts';
@@ -401,16 +404,30 @@ export function assembleHistory(
     fileTexts?: ReadonlyMap<string, string | null>;
     /** How much transcript this attempt's model has room for. */
     limits?: TranscriptLimits;
+    /**
+     * The person the conversation belongs to, when it has one: a message
+     * recorded as another principal's is never in their words.
+     */
+    principal?: string | null;
   } = {},
 ): Pick<AttemptBundle, 'inputs' | 'transcript' | 'earlier'> & {
   progressSummary: string;
   /** The whole conversation in order, before any of it is summarised or bounded. */
   full: CanonicalMessage[];
+  /**
+   * For each message in `full` that the person the conversation belongs to
+   * sent, their own words in it (`personWords`): the only words a standing
+   * instruction can be taken from. In a room nobody's are: the agent there
+   * works for the room, and what a member asks stays in the thread, under
+   * their name, rather than becoming a rule.
+   */
+  personWords: ReadonlyMap<CanonicalMessage, string>;
   /** The newest summary of its earlier messages, if one was made. */
   stored: StoredSummary | null;
 } {
-  const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT } = context;
+  const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT, principal } = context;
   let stored: StoredSummary | null = null;
+  const spoken = new Map<CanonicalMessage, string>();
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
     approval_results: [],
@@ -464,6 +481,15 @@ export function assembleHistory(
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
+      const someoneElse =
+        typeof principal === 'string' &&
+        typeof payload.principal_id === 'string' &&
+        payload.principal_id !== principal;
+      if (!names && !someoneElse)
+        spoken.set(
+          message,
+          personWords({ text: payload.text, pasted: payload.pasted, chosen: payload.chosen }),
+        );
       const readBefore =
         payload.steer === true &&
         typeof payload.steer_id === 'string' &&
@@ -514,6 +540,7 @@ export function assembleHistory(
     ...(bounded.earlier ? { earlier: bounded.earlier } : {}),
     progressSummary,
     full: transcript,
+    personWords: spoken,
     stored,
   };
 }
@@ -533,18 +560,33 @@ export function boundHistory(
   limits: TranscriptLimits,
 ): { transcript: CanonicalMessage[]; earlier?: NonNullable<AttemptBundle['earlier']> } {
   const isFresh = new Set(fresh);
+  // The rules the person set in the summarised messages travel beside the
+  // summary, in their own words, and take their size out of the room as it does.
+  const standing = stored ? standingRules(stored.summary) : [];
   // A summary with nothing in it still says the messages were read, never a silent gap.
-  const summary = stored ? renderSummary(stored.summary) || EMPTY_SUMMARY_TEXT : null;
+  const summary = stored
+    ? renderSummary(stored.summary) ||
+      (standing.length ? EMPTY_SUMMARY_WITH_STANDING_TEXT : EMPTY_SUMMARY_TEXT)
+    : null;
   const through = stored ? Date.parse(stored.through) : Number.NEGATIVE_INFINITY;
   const kept = transcript.flatMap((message) => {
     if (isFresh.has(message) || Date.parse(message.at) > through) return [message];
     return isToolIdentity(message) ? [{ ...message, content: omitted }] : [];
   });
+  const carried = standing.length ? JSON.stringify(standing) : '';
   const room: TranscriptLimits = summary
     ? {
         maxMessages: limits.maxMessages,
-        maxTokens: Math.max(0, limits.maxTokens - estimateInputTokens(JSON.stringify(summary))),
-        maxBytes: Math.max(0, limits.maxBytes - wireBytes(summary)),
+        maxTokens: Math.max(
+          0,
+          limits.maxTokens -
+            estimateInputTokens(JSON.stringify(summary)) -
+            (carried ? estimateInputTokens(carried) : 0),
+        ),
+        maxBytes: Math.max(
+          0,
+          limits.maxBytes - wireBytes(summary) - (carried ? wireBytes(carried) : 0),
+        ),
       }
     : limits;
   const bounded = boundAroundNewMessages(kept, fresh, room);
@@ -561,6 +603,7 @@ export function boundHistory(
             summary,
             through: summary ? (stored?.through ?? null) : null,
             left_out: leftOut,
+            ...(standing.length ? { standing_instructions: standing } : {}),
           },
         }
       : {}),
@@ -922,7 +965,11 @@ export async function readConversation(
   row: JobRow,
   generations: ContextGenerations,
   upTo: number,
-): Promise<{ full: CanonicalMessage[]; stored: StoredSummary | null }> {
+): Promise<{
+  full: CanonicalMessage[];
+  personWords: ReadonlyMap<CanonicalMessage, string>;
+  stored: StoredSummary | null;
+}> {
   const { usableEvents, attempts, contextMatches, room, files } = await historyRows(
     tx,
     row,
@@ -932,8 +979,9 @@ export async function readConversation(
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), upTo, {
     ...(room?.names ? { names: room.names } : {}),
     fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
+    principal: row.principalId,
   });
-  return { full: history.full, stored: history.stored };
+  return { full: history.full, personWords: history.personWords, stored: history.stored };
 }
 
 export async function buildAttemptSkeleton(

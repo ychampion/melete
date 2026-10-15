@@ -32,6 +32,12 @@ export type RuntimeCapabilities = z.infer<typeof runtimeCapabilities>;
 /** The most the summary of a conversation's earlier messages may take, rendered. */
 export const EARLIER_SUMMARY_CHARACTERS = 16_000;
 
+/**
+ * The standing instructions carried past a summary: rules the person set that
+ * hold until they change them, each in their own words.
+ */
+export const STANDING_INSTRUCTIONS = { items: 40, characters: 500 } as const;
+
 /** Provider-agnostic message shape. Nothing provider-specific reaches the transcript. */
 export const canonicalMessage = z.object({
   role: z.enum(['user', 'assistant', 'tool', 'system']),
@@ -399,6 +405,17 @@ export const attemptBundle = z.object({
       summary: z.string().max(EARLIER_SUMMARY_CHARACTERS).nullable(),
       through: timestamp.nullable(),
       left_out: z.number().int().nonnegative(),
+      /**
+       * Rules the person set in the summarised messages that still hold (a
+       * currency, a format, something to leave out), each in their own words,
+       * newest last. They are kept apart from the summary so the engine can
+       * hold them where its own compaction never reaches. Optional: absent,
+       * there are none.
+       */
+      standing_instructions: z
+        .array(z.string().min(1).max(STANDING_INSTRUCTIONS.characters))
+        .max(STANDING_INSTRUCTIONS.items)
+        .optional(),
     })
     .optional(),
   tools: z.array(toolSpec),
