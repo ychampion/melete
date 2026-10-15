@@ -65,8 +65,9 @@ export function withFresh(
       !known.has(chat.id) && (complete || oldest === undefined || chat.updated_at >= oldest),
   );
   // The fresh list is the newest chats, from its first to its last. A paged
-  // chat in that span that it leaves out is gone; one older than its last, or
-  // newer than its first (read since), is not its to say.
+  // chat in that span that it leaves out is gone; one older than its last (or
+  // as old: a tie that fell past its end), or newer than its first (read
+  // since), is not its to say.
   const newestFresh = fresh.reduce(
     (latest, chat) => (chat.updated_at > latest ? chat.updated_at : latest),
     '',
@@ -76,7 +77,7 @@ export function withFresh(
     newestFresh,
   );
   const kept = paged.filter(
-    (chat) => byId.has(chat.id) || chat.updated_at < oldestFresh || chat.updated_at > newestFresh,
+    (chat) => byId.has(chat.id) || chat.updated_at <= oldestFresh || chat.updated_at > newestFresh,
   );
   return [...added, ...kept.map((chat) => byId.get(chat.id) ?? chat)].sort((a, b) =>
     b.updated_at.localeCompare(a.updated_at),

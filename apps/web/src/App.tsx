@@ -169,7 +169,7 @@ export function App() {
   const refreshAgentsSoon = useMemo(() => throttled(refreshAgents, 2000), [refreshAgents]);
   // One refresh reads the conversations and what waits on the person, so the
   // sidebar's dots, Home's count and the queue always agree. When refreshes
-  // overlap, only the newest one's answer is applied.
+  // overlap, an older answer never replaces a newer one.
   const latestRefresh = useMemo(() => latestOnly(), []);
   const refreshConversations = useCallback(() => {
     latestRefresh(

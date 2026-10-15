@@ -248,13 +248,17 @@ function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
 function AddPeople({ detail, onAdded }: { detail: RoomDetail; onAdded: () => void }) {
   const [query, setQuery] = useState('');
   const [people, setPeople] = useState<Person[] | null>(null);
+  // The search those people answer: the hint speaks of it, not of what is still being typed.
+  const [answered, setAnswered] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     const timer = setTimeout(() => {
       void roomsApi.people(query).then((result) => {
-        if (live && result.data) setPeople(result.data.people);
+        if (!live || !result.data) return;
+        setPeople(result.data.people);
+        setAnswered(query);
       });
     }, 200);
     return () => {
@@ -313,7 +317,7 @@ function AddPeople({ detail, onAdded }: { detail: RoomDetail; onAdded: () => voi
           ))}
         </ul>
       ) : people ? (
-        <AddPeopleHint query={query} people={people} inRoom={inRoom} />
+        <AddPeopleHint query={answered} people={people} inRoom={inRoom} />
       ) : null}
     </section>
   );

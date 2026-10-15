@@ -35,3 +35,20 @@ test('reads that answer in order are each applied', async () => {
   await Promise.resolve();
   expect(applied).toEqual([1, 2]);
 });
+
+test('reads that each answer after the next is asked are still applied, oldest first', async () => {
+  const latest = latestOnly();
+  const applied: string[] = [];
+  const first = deferred<string>();
+  const second = deferred<string>();
+  const third = deferred<string>();
+  latest(first.promise, (value) => applied.push(value));
+  latest(second.promise, (value) => applied.push(value));
+  first.resolve('first');
+  await first.promise;
+  latest(third.promise, (value) => applied.push(value));
+  second.resolve('second');
+  await second.promise;
+  await Promise.resolve();
+  expect(applied).toEqual(['first', 'second']);
+});

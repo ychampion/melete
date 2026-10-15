@@ -127,6 +127,13 @@ test('a chat deleted elsewhere leaves the list once the fresh list covers where 
   // A chat started after the fresh list was read is not taken for deleted.
   const newer = [chat('e', '2026-10-09T10:00:00.000Z'), ...paged];
   expect(withFresh(newer, fresh, false).map((item) => item.id)).toEqual(['e', 'a', 'c', 'd']);
+  // "f" ties the fresh list's last chat and fell just past its end; it is not taken for deleted.
+  const tied = [
+    ...paged.slice(0, 3),
+    chat('f', '2026-10-09T07:00:00.000Z'),
+    paged[3] as Conversation,
+  ];
+  expect(withFresh(tied, fresh, false).map((item) => item.id)).toEqual(['a', 'c', 'f', 'd']);
 });
 
 test('the line under a status pill does not repeat the pill', () => {
