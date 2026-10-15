@@ -202,6 +202,18 @@ const providerFailed = (what: string) =>
     502,
   );
 
+const busy = () =>
+  new ServiceError(
+    'voice_busy',
+    'The speech service is busy just now. Try again in a moment.',
+    429,
+  );
+
+/** The provider turned the call away for having too many at once, rather than refusing it. */
+const providerBusy = (error: VoiceProviderError) =>
+  error.code === 'too_many_concurrent_requests' ||
+  (error.status === 429 && error.code !== 'quota_exceeded');
+
 /**
  * A refused key stops Speech and Transcription as surely as voice: the default
  * rows for both read the same key, so they are shown failing at once rather
@@ -400,6 +412,8 @@ export function mountVoice(
         // The operator reads why; the person is told only that it failed.
         process.stderr.write(`voice: ${kind} failed: ${error.message}\n`);
         if (error.keyRefused) await markSpeechFailing(db);
+        // Too many calls at once is a moment's wait, not a failure: the caller may try again.
+        if (providerBusy(error)) throw busy();
         throw providerFailed(what);
       }
       throw error;
