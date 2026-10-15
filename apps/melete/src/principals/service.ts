@@ -127,8 +127,9 @@ export class PrincipalService {
           403,
         );
       const [target] = await tx.select().from(principal).where(eq(principal.id, memberId));
-      // A room's own principal, or any account that is not a person, is never added.
-      if (target?.kind !== 'person')
+      // A room's own principal, any account that is not a person, and one that
+      // is turned off, as an account being deleted is, are never added.
+      if (target?.kind !== 'person' || target.disabledAt)
         throw new ServiceError('not_found', 'Principal not found.', 404);
       const [existing] = await tx
         .select()
