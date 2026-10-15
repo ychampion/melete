@@ -192,12 +192,7 @@ export function mountRooms(
   app.put('/rooms/:id/connections/:connectionId', async (c) => {
     const input = roomConnectionUpdate.parse(await c.req.json());
     return c.json(
-      await service.setConnection(
-        param(c, 'id'),
-        actor(c),
-        param(c, 'connectionId'),
-        input.shared_use,
-      ),
+      await service.setConnection(param(c, 'id'), actor(c), param(c, 'connectionId'), input),
     );
   });
   // The chat platform accounts that speak as the signed-in person, and unlinking one.

@@ -85,6 +85,35 @@ It never holds the account's secret or the certificate authority's key. A
 connection a command opened stops carrying the account the moment that command
 ends.
 
+## In a room
+
+An account a room's owners add for the room serves the requests people make of
+the room's agent, and never anyone's own work there. By default every request
+uses that one account, so a push or a deploy goes out as whoever connected it.
+Because of that, a change made with a room's command-line account is always
+answered by the room's owners, whatever the room's team-account rule says
+([rooms](ROOMS.md#what-the-rooms-own-accounts-send)).
+
+An owner can instead set the account to **each person's own**: in the room's
+settings, under Accounts the room uses, turn on "use each person's own
+account" for it. Then the room's copy of the secret is never used. A request
+uses the account of the same kind (GitHub, GitLab, npm or AWS) that the person
+who asked connected in their own space, while they are still a person in the
+room; a step of that request uses the same person's. Nobody else's account is
+ever used for it, and only the person who asked answers the changes made with
+it, since they go out as them.
+
+If the person who asked has no account of that kind, the relay still takes the
+connection, sends nothing and answers every request with a note the command
+prints, such as:
+
+```
+This room uses each person's own GitHub account, and Ana has not connected one yet. Nothing was sent. Ask Ana to connect GitHub for the agent's computer in Settings, under Connections, then run the same command again.
+```
+
+The agent stops there and asks them to connect it. Someone who leaves the room
+stops lending it their account at once.
+
 ## The egress certificate authority
 
 - Its key is ECDSA P-256, made the first time it is needed, sealed with the

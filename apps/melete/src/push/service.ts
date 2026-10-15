@@ -164,7 +164,7 @@ export async function recordSettled(
  * rooms they are in, that the room's rule for each lets them answer now.
  * Nobody else in the room is told.
  *
- * This is the SQL form of `approverRuleFor`, `isTeamAccount` and
+ * This is the SQL form of `approverRuleFor`, `roomAccountKind` and
  * `eligibleApprovers` in `rooms/approvals.ts`, which decide who may answer: a
  * change to the rule there changes it here too. The room approval tests check
  * that the people pushed are the people the card names.
@@ -191,7 +191,13 @@ function roomDecisions(principalId: string, since: Date) {
     where a.decided_at is null
       and (a.expires_at is null or a.expires_at > now())
       and (parent.audience = 'room' or j.audience = 'room' or holder.kind = 'room')
-      and case when team.id is not null then
+      and case
+      -- The asker's own account: only they answer what is done with it.
+      when team.id is not null and team.provider = 'command_line' and team.per_member then
+        r.requested_by_principal_id = m.principal_id
+      -- A command-line account the owners lent the room: only owners answer.
+      when team.id is not null and team.provider = 'command_line' then m.role = 'owner'
+      when team.id is not null then
         coalesce(rp.team_account_approvers, 'any_member') = 'any_member' or m.role = 'owner'
       else case coalesce(rp.approvers, 'requester')
         when 'requester' then r.requested_by_principal_id = m.principal_id

@@ -304,6 +304,12 @@ export const connection = pgTable(
      */
     sharedUse: text('shared_use').notNull().default('owner'),
     /**
+     * For a command-line account a room uses: true when each person's request
+     * uses that person's own account of the same kind, never this one's secret.
+     * Only a room's command-line connection may set it.
+     */
+    perMember: boolean('per_member').notNull().default(false),
+    /**
      * Whether the service watches this mailbox or calendar for changes when no
      * trigger asks it to. Null is the default: on in a person's own space, off
      * in a room's until its owners turn it on.
@@ -314,6 +320,10 @@ export const connection = pgTable(
   (t) => [
     index('connection_space_idx').on(t.spaceId),
     check('connection_shared_use', sql`${t.sharedUse} in ('owner', 'room')`),
+    check(
+      'connection_per_member',
+      sql`not ${t.perMember} or (${t.sharedUse} = 'room' and ${t.provider} = 'command_line')`,
+    ),
   ],
 );
 

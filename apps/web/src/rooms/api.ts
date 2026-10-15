@@ -127,6 +127,14 @@ export const roomsApi = {
     call<{ present: string[] }>(() => api.POST('/rooms/{id}/presence', room(id))),
 
   /* ---------- how the room works, and who answers its permissions ---------- */
+  /** Whether a command-line account the room uses is each person's own. Owners only. */
+  setPerMember: (id: string, connectionId: string, per_member: boolean) =>
+    call<{ connection: RoomConnection }>(() =>
+      api.PUT('/rooms/{id}/connections/{connectionId}', {
+        params: { path: { id, connectionId } },
+        body: { per_member },
+      }),
+    ),
   setPolicy: (id: string, change: Partial<RoomPolicy>) =>
     call<{ policy: RoomPolicy }>(() =>
       api.PUT('/rooms/{id}/policy', { ...room(id), body: change }),

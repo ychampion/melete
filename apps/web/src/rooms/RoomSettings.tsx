@@ -80,6 +80,26 @@ export function RoomSettings({
   }, [detail.room.id]);
   useEffect(loadAccounts, [loadAccounts]);
 
+  const setOwnAccounts = async (entry: RoomConnection, next: boolean) => {
+    setAccounts(
+      (list) =>
+        list?.map((each) => (each.id === entry.id ? { ...each, per_member: next } : each)) ?? null,
+    );
+    const result = await roomsApi.setPerMember(detail.room.id, entry.id, next);
+    if (!result.data) {
+      loadAccounts();
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t save that' });
+      return;
+    }
+    toast({
+      kind: 'ok',
+      title: 'Saved',
+      sub: next
+        ? 'Each person’s requests now use their own account. Someone without one is asked to connect it.'
+        : 'Everyone’s requests now use this account, and only owners approve what it changes.',
+    });
+  };
+
   const save = async (change: Partial<RoomPolicy>) => {
     const before = policy;
     setPolicy({ ...policy, ...change });
@@ -156,11 +176,30 @@ export function RoomSettings({
           </span>
           {accounts === null ? null : accounts.length ? (
             <ul className="col" style={{ gap: 4, margin: 0, padding: 0, listStyle: 'none' }}>
-              {accounts.map((entry) => (
-                <li key={entry.id} className="settings-choice-title">
-                  {entry.label}
-                </li>
-              ))}
+              {accounts.map((entry) =>
+                entry.provider === 'command_line' ? (
+                  <li key={entry.id} className="settings-switch">
+                    <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                      <span className="settings-choice-title">{entry.label}</span>
+                      <span className="people-hint">
+                        {entry.per_member
+                          ? 'Each person’s requests use their own account, and only they approve what it changes.'
+                          : 'Everyone’s requests use this account. Only owners approve what it changes.'}
+                      </span>
+                    </span>
+                    <Toggle
+                      on={entry.per_member}
+                      disabled={!owner}
+                      label={`Use each person’s own account instead of ${entry.label}`}
+                      onChange={(next) => void setOwnAccounts(entry, next)}
+                    />
+                  </li>
+                ) : (
+                  <li key={entry.id} className="settings-choice-title">
+                    {entry.label}
+                  </li>
+                ),
+              )}
             </ul>
           ) : (
             <span className="people-hint">None yet.</span>

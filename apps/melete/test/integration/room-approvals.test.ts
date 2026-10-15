@@ -16,6 +16,7 @@ import {
   type ConnectorManifest,
   type DispatchResult,
   roomConnectionList,
+  roomConnectionResponse,
   roomDetail,
   roomMessageResponse,
   roomPolicyResponse,
@@ -156,6 +157,8 @@ const notesManifest: ConnectorManifest = {
     },
   ],
 };
+/** The same send through a command-line account the room uses: someone's identity, lent to it. */
+const commandLineManifest: ConnectorManifest = { ...notesManifest, provider: 'command_line' };
 /** A change in a connected app that can be undone: one a reviewer may judge. */
 const tasksManifest: ConnectorManifest = {
   name: 'tasks',
@@ -1526,6 +1529,78 @@ withDb('room approvals', () => {
       decision: 'approved',
       decided_by: world.carol.id,
     });
+  }, 90_000);
+
+  test("a command-line account the room uses is approved only by its owners, whatever the room's rules", async () => {
+    const { roomId } = await makeRoom('Team push');
+    const team = await install(roomId, commandLineManifest, 'room');
+    await setPolicy(roomId, { approvers: 'any_member', team_account_approvers: 'any_member' });
+    const asked = await askAndWait(world.bob, roomId, team);
+    const { card: seen } = await card(world.carol, roomId, asked.threadId, asked.approvalId);
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([world.alice.id]);
+    expect(seen.why.join(' ')).toContain(
+      "It goes through an account the room uses. Waiting for one of the room's owners to answer it.",
+    );
+    expect(await toldOf(asked.approvalId)).toEqual([world.alice.id]);
+    // The member who asked, another member and the guest may not lend the owners' identity.
+    for (const person of [world.bob, world.carol, world.dan])
+      expect(
+        (await answer(person, roomId, asked.approvalId, allowOf(seen, asked.hash))).status,
+      ).toBe(403);
+    expect(await decision(asked.approvalId)).toEqual({ decision: null, decided_by: null });
+    await ok(answer(world.alice, roomId, asked.approvalId, allowOf(seen, asked.hash)));
+    expect(await decision(asked.approvalId)).toEqual({
+      decision: 'approved',
+      decided_by: world.alice.id,
+    });
+  }, 90_000);
+
+  test("a command-line account set to each person's own is approved only by the person who asked", async () => {
+    const { roomId, notes } = await makeRoom('Own push');
+    const team = await install(roomId, commandLineManifest, 'room');
+    const path = (id: string) => `/rooms/${roomId}/connections/${id}`;
+    // Only owners choose it, and only for a command-line account.
+    expect((await send(world.bob.cookie, path(team), 'PUT', { per_member: true })).status).toBe(
+      403,
+    );
+    const made = await install(roomId, notesManifest, 'room');
+    expect((await send(world.alice.cookie, path(made), 'PUT', { per_member: true })).status).toBe(
+      400,
+    );
+    expect((await send(world.alice.cookie, path(notes), 'PUT', { per_member: true })).status).toBe(
+      400,
+    );
+    const set = roomConnectionResponse.parse(
+      await ok(send(world.alice.cookie, path(team), 'PUT', { per_member: true })),
+    );
+    expect(set.connection).toMatchObject({ shared_use: 'room', per_member: true });
+    const listed = roomConnectionList.parse(
+      await ok(send(world.carol.cookie, `/rooms/${roomId}/connections`)),
+    );
+    expect(listed.connections.find((entry) => entry.id === team)?.per_member).toBe(true);
+    // Even where the room leaves everything to its owners, the asker's own account is theirs.
+    await setPolicy(roomId, { approvers: 'owners', team_account_approvers: 'owners' });
+    const asked = await askAndWait(world.bob, roomId, team);
+    const { card: seen } = await card(world.carol, roomId, asked.threadId, asked.approvalId);
+    expect(seen.eligible_approvers?.map((person) => person.principal_id)).toEqual([world.bob.id]);
+    expect(seen.why.join(' ')).toContain(
+      `It goes through ${labelOf(world.bob, roomId)}'s own account.`,
+    );
+    expect(await toldOf(asked.approvalId)).toEqual([world.bob.id]);
+    for (const person of [world.alice, world.carol, world.dan])
+      expect(
+        (await answer(person, roomId, asked.approvalId, allowOf(seen, asked.hash))).status,
+      ).toBe(403);
+    await ok(answer(world.bob, roomId, asked.approvalId, allowOf(seen, asked.hash)));
+    expect(await decision(asked.approvalId)).toEqual({
+      decision: 'approved',
+      decided_by: world.bob.id,
+    });
+    // Kept for the owner's own work, it is no longer anyone's own.
+    const kept = roomConnectionResponse.parse(
+      await ok(send(world.alice.cookie, path(team), 'PUT', { shared_use: 'owner' })),
+    );
+    expect(kept.connection).toMatchObject({ shared_use: 'owner', per_member: false });
   }, 90_000);
 
   test('the person who asked approves their own team-account send under the any-member rule', async () => {

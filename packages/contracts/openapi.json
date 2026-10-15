@@ -12539,11 +12539,11 @@
                       "owner",
                       "room"
                     ]
+                  },
+                  "per_member": {
+                    "type": "boolean"
                   }
                 },
-                "required": [
-                  "shared_use"
-                ],
                 "additionalProperties": false
               }
             }
@@ -41507,6 +41507,9 @@
           },
           "builtin": {
             "type": "boolean"
+          },
+          "per_member": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -41515,7 +41518,8 @@
           "provider",
           "status",
           "shared_use",
-          "builtin"
+          "builtin",
+          "per_member"
         ],
         "additionalProperties": false
       },

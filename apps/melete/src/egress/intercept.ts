@@ -791,6 +791,7 @@ async function handleBody(
       'account_unavailable',
       'This account is no longer available to this command.',
     );
+  if (use.missing !== undefined) return plain(response, 403, 'own_account_missing', use.missing);
   const placeholders =
     use.adapter.standIns?.(use.config) ?? Object.values(use.adapter.placeholders(use.config));
   const authorization = flat(request.headers).authorization;

@@ -1,0 +1,2 @@
+ALTER TABLE "connection" ADD COLUMN "per_member" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "connection" ADD CONSTRAINT "connection_per_member" CHECK (not "connection"."per_member" or ("connection"."shared_use" = 'room' and "connection"."provider" = 'command_line'));

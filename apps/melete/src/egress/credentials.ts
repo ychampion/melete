@@ -14,7 +14,15 @@
  *   connection follows (`connectionServesJob`). In a person's own space that is
  *   all of its jobs. In a room it is an account the room's owners added for the
  *   room, and only the requests people make of the room's agent: never a
- *   member's own work there. A person's own account never reaches a room.
+ *   member's own work there. A person's own account never reaches a room,
+ *   except as below.
+ *
+ * A room's account may be set to each person's own (`per_member`). Then its
+ * own secret is never used: a request of the room uses the account of the
+ * same kind the person who asked connected in their own space, while they are
+ * a person still in the room, and nobody else's. With none, the account is
+ * still terminated, and every request through it is answered with a plain
+ * note asking that person to connect their own, so nothing goes out as anyone.
  *
  * Anything else gets a blind tunnel, exactly as a host with no account does.
  * The secret is opened for one request at a time and never leaves the service.
@@ -35,6 +43,12 @@ export type CredentialUse = {
   config: unknown;
   /** Opens the account's secret for one request. */
   withSecret<T>(use: (secret: string) => Promise<T>): Promise<T>;
+  /**
+   * Set when the room's account is each person's own and the person who asked
+   * has none to use: every request is refused with this note, and no secret is
+   * ever opened.
+   */
+  missing?: string;
 };
 
 /** What a computer of a space with a connected account is given. */
@@ -62,6 +76,21 @@ export interface EgressCredentialPort {
 
 /** The connection row's configuration: `{ kind: 'command_line', adapter, config }`. */
 type Stored = { kind?: unknown; adapter?: unknown; config?: unknown };
+
+/** How the service an adapter reaches is named to a person. */
+const SERVICE_NAME: Record<string, string> = {
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  npm: 'npm',
+  aws: 'AWS',
+};
+
+/** What a request of the room hears when the person who asked has no account of their own. */
+export function ownAccountMissing(adapter: string, name: string | null): string {
+  const service = SERVICE_NAME[adapter] ?? 'this service';
+  const who = name ?? 'The person who asked';
+  return `This room uses each person's own ${service} account, and ${who} has not connected one yet. Nothing was sent. Ask ${name ?? 'them'} to connect ${service} for the agent's computer in Settings, under Connections, then run the same command again.`;
+}
 
 let bound: EgressAdmission | undefined;
 
@@ -94,7 +123,8 @@ export function postgresEgressCredentials(options: {
   const { sql, adapters, ca } = options;
   /** The space's usable accounts, oldest first, with their adapter and parsed configuration. */
   const accounts = async (space: string) => {
-    const rows = await sql`select id, scopes, configuration, secret_ref, shared_use from connection
+    const rows = await sql`select id, scopes, configuration, secret_ref, shared_use, per_member
+      from connection
       where space_id = ${space} and provider = 'command_line' and status = 'active'
         and secret_ref is not null
       order by created_at, id`;
@@ -103,6 +133,7 @@ export function postgresEgressCredentials(options: {
       scopes: string[];
       secretRef: string;
       sharedUse: string;
+      perMember: boolean;
       adapter: CredentialAdapter;
       config: unknown;
     }> = [];
@@ -123,11 +154,52 @@ export function postgresEgressCredentials(options: {
         scopes: row.scopes as string[],
         secretRef: String(row.secret_ref),
         sharedUse: String(row.shared_use),
+        perMember: row.per_member === true,
         adapter,
         config,
       });
     }
     return usable;
+  };
+  /**
+   * The person who asked a room's request, read from the request itself (or
+   * the request a step belongs to), with their name, while they are a person
+   * still in the room. Anyone else, or no one, is null.
+   */
+  const askerOf = async (jobId: string, room: string) => {
+    const [row] = await sql`select coalesce(
+          case when r.audience = 'room' then r.requested_by_principal_id end,
+          case when j.audience = 'room' then j.requested_by_principal_id end) as asker
+      from job j left join job r on r.id = j.experience_parent_id and r.space_id = j.space_id
+      where j.id = ${jobId}`;
+    const asker = row?.asker ? String(row.asker) : null;
+    if (!asker) return null;
+    const [person] = await sql`select p.id, p.display_name from space_membership m
+      join principal p on p.id = m.principal_id
+      where m.space_id = ${room} and m.principal_id = ${asker} and m.revoked_at is null
+        and m.role in ('owner', 'member') and p.kind = 'person'`;
+    if (!person) return { id: null, name: null };
+    return { id: asker, name: (person.display_name ?? null) as string | null };
+  };
+  /**
+   * A person's own account of this adapter's kind that covers the host: in
+   * their own space, active, and holding the read scope. Only ever theirs.
+   */
+  const ownAccount = async (principalId: string, adapterId: string, host: string) => {
+    const spaces = await sql`select id from space where kind = 'personal'
+      and owner_principal_id = ${principalId} and coalesce(audience, 'owner') = 'owner'
+      and removed_at is null order by created_at, id`;
+    for (const each of spaces) {
+      const own = String(each.id);
+      const found = (await accounts(own)).find(
+        (account) =>
+          account.adapter.id === adapterId &&
+          account.scopes.includes(egressReadScope(account.adapter.id)) &&
+          hostCovered(host, account.adapter.hosts(account.config)),
+      );
+      if (found) return { ...found, space: own };
+    }
+    return null;
   };
   /**
    * The kinds of space an account reaches: a person's own, for the owner's
@@ -184,6 +256,25 @@ export function postgresEgressCredentials(options: {
           (!access.allowed || access.allowed.includes(each.id)),
       );
       if (!account) return null;
+      if (account.perMember) {
+        // Each person's own: the room's secret is never opened for anyone.
+        const asker = audience.audience === 'room' ? await askerOf(attribution.jobId, space) : null;
+        const own = asker?.id ? await ownAccount(asker.id, account.adapter.id, host) : null;
+        if (!own)
+          return {
+            connectionId: account.id,
+            adapter: account.adapter,
+            config: account.config,
+            missing: ownAccountMissing(account.adapter.id, asker?.name ?? null),
+            withSecret: () => Promise.reject(new Error('No account of their own to use')),
+          };
+        return {
+          connectionId: account.id,
+          adapter: own.adapter,
+          config: own.config,
+          withSecret: (use) => options.secrets.withSecret(own.secretRef, own.space, use),
+        };
+      }
       return {
         connectionId: account.id,
         adapter: account.adapter,

@@ -68,6 +68,7 @@ const connectionView = (row: typeof connection.$inferSelect) => ({
   status: row.status,
   shared_use: row.sharedUse === 'room' ? ('room' as const) : ('owner' as const),
   builtin: row.configuration.builtin !== undefined,
+  per_member: row.perMember,
 });
 const roomOwnerOnly = () =>
   new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
@@ -802,15 +803,17 @@ export class RoomService {
 
   /**
    * Let a connection serve the room's requests, or keep it to the owner's own
-   * work. Owners only. Who a connection serves changes what work may act
-   * through it, so work under way in the room is fenced and starts again, and
-   * permissions waiting on it are withdrawn.
+   * work, and for a command-line account the room uses, whether each person's
+   * request uses that person's own account instead. Owners only. Either
+   * changes what work may act through it and as whom, so work under way in the
+   * room is fenced and starts again, and permissions waiting on it are
+   * withdrawn. A connection kept to the owner's own work is never per person.
    */
   async setConnection(
     spaceId: string,
     actor: string,
     connectionId: string,
-    sharedUse: 'owner' | 'room',
+    change: { shared_use?: 'owner' | 'room' | undefined; per_member?: boolean | undefined },
   ) {
     const jobs = this.deps.jobs;
     const result = await jobs.transaction(async (tx) => {
@@ -823,7 +826,22 @@ export class RoomService {
         .for('update');
       if (!source || source.status === 'revoked')
         throw new ServiceError('not_found', 'That connection is not in this room.', 404);
-      if (source.sharedUse === sharedUse) return { row: source, controls: [] };
+      const sharedUse = change.shared_use ?? (source.sharedUse === 'room' ? 'room' : 'owner');
+      const perMember = sharedUse === 'room' && (change.per_member ?? source.perMember);
+      if (perMember && source.provider !== 'command_line')
+        throw new ServiceError(
+          'invalid_request',
+          "Only a command-line account (GitHub, GitLab, npm or AWS for the agent's computer) can use each person's own account.",
+          400,
+        );
+      if (change.per_member && sharedUse !== 'room')
+        throw new ServiceError(
+          'invalid_request',
+          "Let the room's requests use this account before setting it to each person's own.",
+          400,
+        );
+      if (source.sharedUse === sharedUse && source.perMember === perMember)
+        return { row: source, controls: [] };
       const [parent] = await tx
         .update(space)
         .set({ policyGeneration: sql`${space.policyGeneration} + 1` })
@@ -832,7 +850,7 @@ export class RoomService {
       if (!parent) throw missing();
       const [row] = await tx
         .update(connection)
-        .set({ sharedUse, generation: source.generation + 1 })
+        .set({ sharedUse, perMember, generation: source.generation + 1 })
         .where(eq(connection.id, connectionId))
         .returning();
       if (!row) throw new Error('Locked connection disappeared');
