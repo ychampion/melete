@@ -2154,9 +2154,9 @@ curl -b cookies.txt -X PUT https://melete.example.com/spaces/sp_.../policy \
 
 | Rule | What it does |
 | --- | --- |
-| `allowed_models` | `provider/model` entries, in order. When the model work would use is not listed, it moves to the first listed model whose provider is connected; with none connected, the attempt stops and the conversation says why. A vision or fallback route to a model not listed is not taken, and the service's own side calls about the space (memory reads, summaries) keep to the list too. Empty allows any model. |
+| `allowed_models` | `provider/model` entries, in order. When the model work would use is not listed, it moves to the first listed model whose provider is connected; with none connected, the attempt stops and the conversation says why. A vision or fallback route to a model not listed is not taken, and the service's own model calls about the space (memory reads, summaries, reviews of its actions, reading its mail for Companies) keep to the list too. A review with no allowed model to use leaves the action for a person to approve. Empty allows any model. |
 | `denied_connector_kinds` | Connection providers, such as `imap`, `caldav`, `mcp` or `command_line`. A connection of a listed kind cannot be added to the space, and one added earlier is neither offered to the agent nor used. |
-| `denied_tool_kinds` | A tool by its name, such as `email.send`, or a family by the part before its first dot, such as `email`, which covers `email.read` and `email.send`. The agent is not offered them, and is refused if it asks for one anyway. |
+| `denied_tool_kinds` | A tool by its name, such as `email.send`, or a family by the part before its first dot, such as `email`, which covers `email.read` and `email.send`. It covers the tools of connections, the built-in files, web and computer ones included. The agent is not offered them, and is refused if it asks for one anyway. Melete's own tools for asking the person, following up and searching memory are not affected. |
 
 A change applies from the next attempt, catalog and call; an attempt already
 running on a model the rules now leave out has its next call refused.

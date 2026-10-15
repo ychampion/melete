@@ -8,6 +8,8 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
 import type { DispatchResult } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { configuredReviewGateway } from '../../src/broker/review-gateway.ts';
+import type { ReviewInput } from '../../src/broker/reviewer.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -22,6 +24,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
+import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { triageModelSource } from '../../src/triage/classifier.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
@@ -250,6 +253,13 @@ describeWithDb('rules for what a space may use', () => {
       kind: 'budget_exhausted',
       summary: expect.stringContaining('anthropic/fixture-model'),
     });
+    // A conversation ends on that sentence too, not on the general note
+    // about a limit that asks the person to say "continue".
+    const [ended] = await database().sql`select payload from event
+      where attempt_id = ${none.attempt?.id ?? ''} and type = 'attempt_ended'`;
+    expect(ended?.payload.limit_note).toStartWith(
+      "This space's rules let its work run only on anthropic/fixture-model",
+    );
 
     // A side call's fast model the rules leave out is not taken.
     const routed = await api.settings.routingFor(spaceId, {
@@ -312,6 +322,73 @@ describeWithDb('rules for what a space may use', () => {
     expect(JSON.stringify(refused.body)).toContain("This space's rules do not allow caldav");
     const after = await database().sql`select count(*)::int as n from connection`;
     expect(after[0]?.n).toBe(before[0]?.n);
+  }, 180_000);
+
+  test("an action's review keeps to the space's models, and with none usable goes to the person", async () => {
+    const api = service();
+    const p = await people(api);
+    const spaceId = p.owner.spaceId;
+    const reached: string[] = [];
+    const provider = async (request: Request) => {
+      const body = (await request.json()) as {
+        model: string;
+        messages?: { role: string; content: string }[];
+      };
+      reached.push(body.model);
+      const system = (body.messages ?? []).find((message) => message.role === 'system');
+      const text = JSON.stringify({
+        review_id: /The review_id must be exactly (\w+)\./.exec(system?.content ?? '')?.[1],
+        verdict: 'approve',
+        risk: 'low',
+        reason: 'As asked.',
+      });
+      return Response.json({
+        id: 'chat_1',
+        object: 'chat.completion',
+        model: body.model,
+        choices: [{ index: 0, message: { role: 'assistant', content: text } }],
+        usage: { prompt_tokens: 40, completion_tokens: 5, total_tokens: 45 },
+      });
+    };
+    if (!queue) throw new Error('the job queue is unavailable');
+    const jobs = new JobService(database().db, queue.boss);
+    const job = await jobs.create({ space_id: spaceId, title: 'Tasks', objective: 'Rename' });
+    const review = await configuredReviewGateway(
+      loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: masterKey, ...ENV }),
+      new PrivacyRouter({ store: new PostgresPrivacyStore(database().sql) }),
+      undefined,
+      undefined,
+      { settings: api.settings, fetch: provider },
+    );
+    if (!review) throw new Error('auto-review is off');
+    const input: ReviewInput = {
+      action: {
+        tool: 'tasks.rename',
+        description: 'Rename a task',
+        effect: 'write_reversible',
+        app: 'Tasks',
+        payload: { title: 'Groceries' },
+      },
+      instruction: 'Rename my task to Groceries',
+      recent: [],
+      origins: [],
+    };
+    const ask = () =>
+      review.reviewer.review(input, AbortSignal.timeout(10_000), { spaceId, jobId: job.id });
+    try {
+      expect(await ask()).toMatchObject({ verdict: 'approve' });
+      expect(reached).toEqual([PRIMARY]);
+
+      await api.call(
+        `/spaces/${spaceId}/policy`,
+        p.owner.cookie,
+        put(rules({ allowed_models: ['anthropic/fixture-model'] })),
+      );
+      expect(await ask()).toMatchObject({ verdict: 'none', failure: 'unavailable' });
+      expect(reached).toEqual([PRIMARY]);
+    } finally {
+      await review.close();
+    }
   }, 180_000);
 
   test('denied connector and tool kinds are neither offered nor admitted', async () => {

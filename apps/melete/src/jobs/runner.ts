@@ -473,10 +473,14 @@ export class AttemptRunner {
       // spending limit, rather than as a failure to run again.
       if (chosen.refused) {
         await unread();
-        await this.finish(tx, row, attemptId, {
-          kind: 'budget_exhausted',
-          summary: chosen.refused,
-        });
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'budget_exhausted', summary: chosen.refused },
+          [],
+          chosen.refused,
+        );
         return null;
       }
       // Past a spending limit no engine is started: the turn, routine run or
@@ -906,6 +910,11 @@ export class AttemptRunner {
     attemptId: string,
     given: AttemptOutcome,
     raised: readonly QuestionSpec[] = [],
+    /**
+     * The sentence a conversation turn stopped short ends on, in place of the
+     * general one, when the reason is one the person can act on.
+     */
+    limitNote?: string,
   ): Promise<JobRow> {
     // An attempt whose model calls were refused at a spending limit ends on
     // that limit, not as a failure to run again while it still holds.
@@ -1176,6 +1185,10 @@ export class AttemptRunner {
           ? { experience_completed: completionVerified }
           : {}),
         ...(turnStatus ? { turn_status: turnStatus } : {}),
+        // A page following the turn live reads the sentence its saved copy ends on.
+        ...(outcome.kind === 'budget_exhausted' && (capped ?? limitNote)
+          ? { limit_note: capped ?? limitNote }
+          : {}),
       },
       dedupKey: `${attemptId}:ended`,
     });
@@ -1202,8 +1215,8 @@ export class AttemptRunner {
           // ends with a plain sentence, not the name of the limit.
           ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
             ? {
-                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? LIMIT_REACHED_NOTE}
-                  else ${experienceTurn.answer} || ${`\n\n${capped ?? LIMIT_REACHED_NOTE}`} end`,
+                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? limitNote ?? LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${capped ?? limitNote ?? LIMIT_REACHED_NOTE}`} end`,
               }
             : 'summary' in outcome
               ? { answer: outcome.summary }

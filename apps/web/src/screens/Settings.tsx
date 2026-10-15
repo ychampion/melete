@@ -550,7 +550,13 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           </div>
         ) : null}
         {current === 'activity' ? <ActivityTab /> : null}
-        {current === 'space-rules' ? <SpaceRules spaceId={people.data?.space.id} /> : null}
+        {current === 'space-rules' ? (
+          people.error ? (
+            <LoadError what="this space’s rules" error={people.error} onRetry={people.reload} />
+          ) : (
+            <SpaceRules spaceId={people.data?.space.id} />
+          )
+        ) : null}
         {current === 'people' ? (
           <PeopleTab
             people={people.data}
