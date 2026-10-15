@@ -84,24 +84,28 @@ export function ownedSpace(spaceId: SQLWrapper, principalId = requestPrincipal()
  * connection rather than the typed one: the owner of a personal space (the
  * installation's owner when the space predates principals), the membership role
  * in a shared space, and nothing for a space under removal or a principal it
- * does not admit. The two must agree; the broker's skill reads rely on it.
+ * does not admit; with whether they own the space itself, as `ownsSpace`
+ * decides. The two must agree; the broker's skill reads rely on it.
  */
-export async function spaceRole(
+export async function spaceStanding(
   query: Sql | TransactionSql,
   spaceId: string,
   principalId: string | null,
-): Promise<MembershipRole | null> {
+): Promise<{ role: MembershipRole; owns: boolean } | null> {
   const [parent] = await query`select kind, removed_at,
     coalesce(owner_principal_id, (select id from owner limit 1)) as owner_id
     from space where id = ${spaceId}`;
   if (!parent || parent.removed_at) return null;
   const actor = principalId ?? parent.owner_id ?? null;
-  if (parent.kind === 'personal') return actor === parent.owner_id ? 'owner' : null;
+  if (parent.kind === 'personal')
+    return actor === parent.owner_id ? { role: 'owner', owns: true } : null;
   if (!actor) return null;
   const [membership] = await query`select role from space_membership
     where space_id = ${spaceId} and principal_id = ${actor} and revoked_at is null
       and (expires_at is null or expires_at > now())`;
-  return membership ? (membership.role as MembershipRole) : null;
+  if (!membership) return null;
+  const role = membership.role as MembershipRole;
+  return { role, owns: ownsSpace({ role, ownerId: parent.owner_id, principalId: actor }) };
 }
 
 /**
@@ -170,6 +174,31 @@ export async function spaceAuthority(
     role: membership.role as MembershipRole,
     generation: membership.generation,
   };
+}
+
+/**
+ * Whether the principal owns the space itself: the owner of a personal space,
+ * or the person who made a room. The owners a room's maker adds manage the
+ * room, but what is kept private to it stays the maker's, as its memory does.
+ */
+export function ownsSpace(access: {
+  role: MembershipRole;
+  ownerId: string | null;
+  principalId: string | null;
+}): boolean {
+  return access.role === 'owner' && access.ownerId === access.principalId;
+}
+
+/**
+ * Whether the principal may open, test or change a connection in the space:
+ * an owner of the space, and only the space's own owner (a room's maker) for a
+ * connection kept for them, which serves only their work.
+ */
+export function managesConnection(
+  access: { role: MembershipRole; ownerId: string | null; principalId: string | null },
+  sharedUse: string,
+): boolean {
+  return access.role === 'owner' && (sharedUse !== 'owner' || ownsSpace(access));
 }
 
 export async function requireJobAccess(db: Reader, id: string, actor = requestPrincipal()) {

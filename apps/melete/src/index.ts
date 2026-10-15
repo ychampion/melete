@@ -179,6 +179,7 @@ import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
+  ownsSpace,
   refusedForRemoval,
   requestPrincipal,
   SPACE_BEING_CLEARED,
@@ -761,12 +762,15 @@ export function createApp(deps: AppDeps) {
           const actor = requestPrincipal();
           if (!scope || !actor || !deps.db) return null;
           const access = await spaceAuthority(deps.db, scope.spaceId, actor);
+          // A space's memory is its owner's: the person who made a room, not
+          // the owners they added, who read what the room shares as members do.
+          const owns = ownsSpace(access);
           return {
             ...scope,
             principalId: actor,
             membershipGeneration: access.generation,
-            role: access.role === 'owner' ? 'owner' : 'reader',
-            audience: access.role === 'owner' ? scope.audience : 'space',
+            role: owns ? 'owner' : 'reader',
+            audience: owns ? scope.audience : 'space',
           };
         },
       }),
@@ -815,7 +819,7 @@ export function createApp(deps: AppDeps) {
       ...(db
         ? {
             authorizeSpace: async (id: string) => ({
-              owner: (await spaceAuthority(db, id, requestPrincipal())).role === 'owner',
+              owner: ownsSpace(await spaceAuthority(db, id, requestPrincipal())),
             }),
           }
         : {}),

@@ -14,6 +14,7 @@ import {
   mentionFor,
   namesAgent,
   needsRead,
+  nextRole,
   recordDelta,
   type Streams,
   sendKey,
@@ -320,4 +321,15 @@ test('a date reads as people say it, with the year only when it is not this one'
   const now = new Date('2026-10-02T12:00:00.000Z');
   expect(dayOf('2026-10-25T12:00:00.000Z', now)).toBe('Oct 25');
   expect(dayOf('2027-01-05T12:00:00.000Z', now)).toBe('Jan 5, 2027');
+});
+
+test('an owner can make a member an owner and an owner a member, never the maker or a guest', () => {
+  expect(nextRole('owner', { role: 'member' })).toBe('owner');
+  expect(nextRole('owner', { role: 'owner', made_room: false })).toBe('member');
+  expect(nextRole('owner', { role: 'owner', made_room: true })).toBeNull();
+  expect(nextRole('owner', { role: 'guest' })).toBeNull();
+  // Only an owner has the choice at all.
+  expect(nextRole('member', { role: 'member' })).toBeNull();
+  expect(nextRole('guest', { role: 'owner' })).toBeNull();
+  expect(nextRole(null, { role: 'member' })).toBeNull();
 });
