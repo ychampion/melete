@@ -326,6 +326,9 @@ export async function seedSpace(
     values (${newId('rin')}, ${spaceId}, 'guest@example.test', ${newId('rin')}, now() + interval '30 days', ${principalId})`;
   // How the room works, and a task its agent handed one of its people.
   await sql`insert into room_policy (space_id) values (${spaceId})`;
+  // What the space's work may use.
+  await sql`insert into space_policy (space_id, denied_tool_kinds)
+    values (${spaceId}, ${JSON.stringify(['email.send'])}::jsonb)`;
   await sql`insert into room_handoff
     (id, space_id, room_job_id, thread_id, action_id, target_principal_id, task_text, task_hash, expires_at)
     values (${newId('rho')}, ${spaceId}, ${jobId}, ${threadId}, ${newId('act')}, ${principalId},

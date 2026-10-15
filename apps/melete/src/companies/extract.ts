@@ -69,10 +69,11 @@ export const extractionReply = z.strictObject({ items: z.array(extractedItem).ma
 export interface CompanyExtractor {
   extract(request: ExtractionRequest): Promise<ExtractedItem[]>;
   /**
-   * An extractor for one scan, with a budget of its own, closed when the scan
-   * ends. An extractor that spends nothing, like the scripted one, has none.
+   * An extractor for one scan of `spaceId`'s mail, with a budget of its own,
+   * closed when the scan ends. An extractor that spends nothing, like the
+   * scripted one, has none.
    */
-  forScan?(): Promise<ScanExtractor>;
+  forScan?(spaceId: string): Promise<ScanExtractor>;
 }
 
 /** The extractor one scan uses, and the way to put it away afterwards. */

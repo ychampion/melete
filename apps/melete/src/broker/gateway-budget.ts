@@ -13,6 +13,7 @@ import {
   type GatewayRoutes,
   type GatewaySettlement,
 } from '../gateway/types.ts';
+import { allowedRoutes, modelAllowed, spaceRulesFor } from '../spaces/policy.ts';
 import { dollarsSpentLocked, remainingOutputTokensLocked, reserveLocked } from './budget.ts';
 import { verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
@@ -67,10 +68,18 @@ export class PostgresGatewayBudget implements GatewayBudget {
           attempt.turn_text.length <= BRIEF_TURN_CHARS;
         // One who asks for depth gets a step more, however short the message.
         const deepTurn = typeof attempt.turn_text === 'string' && asksForDepth(attempt.turn_text);
-        const routes = await this.options.routes?.({
-          ...primary,
-          usageClass: attempt.class === 'background' ? 'background' : 'interactive',
-        });
+        // The space's rules bound every model a call may reach: one changed
+        // since the attempt started is refused, and a route they leave out is
+        // not offered.
+        const rules = await spaceRulesFor(tx, job.space_id);
+        if (!modelAllowed(rules, primary)) throw new GatewayError(403, 'model_denied');
+        const routes = allowedRoutes(
+          rules,
+          await this.options.routes?.({
+            ...primary,
+            usageClass: attempt.class === 'background' ? 'background' : 'interactive',
+          }),
+        );
         const allowedModels = allowedWithRoutes(primary, routes);
         return {
           jobId: job.id,
