@@ -487,9 +487,9 @@ describe('context assembly', () => {
     expect(renderInput(plain)).toContain('- Done means the person has an answer.');
   });
 
-  test('a wait cancelled before it fired is named, with no wait in force now', () => {
+  test('a wait set aside before it fired is named, and said to come back by itself', () => {
     const woken = structuredClone(bundle);
-    expect(renderInput(woken)).not.toContain('## A wait was cancelled');
+    expect(renderInput(woken)).not.toContain('## A wait is set aside');
     woken.job.triggers = [
       {
         id: `trg_${SUFFIX}`,
@@ -500,13 +500,13 @@ describe('context assembly', () => {
     ];
     woken.inputs.cancelled_wait = { kind: 'event', trigger_id: `trg_${SUFFIX}`, deadline_at: null };
     const text = renderInput(woken);
-    expect(text).toContain('## A wait was cancelled');
-    expect(text).toContain(`The wait for mail.new (trg_${SUFFIX}) was cancelled before it fired.`);
-    expect(text).toContain('No wait is in force now');
-    expect(text).toContain('call job.wait');
+    expect(text).toContain('## A wait is set aside');
+    expect(text).toContain(`The wait for mail.new (trg_${SUFFIX}) was set aside before it fired`);
+    expect(text).toContain('It comes back by itself');
+    expect(text).toContain('call job.wait only to wait for something different');
     woken.inputs.cancelled_wait = { kind: 'timer', wake_at: '2026-09-20T08:00:00.000Z' };
     expect(renderInput(woken)).toContain(
-      'The wait until 2026-09-20T08:00:00.000Z was cancelled before it fired.',
+      'The wait until 2026-09-20T08:00:00.000Z was set aside before it fired',
     );
   });
 

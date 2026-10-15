@@ -356,7 +356,8 @@ export class RunService {
       checkResult: input.check_result ?? true,
     });
     // Work that repeats stands on its schedule from the start; the caller
-    // registers the schedule once this commits.
+    // registers the schedule once this commits. Typed or asked for in a
+    // conversation, a schedule given at the start is one the person asked for.
     if (input.repeat)
       await stand(
         tx,
@@ -364,6 +365,7 @@ export class RunService {
         row,
         { kind: 'schedule', ...input.repeat },
         origin.typed ? 'person' : 'work',
+        true,
       );
     return row;
   }

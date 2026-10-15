@@ -798,8 +798,9 @@ export class AttemptRunner {
 
   /**
    * The wait this attempt was told had been cancelled, if it can still fire:
-   * its trigger is still registered and enabled on this job, or its timer is
-   * still ahead, and no effect is pending that a wait would have to outrank.
+   * its trigger is still registered and enabled on this job, or it is a timer
+   * (one that fell due meanwhile fires at once), and no effect is pending that
+   * a wait would have to outrank.
    */
   private async restorableWait(
     tx: Transaction,
@@ -832,8 +833,10 @@ export class AttemptRunner {
       )
       .limit(1);
     if (pending) return null;
-    if (wait.kind === 'timer')
-      return Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime() ? wait : null;
+    // The attempt was told about this timer while it was still ahead. If it
+    // came due while the attempt worked, it is put back all the same and wakes
+    // the job at once: a reminder is late, never lost, because a reply took time.
+    if (wait.kind === 'timer') return wait;
     if (wait.kind !== 'event') return null;
     const [registration] = await tx
       .select({ id: trigger.id })

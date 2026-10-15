@@ -211,6 +211,75 @@ withDb('a reminder the agent set', () => {
     expect(woken.waiting_until).toBeUndefined();
   });
 
+  test('a message while it waits is answered, and the reminder still comes at its time', async () => {
+    const who = await person();
+    const { chat, wait } = await reminderSet(who);
+    const sent = await who.request(`/conversations/${chat.id}/messages`, 'POST', {
+      text: 'Thanks! What should I stretch first?',
+    });
+    expect(sent.status).toBe(200);
+    const reply = await claimNow(await required(jobs).get(chat.id));
+    // The reply is told the reminder is set aside for it, not that it is gone.
+    expect(reply.bundle.inputs.cancelled_wait).toEqual(wait);
+    expect(renderInput(reply.bundle)).toContain('Thanks! What should I stretch first?');
+    await say(reply.claims, 'Start with your neck and shoulders.');
+    await required(runner).commitOutcome(reply.claims, {
+      kind: 'completed',
+      summary: 'Start with your neck and shoulders.',
+      evidence: [],
+    });
+    const resting = await required(jobs).get(chat.id);
+    expect(resting.state).toBe('waiting_for_event_or_time');
+    expect(resting.wait).toEqual(wait);
+    expect(resting.nextWakeAt?.getTime()).toBe(Date.parse(wait.wake_at));
+    const shown = conversationResponse.parse(
+      await (await who.request(`/conversations/${chat.id}`)).json(),
+    ).conversation;
+    expect(Date.parse(shown.waiting_until ?? '')).toBe(Date.parse(wait.wake_at));
+
+    const fired = await fire(chat.id);
+    await say(fired.claims, 'Time to stretch.');
+    await required(runner).commitOutcome(fired.claims, {
+      kind: 'completed',
+      summary: 'Time to stretch.',
+      evidence: [],
+    });
+    const turns = await turnsOf(chat.id);
+    expect(turns.map((turn) => turn.answer)).toEqual([
+      "Set. I'll nudge you in 5 minutes.",
+      'Start with your neck and shoulders.',
+      'Time to stretch.',
+    ]);
+    expect(required(turns[2]).text).toBe('');
+    expect((await required(jobs).get(chat.id)).state).toBe('waiting_for_input');
+  });
+
+  test('a reminder that comes due while its reply is being written still comes', async () => {
+    const who = await person();
+    const { chat, wait } = await reminderSet(who);
+    expect(
+      (await who.request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Ok.' })).status,
+    ).toBe(200);
+    const reply = await claimNow(await required(jobs).get(chat.id));
+    expect(reply.bundle.inputs.cancelled_wait).toEqual(wait);
+    // The time passes before the reply finishes.
+    const lapsed = { kind: 'timer' as const, wake_at: new Date(Date.now() - 1000).toISOString() };
+    await required(handle).db.update(job).set({ wait: lapsed }).where(eq(job.id, chat.id));
+    await required(handle)
+      .sql`update event set payload = jsonb_set(payload, '{wait}', ${JSON.stringify(lapsed)}::jsonb)
+      where dedup_key = ${`${reply.claims.attempt_id}:wait-cancelled`}`;
+    await required(runner).commitOutcome(reply.claims, {
+      kind: 'completed',
+      summary: 'Sure.',
+      evidence: [],
+    });
+    const resting = await required(jobs).get(chat.id);
+    expect(resting.state).toBe('waiting_for_event_or_time');
+    expect(resting.nextWakeAt?.getTime()).toBeLessThanOrEqual(Date.now());
+    await claimNow(resting, 'timer');
+    expect(await turnsOf(chat.id)).toHaveLength(3);
+  });
+
   test('one wake opens one turn, however often it is delivered', async () => {
     const who = await person();
     const { chat } = await reminderSet(who);

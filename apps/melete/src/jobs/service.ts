@@ -19,6 +19,7 @@ import {
   type TransitionInput,
   transition,
   type WaitSpec,
+  waitSpec,
 } from '@melete/contracts';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
@@ -39,6 +40,7 @@ import {
   spaceAuthority,
   visibleJob,
 } from '../principals/authority.ts';
+import { personSetSchedule } from './attention.ts';
 import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
 import { opensWithMention, recordSteer } from './steer.ts';
@@ -392,16 +394,22 @@ export class JobService {
               wait.deadline_at
             ? new Date(wait.deadline_at)
             : null;
+    // Unread results slow work down by stretching its timers, except a
+    // schedule the person asked for, which keeps its time.
     const nextWakeAt =
       result.value === 'waiting_for_event_or_time' &&
       wait.kind === 'timer' &&
       baseWakeAt &&
-      row.cadenceMultiplier > 1
+      row.cadenceMultiplier > 1 &&
+      !(await personSetSchedule(tx, row))
         ? new Date(
             Date.now() + Math.max(0, baseWakeAt.getTime() - Date.now()) * row.cadenceMultiplier,
           )
         : baseWakeAt;
-    if (wait.kind === 'timer' && nextWakeAt) wait = { ...wait, wake_at: nextWakeAt.toISOString() };
+    // Only a job going to rest on its timer takes the stretched time. A queued
+    // job that keeps a wait it has not reached yet keeps it as it was set.
+    if (result.value === 'waiting_for_event_or_time' && wait.kind === 'timer' && nextWakeAt)
+      wait = { ...wait, wake_at: nextWakeAt.toISOString() };
     const [updated] = await tx
       .update(job)
       .set({
@@ -515,11 +523,18 @@ export class JobService {
       : [];
     if (!text && !files.length)
       throw new ServiceError('invalid_request', 'A message needs words or a file.', 400);
+    // A conversation resting until a reminder is due answers the message now and
+    // keeps the reminder: the queued row carries the wait, so the reply is told
+    // it was set aside and the runner puts it back when the reply is done.
+    const kept =
+      continuing && row.state === 'waiting_for_event_or_time'
+        ? waitSpec.parse(row.wait)
+        : undefined;
     const updated = await this.move(
       tx,
       row,
       { kind: continuing ? 'conversation_continued' : 'user_input_received' },
-      { reason: 'input' },
+      { reason: 'input', ...(kept ? { wait: kept } : {}) },
     );
     await appendEvent(tx, {
       jobId: id,

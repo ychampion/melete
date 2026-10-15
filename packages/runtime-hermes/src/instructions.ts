@@ -429,9 +429,9 @@ export function renderInput(bundle: AttemptBundle): string {
         : `for ${named?.event_name ?? 'its trigger'} (${cancelled.trigger_id})`;
     lines.push(
       '',
-      '## A wait was cancelled',
+      '## A wait is set aside',
       '',
-      `The wait ${what} was cancelled before it fired. No wait is in force now, whatever an earlier wait result says; if this job still needs it, call job.wait again.`,
+      `The wait ${what} was set aside before it fired so this attempt could run. It comes back by itself when you finish without choosing another wait, and still fires when due; call job.wait only to wait for something different.`,
     );
   }
   for (const approval of bundle.inputs.approval_results)
