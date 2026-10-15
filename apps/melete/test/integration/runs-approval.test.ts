@@ -427,16 +427,25 @@ withDb('background work that needs the person’s OK', () => {
     try {
       // The broken run is logged and left; the other is told of all the same.
       expect(await required(runs).surfacePermissions()).toEqual([fine.asked.approvalId]);
-      const line = logged.find((entry) => entry.includes(broken.run.id));
-      expect(line).toContain('not surfaced: value too long');
-      expect(line).not.toContain('Private desk measurements');
-      expect(line).not.toContain('insert into');
+    } finally {
+      process.stderr.write = stderr;
+    }
+    const line = logged.find((entry) => entry.includes(broken.run.id));
+    expect(line).toContain('not surfaced: value too long');
+    expect(line).not.toContain('Private desk measurements');
+    expect(line).not.toContain('insert into');
+    try {
       // A database out of reach stops the sweep instead of failing every run in turn.
       failure = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
-      await expect(required(runs).surfacePermissions()).rejects.toThrow('ECONNREFUSED');
+      const stopped = await required(runs)
+        .surfacePermissions()
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(stopped).toMatchObject({ code: 'ECONNREFUSED' });
     } finally {
       watchdog.write = write;
-      process.stderr.write = stderr;
     }
     // Once it can be, the broken run is told of too, and only once.
     expect(await required(runs).surfacePermissions()).toEqual([broken.asked.approvalId]);
