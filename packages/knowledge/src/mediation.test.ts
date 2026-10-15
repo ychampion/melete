@@ -138,6 +138,22 @@ describe('staging a proposal', () => {
     expect(listProposals(paths)).toEqual([]);
     expect(discardProposal(paths, result.proposal.id)).toBe(false);
   });
+
+  test.skipIf(process.platform === 'win32')(
+    'a staged write that is gone by the time it is read is left out of the list',
+    () => {
+      const result = proposeWrite(context(), aWrite());
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // A name the folder still lists whose file cannot be read any more, as
+      // when another instance expires it between the listing and the read.
+      symlinkSync(
+        join(paths.proposed, 'already-removed.json'),
+        join(paths.proposed, 'prop_gone.json'),
+      );
+      expect(listProposals(paths).map((p) => p.id)).toEqual([result.proposal.id]);
+    },
+  );
 });
 
 describe('what the mediator refuses', () => {
