@@ -507,9 +507,17 @@ describe('model gateway effect boundary', () => {
       fetch: async () => new Response('Bearer real-openai-secret', { status: 401 }),
     });
     const response = await post('/providers/openai/v1/chat/completions', { model: 'fixture-chat' });
-    expect(response.status).toBe(502);
-    expect(await response.text()).not.toContain('real-openai-secret');
-    expect(budget.settlements[0]).toMatchObject({ status: 'failed', usage: null, httpStatus: 401 });
+    // A refused key is named as one, and only by its code.
+    expect(response.status).toBe(401);
+    const text = await response.text();
+    expect(text).not.toContain('real-openai-secret');
+    expect(JSON.parse(text).error.code).toBe('provider_key_refused');
+    expect(budget.settlements[0]).toMatchObject({
+      status: 'failed',
+      usage: null,
+      httpStatus: 401,
+      failure: 'key_refused',
+    });
     expect(budget.spent).toBe(budget.reservations[0]?.maxOutputTokens ?? -1);
   });
 

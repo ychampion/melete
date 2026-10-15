@@ -27456,6 +27456,8 @@ export interface components {
                 kind: "waiting_for_event_or_time";
                 wait: components["schemas"]["__schema454"];
             } | {
+                /** @enum {string} */
+                failure?: "key_refused" | "quota" | "rate_limited" | "model_not_found" | "context_too_long" | "provider_down";
                 /** @constant */
                 kind: "failed";
                 reason: string;

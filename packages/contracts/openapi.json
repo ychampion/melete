@@ -48375,6 +48375,17 @@
                       },
                       "retryable": {
                         "type": "boolean"
+                      },
+                      "failure": {
+                        "type": "string",
+                        "enum": [
+                          "key_refused",
+                          "quota",
+                          "rate_limited",
+                          "model_not_found",
+                          "context_too_long",
+                          "provider_down"
+                        ]
                       }
                     },
                     "required": [

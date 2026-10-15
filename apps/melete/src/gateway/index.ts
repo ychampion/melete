@@ -34,6 +34,7 @@ import { trackModelCall } from './inflight.ts';
 import { withLongTurnNote } from './long-turn.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import { PriceTable } from './prices.ts';
+import { classifyProviderFailure, providerFailureError } from './provider-failure.ts';
 import {
   checkConnectTarget,
   PROVIDER_HOSTS,
@@ -727,7 +728,13 @@ export function createModelGateway(options: GatewayOptions): Server {
                   ),
                 );
         } catch (error) {
-          if (abort.signal.aborted || !alternatives) throw error;
+          if (abort.signal.aborted) throw error;
+          if (!alternatives) {
+            // Nothing else to try: the engine and the person hear that the
+            // provider is not answering, and the receipt says so too.
+            settlement.failure = 'provider_down';
+            throw providerFailureError('provider_down');
+          }
           // The provider could not be reached; the next model is tried.
           settlement.status = 'failed';
           settlement.latencyMs = Math.round(performance.now() - started);
@@ -760,12 +767,18 @@ export function createModelGateway(options: GatewayOptions): Server {
           const errorText =
             answer.status === 400 && schemaCarried && !schemaStripped ? rejectionText : '';
           settlement.status = 'failed';
-          if (signedIn && answer.status === 401)
-            callProvider.signedIn?.rejected(signedIn.generation);
-          const failure = new GatewayError(
-            answer.status === 429 ? 429 : 502,
-            'provider_rejected_request',
-          );
+          // A signed-in provider's 401 is an expired token: it is refreshed
+          // here, and the engine's next try goes with the new one, so it is
+          // not named a refused key.
+          const refreshed = Boolean(signedIn) && answer.status === 401;
+          if (signedIn && refreshed) callProvider.signedIn?.rejected(signedIn.generation);
+          // The refusal's class, read from its status and text, is all that
+          // goes on: the engine gets a status and code that mean the same.
+          const failed = refreshed ? null : classifyProviderFailure(answer.status, rejectionText);
+          if (failed) settlement.failure = failed;
+          const failure = failed
+            ? providerFailureError(failed)
+            : new GatewayError(answer.status === 429 ? 429 : 502, 'provider_rejected_request');
           // A model that refuses the answer schema is asked once more without
           // it, every other field kept, and is not sent one again in this
           // process. That 400 is the schema's, so the effort stays.
