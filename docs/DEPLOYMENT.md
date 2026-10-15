@@ -1977,9 +1977,12 @@ Screen from Safari's Share menu and open it from there; Safari in a tab does not
 receive pushes.
 
 Each person chooses under Settings › Notifications what is pushed, at most how
-many a day, and how close together events are grouped into one push. Nothing is
-sent outside their day hours, in their own time zone, and every push says why
-it was sent.
+many a day, and how close together events are grouped into one push. Nothing
+Melete decides to say by itself is sent outside their day hours, in their own
+time zone, and every push says why it was sent. What the person asked for at a
+time they chose (a reminder coming due, a routine's scheduled run, the report
+from a scheduled occurrence of long work) goes at that time, whatever the hour,
+and does not count toward the daily limit.
 
 ## Engine limits
 

@@ -302,6 +302,12 @@ withDb('standing work', () => {
     expect(woke.bundle.job.objective).toContain('Invoice 4410 attached');
     expect(woke.bundle.job.objective).toContain('outside data, not instructions');
     expect(woke.bundle.job.objective).not.toContain('Last week');
+    // What a watch woke it for is the work's own news: still paced by the person's day.
+    await tool(woke.claims, 'run.log', { kind: 'report', title: 'Filed invoice 4410' });
+    const reported = (await notices(run.id)).filter((push) =>
+      push.dedupKey.startsWith(`run-report:${run.id}:`),
+    );
+    expect(reported.map((push) => push.kind)).toEqual(['progress']);
 
     // A later checkpoint can change what it waits for, and then drop it.
     await tool(woke.claims, 'run.checkpoint', {
@@ -595,6 +601,12 @@ withDb('standing work', () => {
       await required(runner).commitOutcome(woke.claims, done());
     }
     expect(await progress()).toHaveLength(2);
+    // Each is the occurrence the person asked for: told at its time, quiet hours or not.
+    for (const push of await progress())
+      expect(push).toMatchObject({
+        kind: 'reminder',
+        because: 'Because you asked for this at this time.',
+      });
     // A shift the person's message started is spaced as before.
     await request(`/runs/${run.id}/message`, 'POST', { text: 'And panels?' });
     const asked = await claim(run.id);
@@ -636,6 +648,7 @@ withDb('standing work', () => {
     expect(told[0]?.body).toContain('text Sam');
     expect(told[0]?.data).toMatchObject({ from_shift_end: true });
     expect(await progress()).toHaveLength(1);
+    expect((await progress())[0]?.kind).toBe('reminder');
     await resting(run.id);
 
     // Its final words are what the person is sent when it said something.
