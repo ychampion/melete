@@ -297,9 +297,7 @@ export class AccountRemovalService {
         const row = await spaces
           .fence(principalId, space.id, space.name, { forAccountDeletion: true })
           .catch((error) => {
-            missed(
-              `account deletion: removing ${space.id} did not start yet (${describe(error)})`,
-            );
+            missed(`account deletion: removing ${space.id} did not start yet (${describe(error)})`);
             return null;
           });
         if (row) spaces.dispatch(row.id);
