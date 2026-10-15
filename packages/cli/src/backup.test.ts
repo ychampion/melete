@@ -1944,6 +1944,32 @@ describe('restoring with an external database', () => {
     }
   });
 
+  test('a Ctrl-C while a step runs is told what that step may have left, never to start the stack on it', async () => {
+    const rig = await external();
+    const started = await external();
+    try {
+      const hints: (string | null)[] = [];
+      rig.context.interruptHint = (hint) => hints.push(hint);
+      // Stopped during the load, as a Ctrl-C would stop it: the hint that stands is the load's.
+      rig.context.streamFails.push('pg_restore --dbname');
+      expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+      expect(hints.at(-1)).toContain('run the same restore --yes again');
+      // Started now, the stack would fill the new database, and the restore would then refuse it.
+      expect(hints.at(-1)).not.toContain('start the stack as it was');
+
+      // Stopped during the start, every part is back: the restore need not run again.
+      const told: (string | null)[] = [];
+      started.context.interruptHint = (hint) => told.push(hint);
+      started.fails.push(startsStack);
+      expect(await runRestore(started.context, [started.set, '--yes'], false)).toBe(3);
+      expect(told.at(-1)).toContain('Every part is back');
+      expect(told.at(-1)).toContain('The restore need not run again.');
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+      rmSync(join(started.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
   test("the administrator's role addresses must name the database the restore loads or keeps", async () => {
     const at = (user: string, database: string) =>
       `postgres://${user}:${'p'.repeat(16)}@db.example:5432/${database}?sslmode=require`;

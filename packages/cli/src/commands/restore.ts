@@ -411,20 +411,26 @@ async function runSteps(
   const secrets = installationSecrets(context.deployDir);
   let changed = false;
   let rerun: string | null = null;
-  // What a Ctrl-C between steps says: where the restore stopped, and what to run next.
-  const hint = () =>
+  // What a Ctrl-C says: where the restore stopped, and what to run next. While a step
+  // that replaces something runs, it may have begun to, so the stack must not start.
+  const hint = (running?: RestoreAction) =>
     context.interruptHint?.(
-      rerun
-        ? `Some parts are back and the stack is stopped. ${rerun}`
-        : changed
-          ? 'Some parts are back and the stack is stopped: run the same restore --yes again, which is safe, since it starts over from the backup.'
-          : `Nothing was replaced yet, but services may be stopped: run the same restore --yes again, which is safe, or start the stack as it was with ${start}.`,
+      running?.phase === 'start'
+        ? `Every part is back; the start was stopped. See bun run melete status, then start it with ${start}. The restore need not run again.`
+        : rerun
+          ? `Some parts are back and the stack is stopped. ${rerun}`
+          : changed
+            ? 'Some parts are back and the stack is stopped: run the same restore --yes again, which is safe, since it starts over from the backup.'
+            : running && running.phase === undefined
+              ? 'It stopped while it put a part back, and the stack is stopped: run the same restore --yes again, which is safe, since it starts over from the backup. Do not start the stack before it has run.'
+              : `Nothing was replaced yet, but services may be stopped: run the same restore --yes again, which is safe, or start the stack as it was with ${start}.`,
     );
   hint();
   for (const action of actions) {
     if (action.kind !== 'run') continue;
     // A Ctrl-C that came during the step before is handled here, before this one starts.
     await new Promise((settle) => setImmediate(settle));
+    hint(action);
     let detail: string | null = null;
     // A step that depends on whether a volume is here runs only on a clear answer.
     const asked = action.ifVolume ?? action.unlessVolume;
