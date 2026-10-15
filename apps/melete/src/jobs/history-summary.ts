@@ -24,9 +24,8 @@ import {
   STANDING_INSTRUCTIONS,
 } from '@melete/contracts';
 import { z } from 'zod';
-import { FILE_BLOCK } from '../attachments/render.ts';
 import { estimateInputTokens } from '../gateway/metering.ts';
-import { saysWanted } from '../intents/said.ts';
+import { ownWords, pastedSpans, saysWanted } from '../intents/said.ts';
 
 /** The notice kind a summary is kept under, in the job's events. */
 export const HISTORY_SUMMARY_KIND = 'history_summary';
@@ -206,25 +205,23 @@ const heard = (text: string) =>
     .filter(Boolean)
     .join('\n');
 
-/** Where someone else's text starts in a person's message: a forward or reply marker, or a pasted email's headers. */
-const ELSEWHERE =
-  /^\s*(?:-{2,}\s*(?:forwarded|original) message|begin forwarded message|on .{3,80} wrote:\s*$|(?:from|subject|sent|reply-to):\s)/i;
-
 /**
- * The person's own words in a message they sent: without the text of files
- * they attached, lines they quoted ("> ..."), or anything from a forward or
- * reply marker or a pasted email's headers onward. Only clear marks count: a
- * guess from a message's shape (a greeting, a sign-off, a long paragraph)
- * would also take away rules the person typed themselves.
+ * The words in a message the person sent that are theirs, read from how it
+ * was sent rather than from the text the model is shown: only what they
+ * wrote (the files they attached are never part of it), less what the
+ * composer saw them paste and what reads as someone else's by its shape (a
+ * quote, a forward, a reply chain, pasted headers, a letter, a long copied
+ * passage), as an intent's details are read (`ownWords`). An option the
+ * assistant offered and the person picked is their choice, in the
+ * assistant's words, so none of it is.
+ *
+ * Where the shape is unsure the text counts as pasted. That only keeps a rule
+ * out of the standing instructions: the summary still records it as
+ * something said.
  */
-function personWords(content: string): string {
-  const kept: string[] = [];
-  for (const raw of content.replace(FILE_BLOCK, ' ').split('\n')) {
-    if (ELSEWHERE.test(raw)) break;
-    // A quoted line keeps its place as a break between paragraphs.
-    kept.push(/^\s*>/.test(raw) ? '' : raw);
-  }
-  return kept.join('\n');
+export function personWords(sent: { text: string; pasted?: unknown; chosen?: unknown }): string {
+  if (sent.chosen !== undefined && sent.chosen !== null) return '';
+  return ownWords(sent.text, pastedSpans(sent.pasted));
 }
 
 /**
@@ -356,9 +353,8 @@ export function planExtension(
 
 /**
  * One call's worth of messages, as text, and how many messages it completes.
- * `person` is what the person wrote in those messages, without the text of
- * files they attached or what they forwarded or quoted, which a standing
- * instruction has to be found in.
+ * `person` is what the person wrote in those messages (`personWords`), which
+ * a standing instruction has to be found in.
  */
 export type SummaryChunk = { text: string; completes: number; person: string };
 
@@ -394,10 +390,16 @@ function partsOf(message: CanonicalMessage, maxTokens: number): string[] {
  * message too long for one call is split into parts across calls. `completes`
  * counts the messages whose last part is in that chunk or an earlier one, so a
  * run of calls stopped early says exactly which messages it covered.
+ *
+ * `spoken` holds, for each message the person the conversation belongs to
+ * sent, their own words in it, as the conversation was read from its events
+ * (`assembleHistory`). A message it does not hold has none: whoever's it is,
+ * and whatever it says, nothing in it can set a rule.
  */
 export function chunkMessages(
   messages: readonly CanonicalMessage[],
   maxTokens: number,
+  spoken: ReadonlyMap<CanonicalMessage, string> = new Map(),
 ): SummaryChunk[] {
   const chunks: SummaryChunk[] = [];
   let text: string[] = [];
@@ -413,10 +415,7 @@ export function chunkMessages(
   };
   for (const [index, message] of messages.entries()) {
     const parts = partsOf(message, maxTokens);
-    // The person's own words. The text of a file they attached, an email they
-    // forwarded or a line they quoted sit in their message but came from
-    // someone else, so they can never set a rule.
-    const words = message.role === 'user' ? personWords(message.content) : null;
+    const words = message.role === 'user' ? (spoken.get(message) ?? null) : null;
     for (const [number, part] of parts.entries()) {
       const cost = estimateInputTokens(part);
       if (used > 0 && used + cost > maxTokens) flush();

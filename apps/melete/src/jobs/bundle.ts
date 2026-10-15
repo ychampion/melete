@@ -77,6 +77,7 @@ import {
   HISTORY_SUMMARY_KIND,
   isToolIdentity,
   madeUnder,
+  personWords,
   renderSummary,
   type StoredSummary,
   standingRules,
@@ -403,16 +404,30 @@ export function assembleHistory(
     fileTexts?: ReadonlyMap<string, string | null>;
     /** How much transcript this attempt's model has room for. */
     limits?: TranscriptLimits;
+    /**
+     * The person the conversation belongs to, when it has one: a message
+     * recorded as another principal's is never in their words.
+     */
+    principal?: string | null;
   } = {},
 ): Pick<AttemptBundle, 'inputs' | 'transcript' | 'earlier'> & {
   progressSummary: string;
   /** The whole conversation in order, before any of it is summarised or bounded. */
   full: CanonicalMessage[];
+  /**
+   * For each message in `full` that the person the conversation belongs to
+   * sent, their own words in it (`personWords`): the only words a standing
+   * instruction can be taken from. In a room nobody's are: the agent there
+   * works for the room, and what a member asks stays in the thread, under
+   * their name, rather than becoming a rule.
+   */
+  personWords: ReadonlyMap<CanonicalMessage, string>;
   /** The newest summary of its earlier messages, if one was made. */
   stored: StoredSummary | null;
 } {
-  const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT } = context;
+  const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT, principal } = context;
   let stored: StoredSummary | null = null;
+  const spoken = new Map<CanonicalMessage, string>();
   const inputs: AttemptBundle['inputs'] = {
     new_user_messages: [],
     approval_results: [],
@@ -466,6 +481,15 @@ export function assembleHistory(
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
+      const someoneElse =
+        typeof principal === 'string' &&
+        typeof payload.principal_id === 'string' &&
+        payload.principal_id !== principal;
+      if (!names && !someoneElse)
+        spoken.set(
+          message,
+          personWords({ text: payload.text, pasted: payload.pasted, chosen: payload.chosen }),
+        );
       const readBefore =
         payload.steer === true &&
         typeof payload.steer_id === 'string' &&
@@ -516,6 +540,7 @@ export function assembleHistory(
     ...(bounded.earlier ? { earlier: bounded.earlier } : {}),
     progressSummary,
     full: transcript,
+    personWords: spoken,
     stored,
   };
 }
@@ -940,7 +965,11 @@ export async function readConversation(
   row: JobRow,
   generations: ContextGenerations,
   upTo: number,
-): Promise<{ full: CanonicalMessage[]; stored: StoredSummary | null }> {
+): Promise<{
+  full: CanonicalMessage[];
+  personWords: ReadonlyMap<CanonicalMessage, string>;
+  stored: StoredSummary | null;
+}> {
   const { usableEvents, attempts, contextMatches, room, files } = await historyRows(
     tx,
     row,
@@ -950,8 +979,9 @@ export async function readConversation(
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), upTo, {
     ...(room?.names ? { names: room.names } : {}),
     fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
+    principal: row.principalId,
   });
-  return { full: history.full, stored: history.stored };
+  return { full: history.full, personWords: history.personWords, stored: history.stored };
 }
 
 export async function buildAttemptSkeleton(

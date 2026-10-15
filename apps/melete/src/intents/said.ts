@@ -23,6 +23,16 @@ import { FORWARDED, QUOTED } from '../memory/capture.ts';
 /** A stretch of a message, by UTF-16 offsets into its text, that the composer saw pasted. */
 export type Span = { start: number; end: number };
 
+/** The stretches a message records as pasted, as far as they read as stretches at all. */
+export function pastedSpans(raw: unknown): Span[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((span) => {
+    const start = (span as { start?: unknown } | null)?.start;
+    const end = (span as { end?: unknown } | null)?.end;
+    return typeof start === 'number' && typeof end === 'number' ? [{ start, end }] : [];
+  });
+}
+
 /** Header lines a pasted email carries. */
 const HEADER = /^\s*(?:from|to|cc|bcc|sent|date|subject|reply-to):\s/i;
 /** Header lines of an email copied from a mail app's view: "Dana <dana@acme.test>", "to me", its date. */

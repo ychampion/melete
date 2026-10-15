@@ -170,7 +170,11 @@ export async function extendHistory(
   // Tool results are not summarised: they are outside text, and what the
   // assistant made of them is in its own messages. Their identities stay.
   const said = plan.summarise.filter((message) => !isToolIdentity(message));
-  const chunks = chunkMessages(said, deps.chunkTokens ?? HISTORY_SUMMARY_LIMITS.chunk_tokens);
+  const chunks = chunkMessages(
+    said,
+    deps.chunkTokens ?? HISTORY_SUMMARY_LIMITS.chunk_tokens,
+    read.personWords,
+  );
   const deadline =
     Date.now() + Math.min(SUMMARY_WALL_MS, bundle.budget.max_wall_ms * SUMMARY_WALL_SHARE);
   let summary = read.stored?.summary ?? EMPTY_SUMMARY;
