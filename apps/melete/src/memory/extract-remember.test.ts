@@ -127,4 +127,10 @@ describe('what the extraction model is told about a request to remember', () => 
     expect(system).toContain('"asked_to_remember":true');
     expect(system).toContain('unless the person asks you to remember them');
   });
+
+  test('a reminder to do something is still a request, not a fact to keep', () => {
+    const { system } = extractionMessages(batch());
+    expect(system).toContain('"remember to call the bank at 5"');
+    expect(system).toContain('is a request, not a fact to keep: propose nothing for it');
+  });
 });
