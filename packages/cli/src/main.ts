@@ -87,7 +87,53 @@ export function parseArguments(argv: readonly string[]): Parsed {
   return { command, rest, deployDir, json, offline };
 }
 
-export async function main(argv: readonly string[], make = realContext): Promise<ExitCode> {
+/** The commands that only read: Ctrl-C stops them with nothing changed. */
+const READ_ONLY = new Set(['', 'help', 'check', 'status', 'logs', 'history']);
+
+/** What Ctrl-C may leave behind, by command, when the command registered nothing closer. */
+const LEFT_BEHIND: Record<string, string> = {
+  backup:
+    'The backup it was making is not whole, and a restore refuses it (it has no SHA256SUMS yet). An offline backup stops the writers while it runs: see bun run melete status, then run the backup again.',
+  restore:
+    'Without --yes it changes nothing. With --yes it changes nothing until its steps start: see bun run melete status, then run the same restore again.',
+};
+
+/**
+ * The handler for Ctrl-C (SIGINT) and SIGTERM: one line naming the command it
+ * stopped and what may have changed, then exit 130 or 143, as a shell reports a
+ * command a signal stopped. A command that changes things in steps registers,
+ * through `hint`, what to say where it stands.
+ */
+export function interruption(
+  command: string,
+  write: (text: string) => void,
+  exit: (code: number) => void,
+) {
+  let registered: string | null = null;
+  return {
+    hint: (text: string | null) => {
+      registered = text;
+    },
+    handle: (signal: 'SIGINT' | 'SIGTERM') => {
+      const left =
+        registered ??
+        (READ_ONLY.has(command)
+          ? 'It changes nothing.'
+          : (LEFT_BEHIND[command] ??
+            'It may have stopped partway: see bun run melete status before running it again.'));
+      write(
+        `\n${signal === 'SIGINT' ? 'Ctrl-C' : 'SIGTERM'} stopped melete ${command || 'help'}. ${left}\n`,
+      );
+      exit(signal === 'SIGINT' ? 130 : 143);
+    },
+  };
+}
+
+export async function main(
+  argv: readonly string[],
+  make = realContext,
+  options: { signals?: boolean } = {},
+): Promise<ExitCode> {
   let parsed: Parsed;
   try {
     parsed = parseArguments(argv);
@@ -96,6 +142,12 @@ export async function main(argv: readonly string[], make = realContext): Promise
     return EXIT.refused;
   }
   const context: Context = make(parsed.deployDir);
+  if (options.signals) {
+    const stop = interruption(parsed.command, context.err, (code) => process.exit(code));
+    context.interruptHint = stop.hint;
+    process.on('SIGINT', () => stop.handle('SIGINT'));
+    process.on('SIGTERM', () => stop.handle('SIGTERM'));
+  }
   const refuse = (message: string): ExitCode => {
     context.err(`${message}\n`);
     return EXIT.refused;
@@ -187,4 +239,9 @@ const json = (asJson: boolean, entries: ReturnType<typeof readHistory>) =>
 `
     : renderHistory(entries);
 
-if (import.meta.main) process.exit(await main(process.argv.slice(2)));
+if (import.meta.main) {
+  const code = await main(process.argv.slice(2), realContext, { signals: true });
+  // A Ctrl-C that came while the last step ran is handled here, before the exit.
+  await new Promise((settle) => setImmediate(settle));
+  process.exit(code);
+}
