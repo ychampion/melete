@@ -22,9 +22,13 @@
  * A second installation on the machine takes `--project <name> --api-port
  * <port> --web-port <port>`, which configure.ts writes to deploy/.env. A new
  * installation is refused while its project name is in use on this engine:
- * another installation's containers or volumes would become this one's.
+ * another installation's containers or volumes would become this one's. It is
+ * refused too when the engine does not answer, so that could not be checked,
+ * unless `--force` says to set it up without the check.
+ *
+ * A refused init leaves the checkout as it found it, deploy/.melete included.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmdirSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
 import { otherCheckouts, type ProjectUse, readProjectUse } from '../compose-project.ts';
@@ -44,7 +48,7 @@ import {
   renderDeployConfig,
 } from '../deploy-config.ts';
 import { configFromEnv, sandboxProfile } from '../installation.ts';
-import { LockRefusal, withLock } from '../lock.ts';
+import { LockRefusal, STATE_DIR, withLock } from '../lock.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
 
 export class InitRefusal extends Error {}
@@ -56,6 +60,8 @@ export type InitOptions = {
   backupDir?: string;
   /** `--project`: the Compose project, also handed to configure.ts. */
   project?: string;
+  /** `--force`: set up a new installation even when the engine cannot say whether its project is free. */
+  force?: boolean;
   /** Everything else, handed to configure.ts. */
   configure: string[];
 };
@@ -76,6 +82,7 @@ export function initOptions(args: readonly string[]): InitOptions {
       index += 1;
     };
     if (arg === '--adopt') options.adopt = true;
+    else if (arg === '--force') options.force = true;
     else if (arg === '--min-free-mb') floor('min_free_mb');
     else if (arg === '--pull-margin-mb') floor('pull_margin_mb');
     else if (arg === '--backup-dir') {
@@ -95,9 +102,9 @@ export function initOptions(args: readonly string[]): InitOptions {
       index += 1;
     } else options.configure.push(arg);
   }
-  if (options.adopt && options.configure.length > 0)
+  if (options.adopt && (options.configure.length > 0 || options.force))
     throw new InitRefusal(
-      `--adopt takes only --min-free-mb, --pull-margin-mb and --backup-dir; ${options.configure.join(' ')} belongs to a new installation.`,
+      `--adopt takes only --min-free-mb, --pull-margin-mb and --backup-dir; ${[...(options.force ? ['--force'] : []), ...options.configure].join(' ')} belongs to a new installation.`,
     );
   return options;
 }
@@ -244,6 +251,19 @@ function readContainers(run: Run, project: string): ContainerFacts[] {
 }
 
 export async function runInit(context: Context, args: readonly string[]): Promise<ExitCode> {
+  // Taking the lock makes deploy/.melete. A refusal removes it again when this
+  // run made it and it is still empty, so a refused init leaves nothing behind.
+  const state = join(context.deployDir, STATE_DIR);
+  const made = !existsSync(state);
+  const code = await initialize(context, args);
+  if (code === EXIT.refused && made)
+    try {
+      rmdirSync(state);
+    } catch {}
+  return code;
+}
+
+async function initialize(context: Context, args: readonly string[]): Promise<ExitCode> {
   const contractPath = join(context.deployDir, DEPLOY_FILE);
   const envPath = join(context.deployDir, '.env');
   try {
@@ -282,10 +302,13 @@ export async function runInit(context: Context, args: readonly string[]): Promis
         'deploy/.env exists already. To describe that installation, run bun run melete init --adopt.',
       );
     return await withLock(context.deployDir, 'init', async () => {
-      // Checked before configure.ts writes anything. An engine that does not
-      // answer is left to configure.ts, which names what is wrong with it.
+      // Checked before configure.ts writes anything.
       const project = options.project ?? 'melete';
       const use = readProjectUse(context.run, project);
+      if (use === null && !options.force)
+        throw new InitRefusal(
+          `Docker did not answer, so whether the Compose project ${project} is already in use on this engine could not be checked; another installation's containers and volumes would become this one's. Start Docker (bun run melete doctor says what is wrong) and run this again, or pass --force to set up without the check. Nothing was written.`,
+        );
       const taken = use && projectInUse(project, use, context.deployDir);
       if (taken) throw new InitRefusal(taken);
       const code = await context.attach([

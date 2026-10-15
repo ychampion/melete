@@ -240,7 +240,8 @@ Each project keeps its backups in a folder of its own: `~/melete-backups` for
 never prune each other's backups. `--backup-dir <folder>` chooses another, and
 `backup.dir` in `deploy/melete.deploy.json` changes it later. An installation
 whose deploy file names the folder another installation uses should be given
-its own.
+its own. `melete upgrade` puts its backup in that folder too; an upgrade made
+before it did left a second installation's in `~/melete-backups`.
 
 Keep the `MELETE_SANDBOX_PROJECT` that `configure.ts` wrote: it is random for
 each installation and tells apart the agents' computers and attempt containers,
@@ -310,11 +311,17 @@ them. `doctor` also reports `docker.leftover_sandboxes`: the stopped agents'
 computers and empty networks whose sandbox project no installation on this
 engine uses, which an installation's own clean-up never reaches. Another
 installation's computers are never listed; they are told apart by the
-`MELETE_SANDBOX_PROJECT` each installation's service runs with. An
-installation that is down (`docker compose down` removes its service
-container) cannot be told apart that way, so check the list before
-`bun run melete doctor --remove-leftovers` removes it. It removes only those
-stopped computers and empty networks, and keeps the computers' volumes.
+`MELETE_SANDBOX_PROJECT` each installation's service runs with, and by the
+`melete.install_project` label each computer and its network carry: the Compose
+project of the installation that made them. While that project still has a
+container or a volume on this engine they are its own, even with the
+installation down (`docker compose down` removes its service container but
+keeps its volumes); once it has neither, they are listed. Computers made before
+they carried that label are listed with an unknown owner when their sandbox
+project is not in use, since an installation that is down cannot be told from
+one that was removed that way; check those before
+`bun run melete doctor --remove-leftovers` removes them. It removes only the
+listed stopped computers and empty networks, and keeps the computers' volumes.
 
 ## The melete command
 
@@ -343,7 +350,7 @@ bun run melete feedback        # problem reports people sent from the app
 
 | Command | What it does |
 |---|---|
-| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). `--project <name> --api-port <port> --web-port <port>` set up [a second installation on this host](#a-second-installation-on-this-host), and `--backup-dir <folder>` where its backups go. A project name that containers or volumes on this engine already use is refused. |
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). `--project <name> --api-port <port> --web-port <port>` set up [a second installation on this host](#a-second-installation-on-this-host), and `--backup-dir <folder>` where its backups go. A project name that containers or volumes on this engine already use is refused, and so is any name while the engine does not answer, unless `--force`. |
 | `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. It takes `--backup-dir` too. |
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, the Compose boundary checks, and what [an installation for other people](#hosting-for-other-people) needs. |
 | `doctor [--offline] [--remove-leftovers]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. `docker.address_pools` counts the networks Docker can still make, and `docker.network_pool` those left in `MELETE_NETWORK_POOL` ([Docker address pools](#docker-address-pools)), and `docker.leftover_sandboxes` lists the agents' computers and networks that sandbox projects no installation on this engine uses left behind; `--remove-leftovers` removes those, and is the only time `doctor` changes anything. |
@@ -916,7 +923,8 @@ account and by administrators.
 
 `bun run deploy/scripts/upgrade.ts <tag> --dry-run` works as described in
 [upgrading](UPGRADING.md). Its `mkdir -p -m 700 ~/melete-backups` creates the
-default backup parent, `C:\Users\<you>\melete-backups`, in Git Bash as on Linux;
+default backup parent, `C:\Users\<you>\melete-backups` (a second
+installation's is `melete-backups\<project>` inside it), in Git Bash as on Linux;
 `--backup-dir` also takes a Windows path such as `C:/melete-backups`. Docker Desktop keeps images and
 volumes on its VM's disk, so the upgrade measures the free space there, from
 beside the database volume, rather than on a Windows drive.

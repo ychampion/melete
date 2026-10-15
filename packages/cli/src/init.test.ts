@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { initOptions, parseServiceImage, runInit } from './commands/init.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
@@ -179,10 +179,23 @@ describe('melete init --adopt', () => {
   });
 });
 
+/** An engine where project `name` has containers from `folders` and these volumes. */
+const using = (name: string, folders: string[], volumes: string[] = []) =>
+  [
+    [
+      `docker ps --all --filter label=com.docker.compose.project=${name} --format`,
+      ok(folders.map((folder) => `dir=${folder}\n`).join('')),
+    ],
+    [
+      `docker volume ls --quiet --filter label=com.docker.compose.project=${name}`,
+      ok(volumes.join('\n')),
+    ],
+  ] as [string, ReturnType<typeof ok>][];
+
 describe('melete init', () => {
   test('a new installation runs configure, then writes the contract from its deploy/.env', async () => {
     const deployDir = temporaryDeployDir();
-    const context = testContext(deployDir, [], {
+    const context = testContext(deployDir, using('melete', []), {
       attach: async (command) => {
         context.attached.push([...command]);
         writeEnv(deployDir, { MELETE_IMAGE_TAG: '' });
@@ -204,7 +217,7 @@ describe('melete init', () => {
 
   test('--hosted marks the new installation hosted, and --public-url reaches configure', async () => {
     const deployDir = temporaryDeployDir();
-    const context = testContext(deployDir, [], {
+    const context = testContext(deployDir, using('melete', []), {
       attach: async (command) => {
         context.attached.push([...command]);
         writeEnv(deployDir, { MELETE_IMAGE_TAG: 'main' });
@@ -219,9 +232,10 @@ describe('melete init', () => {
 
   test('a configure refusal leaves no contract behind', async () => {
     const deployDir = temporaryDeployDir();
-    const context = testContext(deployDir, [], { attach: async () => 1 });
+    const context = testContext(deployDir, using('melete', []), { attach: async () => 1 });
     expect(await runInit(context, [])).toBe(2);
     expect(existsSync(join(deployDir, DEPLOY_FILE))).toBe(false);
+    expect(existsSync(join(deployDir, '.melete'))).toBe(false);
   });
 
   test('an installation that is already configured is pointed at --adopt', async () => {
@@ -242,22 +256,17 @@ describe('melete init', () => {
     });
     expect(() => initOptions(['--backup-dir', 'relative/folder'])).toThrow('--backup-dir');
     expect(() => initOptions(['--project', 'Melete Two'])).toThrow('--project');
+    expect(() => initOptions(['--adopt', '--force'])).toThrow(
+      '--force belongs to a new installation',
+    );
+    expect(initOptions(['--force', '--fake'])).toMatchObject({
+      force: true,
+      configure: ['--fake'],
+    });
   });
 });
 
 describe('a second installation on one machine', () => {
-  /** An engine where project `name` has containers from `folders` and these volumes. */
-  const using = (name: string, folders: string[], volumes: string[] = []) =>
-    [
-      [
-        `docker ps --all --filter label=com.docker.compose.project=${name} --format`,
-        ok(folders.map((folder) => `dir=${folder}\n`).join('')),
-      ],
-      [
-        `docker volume ls --quiet --filter label=com.docker.compose.project=${name}`,
-        ok(volumes.join('\n')),
-      ],
-    ] as [string, ReturnType<typeof ok>][];
   const configuring = (deployDir: string, rules: [string, ReturnType<typeof ok>][], env = {}) => {
     const context = testContext(deployDir, rules, {
       attach: async (command) => {
@@ -308,6 +317,13 @@ describe('a second installation on one machine', () => {
     expect(context.attached).toEqual([]);
     expect(readdirSync(deployDir)).not.toContain('.env');
     expect(changingCalls(context.docker.calls)).toEqual([]);
+    // --force answers only an engine that cannot say; a name in use stays refused.
+    const forced = configuring(
+      deployDir,
+      using('melete', ['/srv/melete/deploy', '/srv/melete/deploy'], ['melete_pgdata']),
+    );
+    expect(await runInit(forced, ['--fake', '--force'])).toBe(2);
+    expect(forced.attached).toEqual([]);
   });
 
   test("a stopped installation's volumes are refused too: its database would not open", async () => {
@@ -316,12 +332,52 @@ describe('a second installation on one machine', () => {
     expect(await runInit(context, ['--fake', '--project', 'melete2'])).toBe(2);
     expect(context.errors()).toContain('Compose project melete2 already has 1 volume(s)');
     expect(context.attached).toEqual([]);
+    const forced = configuring(deployDir, using('melete2', [], ['melete2_pgdata']));
+    expect(await runInit(forced, ['--fake', '--project', 'melete2', '--force'])).toBe(2);
+    expect(forced.attached).toEqual([]);
   });
 
-  test('a free name goes ahead; an engine that does not answer is left to configure', async () => {
+  test('a free name goes ahead; an engine that does not answer is refused, unless --force', async () => {
     const free = temporaryDeployDir();
     expect(await runInit(configuring(free, using('melete', [])), ['--fake'])).toBe(0);
     const silent = temporaryDeployDir();
-    expect(await runInit(configuring(silent, []), ['--fake'])).toBe(0);
+    const refused = configuring(silent, []);
+    expect(await runInit(refused, ['--fake', '--project', 'melete2'])).toBe(2);
+    expect(refused.errors()).toContain(
+      'Docker did not answer, so whether the Compose project melete2 is already in use on this engine could not be checked',
+    );
+    expect(refused.errors()).toContain('pass --force');
+    expect(refused.attached).toEqual([]);
+    expect(readdirSync(silent)).not.toContain('.env');
+    const forced = configuring(silent, []);
+    expect(await runInit(forced, ['--fake', '--force'])).toBe(0);
+    // --force is init's own; configure.ts never sees it.
+    expect(forced.attached[0]?.slice(2)).toEqual(['--fake']);
+  });
+
+  test('a refused init leaves no deploy/.melete behind, and keeps one that was there', async () => {
+    const refusals: [string, ReturnType<typeof configuring>, string[]][] = [];
+    const inUse = temporaryDeployDir();
+    refusals.push([inUse, configuring(inUse, using('melete', ['/srv/melete/deploy'])), ['--fake']]);
+    const silent = temporaryDeployDir();
+    refusals.push([silent, configuring(silent, []), ['--fake']]);
+    const configureRefused = temporaryDeployDir();
+    refusals.push([
+      configureRefused,
+      testContext(configureRefused, using('melete', []), { attach: async () => 1 }),
+      ['--fake'],
+    ]);
+    const adopt = temporaryDeployDir();
+    writeEnv(adopt);
+    refusals.push([adopt, testContext(adopt, [['docker ps --all --quiet', ok('')]]), ['--adopt']]);
+    for (const [deployDir, context, args] of refusals) {
+      expect(await runInit(context, args)).toBe(2);
+      expect(readdirSync(deployDir)).not.toContain('.melete');
+    }
+    const kept = temporaryDeployDir();
+    mkdirSync(join(kept, '.melete'));
+    writeFileSync(join(kept, '.melete', 'history.jsonl'), '');
+    expect(await runInit(configuring(kept, []), ['--fake'])).toBe(2);
+    expect(readdirSync(join(kept, '.melete'))).toEqual(['history.jsonl']);
   });
 });

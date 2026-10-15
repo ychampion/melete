@@ -31,7 +31,7 @@
 import { closeSync, openSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   type CommandOutput,
   HOST_DOCKER_COMMANDS,
@@ -84,6 +84,14 @@ export type UpgradeOptions = {
   tag: string;
   /** The directory this run creates; its parent must exist. */
   backupDir: string;
+  /**
+   * No --backup-dir was given: `backupDir` is in ~/melete-backups, and moves
+   * into the project's own folder there once deploy/.env names the project,
+   * the folder `melete backup` uses by default (packages/cli's
+   * defaultBackupDir; a test keeps them equal). The project `melete` keeps
+   * ~/melete-backups itself.
+   */
+  backupDirByProject?: boolean;
   repositoryRoot: string;
   /** Include deploy/docker-compose.browser.yml in every Compose command. */
   browser: boolean;
@@ -143,7 +151,7 @@ export function parseArguments(
     throw new Error(USAGE);
   };
   let tag: string | undefined;
-  let parent = join(home, 'melete-backups');
+  let parent: string | undefined;
   let dryRun = false;
   let browser = false;
   let tailscale = false;
@@ -202,7 +210,11 @@ export function parseArguments(
     profiles,
     waitTimeoutSeconds,
     repositoryRoot: repository,
-    backupDir: join(parent, `upgrade-${tag}-${stamp}`).replaceAll('\\', '/'),
+    backupDir: join(parent ?? join(home, 'melete-backups'), `upgrade-${tag}-${stamp}`).replaceAll(
+      '\\',
+      '/',
+    ),
+    ...(parent === undefined ? { backupDirByProject: true } : {}),
   };
 }
 
@@ -492,6 +504,8 @@ export type PreflightFacts = {
   serviceContainer: boolean;
   dockerRootFreeBytes: number | null;
   backupFreeBytes: number | null;
+  /** The folder the backup directory is made in. */
+  backupParent?: string;
   /** Database plus /data plus /work; null when the stopped stack could not be measured. */
   backupEstimateBytes: number | null;
   /**
@@ -576,7 +590,9 @@ export function judgePreflight(facts: PreflightFacts): string[] {
   );
   if (facts.backupFreeBytes === null)
     problems.push(
-      'The free space for the backup directory could not be measured; its parent must exist.',
+      facts.backupParent
+        ? `The free space for the backup directory could not be measured; its parent, ${facts.backupParent}, must exist (mkdir -p -m 700 ${facts.backupParent}).`
+        : 'The free space for the backup directory could not be measured; its parent must exist.',
     );
   else if (facts.backupEstimateBytes === null)
     // Sizing an unknown backup at the floor could fill the filesystem Postgres writes to.
@@ -662,6 +678,13 @@ export async function gatherPreflight(
     (await run(['git', 'diff', '--quiet', 'HEAD', target, '--', OPERATOR_CONFIGURATION])).code !==
       0;
   const values = await environment();
+  const project = /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
+    ? (values?.COMPOSE_PROJECT_NAME as string)
+    : 'melete';
+  const backupDir =
+    options.backupDirByProject && project !== 'melete'
+      ? join(dirname(options.backupDir), project, basename(options.backupDir)).replaceAll('\\', '/')
+      : options.backupDir;
   const docker: HostDockerOutputs = {
     engine: await run(HOST_DOCKER_COMMANDS.engine),
     compose: await run(HOST_DOCKER_COMMANDS.compose),
@@ -701,7 +724,7 @@ export async function gatherPreflight(
     : host.info?.dockerRootDir
       ? availableBytes(await run(['df', '-Pk', host.info.dockerRootDir]))
       : null;
-  const backupFreeBytes = availableBytes(await run(['df', '-Pk', dirname(options.backupDir)]));
+  const backupFreeBytes = availableBytes(await run(['df', '-Pk', dirname(backupDir)]));
   const postgresRunning = options.externalDatabase
     ? false
     : Boolean(await text([...compose, 'ps', '-q', 'postgres']));
@@ -725,9 +748,6 @@ export async function gatherPreflight(
   const fromVersion = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(described ?? '')
     ? (described as string)
     : `g${headCommit.slice(0, 12)}`;
-  const project = /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
-    ? (values?.COMPOSE_PROJECT_NAME as string)
-    : 'melete';
   // The image the backup phase tags for a rollback; a missing one is named now.
   const browserImageName = options.browser
     ? stackImages({ browser: true, project, profiles: [] }).at(-1)?.running
@@ -760,11 +780,13 @@ export async function gatherPreflight(
       serviceContainer,
       dockerRootFreeBytes,
       backupFreeBytes,
+      backupParent: dirname(backupDir),
       backupEstimateBytes,
       ...(browserImage ? { browserImage } : {}),
     },
     context: {
       ...options,
+      backupDir,
       project,
       fromCommit: headCommit,
       fromBranch,

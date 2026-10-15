@@ -602,7 +602,8 @@ export async function sweepTrash(
   roots: { workRoot: string; spacesRoot: string },
   days: number,
   now = Date.now(),
-  failures = trashSweepFailures(),
+  // A sweep run once on its own: kept out of the health detail, which reads the loop's.
+  failures = trashSweepFailures(undefined, false),
 ): Promise<number> {
   let swept = 0;
   // Answers the first thing in this trash that could not be removed, if any.
@@ -680,10 +681,11 @@ export async function sweepTrash(
  * A space whose trash failed is tried again on the very next sweep, since what
  * it holds was promised to go; only the log and the health detail are spared.
  */
-function trashSweepFailures(say?: (line: string) => void) {
+function trashSweepFailures(say?: (line: string) => void, reported = true) {
   return new ItemFailures('trash sweep', {
     firstMs: 60 * 60_000,
     maxMs: 60 * 60_000,
+    reported,
     ...(say ? { say } : {}),
   });
 }
