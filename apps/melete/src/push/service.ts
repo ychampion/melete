@@ -496,9 +496,11 @@ export class PushService {
    *   that finished and only waits for the next message, is not stopped.
    * - `done`: a conversation's turn finished with an answer while no client of
    *   the person had focus. Long work is told by its own run reports.
-   * - `reminder`: the same, for a turn the person timed: a conversation's own
-   *   timer or schedule coming due, or a routine's scheduled run. It goes out
-   *   at that time, whatever the hour, and no throttle holds it back.
+   * - `reminder`: a turn the person timed finished with an answer: a
+   *   conversation's own timer or schedule coming due, or a routine's scheduled
+   *   run. It goes out at that time, whatever the hour, and no throttle holds it
+   *   back. An open window does not count as seeing it: a tab left visible on
+   *   another screen would otherwise swallow the alert.
    *
    * One per change of state, by its dedup key. Within the throttle window a
    * second change in the same conversation, of the same kind, is recorded as
@@ -557,11 +559,12 @@ export class PushService {
               and ${STOPPED_ON_PERSON})`);
     }
     if (pacing.settled) {
+      // A turn its own timer or schedule opened (see jobs/wake-turn.ts), or a routine's run.
+      const timed = sql`((j.kind = 'chat' and starts_with(t.submission_id, 'wake:'))
+        or (j.kind = 'routine' and starts_with(t.submission_id, 'routine:')))`;
       const answered = (await this.db.execute(sql`
         select t.id as turn_id, j.id as job_id, j.kind, j.title, t.answer,
-               -- A turn its own timer or schedule opened (see jobs/wake-turn.ts), or a routine's run.
-               (j.kind = 'chat' and starts_with(t.submission_id, 'wake:'))
-                 or (j.kind = 'routine' and starts_with(t.submission_id, 'routine:')) as timed,
+               ${timed} as timed,
                ${pageOf(sql`j`)} as url
         from experience_turn t
         join job j on j.id = t.job_id
@@ -572,8 +575,10 @@ export class PushService {
           and t.status = 'done'
           and t.finished_at >= ${since}::timestamptz
           and length(trim(t.answer)) > 0
-          and not exists (select 1 from client_focus f where f.principal_id = ${principalId}
-            and f.focused_at >= t.finished_at - make_interval(mins => ${FOCUS_GRACE_MINUTES}))
+          -- A window that is open is not a person looking: what they timed still reaches them.
+          and (${timed} or not exists (select 1 from client_focus f
+            where f.principal_id = ${principalId}
+              and f.focused_at >= t.finished_at - make_interval(mins => ${FOCUS_GRACE_MINUTES})))
         order by t.finished_at
       `)) as unknown as Array<{
         turn_id: string;

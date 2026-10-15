@@ -20,6 +20,7 @@ import {
   space,
 } from '../../src/db/schema.ts';
 import { newId } from '../../src/ids.ts';
+import { openWakeTurn } from '../../src/jobs/wake-turn.ts';
 import { PushService } from '../../src/push/service.ts';
 import { decryptPayload, generateVapidKeys, toBase64Url } from '../../src/push/webpush.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -264,6 +265,43 @@ const dawnZone = (() => {
       }),
       expect.objectContaining({ title: 'Stretch' }),
     ]);
+  });
+
+  test('a window left open on another screen does not swallow a reminder', async () => {
+    const who = await person();
+    // A conversation resting on a timer the person asked for.
+    const jobId = newId('job');
+    await db.insert(job).values({
+      id: jobId,
+      spaceId: who.spaceId,
+      principalId: who.principalId,
+      title: 'Airport',
+      objective: 'Remind me to leave for the airport.',
+      kind: 'chat',
+      agentId: who.agentId,
+      state: 'waiting_for_input',
+      wait: { kind: 'none' },
+    });
+    // A desktop tab that stays visible beats every minute, whether or not anyone is there.
+    await push.focus(who.principalId);
+    // The timer fires and opens its own turn, as the runner does.
+    const [row] = await db.select().from(job).where(eq(job.id, jobId));
+    if (!row) throw new Error('job missing');
+    const woke = await db.transaction((tx) => openWakeTurn(tx, row, 'timer:7'));
+    if (!woke.currentTurnId) throw new Error('no wake turn');
+    await db
+      .update(experienceTurn)
+      .set({ answer: 'Time to leave for the airport.', status: 'done', finishedAt: new Date() })
+      .where(eq(experienceTurn.id, woke.currentTurnId));
+    // An ordinary answer finished in the same moment counts as seen, as before.
+    await answered(who, {
+      title: 'Packing list',
+      answer: 'I tidied the packing list.',
+      submission: (id) => `sub:${id}`,
+    });
+    expect(await pass(who)).toBe('sent');
+    expect(to(who).map((entry) => entry.payload.title)).toEqual(['Airport']);
+    expect((await intents(who)).map((intent) => intent.kind)).toEqual(['reminder']);
   });
 
   test('turning the kind off stops reminders too', async () => {
