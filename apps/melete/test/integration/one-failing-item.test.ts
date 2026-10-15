@@ -238,6 +238,49 @@ withDb('one item that keeps failing', () => {
     }
   });
 
+  test("a check that keeps failing waits out each doubled pause, not the sweep's claim", async () => {
+    const db = required(handle);
+    const ownerId = await installationOwner(db.sql);
+    const spaceId = newId('sp');
+    await db.sql`insert into space (id, name, git_path) values (${spaceId}, 'Clocks', ${`test/${spaceId}`})`;
+    let now = Date.now();
+    const id = newId('clk');
+    await db.sql`insert into clock (id, space_id, principal_id, rule, subject_key, title,
+        due_at, lead_s, fire_at, "check")
+      values (${id}, ${spaceId}, ${ownerId}, 'deadline.at_risk', 'subject:failing', 'Due',
+        ${new Date(now + 7_200_000).toISOString()}::timestamptz, 3600,
+        ${new Date(now - 60_000).toISOString()}::timestamptz, '{}'::jsonb)`;
+    const situations = new SituationService({
+      jobs: required(jobs),
+      triggers: { registerWait: async () => {} } as never,
+      detectors: false,
+      now: () => now,
+    });
+    const check = spyOn(
+      situations as unknown as { check: (entry: { id: string }) => Promise<string> },
+      'check',
+    ).mockImplementation(async (entry) => {
+      if (entry.id === id) throw new Error('the reading broke');
+      return 'deferred';
+    });
+    const claimedUntil = async () => {
+      const [row] = await db.sql`select claimed_until from clock where id = ${id}`;
+      return new Date(String(row?.claimed_until)).getTime();
+    };
+    try {
+      // The pause is written only over the claim this sweep made, matched to
+      // the stored time, so a claim read back any less exactly would leave
+      // every failed check retried as soon as its claim (CHECK_SECONDS) ran out.
+      for (const minutes of [1, 2, 4, 8]) {
+        await situations.sweep();
+        expect(await claimedUntil()).toBe(now + minutes * 60_000);
+        now += minutes * 60_000 + 1;
+      }
+    } finally {
+      check.mockRestore();
+    }
+  });
+
   test('a check that fails after outliving its claim leaves the claim of the sweep that took over', async () => {
     const db = required(handle);
     const ownerId = await installationOwner(db.sql);
