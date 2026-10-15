@@ -35,6 +35,12 @@ export type ItemFailuresOptions = {
   maxMs: number;
   now?: () => number;
   say?: (line: string) => void;
+  /**
+   * False keeps the tracker out of `stuckItems()`: one a pass makes for a
+   * single run, because its caller keeps none, so it never takes the place of
+   * the tracker the pass's loop keeps. True by default.
+   */
+  reported?: boolean;
 };
 
 const passes = new Map<string, ItemFailures>();
@@ -50,7 +56,8 @@ export class ItemFailures {
   ) {
     this.now = options.now ?? Date.now;
     this.say = options.say ?? ((line) => process.stderr.write(`${line}\n`));
-    passes.set(pass, this);
+    // The newest reported tracker of a pass is the one its running loop keeps.
+    if (options.reported !== false) passes.set(pass, this);
   }
 
   /** Whether the item may be tried now: it has not failed, or its wait is over. */

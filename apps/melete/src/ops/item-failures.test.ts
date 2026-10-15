@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { sweepTrash } from '../connectors/files-trash.ts';
 import { stuckCheck } from '../health/monitor.ts';
+import { sweepStagedWrites } from '../knowledge/staged.ts';
+import { runDerivedWork } from '../memory/service.ts';
 import { ItemFailures, STUCK_AFTER, stuckItems } from './item-failures.ts';
 
 function clock() {
@@ -124,5 +127,55 @@ describe("the operator's health detail", () => {
     expect(check.detail).toContain('sp_9 failed');
     expect(check.detail).not.toContain('sp_10 failed');
     expect(check.detail).toEndWith('; and 2 more');
+  });
+
+  test("a pass run once without a tracker of its own never takes the place of its loop's", async () => {
+    // Stand-ins for the trackers the running loops keep, each with a stuck space.
+    const loops = ['trash sweep', 'staged write sweep', 'memory background work'].map(
+      (pass) => new ItemFailures(pass, { firstMs: 1_000, maxMs: 60_000, say: () => {} }),
+    );
+    const listed = () =>
+      stuckItems()
+        .filter((item) => item.id === 'sp_stuck_loop')
+        .map((item) => item.pass)
+        .sort();
+    const folder = await mkdtemp(join(tmpdir(), 'melete-item-failures-'));
+    try {
+      for (const loop of loops)
+        for (let i = 0; i < STUCK_AFTER; i++) loop.failed('sp_stuck_loop', new Error('no'));
+      expect(listed()).toEqual(['memory background work', 'staged write sweep', 'trash sweep']);
+      // Each pass run once, leaving its tracker out, as a caller that keeps none does.
+      const absent = join(folder, 'absent');
+      expect(await sweepTrash({ workRoot: absent, spacesRoot: absent }, 7)).toBe(0);
+      expect(await sweepStagedWrites(absent)).toBe(0);
+      const sql = () => Promise.reject(new Error('no database here'));
+      await expect(
+        runDerivedWork({ sql } as unknown as Parameters<typeof runDerivedWork>[0]),
+      ).rejects.toThrow('no database here');
+      expect(listed()).toEqual(['memory background work', 'staged write sweep', 'trash sweep']);
+    } finally {
+      for (const loop of loops) loop.succeeded('sp_stuck_loop');
+      await rm(folder, { recursive: true, force: true });
+    }
+  });
+
+  test('a tracker that is not reported is kept out of the health detail', () => {
+    const loop = new ItemFailures('test pass slot', {
+      firstMs: 1_000,
+      maxMs: 1_000,
+      say: () => {},
+    });
+    for (let i = 0; i < STUCK_AFTER; i++) loop.failed('sp_slot', new Error('no'));
+    const once = new ItemFailures('test pass slot', {
+      firstMs: 1_000,
+      maxMs: 1_000,
+      say: () => {},
+      reported: false,
+    });
+    for (let i = 0; i < STUCK_AFTER; i++) once.failed('sp_once', new Error('no'));
+    expect(stuckItems().filter((item) => item.pass === 'test pass slot')).toMatchObject([
+      { id: 'sp_slot' },
+    ]);
+    loop.succeeded('sp_slot');
   });
 });
