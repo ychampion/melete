@@ -11,10 +11,17 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { CapabilityClaims, JsonObject } from '@melete/contracts';
+import { createArtifactRecorder } from '../../src/artifact/record.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
+import { createArtifactsConnector } from '../../src/connectors/artifacts.ts';
 import { createFilesConnector } from '../../src/connectors/files.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import {
+  createTranscriptionConnector,
+  fakeTranscriptionAdapter,
+} from '../../src/connectors/transcribe.ts';
+import { createCapabilityConnector, fakeSpeechAdapter } from '../../src/connectors/tts.ts';
 import { defaultBudget, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -28,8 +35,53 @@ const SCOPES = [
   'files.move',
   'files.delete',
   'files.restore',
+  'artifact.publish',
+  'audio.synthesize',
+  'audio.transcribe',
 ];
 const made: string[] = [];
+
+/**
+ * The publish, speech and transcription connections a space can have beside
+ * its Files, registered on `registry` for `spaceId`, serving `sharedUse`.
+ */
+async function otherConnections(
+  sql: NonNullable<typeof fixture>['sql'],
+  registry: ConnectorRegistry,
+  spaceId: string,
+  roots: { workRoot: string; spacesRoot: string },
+  sharedUse: 'owner' | 'room',
+) {
+  const ids = { publish: recordId('conn'), speech: recordId('conn'), transcribe: recordId('conn') };
+  for (const [id, provider] of [
+    [ids.publish, 'artifacts'],
+    [ids.speech, 'generation'],
+    [ids.transcribe, 'generation'],
+  ] as const)
+    await sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
+      values (${id}, ${spaceId}, ${provider}, 'Fixture', ${JSON.stringify(SCOPES)}::jsonb, ${sharedUse})`;
+  registry
+    .register(ids.publish, createArtifactsConnector({ sql, ...roots }))
+    .register(
+      ids.speech,
+      createCapabilityConnector({
+        sql,
+        spacesRoot: roots.spacesRoot,
+        adapter: fakeSpeechAdapter,
+        provider: 'fake',
+      }),
+    )
+    .register(
+      ids.transcribe,
+      createTranscriptionConnector({
+        sql,
+        ...roots,
+        adapter: fakeTranscriptionAdapter,
+        provider: 'fake',
+      }),
+    );
+  return ids;
+}
 
 afterAll(async () => {
   await fixture?.close();
@@ -53,10 +105,10 @@ function runner(
   connectionId: string,
   decider?: string,
 ) {
-  return async (kind: string, payload: JsonObject): Promise<Outcome> => {
+  return async (kind: string, payload: JsonObject, connection = connectionId): Promise<Outcome> => {
     let proposal: Awaited<ReturnType<BrokerService['propose']>>;
     try {
-      proposal = await broker.propose(claims, { kind, connection_id: connectionId, payload });
+      proposal = await broker.propose(claims, { kind, connection_id: connection, payload });
     } catch (error) {
       return { status: 'refused', refusal: (error as Error).message };
     }
@@ -117,7 +169,13 @@ async function sharedSpace() {
     connectionId,
     createFilesConnector({ workRoot, spacesRoot, sql }),
   );
-  const broker = new BrokerService({ sql, connectors: registry });
+  const others = await otherConnections(sql, registry, spaceId, { workRoot, spacesRoot }, 'room');
+  const broker = new BrokerService({
+    sql,
+    connectors: registry,
+    recordArtifact: createArtifactRecorder(undefined, { workRoot, spacesRoot }),
+    estimateSpend: () => 0,
+  });
   /** A new request of the room's agent, asked by `asker`. */
   const request = async (asker: string) => {
     const jobId = recordId('job');
@@ -148,8 +206,8 @@ async function sharedSpace() {
       exp: Math.floor(Date.now() / 1000) + 3600,
     };
     /** Proposed and agreed to now, run only when `go` is called. */
-    const later = async (kind: string, payload: JsonObject) => {
-      const proposal = await broker.propose(claims, { kind, connection_id: connectionId, payload });
+    const later = async (kind: string, payload: JsonObject, connection = connectionId) => {
+      const proposal = await broker.propose(claims, { kind, connection_id: connection, payload });
       if (proposal.status === 'needs_approval')
         await broker.decide(
           proposal.action_id,
@@ -177,7 +235,7 @@ async function sharedSpace() {
     };
   };
   const files = (...names: string[]) => path.join(spacesRoot, spaceId, 'artifacts', ...names);
-  return { sql, owner, member, request, files };
+  return { sql, owner, member, request, files, others };
 }
 
 const text = (file: string) => readFile(file, 'utf8');
@@ -477,6 +535,199 @@ databaseTest(
       (await run('files.write', { path: 'fresh.md', area: 'artifacts', content: 'new' })).status,
     ).toBe('succeeded');
     expect(await text(files('fresh.md'))).toBe('new');
+  },
+  SLOW,
+);
+
+const TEXT = { kind: 'text', render: false };
+
+databaseTest(
+  "a member's agent publishes, reads aloud and transcribes into the space's Files only under new names",
+  async () => {
+    const space = await sharedSpace();
+    await writeFile(space.files('report.txt'), "the owner's report");
+    await writeFile(space.files('notes.md'), "the owner's notes");
+    await writeFile(space.files('song.wav'), "the owner's song");
+    const members = await space.request(space.member);
+    expect(
+      (
+        await members.run('files.write', {
+          path: 'report.txt',
+          content: "the member's draft",
+          expect: TEXT,
+        })
+      ).status,
+    ).toBe('succeeded');
+
+    const destinations: JsonObject[] = [
+      { kind: 'space_artifacts' },
+      { kind: 'space_artifacts', path: 'report.txt' },
+    ];
+    for (const destination of destinations) {
+      const published = await members.run(
+        'artifact.publish',
+        { path: 'report.txt', destination },
+        space.others.publish,
+      );
+      expect(published.status).toBe('refused');
+      expect(published.refusal).toContain("only the space's owner");
+      expect(published.refusal).toContain('new name');
+    }
+    expect(await text(space.files('report.txt'))).toBe("the owner's report");
+    const fresh = await members.run(
+      'artifact.publish',
+      { path: 'report.txt', destination: { kind: 'space_artifacts', path: 'member-report.txt' } },
+      space.others.publish,
+    );
+    expect(fresh.status).toBe('succeeded');
+    expect(await text(space.files('member-report.txt'))).toBe("the member's draft");
+
+    const spoken = await members.run(
+      'audio.synthesize',
+      { script: 'parties every night', path: 'song' },
+      space.others.speech,
+    );
+    expect(spoken.status).toBe('refused');
+    expect(spoken.refusal).toContain("only the space's owner");
+    expect(await text(space.files('song.wav'))).toBe("the owner's song");
+    expect(
+      (
+        await members.run(
+          'audio.synthesize',
+          { script: 'A: quiet after ten', path: 'member-song' },
+          space.others.speech,
+        )
+      ).status,
+    ).toBe('succeeded');
+    expect(existsSync(space.files('member-song.wav'))).toBe(true);
+
+    const heard = await members.run(
+      'audio.transcribe',
+      { source: 'member-song.wav', area: 'artifacts', path: 'notes' },
+      space.others.transcribe,
+    );
+    expect(heard.status).toBe('refused');
+    expect(heard.refusal).toContain("only the space's owner");
+    expect(await text(space.files('notes.md'))).toBe("the owner's notes");
+    expect(
+      (
+        await members.run(
+          'audio.transcribe',
+          { source: 'member-song.wav', area: 'artifacts', path: 'member-notes' },
+          space.others.transcribe,
+        )
+      ).status,
+    ).toBe('succeeded');
+    expect(await text(space.files('member-notes.md'))).toContain('quiet after ten');
+  },
+  SLOW,
+);
+
+databaseTest(
+  "a file someone else puts at the name after a member's publish or audio was agreed to is never replaced",
+  async () => {
+    const space = await sharedSpace();
+    const members = await space.request(space.member);
+    await members.run('files.write', { path: 'draft.txt', content: 'member draft', expect: TEXT });
+    await members.run('audio.synthesize', { script: 'hello', path: 'source' }, space.others.speech);
+    const steps = [
+      await members.later(
+        'artifact.publish',
+        { path: 'draft.txt', destination: { kind: 'space_artifacts', path: 'late.txt' } },
+        space.others.publish,
+      ),
+      await members.later(
+        'audio.synthesize',
+        { script: 'late', path: 'late-song' },
+        space.others.speech,
+      ),
+      await members.later(
+        'audio.transcribe',
+        { source: 'source.wav', area: 'artifacts', path: 'late-notes' },
+        space.others.transcribe,
+      ),
+    ];
+    for (const name of ['late.txt', 'late-song.wav', 'late-notes.md'])
+      await writeFile(space.files(name), `owner ${name}`);
+    for (const step of steps) expect(await step.go()).not.toBe('succeeded');
+    for (const name of ['late.txt', 'late-song.wav', 'late-notes.md'])
+      expect(await text(space.files(name))).toBe(`owner ${name}`);
+  },
+  SLOW,
+);
+
+databaseTest(
+  "a member's agent deletes a folder only when every folder in it holds files the member's work added",
+  async () => {
+    const space = await sharedSpace();
+    // An empty folder the owner made, and an empty one the owner made inside the member's.
+    await mkdir(space.files('empty'), { recursive: true });
+    const members = await space.request(space.member);
+    for (const name of ['mixed/a.md', 'mine/b.md', 'mine/deep/c.md'])
+      expect(
+        (await members.run('files.write', { path: name, area: 'artifacts', content: name })).status,
+      ).toBe('succeeded');
+    await mkdir(space.files('mixed', 'owners'), { recursive: true });
+
+    const empty = await members.run('files.delete', { path: 'empty', area: 'artifacts' });
+    expect(empty.status).toBe('refused');
+    expect(empty.refusal).toContain("only the space's owner");
+    expect(existsSync(space.files('empty'))).toBe(true);
+    const mixed = await members.run('files.delete', { path: 'mixed', area: 'artifacts' });
+    expect(mixed.status).toBe('refused');
+    expect(existsSync(space.files('mixed', 'owners'))).toBe(true);
+    expect(await text(space.files('mixed', 'a.md'))).toBe('mixed/a.md');
+    // The member's own, every folder in it holding their files.
+    expect((await members.run('files.delete', { path: 'mine', area: 'artifacts' })).status).toBe(
+      'succeeded',
+    );
+    expect(existsSync(space.files('mine'))).toBe(false);
+    // The owner's agent deletes any of them.
+    const owners = await space.request(space.owner);
+    expect((await owners.run('files.delete', { path: 'empty', area: 'artifacts' })).status).toBe(
+      'succeeded',
+    );
+  },
+  SLOW,
+);
+
+databaseTest(
+  "in a person's own space, an approved publish and audio save over a file as before",
+  async () => {
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    const { sql } = fixture;
+    const seed = await seedJob(sql, { scopes: SCOPES, provider: 'files' });
+    const roots = await folders();
+    const files = (name: string) =>
+      path.join(roots.spacesRoot, seed.claims.space_id, 'artifacts', name);
+    await mkdir(path.join(roots.workRoot, seed.claims.job_id), { recursive: true });
+    await mkdir(path.dirname(files('x')), { recursive: true });
+    const registry = new ConnectorRegistry().register(
+      seed.connectionId,
+      createFilesConnector({ ...roots, sql }),
+    );
+    const others = await otherConnections(sql, registry, seed.claims.space_id, roots, 'owner');
+    const broker = new BrokerService({
+      sql,
+      connectors: registry,
+      recordArtifact: createArtifactRecorder(undefined, roots),
+      estimateSpend: () => 0,
+    });
+    const run = runner(broker, seed.claims, seed.connectionId);
+    await writeFile(files('letter.txt'), 'their letter');
+    await writeFile(files('hello.wav'), 'their recording');
+    await run('files.write', { path: 'letter.txt', content: 'the new letter', expect: TEXT });
+    const published = await run(
+      'artifact.publish',
+      { path: 'letter.txt', destination: { kind: 'space_artifacts' } },
+      others.publish,
+    );
+    expect(published.status).toBe('succeeded');
+    expect(await text(files('letter.txt'))).toBe('the new letter');
+    expect(
+      (await run('audio.synthesize', { script: 'hello', path: 'hello' }, others.speech)).status,
+    ).toBe('succeeded');
+    expect(await text(files('hello.wav'))).not.toBe('their recording');
   },
   SLOW,
 );

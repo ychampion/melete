@@ -153,10 +153,27 @@ export function notTheirs(
 ): string {
   const name = JSON.stringify(relative);
   if (folder)
-    return `the folder ${name} in this space's Files holds files someone else added or changed, and only the space's owner can delete them`;
+    return `only the space's owner can delete the folder ${name} in this space's Files, since it is not made up only of files your own work added; delete your own files in it one at a time instead`;
   const what = `${name} in this space's Files was added or changed by someone else, and only the space's owner can`;
   if (kind === 'files.write') return `${what} change it; save your version as a new file instead`;
   if (kind === 'files.move')
     return `${what} move or rename it; save a copy under a new name instead`;
   return `${what} delete it`;
+}
+
+/**
+ * Why a published or generated file was not saved at a name already in a
+ * shared space's Files, said to the agent. Only a new name is open to anyone
+ * but the space's owner here, their own earlier files included.
+ */
+export const alreadyInFiles = (name: string): string =>
+  `${JSON.stringify(name)} is already in this space's Files, and only the space's owner can replace it; save it under a new name instead`;
+
+/**
+ * Whether this job may only add new files to its space's Files through tools
+ * that do not track whose each file is (publishing, generated audio): true in
+ * a shared space for anyone but its owner, as `sharedFilesRule` decides.
+ */
+export async function onlyNewFiles(query: Query, jobId: string, spaceId: string): Promise<boolean> {
+  return (await sharedFilesRule(query, jobId, spaceId)).limited;
 }

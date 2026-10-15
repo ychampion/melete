@@ -1494,11 +1494,19 @@ export function createFilesConnector(options: FilesOptions): Connector {
       reason = given ? `${given}.` : "It is in this conversation's own workspace.";
     } else {
       // In a shared space, only what this job's person put there and nobody changed since.
+      // Nothing records who made a folder, so a folder is theirs only while
+      // every folder in it, itself included, holds a file of theirs: an empty
+      // one, or one with an empty folder inside, is the owner's to delete.
       const rule = await sharedRule(ctx, tx ?? options.sql);
+      const holdsFiles = (folder: string) =>
+        target.items.some((item) => folder === '' || item.path.startsWith(`${folder}/`));
       if (
         rule.limited &&
-        !target.items.every((item) =>
-          mayChange(rule, item.path ? `${joined}/${item.path}` : joined, item.hash),
+        !(
+          target.items.every((item) =>
+            mayChange(rule, item.path ? `${joined}/${item.path}` : joined, item.hash),
+          ) &&
+          (target.what === 'file' || ['', ...target.folders].every(holdsFiles))
         )
       )
         throw new Error(notTheirs('files.delete', relative, target.what === 'folder'));
