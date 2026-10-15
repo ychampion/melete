@@ -16,7 +16,9 @@
  * holds no entry (a machine that has never run this installation, or a restore
  * that stopped before it put the journal back), the newest journal archive
  * beside the backups is put back before the service starts. Either way the
- * service replays the journal at startup, so nothing forgotten comes back.
+ * service replays the journal at startup, so nothing forgotten comes back. A
+ * journal kept here that lacks removals the backup's journal records (a machine
+ * started and used before the restore) is named, with each removal it lacks.
  *
  * `--keep-database` leaves the database alone, for an external database that
  * already holds the data, as on a replaced VM. When the file volumes here
@@ -44,9 +46,13 @@ import {
   composeVolume,
   computerExists,
   FILE_PARTS,
+  type FilePart,
   fileSettings,
   helperImage,
+  JOURNAL_MEMBER,
+  journalInVolume,
   journalOnEngine,
+  journalRemovals,
   legacyMembers,
   ownComputer,
   parseContents,
@@ -260,6 +266,81 @@ const sourceOf = (file: string, decrypt: Decrypt): Source =>
   decrypt ? { command: decrypt(file) } : { file };
 
 /**
+ * The journal a journal archive holds, as text: empty when it holds none (a
+ * backup of a machine whose journal was not written yet). An encrypted archive
+ * is decrypted into a private folder that is removed afterwards.
+ */
+async function archivedJournal(
+  context: Context,
+  archive: string,
+): Promise<string | { unreadable: string }> {
+  const encryption = archive.endsWith('.age') ? 'age' : archive.endsWith('.gpg') ? 'gpg' : null;
+  const read = await withDecryption(context, encryption, async (decrypt) => {
+    if (!decrypt) return context.run(['tar', '-xOf', archive, JOURNAL_MEMBER]);
+    const dir = mkdtempSync(join(tmpdir(), 'melete-journal-'));
+    try {
+      const plain = join(dir, 'journal.tar');
+      const copied = await context.stream({ command: decrypt(archive) }, [{ file: plain }]);
+      if (!copied.ok) return { code: 1, stdout: '', stderr: copied.detail || 'it is damaged' };
+      return context.run(['tar', '-xOf', plain, JOURNAL_MEMBER]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  if (typeof read === 'string') return { unreadable: read.replace(/ Nothing was changed\.$/, '') };
+  if (read.code === 0) return read.stdout;
+  if (/not found in archive/i.test(read.stderr)) return '';
+  return { unreadable: read.stderr.trim().split('\n').at(-1) || `exit ${read.code}` };
+}
+
+/**
+ * Whether the journal kept here holds every removal the backup's journal
+ * records. A machine started and used before the restore has a journal of its
+ * own, not the one the backup's goes on from: a removal it lacks is not put
+ * back, and the service never replays it. Null when nothing is missing.
+ */
+async function journalAgainstArchive(
+  context: Context,
+  image: string,
+  volume: string,
+  archive: string,
+): Promise<Result | null> {
+  const here = journalInVolume(context, image, volume);
+  const archived = await archivedJournal(context, archive);
+  const kept = typeof here === 'string' ? journalRemovals(here) : null;
+  const backedUp = typeof archived === 'string' ? journalRemovals(archived) : null;
+  if (kept === null || backedUp === null)
+    return {
+      id: 'restore.journal_diverged',
+      level: 'warn',
+      detail: `Whether ${volume} holds every removal in the backup's journal could not be read (${
+        typeof here === 'object'
+          ? here.unreadable
+          : kept === null
+            ? `${volume} holds a line the service does not write`
+            : typeof archived === 'object'
+              ? archived.unreadable
+              : `${basename(archive)} holds a line the service does not write`
+      }), so a removal recorded only in the backup may not be put back.`,
+    };
+  const keptIds = new Set(kept.map((removal) => removal.id));
+  const missing = backedUp.filter((removal) => !keptIds.has(removal.id));
+  if (missing.length === 0) return null;
+  const backedUpIds = new Set(backedUp.map((removal) => removal.id));
+  const onlyHere = kept.filter((removal) => !backedUpIds.has(removal.id)).length;
+  const shown = missing
+    .slice(0, 10)
+    .map((removal) => `${removal.id} (${removal.operation}, ${removal.recordedAt})`)
+    .join(', ');
+  return {
+    id: 'restore.journal_diverged',
+    level: 'warn',
+    detail: `${volume} does not hold ${missing.length} removal(s) recorded in the backup's journal (${archive}), so they are not put back and the service does not replay them: ${shown}${missing.length > 10 ? `, and ${missing.length - 10} more` : ''}. The journal here is not the one the backup's goes on from, as on a machine started and used before the restore.`,
+    fix: `Removing ${volume}, with the stack down, before the restore puts the backup's journal back in its place, and loses the ${onlyHere} removal(s) recorded only here. Do that only when those were made on data the restore replaces.`,
+  };
+}
+
+/**
  * Reads every part of the set through: each archive is listed by tar from
  * start to end, and each encrypted part is decrypted, which also proves the
  * key opens it. An archive an earlier `--with-volumes` made (`legacy`) must
@@ -330,8 +411,26 @@ async function runSteps(
   const secrets = installationSecrets(context.deployDir);
   let changed = false;
   let rerun: string | null = null;
+  // What a Ctrl-C says: where the restore stopped, and what to run next. While a step
+  // that replaces something runs, it may have begun to, so the stack must not start.
+  const hint = (running?: Extract<RestoreAction, { kind: 'run' }>) =>
+    context.interruptHint?.(
+      running?.phase === 'start'
+        ? `Every part is back; the start was stopped. See bun run melete status, then start it with ${start}. The restore need not run again.`
+        : rerun
+          ? `Some parts are back and the stack is stopped. ${rerun}`
+          : changed
+            ? 'Some parts are back and the stack is stopped: run the same restore --yes again, which is safe, since it starts over from the backup.'
+            : running && running.phase === undefined
+              ? 'It stopped while it put a part back, and the stack is stopped: run the same restore --yes again, which is safe, since it starts over from the backup. Do not start the stack before it has run.'
+              : `Nothing was replaced yet, but services may be stopped: run the same restore --yes again, which is safe, or start the stack as it was with ${start}.`,
+    );
+  hint();
   for (const action of actions) {
     if (action.kind !== 'run') continue;
+    // A Ctrl-C that came during the step before is handled here, before this one starts.
+    await new Promise((settle) => setImmediate(settle));
+    hint(action);
     let detail: string | null = null;
     // A step that depends on whether a volume is here runs only on a clear answer.
     const asked = action.ifVolume ?? action.unlessVolume;
@@ -363,6 +462,7 @@ async function runSteps(
       results.push({ id: 'restore.step', level: 'ok', detail: action.say });
       if (action.phase === undefined) changed = true;
       if (action.rerun) rerun = action.rerun;
+      hint();
       continue;
     }
     const outcome: StepsOutcome =
@@ -370,7 +470,8 @@ async function runSteps(
     results.push({
       id: 'restore.step',
       level: 'fail',
-      detail: redact(`${actionLine(action, null)}: ${detail}`, secrets),
+      // The step's name: its shell line, printed with the plan, can run to many lines.
+      detail: redact(`Step failed (${action.say.replace(/\.$/, '')}): ${detail}`, secrets),
       fix:
         action.failure ??
         (outcome === 'not_started'
@@ -499,14 +600,22 @@ function filesToRestore(
   );
   const computers = listed.filter((volume) => !leftOut.has(volume.computer));
   const names = [...new Set(computers.map((computer) => computer.computer))];
+  const containerStates = new Map(
+    names.map((computer) => [computer, computerExists(context, computer)]),
+  );
+  const unreadable = [...containerStates].flatMap(([computer, state]) =>
+    typeof state === 'object' ? [{ computer, why: state.unreadable }] : [],
+  );
   const files: FileRestore = {
     image,
     parts: contents?.parts ?? [],
     computers,
     legacy: contents === null ? legacy : [],
     // Every one whose container is here, running, paused or stopped: one that starts
-    // between this plan and the run is stopped all the same.
-    containers: names.filter((computer) => computerExists(context, computer)),
+    // between this plan and the run is stopped all the same. One the engine could not
+    // describe is stopped too: a container that is there never runs on its volumes as
+    // they are put back, and stopping one that is not fails before anything is replaced.
+    containers: names.filter((computer) => containerStates.get(computer) !== 'absent'),
     missing: computers
       .map((computer) => computer.volume)
       .filter((volume) => states.get(volume) === 'absent'),
@@ -530,6 +639,13 @@ function filesToRestore(
   // What becomes of a computer whose container is gone is the service's to say:
   // one that makes the container again on kept volumes brings the computer back
   // whole; an earlier one gives the agent a new computer.
+  if (unreadable.length > 0)
+    results.push({
+      id: 'restore.computers_unreadable',
+      level: 'warn',
+      detail: `Whether ${unreadable.map((each) => each.computer).join(', ')} ${unreadable.length === 1 ? 'has' : 'have'} a container on this machine could not be read (${[...new Set(unreadable.map((each) => each.why))].join('; ')}): the engine did not answer. ${unreadable.length === 1 ? 'It is' : 'They are'} stopped with the others before the volumes are put back; where there is no such container, that stop fails before anything is replaced.`,
+      fix: 'Check that docker container inspect answers, then run this again.',
+    });
   const absent = names.filter((computer) => !files.containers.includes(computer));
   if (absent.length > 0)
     results.push({
@@ -612,7 +728,16 @@ export async function runRestore(
   // Kept, the files here may be newer than the backup's: putting the backup's in
   // their place deletes what was added since, while the database still names it.
   if (options.keepDatabase && config.database.external && files) {
-    const volumes = FILE_PARTS.map((part) => composeVolume(config.project, part));
+    // Only the volumes this set replaces: an earlier --with-volumes set may hold some of them.
+    const replaced: FilePart[] = [
+      ...files.parts.map((part) => part.part),
+      ...files.legacy.flatMap((file) =>
+        file === 'data.tar' ? (['spaces', 'artifacts'] as const) : (['work'] as const),
+      ),
+    ];
+    const volumes = FILE_PARTS.filter((part) => replaced.includes(part)).map((part) =>
+      composeVolume(config.project, part),
+    );
     const presence = volumes.map((volume) => ({ volume, state: volumePresence(context, volume) }));
     // The agents' computers' volumes the restore replaces are here and this installation's;
     // the ones it makes are not, and hold nothing to lose.
@@ -670,7 +795,8 @@ export async function runRestore(
   // Missing, or with no entry yet: a new machine, or a restore that stopped
   // after `compose create` made the volume and before the journal went back.
   const journalVolume = `${config.project}_restrictions`;
-  const journalState = journalOnEngine(context, helperImage(installation), journalVolume);
+  const image = helperImage(installation);
+  const journalState = journalOnEngine(context, image, journalVolume);
   const freshHost = journalState === 'absent' || journalState === 'empty';
   const journal = freshHost ? newestJournal(backup) : null;
   results.push(
@@ -691,21 +817,30 @@ export async function runRestore(
                   ? `This machine has no journal yet; the newest archive is ${journal}.`
                   : `${journalVolume} holds no entry yet (a new machine, or a restore that stopped before the journal went back); the newest archive, ${journal}, is put back.`,
             }
-          : {
-              id: 'restore.journal',
-              level: 'fail',
-              detail:
-                journalState === 'absent'
-                  ? 'This machine has no restriction journal and the backup holds none.'
-                  : `${journalVolume} holds no entry and the backup holds no journal.`,
-              fix: 'Restore from a backup made by bun run melete backup, which keeps the journal.',
-            }
+          : journalState === 'empty'
+            ? // A set made by hand may hold no journal; with no entry here either, none is lost.
+              {
+                id: 'restore.journal',
+                level: 'ok',
+                detail: `${journalVolume} holds no entry and the backup holds no journal: there is nothing to put back.`,
+              }
+            : {
+                id: 'restore.journal',
+                level: 'fail',
+                detail: 'This machine has no restriction journal and the backup holds none.',
+                fix: 'Restore from a backup made by bun run melete backup, which keeps the journal.',
+              }
         : {
             id: 'restore.journal',
             level: 'ok',
             detail: `${journalVolume} stays as it is: it is newer than the backup.`,
           },
   );
+  // Kept, the journal here must hold the backup's removals too: it is replayed, the backup's is not.
+  const archive = journalState === 'kept' && image ? newestJournal(backup) : null;
+  const diverged =
+    archive && image ? await journalAgainstArchive(context, image, journalVolume, archive) : null;
+  if (diverged) results.push(diverged);
   // The master key is supplied apart from the set; it must be the one the database was sealed with.
   const keyCheck = judgeMasterKey(backup, installation.env, context.environment);
   if (options.mode === 'verify') {
@@ -842,6 +977,10 @@ export async function runRestore(
         });
         const start = shellLine([...compose, 'up', '-d', '--no-build', '--wait', ...services]);
         const done = await runSteps(context, actions, decrypt, results, start);
+        if (done === 'done')
+          context.interruptHint?.(
+            'Every part was back and the stack started: see bun run melete status.',
+          );
         results.push(
           done === 'done'
             ? {

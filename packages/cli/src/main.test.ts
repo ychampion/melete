@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LogsRefusal, logsArguments, runLogs } from './commands/logs.ts';
-import { main, parseArguments } from './main.ts';
+import { interruption, main, parseArguments } from './main.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 describe('melete logs', () => {
@@ -97,6 +97,38 @@ describe('the melete command', () => {
     const make = () => testContext(deployDir);
     expect(await main(['deploy-everything'], make)).toBe(2);
     expect(await main(['check', 'extra'], make)).toBe(2);
+  });
+
+  test('Ctrl-C says which command it stopped and what may have changed', () => {
+    const stopped = (command: string, signal: 'SIGINT' | 'SIGTERM', hint?: string) => {
+      const written: string[] = [];
+      const codes: number[] = [];
+      const handler = interruption(
+        command,
+        (text) => written.push(text),
+        (code) => codes.push(code),
+      );
+      if (hint !== undefined) handler.hint(hint);
+      handler.handle(signal);
+      return { text: written.join(''), codes };
+    };
+    // A restore's own hint, which it registers while its steps run.
+    const restore = stopped(
+      'restore',
+      'SIGINT',
+      'Running the same restore --yes again is safe: it starts over from the backup.',
+    );
+    expect(restore.codes).toEqual([130]);
+    expect(restore.text).toBe(
+      '\nCtrl-C stopped melete restore. Running the same restore --yes again is safe: it starts over from the backup.\n',
+    );
+    // Without one, the line still names the command and what may have changed.
+    const backup = stopped('backup', 'SIGTERM');
+    expect(backup.codes).toEqual([143]);
+    expect(backup.text).toMatch(/^\nSIGTERM stopped melete backup\. .+\n$/);
+    expect(stopped('status', 'SIGINT').text).toBe(
+      '\nCtrl-C stopped melete status. It changes nothing.\n',
+    );
   });
 
   test("a directory that is not a checkout's deploy directory is refused", async () => {

@@ -23,9 +23,11 @@ import { DEPLOY_FILE } from './deploy-config.ts';
 import {
   archiveCommand,
   CHANGED_WHILE_READ,
+  computerExists,
   extractCommand,
   LEFT_OUT,
   legacyExtractCommand,
+  measureFiles,
   parseContents,
   stopCellsCommand,
   volumePresence,
@@ -445,6 +447,41 @@ const labelsOf = (computer: string) => ({
   'melete.session': computer.slice('melete-sbx-proj-'.length),
 });
 
+/** A restriction journal as the service writes it: its header, then one chained line per removal. */
+function journalText(records: readonly { id: string; operation: string }[]): string {
+  let previous = 'melete-memory-restrictions-v1';
+  const lines = [previous];
+  for (const [index, { id, operation }] of records.entries()) {
+    const record = { id, operation, recorded_at: `2026-10-0${index + 1}T09:00:00.000Z` };
+    const hash = createHash('sha256')
+      .update(JSON.stringify([previous, record]))
+      .digest('hex');
+    lines.push(JSON.stringify({ previous, record, hash }));
+    previous = hash;
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/** The removals in this machine's journal and in the backup's, unless a test says otherwise. */
+const SAME = [
+  { id: 'sup_01', operation: 'forget' },
+  { id: 'sup_02', operation: 'delete' },
+  { id: 'sup_03', operation: 'remove_space' },
+];
+
+/** Takes a file out of a backup set, and its line out of SHA256SUMS. */
+function removeFromSet(set: string, file: string) {
+  rmSync(join(set, file));
+  const sums = readFileSync(join(set, 'SHA256SUMS'), 'utf8');
+  writeFileSync(
+    join(set, 'SHA256SUMS'),
+    sums
+      .split('\n')
+      .filter((line) => !line.endsWith(`  ${file}`))
+      .join('\n'),
+  );
+}
+
 /**
  * A rig whose engine also has agents' computers, and which logs every command
  * and every streamed part in one order: `run <command>` and `stream <source> -> <sinks>`.
@@ -484,8 +521,11 @@ function filesRig(
   const users = new Map<string, string[]>();
   /** Commands that fail. */
   const fails: ((text: string) => boolean)[] = [];
-  /** The journal file in melete_restrictions: `none`, or its line count (the header is one). */
-  const journal = { lines: '4' };
+  /**
+   * The journal file in melete_restrictions: `none`, or its line count (the header is one);
+   * its text, and the text of the journal in the backup's archive.
+   */
+  const journal = { lines: '4', text: journalText(SAME), archived: journalText(SAME) };
   /** Volumes that hold at least one file. */
   const held = new Set<string>();
   /** The tables the external database holds. */
@@ -547,7 +587,9 @@ function filesRig(
       return running.has(name) ? ok(`true ${paused.has(name)}\n`) : no();
     }
     if (text.startsWith('docker container inspect --format {{.Id}} '))
-      return containers.has(command.at(-1) ?? '') ? ok('0123abcd\n') : no();
+      return containers.has(command.at(-1) ?? '')
+        ? ok('0123abcd\n')
+        : no(`Error response from daemon: No such container: ${command.at(-1)}`);
     if (text.startsWith('docker container inspect --format {{.State.Paused}} '))
       return ok(options.pauseState?.() ?? `${paused.has(command.at(-1) ?? '')}\n`);
     if (text.startsWith('docker pause ')) {
@@ -567,7 +609,11 @@ function filesRig(
       return ok((users.get(volume) ?? []).map((name) => `${name}\n`).join(''));
     }
     if (text.startsWith('sh -c ids=$(docker ps ')) return ok();
+    if (text.includes(' --entrypoint cat ') && text.endsWith(' /v/restrictions.jsonl'))
+      return ok(journal.text);
     if (text.includes('/v/restrictions.jsonl')) return ok(`lines ${journal.lines}\n`);
+    if (text.startsWith('tar -xOf ') && text.endsWith(' restrictions/restrictions.jsonl'))
+      return ok(journal.archived);
     if (text.includes('find "$d"'))
       return ok(
         `${[...text.matchAll(/src=([^,]+),dst=(\/m\/\d+)/g)]
@@ -1198,7 +1244,7 @@ describe('restoring the files', () => {
     expect(indexOf(rig.events, 'src=melete_work,dst=/v ')).toBe(-1);
     expect(rig.events.some(startsStack)).toBe(false);
     expect(rig.context.printed()).toMatch(
-      /fail\s+restore\.step\s+docker run --rm -i --network none/,
+      /fail\s+restore\.step\s+Step failed \(Put back artifacts\.tar into melete_artifacts\): /,
     );
     expect(rig.context.printed()).toContain(
       'the stack was not started on a half-restored installation',
@@ -1290,6 +1336,206 @@ describe('restoring the files', () => {
       /fail\s+restore\.journal\s+melete_restrictions could not be read/,
     );
     expect(changes(unreadable.events)).toEqual([]);
+  });
+
+  test("a kept journal that lacks the backup's removals is named, with each removal that is not put back", async () => {
+    const rig = await backedUp();
+    try {
+      // A new machine, started and used before the restore, has a journal of its own.
+      rig.journal.lines = '2';
+      rig.journal.text = journalText([{ id: 'sup_here', operation: 'forget' }]);
+      rig.journal.archived = journalText([
+        { id: 'sup_a1', operation: 'forget' },
+        { id: 'sup_b2', operation: 'delete' },
+        { id: 'sup_c3', operation: 'remove_space' },
+      ]);
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+      const printed = rig.context.printed();
+      expect(printed).toContain('melete_restrictions stays as it is');
+      expect(printed).toMatch(
+        /warn\s+restore\.journal_diverged\s+melete_restrictions does not hold 3 removal\(s\) recorded in the backup's journal \(\S+restrictions-20261002T100000Z\.tar\)/,
+      );
+      for (const removal of [
+        'sup_a1 (forget, 2026-10-01T09:00:00.000Z)',
+        'sup_b2 (delete, 2026-10-02T09:00:00.000Z)',
+        'sup_c3 (remove_space, 2026-10-03T09:00:00.000Z)',
+      ])
+        expect(printed).toContain(removal);
+      expect(changes(rig.events)).toEqual([]);
+
+      // The machine the backup came from: its journal goes on from the backup's.
+      const same = await backedUp();
+      same.journal.lines = '5';
+      same.journal.text = journalText([...SAME, { id: 'sup_04', operation: 'forget' }]);
+      expect(await runRestore(same.context, [same.set], false)).toBe(0);
+      expect(same.context.printed()).not.toContain('restore.journal_diverged');
+      rmSync(join(same.deployDir, '..'), { recursive: true, force: true });
+
+      // A journal that cannot be read for the comparison is said so, not taken as agreeing.
+      const blind = await backedUp();
+      blind.fails.push((text) => text.startsWith('tar -xOf '));
+      expect(await runRestore(blind.context, [blind.set], false)).toBe(0);
+      expect(blind.context.printed()).toMatch(
+        /warn\s+restore\.journal_diverged\s+Whether melete_restrictions holds every removal in the backup's journal could not be read/,
+      );
+      rmSync(join(blind.deployDir, '..'), { recursive: true, force: true });
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a journal read that exits non-zero is unreadable, even when it printed a line count', async () => {
+    const rig = await backedUp();
+    try {
+      const run = rig.context.run;
+      rig.context.run = (command, timeoutMs) =>
+        command.join(' ').includes('echo "lines $(wc -l < /v/restrictions.jsonl)"')
+          ? { code: 125, stdout: 'lines 3\n', stderr: 'docker: Error response from daemon: oops.' }
+          : run(command, timeoutMs);
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(1);
+      expect(rig.context.printed()).toMatch(
+        /fail\s+restore\.journal\s+melete_restrictions could not be read \(docker: Error response from daemon: oops\.\)/,
+      );
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a set without a journal restores onto a journal that holds only its header, with a note', async () => {
+    const rig = await backedUp();
+    try {
+      removeFromSet(rig.set, 'restrictions-20261002T100000Z.tar');
+      rig.journal.lines = '1';
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+      expect(rig.context.printed()).toMatch(
+        /ok\s+restore\.journal\s+melete_restrictions holds no entry and the backup holds no journal: there is nothing to put back\./,
+      );
+      expect(rig.context.printed()).not.toContain('melete:/data');
+      // With no journal volume at all, the set is still refused.
+      rig.volumes.delete('melete_restrictions');
+      const fresh = testContext(rig.deployDir, [], { run: rig.context.run });
+      expect(await runRestore(fresh, [rig.set], false)).toBe(1);
+      expect(fresh.printed()).toMatch(/fail\s+restore\.journal\s+This machine has no restriction/);
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('with --keep-database, only the file volumes the set replaces are looked at', async () => {
+    // An earlier --with-volumes set that holds /work alone.
+    const rig = filesRig({ contract: { database: { external: true } } });
+    try {
+      expect(await runBackup(rig.context, ['--database-only'], false)).toBe(0);
+      writeFileSync(join(rig.set, 'work.tar'), 'old work.tar');
+      const sums = readFileSync(join(rig.set, 'SHA256SUMS'), 'utf8');
+      writeFileSync(
+        join(rig.set, 'SHA256SUMS'),
+        `${sums}${createHash('sha256').update('old work.tar').digest('hex')}  work.tar\n`,
+      );
+      rig.events.length = 0;
+      // The engine cannot describe the spaces' volume, which this set never touches.
+      rig.fails.push(
+        (text) => text.startsWith('docker volume inspect ') && text.endsWith(' melete_spaces'),
+      );
+      expect(await runRestore(rig.context, [rig.set, '--keep-database'], false)).toBe(0);
+      expect(rig.context.printed()).not.toContain('restore.keep_database_files');
+      const look = rig.events.find((event) => event.includes('find "$d"')) ?? '';
+      expect(look).toContain('src=melete_work,');
+      expect(look).not.toContain('src=melete_spaces,');
+      expect(look).not.toContain('src=melete_artifacts,');
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a computer whose container the engine could not describe is said so, never taken for gone', async () => {
+    const rig = await backedUp();
+    try {
+      const unknown = COMPUTERS[1] ?? '';
+      rig.fails.push((text) => text === `docker container inspect --format {{.Id}} ${unknown}`);
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+      const printed = rig.context.printed();
+      expect(printed).toMatch(
+        new RegExp(
+          `warn\\s+restore\\.computers_unreadable\\s+Whether ${unknown} has a container on this machine could not be read \\(failed in this test\\)`,
+        ),
+      );
+      expect(printed).not.toContain('restore.computers_without_container');
+      // It is stopped with the others: a container that is there is never left running on its volumes.
+      expect(printed).toContain(`docker stop ${COMPUTERS[0]} ${unknown}`);
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a container is absent only when the engine says it has no such container', () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      const answering = (code: number, stderr: string) =>
+        testContext(deployDir, [], { run: () => ({ code, stdout: '', stderr }) });
+      expect(computerExists(answering(0, ''), 'c')).toBe('present');
+      expect(computerExists(answering(1, 'Error: No such container: c'), 'c')).toBe('absent');
+      expect(
+        computerExists(answering(1, 'Error response from daemon: no such container: c'), 'c'),
+      ).toBe('absent');
+      expect(
+        computerExists(answering(1, 'Cannot connect to the Docker daemon at unix:///x.sock.'), 'c'),
+      ).toEqual({ unreadable: 'Cannot connect to the Docker daemon at unix:///x.sock.' });
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('the files are not measured when a volume the engine could not describe would be left out', () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      const measuring = (artifacts: { code: number; stderr: string }) =>
+        testContext(deployDir, [], {
+          run: (command) => {
+            const text = command.join(' ');
+            if (text.endsWith(' melete_artifacts')) return { stdout: '', ...artifacts };
+            if (text.startsWith('docker volume inspect '))
+              return { code: 0, stdout: '', stderr: '' };
+            return { code: 0, stdout: text, stderr: '' };
+          },
+        });
+      const settings = {
+        image: 'img',
+        sandboxProject: null,
+        remoteSandboxes: null,
+        blobs: { store: 'local' as const },
+        cells: false,
+      };
+      const config = { project: 'melete' } as Parameters<typeof measureFiles>[1];
+      const measured: string[] = [];
+      const duBytes = (output: { stdout: string }) => {
+        measured.push(output.stdout);
+        return 1000;
+      };
+      // Not there: the volume holds nothing yet, and the rest is measured.
+      expect(
+        measureFiles(
+          measuring({ code: 1, stderr: 'Error: No such volume: melete_artifacts' }),
+          config,
+          settings,
+          duBytes,
+        ),
+      ).toBe(1000);
+      expect(measured.at(-1)).toContain('src=melete_spaces,');
+      expect(measured.at(-1)).not.toContain('src=melete_artifacts,');
+      // Not answered: the size is not known.
+      expect(
+        measureFiles(
+          measuring({ code: 1, stderr: 'Cannot connect to the Docker daemon' }),
+          config,
+          settings,
+          duBytes,
+        ),
+      ).toBeNull();
+      expect(measured).toHaveLength(1);
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
   });
 
   test("only the engine's own answer that it has no such volume counts as absent", () => {
@@ -1662,6 +1908,66 @@ describe('restoring with an external database', () => {
     );
     expect(indexOf(rig.events, 'src=melete_spaces,dst=/v ')).toBe(-1);
     expect(rig.events.some(startsStack)).toBe(false);
+  });
+
+  test("a failed step's report line names the step, not its whole shell line", async () => {
+    const rig = await external();
+    try {
+      rig.context.streamFails.push('pg_restore --dbname');
+      expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+      const line = rig.context
+        .printed()
+        .split('\n')
+        .find((text) => /fail\s+restore\.step\s/.test(text));
+      expect(line).toContain('Loaded the database dump into the database DATABASE_URL names');
+      expect(line).toContain('it failed in this test');
+      expect(line).not.toContain('sh -c');
+      expect(line?.length ?? 0).toBeLessThan(300);
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('while its steps run, a restore tells a Ctrl-C what to say, and what to run next', async () => {
+    const rig = await external();
+    try {
+      const hints: (string | null)[] = [];
+      rig.context.interruptHint = (hint) => hints.push(hint);
+      rig.context.streamFails.push('src=melete_artifacts,dst=/v ');
+      expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+      // Before the steps: nothing replaced yet, and the same restore may run again.
+      expect(hints[0]).toContain('run the same restore --yes again');
+      // Once the dump is in the database, the same restore is refused: the hint says what finishes it.
+      expect(hints.at(-1)).toContain('--keep-database --replace-files --yes');
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a Ctrl-C while a step runs is told what that step may have left, never to start the stack on it', async () => {
+    const rig = await external();
+    const started = await external();
+    try {
+      const hints: (string | null)[] = [];
+      rig.context.interruptHint = (hint) => hints.push(hint);
+      // Stopped during the load, as a Ctrl-C would stop it: the hint that stands is the load's.
+      rig.context.streamFails.push('pg_restore --dbname');
+      expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+      expect(hints.at(-1)).toContain('run the same restore --yes again');
+      // Started now, the stack would fill the new database, and the restore would then refuse it.
+      expect(hints.at(-1)).not.toContain('start the stack as it was');
+
+      // Stopped during the start, every part is back: the restore need not run again.
+      const told: (string | null)[] = [];
+      started.context.interruptHint = (hint) => told.push(hint);
+      started.fails.push(startsStack);
+      expect(await runRestore(started.context, [started.set, '--yes'], false)).toBe(3);
+      expect(told.at(-1)).toContain('Every part is back');
+      expect(told.at(-1)).toContain('The restore need not run again.');
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+      rmSync(join(started.deployDir, '..'), { recursive: true, force: true });
+    }
   });
 
   test("the administrator's role addresses must name the database the restore loads or keeps", async () => {

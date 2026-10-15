@@ -73,6 +73,11 @@ export type Context = {
   now: () => Date;
   /** The environment this command runs in, which Compose reads before deploy/.env. */
   environment: Readonly<Record<string, string | undefined>>;
+  /**
+   * What to say if Ctrl-C stops this command now: where it stands and what to run
+   * next. Null goes back to the command's general line. Left out, nothing listens.
+   */
+  interruptHint?: (hint: string | null) => void;
   out: (text: string) => void;
   err: (text: string) => void;
 };
@@ -210,12 +215,25 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
           stderr: new Response(child.stderr as ReadableStream).text(),
         });
         const stdin = child.stdin as import('bun').FileSink;
+        // A sink that stops reading early (pg_restore at its first error) says why by
+        // its exit; the bytes it no longer takes are dropped, never left to throw later.
+        let closed = false;
         writers.push(async (chunk) => {
-          stdin.write(chunk);
-          await stdin.flush();
+          if (closed) return;
+          try {
+            await stdin.write(chunk);
+            await stdin.flush();
+          } catch {
+            closed = true;
+          }
         });
         closers.push(async () => {
-          await stdin.end();
+          if (closed) return;
+          try {
+            await stdin.end();
+          } catch {
+            closed = true;
+          }
         });
       }
     }
