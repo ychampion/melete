@@ -86,8 +86,8 @@ import { asFetch, reachFetch, spaceReach } from './public-fetch.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { createRoomConnector } from './room.ts';
 import { createSandboxExecConnector } from './sandbox-exec.ts';
-import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
-import { type AccountClient, signedInAccess } from './signed-in.ts';
+import { PostgresSecretRepository, SealedSecretStore, type SecretAccess } from './secrets.ts';
+import { type AccountClient, SignInEnded, signedInAccess } from './signed-in.ts';
 import { createSkillsConnector } from './skills.ts';
 import { SmsConnector } from './sms.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
@@ -419,6 +419,26 @@ export class ConnectorFactory {
       throw new Error('Duplicate configured connection id');
   }
 
+  /**
+   * The row's credential as it stands at each call, for the connectors that
+   * are opened with a credential's id. A person can switch the connection to
+   * another credential while its connector stays registered, so the id it was
+   * opened with is not trusted: the next call reads the row and uses the new
+   * one. A connection left with none is refused as a sign-in that ended.
+   */
+  private currentCredential(row: ConnectionSource): SecretAccess {
+    const sql = this.options.sql;
+    const secrets = this.secrets;
+    return {
+      async withSecret(_opened, spaceId, use) {
+        const [current] = await sql`select secret_ref from connection
+          where id = ${row.id} and space_id = ${spaceId}`;
+        if (!current?.secret_ref) throw new SignInEnded();
+        return secrets.withSecret(String(current.secret_ref), spaceId, use);
+      },
+    };
+  }
+
   /** Undefined when the row selects nothing this service can run. */
   async open(row: ConnectionSource): Promise<Connector | undefined> {
     const options = this.options;
@@ -627,7 +647,7 @@ export class ConnectorFactory {
             secretRef: row.secretRef,
             ...(options.twilio ? { twilio: options.twilio } : {}),
           },
-          this.secrets,
+          this.currentCredential(row),
         ),
       );
     if (row.provider === 'test' && options.enableTestConnector)
@@ -638,13 +658,14 @@ export class ConnectorFactory {
       const offered = credentialAdapters({ test: options.enableTestConnector === true });
       if (typeof adapter !== 'string' || !offered.has(adapter as never)) return undefined;
       const secretRef = row.secretRef;
+      const credential = this.currentCredential(row);
       // An account is checked by asking its service whose token it is.
       const service =
         adapter in COMMAND_LINE_SERVICE ? (adapter as keyof typeof COMMAND_LINE_SERVICE) : null;
       const health =
         service && secretRef
           ? async (): Promise<ConnectorHealth> => {
-              const checked = await this.secrets.withSecret(secretRef, row.spaceId, (token) =>
+              const checked = await credential.withSecret(secretRef, row.spaceId, (token) =>
                 commandLineAccount(service, token, {
                   ...options.commandLine,
                   signal: AbortSignal.timeout(20_000),
@@ -665,7 +686,7 @@ export class ConnectorFactory {
             }
           : adapter === 'aws' && secretRef
             ? async (): Promise<ConnectorHealth> => {
-                const checked = await this.secrets
+                const checked = await credential
                   .withSecret(secretRef, row.spaceId, async (secret) =>
                     awsAccount(
                       parseAwsSecret(secret),
@@ -782,7 +803,7 @@ export class ConnectorFactory {
     if (row.provider === 'imap' && setting?.kind === 'email' && row.secretRef)
       return new EmailConnector(
         { ...setting, spaceId: row.spaceId, secretRef: row.secretRef },
-        this.secrets,
+        this.currentCredential(row),
       );
     if (row.provider === 'imap' && stored?.kind === 'mail' && row.secretRef)
       return ownerOnly(
@@ -796,13 +817,13 @@ export class ConnectorFactory {
             // Added in the app, so its servers are held to the space's reach.
             reach: await spaceReach(options.sql, row.spaceId),
           },
-          this.secrets,
+          this.currentCredential(row),
         ),
       );
     if (row.provider === 'caldav' && setting?.kind === 'caldav' && row.secretRef)
       return new CalendarConnector(
         { ...setting, spaceId: row.spaceId, secretRef: row.secretRef, mode: 'caldav' },
-        this.secrets,
+        this.currentCredential(row),
       );
     if (row.provider === 'caldav' && stored?.kind === 'caldav' && row.secretRef)
       return ownerOnly(
@@ -816,7 +837,7 @@ export class ConnectorFactory {
             secretRef: row.secretRef,
             allowInsecureLocalForTests: options.insecureLocalFixtures,
           },
-          this.secrets,
+          this.currentCredential(row),
           // Added in the app: every request is checked and pinned to the space's reach.
           asFetch(reachFetch({ reach: await spaceReach(options.sql, row.spaceId) })),
         ),
@@ -830,7 +851,7 @@ export class ConnectorFactory {
             secretRef: row.secretRef,
             allowInsecureLocalForTests: options.insecureLocalFixtures,
           },
-          this.secrets,
+          this.currentCredential(row),
         ),
       );
     if (
