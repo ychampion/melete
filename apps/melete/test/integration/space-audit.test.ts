@@ -378,6 +378,30 @@ withDb('a space’s activity log', () => {
     expect(lines[1]).toContain(second.action_id);
     expect(lines[2]).toContain(first.payload_hash);
     expect(lines[2]).toContain('Carol');
+    // Everything fit, so the file does not say it was cut short.
+    expect(exported.headers.get('x-melete-export-truncated')).toBeNull();
+
+    // Two effects proposed in the same microsecond still page apart: the id
+    // breaks the tie, and each is shown exactly once.
+    await sql`update action set created_at = '2026-10-15T09:00:00.123456Z'
+      where id in (${first.action_id}, ${second.action_id})`;
+    const tiedFirst = spaceAuditResponse.parse(
+      await ok(send(bob.cookie, `/spaces/${roomId}/audit?limit=1`)),
+    );
+    expect(tiedFirst.entries).toHaveLength(1);
+    expect(tiedFirst.next_cursor).not.toBeNull();
+    const tiedSecond = spaceAuditResponse.parse(
+      await ok(
+        send(
+          bob.cookie,
+          `/spaces/${roomId}/audit?limit=1&cursor=${encodeURIComponent(tiedFirst.next_cursor ?? '')}`,
+        ),
+      ),
+    );
+    expect(tiedSecond.next_cursor).toBeNull();
+    expect(
+      [...tiedFirst.entries, ...tiedSecond.entries].map((entry) => entry.action_id).sort(),
+    ).toEqual([first.action_id, second.action_id].sort());
   }, 120_000);
 
   // The log's routes skip the membership check every other space route gets,
