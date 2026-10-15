@@ -330,6 +330,8 @@ function computerRig(presence: (volume: string) => CommandOutput) {
   const backups = backupsDir();
   const rig = keepRig('melete', backups, { keep: 3 }, (text) => {
     const yes = (stdout = '') => ({ code: 0, stdout, stderr: '' });
+    if (text.startsWith('docker volume ls ') && text.includes(' --format '))
+      return yes(`${COMPUTER}-home\t"proj"\t""\n${COMPUTER}-work\t"proj"\t""\n`);
     if (text.startsWith('docker volume ls '))
       return text.includes('label=melete.project=proj')
         ? yes(`${COMPUTER}-home\n${COMPUTER}-work\n`)

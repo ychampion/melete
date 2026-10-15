@@ -566,14 +566,12 @@ function filesToRestore(
     };
   // Only this installation's computers, and only into volumes that are theirs or absent:
   // a backup of another installation, or a list edited by hand, never reaches another's.
-  const { sandboxProject } = fileSettings(installation);
+  const owner = fileSettings(installation);
   const listed = contents?.computers ?? [];
   const states = new Map(
     listed.map((volume) => [
       volume.volume,
-      ownComputer(volume, sandboxProject) && sandboxProject
-        ? volumeOnEngine(context, volume, sandboxProject)
-        : 'foreign',
+      ownComputer(volume, owner) ? volumeOnEngine(context, volume, owner) : 'foreign',
     ]),
   );
   // Unknown is neither absent nor ours: a volume the engine could not describe might be
@@ -634,7 +632,7 @@ function filesToRestore(
     results.push({
       id: 'restore.computers_left_out',
       level: 'warn',
-      detail: `${leftOut.size} agent computer(s) in this backup are not this installation's${sandboxProject ? ` (MELETE_SANDBOX_PROJECT=${sandboxProject})` : ', which has no MELETE_SANDBOX_PROJECT'}, or a volume of the same name on this engine belongs to something else: they are left out, and nothing of theirs here is touched.`,
+      detail: `${leftOut.size} agent computer(s) in this backup are not this installation's (Compose project ${owner.installProject}, ${owner.sandboxProject ? `MELETE_SANDBOX_PROJECT=${owner.sandboxProject}` : 'no MELETE_SANDBOX_PROJECT'}): made by another installation, or, before computers named the installation that made them, under another sandbox project. Or a volume of the same name on this engine belongs to something else. They are left out, and nothing of theirs here is touched.`,
     });
   // What becomes of a computer whose container is gone is the service's to say:
   // one that makes the container again on kept volumes brings the computer back

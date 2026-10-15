@@ -78,6 +78,7 @@ import {
   PART_NAMES,
   partFile,
   stopCellsCommand,
+  type UnattributedVolume,
   volumePresence,
 } from '../files.ts';
 import { lastSwitched, readHistory } from '../history.ts';
@@ -340,10 +341,11 @@ async function backupFiles(
     );
   let computers: ComputerVolume[];
   const skipped: string[] = [];
+  const unattributed: UnattributedVolume[] = [];
   /** Computers' volumes the engine no longer has: their computer ended after they were listed. */
   const gone: string[] = [];
   try {
-    computers = listComputerVolumes(context, settings.sandboxProject, skipped);
+    computers = listComputerVolumes(context, settings, skipped, unattributed);
   } catch (error) {
     if (!(error instanceof FilesRefusal)) throw error;
     return fail(
@@ -359,6 +361,15 @@ async function backupFiles(
       detail: `${skipped.length} volume(s) labelled for this installation's computers are not a computer's /work or home volume, so this backup leaves them out: ${skipped.join(', ')}.`,
       fix: 'Check that this checkout is at the release the installation runs (bun run melete history): a newer release may keep more of a computer, and its backup takes it.',
     });
+  if (unattributed.length > 0) {
+    const projects = [...new Set(unattributed.map((each) => each.project || '(none)'))];
+    results.push({
+      id: 'backup.computer_volumes_unattributed',
+      level: 'warn',
+      detail: `${unattributed.length} agent computer volume(s) under sandbox project${projects.length === 1 ? '' : 's'} ${projects.join(', ')}, which this installation does not run with now, were made before computers named the installation that made them. Whether they are this installation's (made before MELETE_SANDBOX_PROJECT changed) or another's cannot be told, so this backup leaves them out: ${unattributed.map((each) => each.volume).join(', ')}.`,
+      fix: 'For each one that belongs to this installation, archive it by hand with its labels, outside this backup, as docs/DEPLOYMENT.md shows ("Computers made under an earlier sandbox project"): a restore does not put it back. Each stays on this engine as it is.',
+    });
+  }
   for (const each of FILE_PARTS) {
     const volume = composeVolume(config.project, each);
     if (context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code !== 0)

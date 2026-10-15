@@ -77,11 +77,11 @@ const lines = (stdout: string) =>
     .filter(Boolean);
 
 /**
- * The project label as the listings print it, through `json`: a value with a
- * line break or a tab stays inside its own field, so it can never add a row
- * that names another container or network. Null for anything else.
+ * A label as the listings print it, through `json`: a value with a line break
+ * or a tab stays inside its own field, so it can never add a row that names
+ * another container, network or volume. Null for anything else.
  */
-function labelOf(field: string): string | null {
+export function labelOf(field: string): string | null {
   try {
     const value: unknown = JSON.parse(field);
     return typeof value === 'string' ? value : null;
@@ -113,18 +113,45 @@ function composeProjects(run: Run): Set<string> | null {
   );
 }
 
+const SERVICE = 'label=com.docker.compose.service=melete';
+const CONTAINER_ID = /^[0-9a-f]{6,64}$/;
+
 /** The sandbox projects the Melete service containers on this engine run with. */
 function projectsInUse(run: Run): Set<string> | null {
+  const listed = run(['docker', 'ps', '--all', '--quiet', '--filter', SERVICE]);
+  if (listed.code !== 0) return null;
+  return projectsOf(
+    run,
+    lines(listed.stdout).filter((id) => CONTAINER_ID.test(id)),
+  );
+}
+
+/**
+ * The sandbox projects the Melete service containers of the other
+ * installations on this engine (every Compose project but `own`) run with,
+ * running or stopped; null when the engine did not answer.
+ */
+export function otherSandboxProjects(run: Run, own: string): Set<string> | null {
   const listed = run([
     'docker',
     'ps',
     '--all',
-    '--quiet',
     '--filter',
-    'label=com.docker.compose.service=melete',
+    SERVICE,
+    '--format',
+    `{{.ID}}\t{{json (.Label "${COMPOSE_PROJECT}")}}`,
   ]);
   if (listed.code !== 0) return null;
-  const ids = lines(listed.stdout).filter((id) => /^[0-9a-f]{6,64}$/.test(id));
+  const ids = lines(listed.stdout).flatMap((line) => {
+    const [id = '', label = ''] = line.split('\t');
+    const project = labelOf(label);
+    return CONTAINER_ID.test(id) && project !== null && project !== own ? [id] : [];
+  });
+  return projectsOf(run, ids);
+}
+
+/** The MELETE_SANDBOX_PROJECT each of these service containers runs with. */
+function projectsOf(run: Run, ids: readonly string[]): Set<string> | null {
   if (ids.length === 0) return new Set();
   const inspected = run([
     'docker',
