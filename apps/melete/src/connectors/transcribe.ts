@@ -42,10 +42,9 @@ import {
   atomicWrite,
   capabilityDirectory,
   digest,
-  outputOnlyNew,
   readBytes,
   refuseTakenOutput,
-  writeNew,
+  saveOutput,
 } from './tts.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { scriptFromWav, spokenDurationMs } from './wav.ts';
@@ -324,14 +323,12 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
         transcriptMarkdown(transcript, media.name, options.adapter.model),
       );
       const file = await target(ctx, name);
-      if (await outputOnlyNew(options.sql, ctx)) {
-        if (!(await writeNew(file, bytes)))
-          return {
-            outcome: 'failed',
-            reason: alreadyInFiles(transcriptName(name)),
-            retryable: false,
-          };
-      } else await atomicWrite(file, bytes);
+      if (!(await saveOutput(options.sql, ctx, file, bytes)))
+        return {
+          outcome: 'failed',
+          reason: alreadyInFiles(transcriptName(name)),
+          retryable: false,
+        };
       const hash = digest(bytes);
       const proof: Receipt = {
         action_id: action.id,

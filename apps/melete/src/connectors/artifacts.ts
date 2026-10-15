@@ -37,7 +37,7 @@ import type { Query } from '../broker/records.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import type { MailAttachment } from './mail-transport.ts';
-import { alreadyInFiles, onlyNewFiles } from './shared-files.ts';
+import { alreadyInFiles, inFilesTurn, onlyNewFiles } from './shared-files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 /** What the email destination needs, and nothing more. */
@@ -380,38 +380,42 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
         // Nobody was asked because the file was new, so it must still be new:
         // one that appeared since is someone's, and is not replaced unasked.
         // In a shared space, anyone but its owner makes only a new file, asked or not.
-        const unasked = !action.authorization_ref;
-        const limited = await onlyNewFiles(options.sql, ctx.job_id, ctx.space_id);
-        const exclusive = unasked || limited;
-        const file = await open(
-          resolved,
-          constants.O_WRONLY |
-            constants.O_CREAT |
-            constants.O_NOFOLLOW |
-            constants.O_NONBLOCK |
-            (exclusive ? constants.O_EXCL : 0),
-          0o600,
-        ).catch(async (error: unknown) => {
-          if (!exclusive || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-          // A retry of this same save finds its own bytes there and is done.
-          const there = await read(resolved).catch(() => null);
-          if (there && digest(there) === hash) return null;
-          throw new Error(
-            limited
-              ? alreadyInFiles(target)
-              : 'the space already has a file with that name; saving over it needs the person to approve',
-          );
+        // Saved in its turn in the space's Files, so it never lands between
+        // another step's check of a file there and its change to it.
+        await inFilesTurn(ctx.space_id, async () => {
+          const unasked = !action.authorization_ref;
+          const limited = await onlyNewFiles(options.sql, ctx.job_id, ctx.space_id);
+          const exclusive = unasked || limited;
+          const file = await open(
+            resolved,
+            constants.O_WRONLY |
+              constants.O_CREAT |
+              constants.O_NOFOLLOW |
+              constants.O_NONBLOCK |
+              (exclusive ? constants.O_EXCL : 0),
+            0o600,
+          ).catch(async (error: unknown) => {
+            if (!exclusive || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+            // A retry of this same save finds its own bytes there and is done.
+            const there = await read(resolved).catch(() => null);
+            if (there && digest(there) === hash) return null;
+            throw new Error(
+              limited
+                ? alreadyInFiles(target)
+                : 'the space already has a file with that name; saving over it needs the person to approve',
+            );
+          });
+          if (file)
+            try {
+              const stat = await file.stat();
+              if (!stat.isFile()) throw new Error('the publish target is not a regular file');
+              await file.truncate(0);
+              await file.writeFile(bytes);
+              await file.sync();
+            } finally {
+              await file.close();
+            }
         });
-        if (file)
-          try {
-            const stat = await file.stat();
-            if (!stat.isFile()) throw new Error('the publish target is not a regular file');
-            await file.truncate(0);
-            await file.writeFile(bytes);
-            await file.sync();
-          } finally {
-            await file.close();
-          }
         externalRef = target;
         detail = { destination: 'space_artifacts', path: target, bytes: bytes.byteLength };
       } else {

@@ -18,6 +18,31 @@ import { segmentsFor } from '../paths.ts';
 import { type MembershipRole, spaceStanding } from '../principals/authority.ts';
 import { beneath } from './files-ownership.ts';
 
+const turns = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `work` in its turn in a space's Files: after every change there this
+ * service started before it, and before any it starts after. A step that
+ * checks what is at a name and then changes it does both in one turn, so no
+ * other step can save over, move or replace that file in between. Every
+ * step that saves over, moves, replaces or deletes something already in a
+ * space's Files takes its turn here, whoever it works for.
+ */
+export function inFilesTurn<T>(spaceId: string, work: () => Promise<T>): Promise<T> {
+  const previous = turns.get(spaceId) ?? Promise.resolve();
+  // The queue carries on whether the one before succeeded or failed.
+  const result = previous.then(work, work);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  turns.set(spaceId, settled);
+  void settled.then(() => {
+    if (turns.get(spaceId) === settled) turns.delete(spaceId);
+  });
+  return result;
+}
+
 /** Whether a role changes what others put in a shared space's Files: only its owner's does. */
 export const managesSharedFiles = (role: MembershipRole | null | undefined): boolean =>
   role === 'owner';

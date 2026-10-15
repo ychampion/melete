@@ -7,7 +7,17 @@
  */
 import { afterAll, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  type FileHandle,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { CapabilityClaims, JsonObject } from '@melete/contracts';
@@ -240,6 +250,45 @@ async function sharedSpace() {
 
 const text = (file: string) => readFile(file, 'utf8');
 
+/**
+ * The moment between a step's check of `file` and the change it makes: the
+ * first time a handle on that file reaches `method` (just after a whole read,
+ * or just before it is emptied to be written), `meanwhile` starts and is given
+ * `ms` to finish before the step carries on. A step that holds the space's
+ * Files for itself until it is done makes `meanwhile` wait instead.
+ */
+async function meanwhileAt(
+  file: string,
+  method: 'readFile' | 'truncate',
+  meanwhile: () => Promise<unknown>,
+  ms = 2500,
+) {
+  const { ino } = await stat(file);
+  const probe = await open(file, 'r');
+  const handles = Object.getPrototypeOf(probe) as Record<
+    string,
+    (this: FileHandle, ...args: unknown[]) => Promise<unknown>
+  >;
+  await probe.close();
+  const original = handles[method] as (this: FileHandle, ...args: unknown[]) => Promise<unknown>;
+  let started: Promise<unknown> | null = null;
+  const pause = async (handle: FileHandle) => {
+    if (started || (await handle.stat()).ino !== ino) return;
+    started = meanwhile();
+    await Promise.race([started.catch(() => {}), Bun.sleep(ms)]);
+  };
+  handles[method] = async function (this: FileHandle, ...args: unknown[]) {
+    if (method === 'truncate') await pause(this);
+    const result = await original.apply(this, args);
+    if (method === 'readFile') await pause(this);
+    return result;
+  };
+  return async () => {
+    handles[method] = original;
+    return started;
+  };
+}
+
 databaseTest(
   "a member's agent cannot save over, move or delete a file someone else added",
   async () => {
@@ -436,6 +485,83 @@ databaseTest(
     for (const name of ['a.md', 'b.md', 'c.md', 'e.md'])
       expect(await text(space.files(name))).toBe(`owner ${name}`);
     expect(existsSync(space.files('d.md'))).toBe(false);
+  },
+  SLOW,
+);
+
+databaseTest(
+  "a member's save over their own file never overwrites what the owner saved there while it ran",
+  async () => {
+    const space = await sharedSpace();
+    const members = await space.request(space.member);
+    expect(
+      (await members.run('files.write', { path: 'notes.md', area: 'artifacts', content: 'mine' }))
+        .status,
+    ).toBe('succeeded');
+    const again = await space.request(space.member);
+    const save = await again.later('files.write', {
+      path: 'notes.md',
+      area: 'artifacts',
+      content: 'mine again',
+    });
+    const owners = await space.request(space.owner);
+    // Once the member's save has found the file still theirs, and before it
+    // writes, the owner's agent saves over the same file.
+    const done = await meanwhileAt(space.files('notes.md'), 'truncate', () =>
+      owners.run('files.write', { path: 'notes.md', area: 'artifacts', content: "owner's" }),
+    );
+    let saved: string;
+    let owner: Outcome | undefined;
+    try {
+      saved = await save.go();
+    } finally {
+      owner = (await await done()) as Outcome | undefined;
+    }
+    expect(owner?.status).toBe('succeeded');
+    expect(saved).toBe('succeeded');
+    // The member's save went over their own file, then the owner's over it:
+    // the owner's is what the space keeps.
+    expect(await text(space.files('notes.md'))).toBe("owner's");
+  },
+  SLOW,
+);
+
+databaseTest(
+  "a member's move of their own file never takes what the owner saved at its name while it ran",
+  async () => {
+    const space = await sharedSpace();
+    const members = await space.request(space.member);
+    expect(
+      (await members.run('files.write', { path: 'notes.md', area: 'artifacts', content: 'mine' }))
+        .status,
+    ).toBe('succeeded');
+    const again = await space.request(space.member);
+    const takeOut = await again.later('files.move', {
+      from: 'notes.md',
+      to: 'notes.md',
+      area: 'artifacts',
+      to_area: 'work',
+    });
+    const owners = await space.request(space.owner);
+    // Once the member's move has read the file and found it theirs, and
+    // before it moves it, the owner's agent saves over the same file.
+    const done = await meanwhileAt(space.files('notes.md'), 'readFile', () =>
+      owners.run('files.write', { path: 'notes.md', area: 'artifacts', content: "owner's" }),
+    );
+    let moved: string;
+    let owner: Outcome | undefined;
+    try {
+      moved = await takeOut.go();
+    } finally {
+      owner = (await await done()) as Outcome | undefined;
+    }
+    expect(owner?.status).toBe('succeeded');
+    expect(moved).toBe('succeeded');
+    // The member took out their own file, and the owner's then went in at its
+    // name: the owner's stays in the space's Files and never reaches the
+    // member's workspace.
+    expect(await text(again.work('notes.md'))).toBe('mine');
+    expect(await text(space.files('notes.md'))).toBe("owner's");
   },
   SLOW,
 );
