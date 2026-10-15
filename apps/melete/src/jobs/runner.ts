@@ -108,6 +108,9 @@ export const LEASE_MS = 45_000;
 /** What a conversation's turn ends with when its work was cut off and could not be resumed. */
 export const LOST_NOTE =
   'This was interrupted before it could finish, for example because Melete restarted while it was working. Nothing more will happen here until you send another message.';
+/** The same, when the work stopped because an app it was using was disconnected. */
+export const DISCONNECTED_NOTE =
+  'This stopped because an app it was using was disconnected. Nothing more will happen here until you send another message.';
 
 /** How many attempts run at once unless the service is told otherwise. */
 export const DEFAULT_ATTEMPT_CONCURRENCY = 4;
@@ -1474,6 +1477,11 @@ export class AttemptRunner {
     // in the saved copy and on the stream, instead of looking busy for ever.
     // So has a routine's run that went back to its schedule.
     const turnFailed = Boolean(row.currentTurnId) && (moved.state === 'failed' || rest !== null);
+    // A disconnected app is said as such, not as a restart.
+    const note =
+      turnFailed && (await disconnectedDuring(tx, row.id, attemptId))
+        ? DISCONNECTED_NOTE
+        : LOST_NOTE;
     await appendEvent(tx, {
       jobId: row.id,
       attemptId,
@@ -1483,7 +1491,7 @@ export class AttemptRunner {
         reason,
         ...(turnFailed
           ? {
-              outcome: { kind: 'failed', reason: LOST_NOTE, retryable: false },
+              outcome: { kind: 'failed', reason: note, retryable: false },
               turn_status: 'failed',
             }
           : {}),
@@ -1495,8 +1503,8 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({
           status: 'failed',
-          answer: sql`case when ${experienceTurn.answer} = '' then ${LOST_NOTE}
-            else ${experienceTurn.answer} || ${`\n\n${LOST_NOTE}`} end`,
+          answer: sql`case when ${experienceTurn.answer} = '' then ${note}
+            else ${experienceTurn.answer} || ${`\n\n${note}`} end`,
           finishedAt: new Date(),
         })
         .where(
@@ -2047,4 +2055,21 @@ export class AttemptRunner {
     await Promise.allSettled([...this.wakes]);
     await this.scheduler.idle();
   }
+}
+
+/** Whether this attempt was fenced because a connection its job used was revoked. */
+async function disconnectedDuring(tx: Transaction, jobId: string, attemptId: string) {
+  const [fenced] = await tx
+    .select({ seq: event.seq })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        eq(event.type, 'context_invalidated'),
+        sql`${event.payload}->>'attempt_id' = ${attemptId}`,
+        sql`${event.payload}->>'reason' = 'connection_revoked'`,
+      ),
+    )
+    .limit(1);
+  return Boolean(fenced);
 }
