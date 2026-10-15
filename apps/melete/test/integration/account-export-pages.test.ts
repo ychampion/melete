@@ -25,6 +25,7 @@ afterAll(async () => {
 const TASKS = 450;
 const DAYS = 430;
 const CODES = 230;
+const NICKNAMED = 450;
 
 async function seed() {
   if (!handle) throw new Error('Postgres unavailable');
@@ -154,3 +155,28 @@ databaseTest('a role that may only read the tables still reads them in key order
     await handle.sql.unsafe(`drop role ${role}`);
   }
 });
+
+databaseTest(
+  'a unique column that is mostly empty does not order the pages: every record comes through once',
+  async () => {
+    if (!handle) return;
+    const { principal } = await seed();
+    // Keyed by the account and an id; beside them a unique nickname, which few rows have.
+    await handle.sql.unsafe(`create table export_nickname (principal_id text not null,
+      id text not null, nickname text unique, primary key (principal_id, id))`);
+    try {
+      await handle.sql`insert into export_nickname (principal_id, id, nickname)
+        select ${principal}, 'row-' || lpad(n::text, 5, '0'),
+          case when n % 10 = 0 then 'nick-' || n end
+        from generate_series(1, ${NICKNAMED}) n`;
+      let rows: { id: string }[] = [];
+      for await (const entry of accountExport({ sql: handle.sql, spacesRoot }, principal))
+        if (entry.name === 'account/records/export_nickname.json')
+          rows = JSON.parse(await text(entry.data));
+      expect(rows).toHaveLength(NICKNAMED);
+      expect(new Set(rows.map((row) => row.id)).size).toBe(NICKNAMED);
+    } finally {
+      await handle.sql.unsafe('drop table export_nickname');
+    }
+  },
+);

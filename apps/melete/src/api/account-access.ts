@@ -2,10 +2,10 @@
  * Everything that reaches an account without its password, and the one way to
  * end all of it: browser sessions, sign-in and reset links, connected
  * assistants' tokens and their unused codes, paired computers and their
- * pairing codes, browsers that receive notifications, and linked chat
- * accounts. A password change, a reset, "Sign out everywhere else" and an
- * operator disabling the account all end access through `endAccess`, so none
- * of them can forget a kind.
+ * pairing codes, browsers that receive notifications, linked chat accounts,
+ * and the room invites it made that nobody has accepted. A password change, a
+ * reset, "Sign out everywhere else" and an operator disabling the account all
+ * end access through `endAccess`, so none of them can forget a kind.
  */
 import { createHash } from 'node:crypto';
 import { accountAccess } from '@melete/contracts';
@@ -84,6 +84,10 @@ export async function endAccess(
   // Codes for pairing a computer that were never used, then the computers paired.
   await tx`update device_pairing set used_at = now()
     where principal_id = ${principalId} and used_at is null`;
+  // Room invites it made that nobody has accepted yet, which would still let a guest in.
+  await tx`update room_invite set withdrawn_at = now()
+    where created_by = ${principalId} and redeemed_at is null and withdrawn_at is null
+      and expires_at > now()`;
   const devices = await tx<{ id: string }[]>`update paired_device set revoked_at = now()
     where paired_by = ${principalId} and revoked_at is null returning id`;
   return devices.map((row) => String(row.id));
