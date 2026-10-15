@@ -187,6 +187,10 @@ describe('MELETE_MODEL_ROUTES is read', () => {
     );
     const side = serviceModelSource({ env, fast: routing.fast });
     expect(await side.current()).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+    // Without its key, the start-up names the setting that was written, once.
+    expect(routingWarnings(env, routing)).toEqual([
+      'MELETE_MODEL_ROUTES (side) names anthropic, but ANTHROPIC_API_KEY is empty; calls routed to it fail unless a key is connected in Settings › Models.',
+    ]);
   });
 
   test('MELETE_MODEL_FAST wins over the preset’s side route, and naming both stops start-up', () => {
@@ -496,6 +500,29 @@ describe('the model an attempt runs on', () => {
       route: undefined,
       asked: false,
     });
+  });
+
+  test('a default on the owner’s own machine keeps its turns, background work included', async () => {
+    const local = {
+      MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+      MELETE_DEFAULT_MODEL: 'llama3.1:8b',
+      OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+      MELETE_MODEL_ROUTES: ROUTES,
+    };
+    const { env, service } = settings({ env: local });
+    expect((await choose(service, env, 'interactive', ['computer', 'chat'])).chosen).toBe(
+      'openai-compatible/llama3.1:8b',
+    );
+    expect(await choose(service, env, 'background', ['background', 'chat'])).toEqual({
+      chosen: 'openai-compatible/llama3.1:8b',
+      route: undefined,
+      asked: false,
+    });
+    // The owner's own secondary for scheduled work is their choice, and still wins.
+    const second = settings({ env: local, secondary: { provider: 'fireworks', model: 'small' } });
+    expect((await choose(second.service, second.env, 'background', ['background'])).chosen).toBe(
+      'fireworks/small',
+    );
   });
 
   test('a background route without a key leaves background work where it was', async () => {

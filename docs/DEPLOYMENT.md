@@ -2316,7 +2316,8 @@ place:
   (`MELETE_MEMORY_MODEL` and the like), then the owner's secondary model,
   then the fast model (`MELETE_MODEL_FAST` or `side`), then the model in use.
 - For background work: the owner's secondary model when they moved scheduled
-  work to it, then the `background` route, then the model in use. Sorting
+  work to it, then the `background` route, then the routes of the attempt's
+  other kinds (`team`, `chat` and so on), then the model in use. Sorting
   new mail (`MELETE_MODEL_TRIAGE`, when unset) follows the same order before
   the fast model.
 - `MELETE_MODEL_VISION` and `MELETE_MODEL_FALLBACK` apply to routed turns as

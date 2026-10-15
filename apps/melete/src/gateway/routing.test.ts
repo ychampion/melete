@@ -515,6 +515,15 @@ describe('the price table', () => {
     expect(
       operator.cost('openai', 'x', { inputTokens: 11, cachedInputTokens: 0, outputTokens: 0 }),
     ).toBeCloseTo(0.000022, 9);
+    // The charged input weighs a long call's cached part by the long prompt's own cached price.
+    const cachedLong = new PriceTable(
+      parseModelPrices(
+        '{"openai/y":{"input":1,"output":1,"cached_input":0.5,"long_prompt":{"over_tokens":10,"input":2,"output":2,"cached_input":0.2}}}',
+      ),
+    );
+    const usage = { inputTokens: 100, cachedInputTokens: 100, outputTokens: 0 };
+    expect(cachedLong.chargedInputTokens('openai', 'y', usage)).toBe(10);
+    expect(cachedLong.cost('openai', 'y', usage)).toBeCloseTo(0.00002, 9);
   });
 });
 

@@ -203,6 +203,14 @@ export class PriceTable {
     return { ...fallback, entry: '*' };
   }
 
+  /** The prices one call is charged at: its model's `long_prompt` prices when its input is over them. */
+  private priceOfCall(provider: string, model: string, usage: PricedUsage): ModelPrice {
+    const listed = this.priceFor(provider, model);
+    return listed.long_prompt && usage.inputTokens > listed.long_prompt.over_tokens
+      ? listed.long_prompt
+      : listed;
+  }
+
   /** Dollars per million tokens for a cache read and a cache write of this model. */
   private cachePrices(provider: string, price: ModelPrice): { read: number; write: number } {
     const share = shareOf(provider);
@@ -218,11 +226,7 @@ export class PriceTable {
    * cache write at the write price.
    */
   cost(provider: string, model: string, usage: PricedUsage): number {
-    const listed = this.priceFor(provider, model);
-    const price =
-      listed.long_prompt && usage.inputTokens > listed.long_prompt.over_tokens
-        ? listed.long_prompt
-        : listed;
+    const price = this.priceOfCall(provider, model, usage);
     const cache = this.cachePrices(provider, price);
     const { cached, written, fresh } = split(usage);
     const dollars =
@@ -243,7 +247,7 @@ export class PriceTable {
    * with any input is never charged nothing.
    */
   chargedInputTokens(provider: string, model: string, usage: PricedUsage): number {
-    const price = this.priceFor(provider, model);
+    const price = this.priceOfCall(provider, model, usage);
     const share =
       price.input > 0
         ? (() => {

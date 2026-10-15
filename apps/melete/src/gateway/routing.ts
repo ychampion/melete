@@ -33,8 +33,9 @@
  *
  * For a side call the order is: a model pinned for that use, then the space
  * owner's secondary, then the fast role, then the model in use. For background
- * work: the owner's secondary, then the `background` route, then the model in
- * use.
+ * work: the owner's secondary, then the `background` route, then the routes of
+ * its other kinds, then the model in use. A default on the owner's own machine
+ * keeps every turn but those on the owner's secondary.
  *
  * The gateway relays the request as the engine wrote it, so an alternative
  * model is only ever taken when it speaks the same protocol as the request.
@@ -351,8 +352,15 @@ export function routingWarnings(
   env: Record<string, string | undefined>,
   routing: ModelRouting,
 ): string[] {
+  // A fast model taken from the `side` route is named under MELETE_MODEL_ROUTES below.
+  const side = routing.work?.side?.[0];
+  const fastFromSide =
+    !env.MELETE_MODEL_FAST?.trim() &&
+    Boolean(side && routing.fast && sameModel(side, routing.fast));
   const named: [string, ModelChoice][] = [
-    ...(routing.fast ? [['MELETE_MODEL_FAST', routing.fast] as [string, ModelChoice]] : []),
+    ...(routing.fast && !fastFromSide
+      ? [['MELETE_MODEL_FAST', routing.fast] as [string, ModelChoice]]
+      : []),
     ...(routing.vision ? [['MELETE_MODEL_VISION', routing.vision] as [string, ModelChoice]] : []),
     ...routing.fallback.map((choice) => ['MELETE_MODEL_FALLBACK', choice] as [string, ModelChoice]),
     ...ROUTE_KINDS.flatMap((kind) =>

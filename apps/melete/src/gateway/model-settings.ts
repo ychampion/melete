@@ -333,19 +333,27 @@ export class ModelSettingsService {
         await this.visionSaid(choice.provider, choice.model, db),
       ),
     });
+    let inUse: Awaited<ReturnType<ModelSettingsService['active']>> | undefined;
+    const activeNow = async () => {
+      inUse ??= await this.active(await this.chosen(db), db);
+      return inUse;
+    };
     if (work?.usageClass === 'background') {
       const own = (await this.personRoles(work.spaceId, db)).background;
       if (own) return shown(own);
       const background = routing.background;
       const routed = routing.work?.background?.[0];
       const fromRoute = Boolean(background && routed && sameModel(background, routed));
-      if (
+      const usable =
         background &&
-        (!fromRoute || (await this.connected(background.provider, await this.keyRows(db))))
-      )
+        (!fromRoute ||
+          ((await this.connected(background.provider, await this.keyRows(db))) &&
+            // Like every route, it leaves a default on the owner's own machine its turns.
+            !(await this.servesLocally((await activeNow()).provider))));
+      if (background && usable)
         return { ...(await shown(background)), ...(fromRoute ? { route: 'background' } : {}) };
     }
-    const active = await this.active(await this.chosen(db), db);
+    const active = await activeNow();
     const current = { provider: active.provider, model: active.model, vision: active.vision };
     if (!routing.work || !work?.kinds || this.ownerChose(active)) return current;
     if (await this.servesLocally(active.provider)) return current;
