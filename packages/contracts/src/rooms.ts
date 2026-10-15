@@ -132,7 +132,14 @@ export const person = z.strictObject({
   display_name: z.string(),
   email: z.email(),
 });
-export const peopleQuery = z.strictObject({ query: z.string().max(200).optional() });
+export const peopleQuery = z.strictObject({
+  // No name or address holds a NUL, and the database refuses one.
+  query: z
+    .string()
+    .max(200)
+    .refine((value) => !value.includes('\u0000'), 'Search without the NUL character.')
+    .optional(),
+});
 export const peopleList = z.strictObject({ people: z.array(person) });
 
 const LOOKALIKE_MARKS =

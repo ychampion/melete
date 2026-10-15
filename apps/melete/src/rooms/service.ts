@@ -76,7 +76,9 @@ const roomOwnerOnly = () =>
 /**
  * Whether a name is another account's: its chosen name, or the part before the
  * @ of its email, ignoring case. A name is how a room, and its agent, tell
- * people apart at a glance; the handle after it is what settles it.
+ * people apart at a glance; the handle after it is what settles it. A room's
+ * own account carries the room's name and is no one's, so it never counts:
+ * otherwise anyone could learn the names of rooms they are not in.
  */
 export async function nameTaken(db: Database, name: string, except?: string): Promise<boolean> {
   const [taken] = await db
@@ -85,6 +87,7 @@ export async function nameTaken(db: Database, name: string, except?: string): Pr
     .where(
       and(
         except ? ne(principal.id, except) : undefined,
+        ne(principal.kind, 'room'),
         or(
           sql`lower(${principal.displayName}) = lower(${name})`,
           sql`lower(split_part(${principal.email}, '@', 1)) = lower(${name})`,
@@ -270,8 +273,9 @@ export class RoomService {
   }
 
   /**
-   * Accounts a person can add to a room: people, never a room's own principal
-   * or a guest. The person who set this installation up finds everyone. Anyone
+   * Accounts a person can add to a room: people, never a room's own principal,
+   * a guest, or an account that is turned off, which an account being deleted
+   * also is. The person who set this installation up finds everyone. Anyone
    * else finds themselves and the people they share a space or room with now,
    * and someone else only by typing that person's whole email address, so
    * nobody can list the other accounts here.
@@ -301,6 +305,7 @@ export class RoomService {
       .where(
         and(
           eq(principal.kind, 'person'),
+          isNull(principal.disabledAt),
           visible,
           pattern
             ? or(ilike(principal.email, pattern), ilike(principal.displayName, pattern))

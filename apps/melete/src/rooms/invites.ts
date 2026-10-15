@@ -128,6 +128,8 @@ export class InviteService {
       .select({ id: principal.id, kind: principal.kind })
       .from(principal)
       .where(eq(principal.email, email));
+    // The answer is the same whether the account is turned off, so it does not say which.
+    // A guest that is turned off gets an invite it cannot accept: accepting needs its sign-in.
     if (account && account.kind !== 'guest')
       throw new ServiceError(
         'person_account',
