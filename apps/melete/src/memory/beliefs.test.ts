@@ -210,6 +210,12 @@ describe('labels', () => {
     expect(subjectLabel(null, 'work.employer')).toBe('Work employer');
     expect(subjectLabel(null, 'pref.tea:exception:2026-01-01:2026-01-02')).toBe('Tea');
   });
+  test('a detail filed under the person alone reads as about them', () => {
+    expect(subjectLabel(null, 'self.about.works_nurse')).toBe('About you');
+    expect(subjectLabel(null, 'self.about')).toBe('About you');
+    expect(subjectLabel(null, 'self')).toBe('About you');
+    expect(subjectLabel(null, 'self.city')).toBe('Your city');
+  });
   test('a relation and a name read as one person, never as a key', () => {
     // Labels a memory page showed in real use: "Sister's lena city", "Landlord's patel",
     // "Pref diet shellfish allergy".

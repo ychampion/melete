@@ -95,6 +95,9 @@ export function subjectLabel(plainKey: string | null, plainDomain: string): stri
     const what = related ? field : [second, ...field];
     return (what.length ? `${who}'s ${what.join(' ')}` : who).slice(0, 200);
   }
+  // A detail filed under the person alone, with no topic, is about them.
+  if (head.toLowerCase() === 'self' && (!rest.length || rest[0]?.toLowerCase() === 'about'))
+    return 'About you';
   // A detail filed under the person themself is theirs.
   if (head.toLowerCase() === 'self' && rest.length) return `Your ${rest.join(' ')}`.slice(0, 200);
   const meaningful = GENERIC_HEADS.has(head.toLowerCase()) && rest.length ? rest : parts;
@@ -258,11 +261,65 @@ export function ownTopicRun(domainKey: string, text: string): boolean {
 const OWNER_OF_SOMETHING =
   /\bthe\s+owners?(?:['’]s)?\s+of\b|\bowners?(?:['’]s)?\s+of\s+(?:my|your|our|the)\b|\b(?:flat|house|home|apartment|building|property|shop|store|caf[eé]|restaurant|bar|business|company|venue|hotel|car|dog|cat|land)(?:['’]s)?\s+owners?\b/i;
 
+/** Words a detail starts with that are not someone in the person's life: "User lives in Lisbon". */
+const NO_ONE = new Set([
+  ...SELF,
+  ...GENERIC_HEADS,
+  ...PERSON_HEADS,
+  ...'i he she they it this that there here we who his her their its the a an'.split(' '),
+]);
+/** Words after someone a detail starts with that say what they are, do or have: "Maya is", "Sam lives". */
+const SAID_OF = new Set(
+  (
+    'is was has had lives lived works worked moved likes loves prefers wants needs owns eats ' +
+    'drinks isn wasn hasn doesn'
+  ).split(' '),
+);
+/**
+ * Who a detail's words are about, when they start with someone: "Maya is
+ * allergic to peanuts", "Sam's diet is vegan", "My sister lives in Lisbon",
+ * "Sister Maya is vegetarian", "my friend sam is vegetarian". Null when they
+ * start with the detail itself ("Allergic to peanuts", "Will be away until
+ * Friday") or with the person ("User lives in Lisbon"). A name on its own is
+ * read only when written with a capital; after a relation, however written.
+ */
+export function someoneFirst(text: string): { name?: string; relation?: string } | null {
+  const words = text
+    .trim()
+    .split(/[^\p{L}\p{N}'’]+/u)
+    .filter(Boolean);
+  const plain = (word = '') => word.replace(/['’]s$/u, '').toLowerCase();
+  const possessive = (word = '') => /['’]s$/u.test(word);
+  let at = /^(?:my|our|his|her|their|the)$/i.test(words[0] ?? '') ? 1 : 0;
+  let relation: string | undefined;
+  if (RELATIONS.has(plain(words[at]))) {
+    relation = plain(words[at]);
+    if (possessive(words[at])) return { relation };
+    at++;
+  }
+  const word = words[at] ?? '';
+  const name = plain(word);
+  if (
+    name &&
+    !NO_ONE.has(name) &&
+    !TOPICS.has(name) &&
+    !RELATIONS.has(name) &&
+    !SAID_OF.has(name) &&
+    (relation || /^\p{Lu}/u.test(word)) &&
+    (possessive(word) || SAID_OF.has(plain(words[at + 1])))
+  )
+    return { name, ...(relation ? { relation } : {}) };
+  if (relation && SAID_OF.has(plain(words[at]))) return { relation };
+  return null;
+}
+
 /**
  * Whose detail a subject holds, read from its heading. A name is read as one
  * however it is written: "sam" in "my friend sam" is someone, not a topic.
  * "Owner" is the person themself, unless the detail's own words say it is the
- * owner of something.
+ * owner of something. A subject that names only a topic is someone's when
+ * the detail's words start with them ("Maya is allergic to peanuts" under
+ * person.allergy).
  */
 export function whoseDetail(plainKey: string, content?: string | null): Whose {
   const domainKey = withoutMember(plainKey);
@@ -273,8 +330,20 @@ export function whoseDetail(plainKey: string, content?: string | null): Whose {
     return { kind: 'other', who: 'owner' };
   if (SELF.has(subject)) return { kind: 'self' };
   const who = subject.replace(/[_-]+/g, ' ').trim();
-  if (!who || (!RELATIONS.has(subject) && textWords(who).every((word) => TOPICS.has(word))))
+  if (!who || (!RELATIONS.has(subject) && textWords(who).every((word) => TOPICS.has(word)))) {
+    const someone = content ? someoneFirst(content) : null;
+    if (someone?.relation && someone.name)
+      return {
+        kind: 'other',
+        who: someone.relation,
+        name: someone.name,
+        relation: someone.relation,
+      };
+    if (someone?.relation)
+      return { kind: 'other', who: someone.relation, relation: someone.relation };
+    if (someone?.name) return { kind: 'other', who: someone.name };
     return { kind: 'unknown', who };
+  }
   // "person.brother.sam.city" is Brother Sam; "person.sister.city" is the sister's city.
   const name = next.replace(/[_-]+/g, ' ').trim();
   if (RELATIONS.has(subject) && name && !textWords(name).every((word) => TOPICS.has(word)))
@@ -396,6 +465,8 @@ function relationsOf(whose: Whose, text: string): Set<string> {
   if (whose.relation) all.add(relation(whose.relation));
   return all;
 }
+/** Whether a detail's words, or its subject, say how the person knows the someone it is about. */
+export const saysRelation = (whose: Whose, text: string) => relationsOf(whose, text).size > 0;
 /**
  * Whether two details about someone of the same name are about two people:
  * each says how the person knows them, and no relation of one could be the

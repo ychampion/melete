@@ -14,7 +14,7 @@ import {
   readExtractionReply,
   sameDetail,
 } from './extract.ts';
-import { ownTopicRun, relatedSubject, twoPeople, whoseDetail } from './labels.ts';
+import { ownTopicRun, relatedSubject, someoneFirst, twoPeople, whoseDetail } from './labels.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -329,6 +329,96 @@ describe("the person's own details are filed under them, never as someone in the
       'person.user.sister',
       'person.priya.role',
       'person.diet',
+    ]);
+  });
+
+  test("a detail filed under a bare topic whose words name someone else is not the person's own", () => {
+    // The model got both the subject and what it is about wrong.
+    expect(
+      filed([
+        said('person.allergy', 'Maya is allergic to peanuts', 'Maya is allergic to peanuts', {
+          about: 'the_person',
+        }),
+        said('person.diet', "Sam's diet is vegan", 'Sam is vegan', { about: 'the_person' }),
+        said('person.city', 'My sister lives in Lisbon', 'my sister lives in Lisbon', {
+          about: 'the_person',
+        }),
+        said('person.diet', 'My friend sam is vegetarian', 'my friend sam is vegetarian', {
+          about: 'preference',
+        }),
+        // The person's own, however the model wrote it.
+        said('person.allergy', 'Allergic to peanuts', 'I am allergic to peanuts', {
+          about: 'the_person',
+        }),
+        said('person.city', 'User lives in Lisbon', 'I live in Lisbon', { about: 'the_person' }),
+        said('person.travel', 'Will be away until Friday', 'I will be away until Friday', {
+          about: 'temporary_exception',
+        }),
+        said('person.city', 'Lives in Lisbon with Maya', 'I live in Lisbon with Maya', {
+          about: 'the_person',
+        }),
+      ]),
+    ).toEqual([
+      'person.maya.allergy',
+      'person.sam.diet',
+      'person.sister.city',
+      'person.friend.sam.diet',
+      'self.allergy',
+      'self.city',
+      'self.travel',
+      'self.city',
+    ]);
+    expect(whoseDetail('person.allergy', 'Maya is allergic to peanuts')).toEqual({
+      kind: 'other',
+      who: 'maya',
+    });
+    expect(whoseDetail('person.allergy', 'Allergic to peanuts').kind).toBe('unknown');
+    // Only words that start with someone name them.
+    expect(someoneFirst('Maya is allergic to peanuts')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Sister Maya is vegetarian')).toEqual({ name: 'maya', relation: 'sister' });
+    expect(someoneFirst("Mom's birthday is in May")).toEqual({ relation: 'mom' });
+    for (const own of [
+      'maya is allergic to peanuts',
+      'Loves dogs',
+      'Hates mushrooms',
+      'Has two cats',
+      'Is vegetarian',
+      'May be late on Mondays',
+      'The user is vegetarian',
+      'She is allergic to peanuts',
+      'Vegetarian and gluten free',
+    ])
+      expect(someoneFirst(own)).toBeNull();
+    // Nor is it merged into the person's own allergy held in the same words.
+    const [maya] = mergeIntoHeld(
+      [said('person.allergy', 'Maya is allergic to peanuts', 'Maya is allergic to peanuts')],
+      [
+        {
+          id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA4',
+          domain_key: 'health.allergy',
+          key: null,
+          content: 'Allergic to peanuts',
+        },
+      ],
+    );
+    expect(maya?.op === 'add' ? maya.domain_key : maya?.op).toBe('person.allergy');
+  });
+
+  test('a detail filed under the person alone gets a subject of its own', () => {
+    expect(
+      filed([
+        said('person.user', 'Works as a nurse', 'I work as a nurse', { about: 'the_person' }),
+        said('person.user', 'Has two cats', 'I have two cats', { about: 'the_person' }),
+        said('contact.owner', 'Speaks Portuguese and English', 'I speak Portuguese and English', {
+          about: 'the_person',
+        }),
+        said('person.me', '!!!', 'I am', { about: 'the_person' }),
+      ]),
+    ).toEqual([
+      'self.about.works_nurse',
+      'self.about.two_cats',
+      'self.about.speaks_portuguese_english',
+      'self.about',
     ]);
   });
 
