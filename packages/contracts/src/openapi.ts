@@ -388,13 +388,16 @@ const spaceAuditPaths = () => ({
       summary: 'The same log as a CSV file',
       description:
         `The entries the same filters select, newest first, up to ${AUDIT_EXPORT_MAX} ` +
-        'rows. Narrow `since` and `until` to export a longer log in parts.',
+        'rows. When the filters select more, the response carries ' +
+        '`X-Melete-Export-Truncated: true`; narrow `since` and `until` to export a ' +
+        'longer log in parts.',
       requestParams: { ...idParam('spaceId', 'Space id'), query: spaceAuditFilter },
       responses: {
         '200': {
           description: 'The log, one row per effect',
           content: { 'text/csv': { schema: z.string() } },
         },
+        '400': problem('A filter that cannot be read'),
         '403': problem('Only the space’s owners read its log'),
       },
     },
