@@ -13,6 +13,12 @@
  * say nothing, and the same word reads differently in every space. A block
  * made without a key, or before blocks kept tags, holds for its subject and
  * for the same subject filed under an older or variant heading.
+ *
+ * The person chooses how far a block reaches. By default it holds for
+ * anything about the subject, the narrower subjects under it included, and
+ * also for the forgotten detail filed under any other subject of theirs. Or it holds for
+ * just that detail, so a different detail under the same subject ("Lives in
+ * Porto" after "Lives in Lisbon") can still be learned.
  */
 import { createHmac, hkdfSync } from 'node:crypto';
 import { detailWords } from './extract.ts';
@@ -32,6 +38,14 @@ import {
 
 /** Where a block's tags start in its stored subject: "health.allergy:detail:…". */
 const DETAIL = ':detail:';
+/**
+ * Before a block's tag check, it says the block holds for its whole subject
+ * too: "health.allergy:detail:all<check>.<tag>…". A reader that does not know
+ * it sees a check that never matches, and so holds the block for its subject.
+ */
+const WHOLE = 'all';
+/** How far a block reaches: anything about its subject, or just the detail forgotten. */
+export type BlockScope = 'topic' | 'detail';
 const MEMBER = /\.member_([0-9a-f]{12})(?=$|[.:])/;
 /**
  * A letter of a script whose words are not compared here: they have no
@@ -180,8 +194,16 @@ export type Block = {
   tags: Set<string> | null;
   /** The tag check it was made with; tags made with another key are not read. */
   check: string | null;
+  /** It holds for anything about its subject, not just the detail forgotten. */
+  whole: boolean;
 };
 export type Blocks = { list: Block[]; key: Key | null };
+
+/** How far a stored block reaches. Blocks kept for their subject reach all of it. */
+export function storedScope(stored: string): BlockScope {
+  const at = stored.indexOf(DETAIL);
+  return at >= 0 && !stored.startsWith(WHOLE, at + DETAIL.length) ? 'detail' : 'topic';
+}
 
 /** Read the blocks of one space, as stored. */
 export function readBlocks(spaceId: string, rows: readonly Record<string, unknown>[]): Blocks {
@@ -191,32 +213,43 @@ export function readBlocks(spaceId: string, rows: readonly Record<string, unknow
       const stored = String(row.domain_key);
       const at = stored.indexOf(DETAIL);
       const key = row.key ? String(row.key) : null;
-      if (at < 0) return { subject: stored, key, tags: null, check: null };
+      if (at < 0) return { subject: stored, key, tags: null, check: null, whole: true };
       const [check = '', ...tags] = stored.slice(at + DETAIL.length).split('.');
-      return { subject: stored.slice(0, at), key, tags: new Set(tags), check };
+      const whole = check.startsWith(WHOLE);
+      return {
+        subject: stored.slice(0, at),
+        key,
+        tags: new Set(tags),
+        check: whole ? check.slice(WHOLE.length) : check,
+        whole,
+      };
     }),
   };
 }
 
 /**
- * The subject a block on this detail is stored under: the subject, and when
- * the detail says something of its own and the install has a key, the tags
- * of its words. A detail that says nothing beyond its kind ("Has an
- * allergy") is blocked for its whole subject.
+ * The subject a block on this detail is stored under, and how far it ended up
+ * reaching. When the detail says something of its own and the install has a
+ * key, the tags of its words are kept beside the subject; a block on anything
+ * about the subject marks them so. A detail that says nothing beyond its kind
+ * ("Has an allergy"), or is written in a script whose words are not compared,
+ * is blocked for its whole subject whichever was asked for.
  */
 export function blockedSubject(
   spaceId: string,
   domainKey: string,
   content: string | null,
-): { subject: string; detail: boolean } {
+  scope: BlockScope,
+): { subject: string; scope: BlockScope } {
   const key = blockKey(spaceId);
   const words = wordsOf(content ?? '');
   const named = personWords(domainKey, content ?? '');
   const distinct = [...words].filter((word) => !KIND.has(word) && !named.has(word));
   if (!key || !distinct.length || UNCOMPARED.test(content ?? ''))
-    return { subject: domainKey, detail: false };
+    return { subject: domainKey, scope: 'topic' };
   const tags = [...new Set([...words].map(key.tag))].sort();
-  return { subject: `${domainKey}${DETAIL}${[key.check, ...tags].join('.')}`, detail: true };
+  const check = scope === 'topic' ? `${WHOLE}${key.check}` : key.check;
+  return { subject: `${domainKey}${DETAIL}${[check, ...tags].join('.')}`, scope };
 }
 
 /** What a proposal says, as blocks are compared with it. */
@@ -228,14 +261,17 @@ export type Said = { domain_key: string; content: string; key?: unknown };
  * it, or null for the person in their own memory.
  *
  * - A registry key or the same subject, under any name an older extraction
- *   gave it or the member's own tag, matches a block kept for its subject.
+ *   gave it or the member's own tag, matches a block kept for its subject;
+ *   so does a narrower subject under it (travel.seat.window for travel.seat).
  * - A block that kept what was forgotten matches a detail that says all of
  *   it again, under any subject of the person's own ("Tell restaurants about
  *   the peanut allergy" for "Allergic to peanuts"); or, under the same subject
  *   or one that narrows or widens it, a detail that says nothing the
  *   forgotten one did not ("Aisle seats only" for "Always books an aisle seat
  *   on flights"). A window seat on trains, extra legroom, a shellfish allergy
- *   or no alcohol is another detail, not blocked by it.
+ *   or no alcohol is another detail, not blocked by it, unless the block is
+ *   on anything about its subject: then it also holds as one kept for its
+ *   subject does, below.
  * - A block on an older subject with no tags holds for the person's own detail
  *   that says every word of it, or all but one word of its kind when the new
  *   detail adds nothing of its own: a block on
@@ -262,9 +298,13 @@ export function blockedDetail(blocks: Blocks, said: Said, member: string | null)
   return blocks.list.some((block) => {
     if (block.key && typeof said.key === 'string' && block.key === said.key) return true;
     const same = subjects.has(block.subject);
+    // Anything about a subject is about the narrower subjects under it too:
+    // travel.seat.window is about the travel seat.
+    const under = !same && block.whole && narrower(subjects, block.subject);
     // A room member's block is only that member's.
     const blockMember = MEMBER.exec(block.subject)?.[1] ?? null;
     if (blockMember && blockMember !== (member ?? '').slice(0, 12) && !same) return false;
+    if (under) return true;
     const blockOwn =
       olderOwnSubject(block.subject) ||
       ownTopicRun(block.subject, said.content) ||
@@ -277,7 +317,7 @@ export function blockedDetail(blocks: Blocks, said: Said, member: string | null)
       if (same) return true;
       return untaggedOwnBlock(block.subject, said, words, proposalSays, distinct);
     }
-    if (same && UNCOMPARED.test(said.content)) return true;
+    if (same && (block.whole || UNCOMPARED.test(said.content))) return true;
     // Who a detail about someone is about is in its subject; their name or
     // relation need not be said again ("Sam", "friend").
     const named = new Set([...personWords(block.subject)].map((word) => key?.tag(word)));
@@ -289,9 +329,23 @@ export function blockedDetail(blocks: Blocks, said: Said, member: string | null)
       same ||
       [...blockSays].every((word) => proposalSays.has(word)) ||
       [...proposalSays].every((word) => blockSays.has(word));
-    if (!related || !distinct.length || !key) return false;
-    return distinct.every((word) => readable.has(key.tag(word)));
+    if (related && distinct.length && key && distinct.every((word) => readable.has(key.tag(word))))
+      return true;
+    // A block on anything about its subject also holds wherever one kept for
+    // its subject alone would.
+    return block.whole && untaggedOwnBlock(block.subject, said, words, proposalSays, distinct);
   });
+}
+
+/**
+ * Whether one of these subjects sits under `wider`: travel.seat.window and
+ * travel.seat.window.member_… under travel.seat. A heading that names nothing
+ * ("general", "person", "self") is no topic to reach under.
+ */
+function narrower(subjects: ReadonlySet<string>, wider: string): boolean {
+  const base = withoutMember(wider);
+  if (!subjectSays(base).size) return false;
+  return [...subjects].some((subject) => withoutMember(subject).startsWith(`${base}.`));
 }
 
 /** An own block kept for its subject, matched against the person's own detail under another. */
@@ -305,8 +359,9 @@ function untaggedOwnBlock(
   // "person.peanut_allergy" reads as the words "peanut allergy".
   const blockSays = subjectSays(subject);
   if (!blockSays.size) return false;
-  // A block under a topic heading holds for that topic, not for one it narrows
-  // to: travel.seat is not a block on travel.seat.train.
+  // Read across subjects, a block under a topic heading holds for that topic,
+  // not for one it narrows to: preference.flights.seat is not a block on
+  // travel.seat.train.
   if (
     !olderOwnSubject(subject) &&
     !ownTopicRun(subject, said.content) &&
