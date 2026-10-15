@@ -252,10 +252,11 @@ export function ownTopicRun(domainKey: string, text: string): boolean {
  * Whether a detail saved under "owner" is about the owner of something,
  * someone else: "The owner of my flat lives upstairs", "The café owner's
  * number". The person themself is the owner of their memory, and older
- * details about them were saved under "owner"; those say no such thing.
+ * details about them were saved under "owner"; those say no such thing. Nor
+ * does a detail of theirs that says what they own: "Owner of a café in Lisbon".
  */
 const OWNER_OF_SOMETHING =
-  /\bowners?(?:['’]s)?\s+of\b|\b(?:flat|house|home|apartment|building|property|shop|store|caf[eé]|restaurant|bar|business|company|venue|hotel|car|dog|cat|land)(?:['’]s)?\s+owners?\b/i;
+  /\bthe\s+owners?(?:['’]s)?\s+of\b|\bowners?(?:['’]s)?\s+of\s+(?:my|your|our|the)\b|\b(?:flat|house|home|apartment|building|property|shop|store|caf[eé]|restaurant|bar|business|company|venue|hotel|car|dog|cat|land)(?:['’]s)?\s+owners?\b/i;
 
 /**
  * Whose detail a subject holds, read from its heading. A name is read as one
@@ -342,17 +343,29 @@ function compatible(a: string, b: string): boolean {
   const circleB = CIRCLE[b];
   return !circleA || !circleB || circleA === circleB;
 }
+/** Words ending in "'s" that are no one's: "It's brother Sam's birthday". */
+const CONTRACTED = new Set(
+  "it's that's there's here's what's who's where's he's she's let's".split(' '),
+);
 /**
  * How a text relates the person to someone it names: "Brother Sam", "my
  * friend Sam", "Sam, my colleague". A relation of theirs ("Sam's sister")
- * is not one.
+ * is not one, nor is a relation of someone else's ("my friend's brother
+ * Sam"). A relation by marriage or a former one ("brother-in-law",
+ * "ex-boyfriend") is one of its own, not a brother or a partner.
  */
 export function relationsIn(text: string, name: string): Set<string> {
   const found = new Set<string>();
+  const kinOf = (word: string) => word.split('-').some((part) => RELATIONS.has(part));
   const words = text
     .toLowerCase()
-    .split(/[^\p{L}\p{N}'’]+/u)
+    .split(/[^\p{L}\p{N}'’-]+/u)
+    // A hyphenated relation stays one word; any other ("Jean-Luc") is read word by word.
+    .flatMap((word) => (word.includes('-') && kinOf(word) ? [word] : word.split('-')))
     .filter(Boolean);
+  const isRelation = (word: string) => RELATIONS.has(word) || (word.includes('-') && kinOf(word));
+  const possessive = (word: string) =>
+    /['’]s$/u.test(word) && !CONTRACTED.has(word.replace('’', "'"));
   const who = textWords(name);
   const last = who.at(-1);
   if (!last) return found;
@@ -362,13 +375,14 @@ export function relationsIn(text: string, name: string): Set<string> {
     if (plain(word) !== last) return;
     for (let back = index - who.length; back >= Math.max(0, index - who.length - 3); back--) {
       const before = words[back] ?? '';
-      if (/['’]s$/u.test(before)) break;
-      if (RELATIONS.has(before)) found.add(relation(before));
+      if (possessive(before)) break;
+      // "My friend's brother Sam" is the friend's brother.
+      if (isRelation(before) && !possessive(words[back - 1] ?? '')) found.add(relation(before));
     }
     // "Sam's sister" is Sam's relation, not the person's.
-    if (/['’]s$/u.test(word)) return;
+    if (possessive(word)) return;
     const after = words.slice(index + 1, index + 4);
-    const at = after.findIndex((item) => RELATIONS.has(item));
+    const at = after.findIndex(isRelation);
     if (at >= 0 && after.slice(0, at).every((item) => own.has(item)) && at <= 1)
       found.add(relation(after[at] ?? ''));
   });

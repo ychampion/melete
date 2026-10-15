@@ -423,7 +423,7 @@ function BeliefRow({
   );
 }
 
-/** When a note was written, as a short date in the viewer's own time. */
+/** When a note was written or a block made, as a short date in the viewer's own time. */
 const noteDate = (at: string) =>
   new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
@@ -546,36 +546,53 @@ function BeliefsView({ focus }: { focus: string | null }) {
         </div>
       ) : null}
       <AgentNotes />
-      {(blocks.data?.blocks.length ?? 0) > 0 ? (
-        <section className="col" style={{ gap: 8 }} aria-labelledby="bc-blocked">
-          <h3 id="bc-blocked" className="belief-group">
-            Not learning again
-          </h3>
-          <div className="card-12 belief-list">
-            {blocks.data?.blocks.map((block) => (
-              <div key={block.id} className="belief-row">
-                <div className="belief-main">
-                  <span className="belief-value">{block.label}</span>
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    void adapter.unblockBelief(block.id).then((r) => {
-                      if (r.data === null) return failed(r, 'Couldn’t change that');
-                      toast({ kind: 'ok', title: allowedToast(block) });
-                      blocks.reload();
-                    })
-                  }
-                >
-                  Allow again
-                </Button>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <NotLearningAgain blocks={blocks.data?.blocks ?? []} onAllowed={blocks.reload} />
     </div>
+  );
+}
+
+/**
+ * What the person asked Melete not to learn again, each with the day it was
+ * forgotten: two details under one subject read alike, and the day tells
+ * them apart.
+ */
+export function NotLearningAgain({
+  blocks,
+  onAllowed,
+}: {
+  blocks: readonly BeliefBlock[];
+  onAllowed: () => void;
+}) {
+  if (!blocks.length) return null;
+  return (
+    <section className="col" style={{ gap: 8 }} aria-labelledby="bc-blocked">
+      <h3 id="bc-blocked" className="belief-group">
+        Not learning again
+      </h3>
+      <div className="card-12 belief-list">
+        {blocks.map((block) => (
+          <div key={block.id} className="belief-row">
+            <div className="belief-main">
+              <span className="belief-value">{block.label}</span>
+              <span className="belief-note">Forgotten {noteDate(block.created_at)}</span>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                void adapter.unblockBelief(block.id).then((r) => {
+                  if (r.data === null) return failed(r, 'Couldn’t change that');
+                  toast({ kind: 'ok', title: allowedToast(block) });
+                  onAllowed();
+                })
+              }
+            >
+              Allow again
+            </Button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1061,7 +1078,26 @@ export function LearningSwitch() {
   );
 }
 
+/**
+ * Memory is kept in a person's own space. A member of someone else's shared
+ * space has none there to show or change, so their page says so plainly.
+ */
 export function MemoryPanel(): ReactNode {
+  const { member } = useApp();
+  if (member)
+    return (
+      <div className="card-12 belief-empty">
+        <span className="belief-empty-title">Memory is kept in your own space</span>
+        <span>
+          This space is shared with you by its owner, so there is nothing of yours to show or change
+          here.
+        </span>
+      </div>
+    );
+  return <OwnMemory />;
+}
+
+function OwnMemory() {
   const route = useRoute();
   const view =
     (['beliefs', 'timeline', 'lessons'] as const).find(
