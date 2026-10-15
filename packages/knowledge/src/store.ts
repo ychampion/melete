@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { type KnowledgeFrontmatter, prefixedId } from '@melete/contracts';
 import { type ParsedRecord, parseRecord } from './frontmatter.ts';
 import { type IndexedRecord, SpaceIndex } from './fts.ts';
@@ -63,6 +63,47 @@ export function loadSpace(paths: SpacePaths): SpaceContents {
   }
 
   return { records, failures };
+}
+
+/**
+ * Read only the records at these paths, as a search names them (relative to
+ * the space root): what the hits of a search need, without parsing every
+ * record in the space. A path is read only where `loadSpace` would read it, a
+ * Markdown file inside the knowledge directory with no symlink on the way; any
+ * other path, and a file that is gone or does not validate, is left out.
+ */
+export function loadRecords(
+  paths: SpacePaths,
+  relativePaths: readonly string[],
+  read: (absolutePath: string) => string = (absolutePath) => readFileSync(absolutePath, 'utf8'),
+): LoadedRecord[] {
+  const knowledge = resolve(paths.knowledge);
+  const records: LoadedRecord[] = [];
+  for (const wanted of new Set(relativePaths)) {
+    const absolutePath = resolve(paths.root, wanted);
+    const inside = relative(knowledge, absolutePath);
+    const outside =
+      !inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+    if (outside || !absolutePath.endsWith('.md')) continue;
+    try {
+      // The knowledge directory, each directory below it, and the file itself.
+      let at = knowledge;
+      let linked = lstatSync(at).isSymbolicLink();
+      for (const step of inside.split(sep)) {
+        if (linked) break;
+        at = join(at, step);
+        linked = lstatSync(at).isSymbolicLink();
+      }
+      if (linked || !lstatSync(absolutePath).isFile()) continue;
+      const parsed = parseRecord(read(absolutePath));
+      if (!parsed.ok) continue;
+      const path = relative(paths.root, absolutePath).split('\\').join('/');
+      records.push({ ...parsed.record, path, absolutePath });
+    } catch {
+      // Gone since the search, or unreadable: not a record now.
+    }
+  }
+  return records;
 }
 
 export const toIndexed = (record: LoadedRecord): IndexedRecord => ({

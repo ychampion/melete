@@ -9,7 +9,7 @@
  * one sentence instead of quietly giving another city's weather.
  */
 import { canonicalTimeZone } from '@melete/contracts';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { event, experienceProfile } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -44,14 +44,14 @@ export function zoneCity(zone: string): string | null {
   return city && /^[\p{L}]/u.test(city) ? city : null;
 }
 
-/** The zone the person's device reported with their latest message in this job, if any. */
-async function deviceZone(tx: Transaction, jobId: string): Promise<string | null> {
+/** The zone the person's device reported with their latest message in these jobs, if any. */
+async function deviceZone(tx: Transaction, jobIds: string[]): Promise<string | null> {
   const [row] = await tx
     .select({ zone: sql<string | null>`${event.payload}->>'client_time_zone'` })
     .from(event)
     .where(
       and(
-        eq(event.jobId, jobId),
+        inArray(event.jobId, jobIds),
         eq(event.type, 'notice'),
         sql`${event.payload}->>'kind' = 'user_message'`,
         sql`${event.payload} ? 'client_time_zone'`,
@@ -67,18 +67,38 @@ async function deviceZone(tx: Transaction, jobId: string): Promise<string | null
  * mismatch is recorded the first time it is seen, and only that attempt is
  * told of it.
  */
-export async function localNow(tx: Transaction, row: JobRow, now: Date): Promise<LocalNow> {
+/** The profile's zone, the device's, and which one time is read in. */
+async function zoneChoice(tx: Transaction, spaceId: string, jobIds: string[]) {
   const [profile] = await tx
     .select({
       timeZone: experienceProfile.timeZone,
       confirmedAt: experienceProfile.timeZoneConfirmedAt,
     })
     .from(experienceProfile)
-    .where(eq(experienceProfile.spaceId, row.spaceId));
+    .where(eq(experienceProfile.spaceId, spaceId));
   const saved = knownZone(profile?.timeZone) ?? 'UTC';
-  const device = await deviceZone(tx, row.id);
+  const device = await deviceZone(tx, jobIds);
   const used: 'profile' | 'device' = !profile?.confirmedAt && device ? 'device' : 'profile';
-  const zone = used === 'device' && device ? device : saved;
+  return { saved, device, used, zone: used === 'device' && device ? device : saved };
+}
+
+/**
+ * The zone a schedule set with no zone of its own runs in: the one the work
+ * was told it is in, so the 9:00 the model wrote is the 9:00 the person
+ * meant. Work set up from a conversation also reads the device's zone from
+ * that conversation's messages, where the person wrote.
+ */
+export async function workZone(
+  tx: Transaction,
+  row: JobRow,
+  conversationId?: string | null,
+): Promise<string> {
+  const ids = conversationId ? [row.id, conversationId] : [row.id];
+  return (await zoneChoice(tx, row.spaceId, ids)).zone;
+}
+
+export async function localNow(tx: Transaction, row: JobRow, now: Date): Promise<LocalNow> {
+  const { saved, device, used, zone } = await zoneChoice(tx, row.spaceId, [row.id]);
   let zoneMismatch: LocalNow['zone_mismatch'] = null;
   if (device && device !== saved) {
     const told = await appendEvent(tx, {

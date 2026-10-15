@@ -345,7 +345,7 @@ withDb('routines, time zone and setup as the person sees them', () => {
     );
     expect(registered?.timezone).toBe('America/New_York');
     // 8:30 in New York is 12:30 UTC before the clocks go back on 1 November, 13:30 after.
-    const next = required(queue).boss.previewSchedule(spec.cron, {
+    const next = required(queue).boss.previewSchedule(spec.cron ?? '', {
       tz: spec.timezone,
       from: new Date('2026-10-30T00:00:00Z'),
       count: 4,

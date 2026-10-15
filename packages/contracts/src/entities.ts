@@ -10,6 +10,7 @@ import { originWarnings, sha256Hex } from './effects.ts';
 import { jobState } from './job-state.ts';
 import { knowledgeRecordStatus } from './knowledge.ts';
 import { handOff } from './paths.ts';
+import { scheduleTimingProblem } from './recurrence.ts';
 import { repairCounters, repairDisposition, repairTrace } from './repair.ts';
 import { watchPredicate } from './watch.ts';
 
@@ -465,7 +466,30 @@ export const triggerKind = z.enum(TRIGGER_KINDS);
 export type TriggerKind = z.infer<typeof triggerKind>;
 
 export const triggerSpec = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('schedule'), cron: z.string().min(1), timezone: z.string().min(1) }),
+  /**
+   * A cron, or an RFC 5545 rule with its first local time (`starts`), read in
+   * `timezone`. A rule says what a cron cannot: "every other Friday".
+   */
+  z
+    .object({
+      kind: z.literal('schedule'),
+      cron: z.string().min(1).optional(),
+      rrule: z.string().min(1).optional(),
+      starts: z.string().min(1).optional(),
+      timezone: z.string().min(1),
+    })
+    .superRefine((value, ctx) => {
+      const problem = scheduleTimingProblem(value);
+      if (problem)
+        ctx.addIssue({
+          code: 'custom',
+          path: [problem.field],
+          message:
+            problem.problem === 'missing'
+              ? 'A schedule needs a cron or an rrule.'
+              : problem.problem,
+        });
+    }),
   z.object({
     kind: z.literal('event'),
     connection_id: prefixedId(ID_PREFIXES.connection),

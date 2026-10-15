@@ -2,7 +2,8 @@ import type { Env } from '../env.ts';
 import { withSignIn } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
 import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
-import { type ModelSettingsService, serviceModelSource } from '../gateway/model-settings.ts';
+import { type ModelSettingsService, sideCallSource } from '../gateway/model-settings.ts';
+import { routingFromEnv } from '../gateway/routing.ts';
 import type { JobService } from '../jobs/service.ts';
 import { type Commits, quietLoop } from '../ops/quiet-loop.ts';
 import { ProcedureService } from './procedures.ts';
@@ -31,6 +32,15 @@ export async function applyLearned(proposer: ProcedureProposer, procedures: Proc
 }
 
 /**
+ * The model a proposal is written with. A proposal is a short side call like
+ * reading chat into memory, so it takes the fast model, or the secondary of
+ * the space's owner, before the model new chats use.
+ */
+export function proposalModelSource(env: Env, settings?: ModelSettingsService) {
+  return sideCallSource('learning', { env, settings, routing: routingFromEnv(env) });
+}
+
+/**
  * One durable drain; a second pass cannot overlap a bounded model call. It
  * looks each second while corrections keep coming, as soon as a change is
  * committed, and otherwise at most every half minute.
@@ -56,8 +66,7 @@ export async function startLearning(
     reasoningEffort: env.MELETE_REASONING_EFFORT_SIDE,
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
-    // Proposals use the model new chats use, the one chosen in the app included.
-    source: serviceModelSource({ env, settings }),
+    source: proposalModelSource(env, settings),
     // The same explicitly configured fake provider covers the proposal call.
     // Real provider credentials still stay inside the existing model gateway.
     fake,

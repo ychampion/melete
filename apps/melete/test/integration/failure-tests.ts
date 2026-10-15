@@ -327,6 +327,73 @@ export function registerFailureTests(db: TestDatabase | null) {
       await runViewWork(db.sql, scope);
       expect((await recall(db.sql, scope, { query: 'trip' })).status).toBe('complete');
     });
+    test('an index build overtaken by a new fact is built again at once, not counted as a failure', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      const seeded = await seed(db, scope);
+      let calls = 0;
+      const built = await runViewWork(db.sql, scope, {
+        model: 'scripted-vector',
+        version: '1',
+        dimensions: 2,
+        recipe: 'test-v1',
+        async embed(texts) {
+          calls += 1;
+          // The first build is overtaken by a correction said meanwhile.
+          if (calls === 1)
+            await correctClaim(db.sql, scope, {
+              claim_id: seeded.id,
+              expected_revision: 1,
+              content: 'August',
+              text: 'move to August',
+              valid_from: '2026-06-10T00:00:00Z',
+              idempotency_key: 'during-pass',
+            });
+          return texts.map(() => [1, 0]);
+        },
+      });
+      expect(built).toBe(true);
+      expect(calls).toBe(2);
+      const outbox = await db.sql`select failures, completed_at from memory_outbox
+        where space_id = ${scope.spaceId} and kind = 'index'`;
+      expect(outbox.every((row) => row.completed_at !== null)).toBe(true);
+      expect(outbox.every((row) => Number(row.failures) === 0)).toBe(true);
+      const fresh = await recall(db.sql, scope, { query: 'trip' });
+      expect(fresh.status).toBe('complete');
+      expect(fresh.items[0]?.content).toBe('August');
+    });
+    test('an index built again after being overtaken does not embed the same facts twice', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      await seed(db, scope);
+      const embedded: string[] = [];
+      let calls = 0;
+      const built = await runViewWork(db.sql, scope, {
+        model: 'scripted-vector',
+        version: '1',
+        dimensions: 2,
+        recipe: 'test-v1',
+        async embed(texts) {
+          calls += 1;
+          embedded.push(...texts);
+          // Something else is written to the space while the first build embeds.
+          if (calls === 1)
+            await db.sql`update memory_spaces set data_revision = data_revision + 1
+              where space_id = ${scope.spaceId}`;
+          return texts.map(() => [1, 0]);
+        },
+      });
+      expect(built).toBe(true);
+      expect(calls).toBe(1);
+      expect(embedded.length).toBeGreaterThan(0);
+      const [dense] = await db.sql`select count(*)::integer as count from memory_dense_entries
+        where space_id = ${scope.spaceId}`;
+      expect(dense?.count).toBe(embedded.length);
+      const outbox = await db.sql`select failures, completed_at from memory_outbox
+        where space_id = ${scope.spaceId} and kind = 'index'`;
+      expect(outbox.every((row) => row.completed_at !== null)).toBe(true);
+      expect(outbox.every((row) => Number(row.failures) === 0)).toBe(true);
+    });
     test('database timeout is unavailable and a successful empty search is complete', async () => {
       if (!db) return;
       const scope = await createScope(db);
