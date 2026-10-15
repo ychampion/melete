@@ -361,7 +361,7 @@ async function withdrawGithub(
   const revokeAt = { name: 'GitHub', url: 'https://github.com/settings/applications' };
   if (!credential.client_id || !credential.client_secret)
     return { provider_access: 'not_offered', revoke_at: revokeAt };
-  const [other] = await sameServerElsewhere(options, connection, leaving);
+  const other = await sameServerElsewhere(options, connection, leaving);
   const basic = Buffer.from(`${credential.client_id}:${credential.client_secret}`).toString(
     'base64',
   );
@@ -393,7 +393,7 @@ async function withdrawGithub(
 }
 
 /**
- * The other connections, in any space and of any person, that sign in to the
+ * Whether another connection, in any space and of any person, signs in to the
  * same MCP server as this one, leaving out those of a space being removed. A
  * connection whose server is not known counts every MCP connection.
  */
@@ -401,22 +401,27 @@ async function sameServerElsewhere(
   options: RevocationOptions,
   connection: RevokedConnection,
   leaving: string | undefined,
-) {
+): Promise<boolean> {
   const server = (connection.configuration as { server?: { endpoint?: { url?: unknown } } } | null)
     ?.server?.endpoint?.url;
   const url = typeof server === 'string' ? server : null;
-  return options.sql<{ space_id: string; secret_ref: string }[]>`select space_id, secret_ref
-    from connection
+  const [other] = await options.sql`select 1 from connection
     where id <> ${connection.id} and provider = 'mcp' and status <> 'revoked'
       and secret_ref is not null
       and (${url}::text is null or configuration->'server'->'endpoint'->>'url' = ${url}::text)
-      and (${leaving ?? null}::text is null or space_id <> ${leaving ?? null}::text)`;
+      and (${leaving ?? null}::text is null or space_id <> ${leaving ?? null}::text)
+    limit 1`;
+  return Boolean(other);
 }
 
 /**
- * Whether another connection on the same MCP server signs in as the same
- * client. Its sealed copy is opened here only for its client id, which goes
- * nowhere; a copy that cannot be read counts as the same client.
+ * Whether another connection on the same MCP server may sign in as the same
+ * client, told from this connection's own client id alone: no other
+ * connection's sealed copy is opened for it. A client named by its metadata
+ * document has an address for its id, the same for every sign-in that uses
+ * it, so any other connection on the server counts. Any other id was issued to
+ * this sign-in by dynamic registration, or is a client the person registered
+ * themselves.
  */
 async function sameClientElsewhere(
   options: RevocationOptions,
@@ -424,17 +429,8 @@ async function sameClientElsewhere(
   clientId: string,
   leaving: string | undefined,
 ): Promise<boolean> {
-  for (const row of await sameServerElsewhere(options, connection, leaving)) {
-    const theirs = await options.secrets
-      .withSecret(
-        row.secret_ref,
-        row.space_id,
-        async (value) => mcpCredentials.parse(JSON.parse(value)).client_id,
-      )
-      .catch(() => clientId);
-    if (theirs === clientId) return true;
-  }
-  return false;
+  if (!/^https?:\/\//i.test(clientId)) return false;
+  return sameServerElsewhere(options, connection, leaving);
 }
 
 /**

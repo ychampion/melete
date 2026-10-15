@@ -845,12 +845,31 @@ withDb('rooms', () => {
     );
   }, 60_000);
 
-  test('a NUL in what is searched for is refused or finds nothing, never a server error', async () => {
+  test('a NUL in a query is refused as invalid, never a server error', async () => {
     const people = await send(world.bob.cookie, `/people?query=${encodeURIComponent('bob\u0000')}`);
     expect(people.status).toBe(400);
-    const search = await send(world.alice.cookie, `/search?q=${encodeURIComponent('a\u0000b')}`);
-    expect(search.status).toBe(200);
-    expect(((await search.json()) as { results: unknown[] }).results).toEqual([]);
+    const nul = encodeURIComponent('a\u0000b');
+    // Searches, and ids compared for equality, on every route alike.
+    for (const path of [
+      `/search?q=${nul}`,
+      `/runs?conversation_id=${nul}`,
+      `/connections?space_id=${nul}`,
+      `/actions?job_id=${nul}`,
+      `/operations?job_id=${nul}`,
+      `/principals?space_id=${nul}`,
+      `/search?${nul}=x`,
+    ]) {
+      const answer = await send(world.alice.cookie, path);
+      expect([
+        path,
+        answer.status,
+        ((await answer.json()) as { error?: { code?: string } }).error?.code,
+      ]).toEqual([path, 400, 'invalid_request']);
+    }
+    // The characters "%00" typed into a search are not a NUL.
+    const typed = await send(world.alice.cookie, `/search?q=${encodeURIComponent('%00')}`);
+    expect(typed.status).toBe(200);
+    expect(((await typed.json()) as { results: unknown[] }).results).toEqual([]);
   }, 60_000);
 
   test("a room's name is not a person's, so anyone may go by it", async () => {

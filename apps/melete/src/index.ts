@@ -368,6 +368,15 @@ export function createApp(deps: AppDeps) {
   // before sign-in, so an invite link and a guest's session meet the same answer.
   const multiplayer = multiplayerEnabled(deps.env);
   mountMultiplayerGate(app, multiplayer);
+  // No name, address, id or search holds a NUL, and the database refuses one in
+  // any text it is given: a query that carries one is refused here, for every
+  // route, as invalid request data, never answered with a server error.
+  app.use('*', async (c, next) => {
+    for (const [name, value] of new URL(c.req.url).searchParams)
+      if (name.includes('\u0000') || value.includes('\u0000'))
+        throw new ServiceError('invalid_request', 'Request data is invalid.', 400);
+    return next();
+  });
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
