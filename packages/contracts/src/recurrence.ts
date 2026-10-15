@@ -340,8 +340,10 @@ const offsetAt = (at: number, zone: string) =>
  */
 export function zonedInstant(local: LocalTime, zone: string): Date {
   const wall = asUtc(local);
-  const before = offsetAt(wall - 12 * 3_600_000, zone);
-  const after = offsetAt(wall + 12 * 3_600_000, zone);
+  // A day either side brackets the change in every zone. Offsets run from -12
+  // to +14 hours, so half a day is already past it in Auckland or Chatham.
+  const before = offsetAt(wall - 24 * 3_600_000, zone);
+  const after = offsetAt(wall + 24 * 3_600_000, zone);
   const fits = [...new Set([wall - before, wall - after])]
     .filter((at) => asUtc(zoneParts(at, zone)) === wall)
     .sort((a, b) => a - b);
@@ -455,7 +457,7 @@ function periodDays(rule: Recurrence, start: LocalTime, index: number): number[]
       } else if (rule.byMonthDay.length) {
         days = [];
         for (let month = 1; month <= 12; month++)
-          days.push(...daysOfMonth(rule, year, month, start));
+          days.push(...monthDays(year, month, rule.byMonthDay));
         if (rule.byDay.length) {
           // With no BYMONTH, a numbered day counts through the whole year.
           const allowed = daysInSpan(first, last, rule.byDay);
@@ -478,15 +480,38 @@ function periodDays(rule: Recurrence, start: LocalTime, index: number): number[]
 /** A rule with nothing for this many years of calendar is taken to have ended. */
 const EMPTY_YEARS = 12;
 
+/** The period holding `day` (a day number), counted as `periodSpan` counts them. */
+function periodHolding(rule: Recurrence, start: LocalTime, day: number): number {
+  switch (rule.freq) {
+    case 'DAILY':
+      return Math.floor((day - dayNumber(start.year, start.month, start.day)) / rule.interval);
+    case 'WEEKLY':
+      return Math.floor((day - periodSpan(rule, start, 0)[0]) / (7 * rule.interval));
+    case 'MONTHLY': {
+      const { year, month } = civil(day);
+      return Math.floor((year * 12 + month - (start.year * 12 + start.month)) / rule.interval);
+    }
+    case 'YEARLY':
+      return Math.floor((civil(day).year - start.year) / rule.interval);
+  }
+}
+
 /**
  * The rule's occurrences as instants, in order, from its start. It ends at
  * COUNT or UNTIL, and also once a dozen years pass with none (a rule for
  * February 30 never comes round).
+ *
+ * With `from`, times well before it are not worked out: a rule with no COUNT
+ * starts its search near `from`, and one with a COUNT only counts the days
+ * before it. What comes out from `from` on is the same either way (but for
+ * the dozen empty years, then counted from near `from`), and a daily rule
+ * started years ago stays as quick to ask as a new one.
  */
 export function* occurrences(
   rule: Recurrence,
   start: LocalTime,
   zone: string,
+  from?: Date,
 ): Generator<Date, void, undefined> {
   const startDay = dayNumber(start.year, start.month, start.day);
   const until =
@@ -495,12 +520,25 @@ export function* occurrences(
       : 'at' in rule.until
         ? rule.until.at.getTime()
         : zonedInstant(rule.until.local, zone).getTime();
+  // Two days before `from`'s UTC date: any local time that early, in any
+  // zone and after any daylight saving shift, is an instant before `from`.
+  const skipBefore = from ? Math.floor(from.getTime() / 86_400_000) - 2 : null;
+  const firstIndex =
+    skipBefore !== null && rule.count === null
+      ? Math.max(0, periodHolding(rule, start, skipBefore))
+      : 0;
   let produced = 0;
-  let lastFound = startDay;
-  for (let index = 0; ; index++) {
+  let lastFound = Math.max(startDay, periodSpan(rule, start, firstIndex)[0]);
+  for (let index = firstIndex; ; index++) {
     const days = periodDays(rule, start, index);
     for (const day of days) {
       if (day < startDay) continue;
+      if (skipBefore !== null && day < skipBefore) {
+        lastFound = day;
+        produced++;
+        if (rule.count !== null && produced >= rule.count) return;
+        continue;
+      }
       const date = civil(day);
       const at = zonedInstant(
         { ...date, hour: start.hour, minute: start.minute, second: start.second },
@@ -526,7 +564,7 @@ export function occurrencesAfter(
   count: number,
 ): Date[] {
   const out: Date[] = [];
-  for (const at of occurrences(rule, start, zone)) {
+  for (const at of occurrences(rule, start, zone, after)) {
     if (at.getTime() <= after.getTime()) continue;
     out.push(at);
     if (out.length >= count) break;
@@ -543,7 +581,7 @@ export function occurrenceBetween(
   to: Date,
 ): Date | null {
   let found: Date | null = null;
-  for (const at of occurrences(rule, start, zone)) {
+  for (const at of occurrences(rule, start, zone, from)) {
     if (at.getTime() > to.getTime()) break;
     if (at.getTime() > from.getTime()) found = at;
   }
@@ -593,6 +631,15 @@ function everyWords(interval: number, unit: string): string {
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
+/** The date an UNTIL instant falls on in the zone, or in UTC when the zone is not one. */
+function untilDate(at: Date, zone: string | undefined): LocalTime {
+  try {
+    return zoneParts(at.getTime(), zone ?? 'UTC');
+  } catch {
+    return zoneParts(at.getTime(), 'UTC');
+  }
+}
+
 /** The day-of-month part of a rule: "the 1st and 15th", "the first Monday", or null when it has no plain words. */
 function whichDays(rule: Recurrence, start: LocalTime): string | null {
   if (rule.byMonthDay.length && !rule.byDay.length)
@@ -614,8 +661,21 @@ function whichDays(rule: Recurrence, start: LocalTime): string | null {
  * March 15 at 9:00, 3 times". Anything else gets a neutral line, never a
  * wrong one.
  */
-export function recurrenceWords(rule: Recurrence, start: LocalTime): string {
-  const time = `at ${start.hour}:${String(start.minute).padStart(2, '0')}`;
+export function recurrenceWords(
+  rule: Recurrence,
+  start: LocalTime,
+  options: {
+    /** The schedule's zone, so an UNTIL given in UTC is said as the local date. */
+    zone?: string | undefined;
+    /** "9:00" and "17:00" (the default), or "9:00 AM" and "5:00 PM" where a page says times that way. */
+    clock?: '24h' | '12h';
+  } = {},
+): string {
+  const minutes = String(start.minute).padStart(2, '0');
+  const time =
+    options.clock === '12h'
+      ? `at ${start.hour % 12 || 12}:${minutes} ${start.hour < 12 ? 'AM' : 'PM'}`
+      : `at ${start.hour}:${minutes}`;
   const startWeekday = weekdayOf(dayNumber(start.year, start.month, start.day));
   const plainDays = rule.byDay.length > 0 && rule.byDay.every((day) => day.nth === null);
   const months = listWords(rule.byMonth.map((month) => MONTHS[month - 1] ?? ''));
@@ -632,10 +692,14 @@ export function recurrenceWords(rule: Recurrence, start: LocalTime): string {
       const days = weekdayWords(
         rule.byDay.length ? rule.byDay.map((day) => day.weekday) : [startWeekday],
       );
+      // "Every other Friday" is clear for one day; for several it would read
+      // as every other one of them, so the weeks are said apart.
+      const single = new Set(rule.byDay.map((day) => day.weekday)).size <= 1;
+      const on =
+        days === 'weekday' ? ' on weekdays' : days === 'day' ? ', every day,' : ` on ${days}`;
       if (rule.interval === 1) words = `Every ${days} ${time}`;
-      else if (rule.interval === 2 && days !== 'day') words = `Every other ${days} ${time}`;
-      else
-        words = `Every ${rule.interval} weeks on ${days === 'weekday' ? 'weekdays' : days === 'day' ? 'every day' : days} ${time}`;
+      else if (single && rule.interval === 2) words = `Every other ${days} ${time}`;
+      else words = `${capital(everyWords(rule.interval, 'week'))}${on} ${time}`;
       break;
     }
     case 'MONTHLY': {
@@ -677,13 +741,7 @@ export function recurrenceWords(rule: Recurrence, start: LocalTime): string {
   if (rule.count !== null) words += rule.count === 1 ? ', once' : `, ${rule.count} times`;
   if (rule.until) {
     const { year, month, day } =
-      'local' in rule.until
-        ? rule.until.local
-        : {
-            year: rule.until.at.getUTCFullYear(),
-            month: rule.until.at.getUTCMonth() + 1,
-            day: rule.until.at.getUTCDate(),
-          };
+      'local' in rule.until ? rule.until.local : untilDate(rule.until.at, options.zone);
     words += `, until ${MONTHS[month - 1]} ${day}, ${year}`;
   }
   return words;
@@ -707,6 +765,7 @@ export interface ScheduleTiming {
   cron?: string | undefined;
   rrule?: string | undefined;
   starts?: string | undefined;
+  timezone?: string | undefined;
 }
 
 /**

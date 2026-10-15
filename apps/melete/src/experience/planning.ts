@@ -467,7 +467,7 @@ export class ExperiencePlanning {
       schedule:
         spec.kind === 'schedule'
           ? spec.rrule !== undefined
-            ? `${scheduleWords(spec)} (${spec.timezone})`
+            ? `${scheduleWords(spec, { clock: '12h' })} (${spec.timezone})`
             : scheduleSentence(spec.cron ?? '', spec.timezone)
           : 'When the connected app has an update',
       enabled: row.enabled && !isTerminal(jobState.parse(state)),

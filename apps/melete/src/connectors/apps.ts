@@ -888,7 +888,9 @@ export function createAppsConnector(options: AppsOptions): Connector {
     const routines = rows.map((row) => ({
       routine_id: row.id,
       title: row.title,
-      schedule: row.spec?.cron ?? row.spec?.rrule ?? null,
+      // A rule is read from its start, so the start goes with it.
+      schedule:
+        row.spec?.cron ?? (row.spec?.rrule ? `${row.spec.rrule} from ${row.spec.starts}` : null),
       enabled: row.enabled,
       files: row.files,
     }));

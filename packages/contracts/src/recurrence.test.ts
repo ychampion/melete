@@ -277,6 +277,16 @@ describe('RFC 5545 example sequences', () => {
     ).toEqual(at9(['1996-11-05', '2000-11-07', '2004-11-02']));
   });
 
+  test('a numbered day of the year beside a day of the month counts through the year', () => {
+    // January 1 when it is the 53rd-from-last Thursday: a year that starts on a Thursday.
+    expect(local('FREQ=YEARLY;BYDAY=-53TH;BYMONTHDAY=1', '2026-01-01T09:00', 4)).toEqual([
+      '2026-01-01 09:00',
+      '2032-01-01 09:00',
+      '2037-01-01 09:00',
+      '2043-01-01 09:00',
+    ]);
+  });
+
   test('a month without the day is skipped, not moved', () => {
     expect(local('FREQ=MONTHLY;BYMONTHDAY=15,30;COUNT=5', '2007-01-15T09:00')).toEqual(
       at9(['2007-01-15', '2007-01-30', '2007-02-15', '2007-03-15', '2007-03-30']),
@@ -392,6 +402,24 @@ describe('time zones and daylight saving', () => {
     ]);
   });
 
+  test('zones twelve or more hours ahead of UTC change at the right moment', () => {
+    // New Zealand goes forward at 2:00 on September 27, 2026 and back at 3:00 on April 5.
+    const auckland = (day: number, month: number, hour: number) =>
+      zonedInstant(
+        { year: 2026, month, day, hour, minute: 30, second: 0 },
+        'Pacific/Auckland',
+      ).toISOString();
+    expect(auckland(27, 9, 2)).toBe('2026-09-26T14:30:00.000Z');
+    expect(auckland(5, 4, 2)).toBe('2026-04-04T13:30:00.000Z');
+    expect(auckland(5, 4, 1)).toBe('2026-04-04T12:30:00.000Z');
+    expect(first('FREQ=DAILY', '2026-09-25T02:30', 'Pacific/Auckland', 4)).toEqual([
+      '2026-09-24T14:30:00.000Z',
+      '2026-09-25T14:30:00.000Z',
+      '2026-09-26T14:30:00.000Z',
+      '2026-09-27T13:30:00.000Z',
+    ]);
+  });
+
   test('UNTIL as a local date includes that whole day', () => {
     expect(local('FREQ=DAILY;UNTIL=20261018', '2026-10-16T21:00')).toEqual([
       '2026-10-16 21:00',
@@ -415,6 +443,58 @@ describe('finding the next time', () => {
     expect(occurrencesAfter(rule, start, NEW_YORK, new Date('2026-12-01T00:00:00Z'), 1)).toEqual(
       [],
     );
+  });
+
+  test('asking from a later moment gives the times reading from the start would', () => {
+    const rules: [string, string][] = [
+      ['FREQ=DAILY', '2019-03-09T02:30'],
+      ['FREQ=DAILY;INTERVAL=3', '2020-02-29T23:45'],
+      ['FREQ=WEEKLY;INTERVAL=2;BYDAY=FR', '2021-01-01T09:00'],
+      ['FREQ=WEEKLY;INTERVAL=3;BYDAY=MO,SU;WKST=SU', '2021-06-13T07:15'],
+      ['FREQ=MONTHLY;BYDAY=-1FR', '2018-05-01T17:00'],
+      ['FREQ=MONTHLY;INTERVAL=5;BYMONTHDAY=31', '2017-01-31T09:00'],
+      ['FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29', '2016-02-29T09:00'],
+      ['FREQ=DAILY;COUNT=2500', '2020-01-01T01:30'],
+      ['FREQ=WEEKLY;BYDAY=TU,TH;UNTIL=20270301', '2024-01-02T09:00'],
+    ];
+    const moments = ['2024-11-03T06:30:00Z', '2026-10-15T12:00:00Z', '2027-02-28T23:00:00Z'];
+    for (const [rrule, starts] of rules) {
+      const read = readRecurrence(rrule, starts);
+      if (!read.ok) throw new Error(read.problem);
+      const { rule, start } = read.value;
+      for (const moment of moments) {
+        const after = new Date(moment);
+        const week = new Date(after.getTime() - 7 * 86_400_000);
+        const next: string[] = [];
+        let latest: string | null = null;
+        for (const at of occurrences(rule, start, NEW_YORK)) {
+          if (at.getTime() > week.getTime() && at.getTime() <= after.getTime())
+            latest = at.toISOString();
+          if (at.getTime() > after.getTime()) next.push(at.toISOString());
+          if (next.length >= 3) break;
+        }
+        const label = `${rrule} after ${moment}`;
+        expect([
+          label,
+          occurrencesAfter(rule, start, NEW_YORK, after, 3).map((at) => at.toISOString()),
+          occurrenceBetween(rule, start, NEW_YORK, week, after)?.toISOString() ?? null,
+        ]).toEqual([label, next, latest]);
+      }
+    }
+  });
+
+  test('a daily rule started long ago is as quick to ask as a new one', () => {
+    const read = readRecurrence('FREQ=DAILY', '1900-01-01T09:00');
+    if (!read.ok) throw new Error(read.problem);
+    const { rule, start } = read.value;
+    const now = new Date('2026-10-15T12:00:00Z');
+    const began = performance.now();
+    for (let wake = 0; wake < 10; wake++) {
+      occurrenceBetween(rule, start, NEW_YORK, new Date(now.getTime() - 7_200_000), now);
+      occurrencesAfter(rule, start, NEW_YORK, now, 6);
+    }
+    // Reading every day since 1900 took seconds a call.
+    expect(performance.now() - began).toBeLessThan(1000);
   });
 
   test('the occurrence a wake falls on', () => {
@@ -487,6 +567,14 @@ describe('in plain words', () => {
     expect(words('FREQ=WEEKLY;INTERVAL=3;BYDAY=MO,TH')).toBe(
       'Every 3 weeks on Monday and Thursday at 9:00',
     );
+    // Several days every other week is not every other one of those days.
+    expect(words('FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE,FR')).toBe(
+      'Every other week on Monday, Wednesday and Friday at 9:00',
+    );
+    expect(words('FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,TU,WE,TH,FR')).toBe(
+      'Every other week on weekdays at 9:00',
+    );
+    expect(words('FREQ=WEEKLY;INTERVAL=3;BYDAY=FR')).toBe('Every 3 weeks on Friday at 9:00');
     expect(words('FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR')).toBe('Every weekday at 9:00');
     expect(words('FREQ=DAILY')).toBe('Every day at 9:00');
     expect(words('FREQ=DAILY;INTERVAL=2')).toBe('Every other day at 9:00');
@@ -518,6 +606,23 @@ describe('in plain words', () => {
     expect(words('FREQ=DAILY;UNTIL=20261231T235959Z')).toBe(
       'Every day at 9:00, until December 31, 2026',
     );
+  });
+
+  test('a 12-hour clock where the page uses one, and UNTIL on its date in the zone', () => {
+    const read = readRecurrence(
+      'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR;UNTIL=20261231T230000Z',
+      '2026-10-16T17:30',
+    );
+    if (!read.ok) throw new Error(read.problem);
+    const { rule, start } = read.value;
+    expect(recurrenceWords(rule, start, { clock: '12h', zone: NEW_YORK })).toBe(
+      'Every other Friday at 5:30 PM, until December 31, 2026',
+    );
+    // 23:00 UTC on December 31 is already January 1 in Tokyo.
+    expect(recurrenceWords(rule, start, { zone: 'Asia/Tokyo' })).toBe(
+      'Every other Friday at 17:30, until January 1, 2027',
+    );
+    expect(words('FREQ=DAILY', '2026-10-16T00:05')).toBe('Every day at 0:05');
   });
 
   test('anything else gets a neutral line, never a wrong one', () => {

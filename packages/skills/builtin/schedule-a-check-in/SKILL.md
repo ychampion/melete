@@ -20,8 +20,8 @@ person's own time zone.
 
 A reminder is this job waiting: job.wait with kind "timer" and wake_at. A
 wait wakes once: for one that repeats, use run.start with repeat.cron. A cron
-cannot count weeks or months, so for every other week, every few months or a
-yearly date give repeat.rrule and repeat.starts: every other Friday at 9:00 is
+cannot count weeks, months or years, so for every other week, every few months
+or years give repeat.rrule and repeat.starts: every other Friday at 9:00 is
 "FREQ=WEEKLY;INTERVAL=2;BYDAY=FR", starts "2026-10-16T09:00". Say what
 will be checked when it wakes. Add a calendar entry for a
 reminder only when asked.
