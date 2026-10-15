@@ -1118,8 +1118,27 @@ withDb('installing each kind of connection through the API', () => {
       mcp: { ...body.mcp, url: 'http://mcp.example.test/mcp' },
     });
     expect(plainHttp.status).toBe(400);
-    expect(plainHttp.text).toContain('https');
+    expect(plainHttp.json).toMatchObject({
+      error: {
+        code: 'invalid_request',
+        message: 'A token is only sent to an https:// address. Use the server’s https:// address.',
+      },
+    });
     expectNoSecret(plainHttp.text);
+    // A token endpoint over plain http gets the same answer, not a field error.
+    const plainTokenUrl = await h.install({
+      ...body,
+      credentials: {
+        access_token: MCP_TOKEN,
+        refresh_token: 'kinds-refresh',
+        token_url: 'http://auth.example.test/token',
+      },
+    });
+    expect(plainTokenUrl.status).toBe(400);
+    expect(plainTokenUrl.json).toMatchObject({
+      error: { code: 'invalid_request', message: expect.stringContaining('https:// address') },
+    });
+    expectNoSecret(plainTokenUrl.text);
 
     const created = await h.install(body);
     expect(created.status).toBe(201);
@@ -1353,6 +1372,76 @@ withDb('installing each kind of connection through the API', () => {
     expect(hits).toBe(0);
     expect(checked.status).toBe(200);
     expect(((await checked.json()) as { check: { status: string } }).check.status).toBe('failing');
+  }, 120_000);
+
+  test('a room reaches an internal server the operator listed, and nothing else inside', async () => {
+    if (!h || !fixture) throw new Error('Postgres unavailable');
+    const bearer: string[] = [];
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request) {
+        bearer.push(request.headers.get('authorization') ?? '');
+        if (request.method === 'DELETE') return new Response(null, { status: 204 });
+        const message = (await request.json()) as { id?: number; method: string };
+        if (message.id === undefined) return new Response(null, { status: 202 });
+        const result =
+          message.method === 'initialize'
+            ? { protocolVersion: '2025-11-25', capabilities: { tools: {} } }
+            : {
+                tools: [
+                  { name: 'lookup', description: 'Fixture', inputSchema: { type: 'object' } },
+                ],
+              };
+        return Response.json({ jsonrpc: '2.0', id: message.id, result });
+      },
+    });
+    closers.push(() => server.stop(true));
+    const body = (roomId: string) => ({
+      provider: 'mcp',
+      label: 'Team server',
+      space_id: roomId,
+      credentials: { access_token: 'team-fixture-token' },
+      mcp: {
+        id: 'team',
+        url: `http://127.0.0.1:${server.port}/mcp`,
+        allowed_scopes: ['mcp_team.lookup'],
+        audience: 'owner',
+        tools: [
+          {
+            name: 'lookup',
+            alias: 'lookup',
+            required_scopes: ['mcp_team.lookup'],
+            effect_class: 'read',
+          },
+        ],
+      },
+    });
+    const madeRoom = await h.app.request('/rooms', h.as(h.cookie, { name: 'Team room' }));
+    expect(madeRoom.status).toBe(201);
+    const roomId = ((await madeRoom.json()) as { room: { id: string } }).room.id;
+    const saved = process.env.MELETE_PRIVATE_HOSTS;
+    try {
+      // A list that names another range leaves this server out of the room's reach.
+      process.env.MELETE_PRIVATE_HOSTS = '10.20.0.0/16, *.corp.internal';
+      const elsewhere = await h.install(body(roomId));
+      expect(elsewhere.status).toBe(400);
+      expect(elsewhere.json).toMatchObject({ error: { code: 'address_not_reachable' } });
+      expect(bearer).toEqual([]);
+
+      // Listed, the room installs it, the token goes over http, and it serves the room.
+      process.env.MELETE_PRIVATE_HOSTS = '127.0.0.1/32';
+      const created = await h.install(body(roomId));
+      expect(created.status).toBe(201);
+      const installed = connectionResponse.parse(created.json);
+      expect(installed.check?.code).toBe('ok');
+      expect(bearer).toContain('Bearer team-fixture-token');
+      expect(installed.connection).toMatchObject({ provider: 'mcp', status: 'active' });
+      expect((await h.revoke(installed.connection.id)).status).toBe(200);
+    } finally {
+      if (saved === undefined) delete process.env.MELETE_PRIVATE_HOSTS;
+      else process.env.MELETE_PRIVATE_HOSTS = saved;
+    }
   }, 120_000);
 
   test('a calendar service or mailbox at a private address is the setup owner’s alone', async () => {
