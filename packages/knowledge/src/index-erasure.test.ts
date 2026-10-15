@@ -10,7 +10,16 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { aRecord, createSpaceTemplate, fixedClock, IDS } from './fixtures.ts';
@@ -210,6 +219,64 @@ describe('an index written before forgotten text was erased', () => {
 
     SpaceIndex.open(paths).close();
 
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  /**
+   * Makes every index act as SQLite before 3.44 does, until restored: it
+   * cannot store FTS5's secure-delete, and it cannot read a full-text table
+   * that has it stored.
+   */
+  const actAsOlderSqlite = () => {
+    const { run, query } = Database.prototype;
+    const refuse = (db: Database, sql: string) => {
+      if (/^\s*INSERT\b/i.test(sql) && sql.includes("'secure-delete'"))
+        throw new Error('SQL logic error');
+      if (!/\brecord_fts\b/.test(sql) || /^\s*(CREATE|DROP)\b/i.test(sql)) return;
+      let stored: unknown = null;
+      try {
+        stored = query.call(db, "SELECT v FROM record_fts_config WHERE k = 'secure-delete'").get();
+      } catch {
+        // No full-text table yet.
+      }
+      if (stored) throw new Error("invalid fts5 file format (found 5, expected 4) - run 'rebuild'");
+    };
+    Database.prototype.run = function (this: Database, ...args: Parameters<Database['run']>) {
+      refuse(this, String(args[0]));
+      return run.apply(this, args);
+    } as Database['run'];
+    Database.prototype.query = function (this: Database, ...args: Parameters<Database['query']>) {
+      refuse(this, String(args[0]));
+      return query.apply(this, args);
+    } as Database['query'];
+    return {
+      restore: () => {
+        Database.prototype.run = run;
+        Database.prototype.query = query;
+      },
+    };
+  };
+
+  test('is built again when this SQLite cannot read it', () => {
+    // Written where secure-delete is stored with the table, then opened where
+    // SQLite is too old to read such a table.
+    buildIndex(paths).index.close();
+    const older = actAsOlderSqlite();
+    try {
+      const { index, rebuilt } = openIndex(paths);
+      try {
+        expect(rebuilt).toBe(true);
+        expect(index.search('bun')).toHaveLength(1);
+        expect(index.search(MARKER)).toHaveLength(1);
+        // Without secure-delete, a removal still takes the words out of the file.
+        index.remove(IDS.landlord);
+        expect(index.search(MARKER)).toEqual([]);
+      } finally {
+        index.close();
+      }
+    } finally {
+      older.restore();
+    }
     expect(copiesOnDisk()).toBe(0);
   });
 
@@ -494,7 +561,7 @@ describe('forgetting at scale', () => {
   });
 
   test.skipIf(process.platform === 'win32')(
-    'a log another reader holds keeps the mark until a later removal can empty it',
+    'a removal does not wait for a log another reader holds, and keeps the mark until a later removal can empty it',
     () => {
       const index = SpaceIndex.open(paths);
       const reader = new Database(paths.indexDb);
@@ -502,8 +569,14 @@ describe('forgetting at scale', () => {
         index.rebuild([...kept, ...forgotten]);
         reader.run('BEGIN');
         reader.query('SELECT count(*) FROM record').get();
-        // The checkpoint waits out the busy timeout, then gives up while the reader holds on.
+        // The log cannot be emptied while the reader holds on; the removal
+        // must not sit out the lock timeout waiting for it.
+        const started = performance.now();
         index.removeMany(forgottenIds);
+        expect(performance.now() - started).toBeLessThan(1000);
+        // The rows are gone at once; only emptying the log is left for later.
+        expect(index.has(forgottenIds[0] as string)).toBe(false);
+        expect(index.search(MARKER)).toEqual([]);
         expect(index.erasePending()).toBe(true);
         reader.run('COMMIT');
         index.removeMany([]);
@@ -567,6 +640,82 @@ describe('forgetting at scale', () => {
     }
     expect(copiesOnDisk()).toBe(0);
   });
+
+  test('a removal never tries a rewrite the disk has no room for, and owes it instead', () => {
+    const index = SpaceIndex.open(paths);
+    const vacuums = countVacuums();
+    const free = indexDisk.free;
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      indexDisk.free = () => 4096;
+      index.removeMany(forgottenIds);
+      // The rows go at once; only the rewrite waits for room.
+      expect(index.has(forgottenIds[0] as string)).toBe(false);
+      expect(index.search(MARKER)).toEqual([]);
+      expect(index.erasePending()).toBe(true);
+      // Replacing a record takes its old words out the same way.
+      index.upsert(indexed('k_kept_1', 'Note 1', 'changed words'));
+      expect(vacuums.count()).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('Not enough disk to finish erasing');
+      indexDisk.free = free;
+      index.removeMany([]);
+      expect(vacuums.count()).toBe(1);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      indexDisk.free = free;
+      warn.mockRestore();
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('deleting a record is erased by its rebuild, without a rewrite of the whole file first', async () => {
+    const { index } = buildIndex(paths);
+    const vacuums = countVacuums();
+    try {
+      await hardDelete(paths, index, findSecret(), { reason: 'never keep this', by: 'zara', now });
+      expect(vacuums.count()).toBe(0);
+      expect(index.search(MARKER)).toEqual([]);
+      expect(index.search('bun')).toHaveLength(1);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'a deletion whose log another reader holds is still owed, and finished later',
+    async () => {
+      const { index } = buildIndex(paths);
+      const reader = new Database(paths.indexDb);
+      try {
+        reader.run('BEGIN');
+        reader.query('SELECT count(*) FROM record').get();
+        const started = performance.now();
+        await hardDelete(paths, index, findSecret(), {
+          reason: 'never keep this',
+          by: 'zara',
+          now,
+        });
+        expect(performance.now() - started).toBeLessThan(2000);
+        expect(index.search(MARKER)).toEqual([]);
+        expect(index.erasePending()).toBe(true);
+        reader.run('COMMIT');
+        index.removeMany([]);
+        expect(index.erasePending()).toBe(false);
+        expect(copiesOnDisk()).toBe(0);
+      } finally {
+        reader.close();
+        index.close();
+      }
+    },
+    30_000,
+  );
 
   test('an open never tries a rewrite the disk has no room for', () => {
     const first = SpaceIndex.open(paths);

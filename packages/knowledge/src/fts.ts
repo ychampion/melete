@@ -116,19 +116,21 @@ const userVersion = (db: Database): number =>
   db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0;
 
 /**
- * Wipe a file written by an older build. Dropping the tables zeroes their pages,
- * because secure_delete is on by now; VACUUM then rewrites the file, which
- * clears the pages freed before that, and those still hold old text.
+ * Wipe a file written by an older build, or one this SQLite cannot read.
+ * Dropping the tables zeroes their pages, because secure_delete is on by now;
+ * VACUUM then rewrites the file, which clears the pages freed before that, and
+ * those still hold old text.
  *
- * Two processes can open the same old file at once. The version is checked
- * again under the write lock, so a file another process has already brought up
- * to date, and perhaps refilled, is left alone. It is written only after VACUUM,
- * so a wipe that is cut short runs again on the next open.
+ * Two processes can open the same old file at once. Whether it needs wiping is
+ * asked again under the write lock, so a file another process has already
+ * brought up to date, and perhaps refilled, is left alone. The version is
+ * written only after VACUUM, so a wipe that is cut short runs again on the next
+ * open.
  */
-function wipeOlderIndex(db: Database): void {
+function wipeIndex(db: Database, needed: () => boolean): void {
   const dropped = db
     .transaction(() => {
-      if (userVersion(db) === INDEX_SCHEMA_VERSION) return false;
+      if (!needed()) return false;
       db.run(DROP);
       return true;
     })
@@ -137,6 +139,27 @@ function wipeOlderIndex(db: Database): void {
   db.run('VACUUM');
   db.run(`PRAGMA user_version = ${INDEX_SCHEMA_VERSION}`);
 }
+
+/**
+ * Whether this SQLite can read the full-text table. Before 3.44 it cannot read
+ * one that has secure-delete stored with it (see `eraseTermsOnDelete`), and
+ * reports the file format as invalid. That happens when an index written on a
+ * newer SQLite is opened on an older one; the index is derived, so it is wiped
+ * and built again rather than left failing every search.
+ */
+function readsFullText(db: Database): boolean {
+  try {
+    db.query('SELECT rowid FROM record_fts LIMIT 1').get();
+    return true;
+  } catch (error) {
+    if (/invalid fts5 file format/i.test((error as Error).message)) return false;
+    throw error;
+  }
+}
+
+/** Another connection holds a lock this one would have to wait for. */
+const isBusy = (error: unknown): boolean =>
+  String((error as { code?: unknown } | null)?.code ?? '').startsWith('SQLITE_BUSY');
 
 /**
  * Turn on FTS5's secure-delete, which takes a deleted record's words out of the
@@ -205,14 +228,19 @@ export class SpaceIndex {
     db.run('PRAGMA journal_mode = WAL');
     // A deleted row is overwritten with zeros, not left in the file as free space.
     db.run('PRAGMA secure_delete = ON');
-    const wiped = userVersion(db) !== INDEX_SCHEMA_VERSION;
-    if (wiped) wipeOlderIndex(db);
+    const outdated = userVersion(db) !== INDEX_SCHEMA_VERSION;
+    if (outdated) wipeIndex(db, () => userVersion(db) !== INDEX_SCHEMA_VERSION);
     db.run(SCHEMA);
+    const unreadable = !readsFullText(db);
+    if (unreadable) {
+      wipeIndex(db, () => !readsFullText(db));
+      db.run(SCHEMA);
+    }
     const index = new SpaceIndex(db, space, eraseTermsOnDelete(db));
     // A removal whose rewrite failed (a full disk) or never ran (the process
     // stopped) is finished now.
     if (index.erasePending()) index.finishPendingErase();
-    else if (wiped) index.flush();
+    else if (outdated || unreadable) index.flush();
     return index;
   }
 
@@ -233,12 +261,17 @@ export class SpaceIndex {
       // of a large space take minutes.
       this.db.run(DROP);
       this.db.run(SCHEMA);
-      if (pending) this.markErasePending();
+      // The zeroed pages reach the file only once the log is emptied into it,
+      // so whatever the rebuild dropped is owed until then.
+      this.markErasePending();
       this.erasesTerms = eraseTermsOnDelete(this.db);
       for (const record of records) this.insert(record);
     })();
+    // An older erase needs the file rewritten. The rebuild's own needs only
+    // the log emptied, and a reader that keeps it from emptying leaves the
+    // mark for a later try rather than holding this up.
     if (pending) this.finishPendingErase();
-    else this.flush();
+    else this.withoutWaiting(() => this.settleErase());
   }
 
   /**
@@ -257,11 +290,42 @@ export class SpaceIndex {
    */
   private finishPendingErase(): void {
     if (!this.roomToRewrite()) return;
-    this.db.run('PRAGMA busy_timeout = 0');
     try {
-      this.afterRemoval();
+      this.withoutWaiting(() => this.afterRemoval());
     } catch {
       // Still owed; see above.
+    }
+  }
+
+  /**
+   * The erase a removal owes for the rows it just deleted. The rows are gone
+   * whatever happens here; this takes their words out of the file. A failure
+   * to rewrite reaches the caller. Two things leave the erase owed instead,
+   * for a later open or removal to finish: a disk without room for the
+   * rewrite, which it would fill for everything else on it, and another
+   * connection still reading the log, which is not waited for.
+   */
+  private eraseRemoved(): void {
+    if (!this.roomToRewrite()) {
+      console.warn(
+        `Not enough disk to finish erasing removed records from the search index of space "${this.space}". Their rows are gone; their words are cleared from the file once there is room.`,
+      );
+      return;
+    }
+    this.withoutWaiting(() => this.afterRemoval());
+  }
+
+  /**
+   * Run part of an erase without waiting for another connection's lock. A
+   * lock held elsewhere ends it early with the mark left set; any other
+   * failure is thrown.
+   */
+  private withoutWaiting(work: () => void): void {
+    this.db.run('PRAGMA busy_timeout = 0');
+    try {
+      work();
+    } catch (error) {
+      if (!isBusy(error)) throw error;
     } finally {
       this.db.run(`PRAGMA busy_timeout = ${BUSY_MS}`);
     }
@@ -305,7 +369,7 @@ export class SpaceIndex {
     // Replacing a record takes its old words out, and that erase is this
     // write's own. Adding one owes nothing: it only finishes an older erase
     // when it can, and is never failed by one.
-    if (replaced) this.afterRemoval();
+    if (replaced) this.eraseRemoved();
     else if (this.erasePending()) this.finishPendingErase();
   }
 
@@ -322,7 +386,10 @@ export class SpaceIndex {
    * Remove several records in one go. Their words leave the file before this
    * returns, as with `remove`, but the file is rewritten once for the whole
    * set rather than once per record. On a large space that turns most of a
-   * minute, with nothing else able to run, into a second or two.
+   * minute, with nothing else able to run, into a second or two. On a disk
+   * without room for the rewrite, or while another connection reads the log,
+   * the rows still go at once and the rest is left to a later open or removal
+   * (see `eraseRemoved`).
    */
   removeMany(ids: readonly string[]): void {
     const removed = this.db.transaction(() => this.deleteRows(ids))();
@@ -330,7 +397,7 @@ export class SpaceIndex {
     // to delete (a retry after a rewrite that failed finds the rows gone), the
     // erase still owed is finished as an open finishes it, so a retry neither
     // fails nor fills the disk again for as long as there is no room for it.
-    if (removed) this.afterRemoval();
+    if (removed) this.eraseRemoved();
     else if (this.erasePending()) this.finishPendingErase();
   }
 
@@ -465,6 +532,11 @@ export class SpaceIndex {
   private afterRemoval(): void {
     if (!this.erasesTerms) this.db.run("INSERT INTO record_fts (record_fts) VALUES ('optimize')");
     this.db.run('VACUUM');
+    this.settleErase();
+  }
+
+  /** Empty the log into the file, then clear the erase-pending mark; see `afterRemoval`. */
+  private settleErase(): void {
     if (!this.flush()) return;
     this.db.run('DELETE FROM meta WHERE key = ?', [ERASE_PENDING]);
     this.flush();
