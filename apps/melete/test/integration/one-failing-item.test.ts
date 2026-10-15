@@ -19,10 +19,10 @@ import type { MarkdownViews } from '../../src/memory/markdown.ts';
 import { startJobRecompute } from '../../src/memory/recompute.ts';
 import type { RestrictionJournal } from '../../src/memory/restore.ts';
 import { type MemoryServiceOptions, runDerivedWork } from '../../src/memory/service.ts';
-import { ItemFailures } from '../../src/ops/item-failures.ts';
+import { ItemFailures, stuckItems } from '../../src/ops/item-failures.ts';
 import type { PrincipalService } from '../../src/principals/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { SituationService } from '../../src/situations/service.ts';
+import { CHECK_SECONDS, SituationService } from '../../src/situations/service.ts';
 import { type RemovalDeps, SpaceRemovalService } from '../../src/spaces/removal.ts';
 import type { SpaceRemovalRow } from '../../src/spaces/schema.ts';
 import type { BlobStore } from '../../src/storage/blob.ts';
@@ -238,6 +238,79 @@ withDb('one item that keeps failing', () => {
     }
   });
 
+  test('a check that fails after outliving its claim leaves the claim of the sweep that took over', async () => {
+    const db = required(handle);
+    const ownerId = await installationOwner(db.sql);
+    const spaceId = newId('sp');
+    await db.sql`insert into space (id, name, git_path) values (${spaceId}, 'Clocks', ${`test/${spaceId}`})`;
+    const id = newId('clk');
+    await db.sql`insert into clock (id, space_id, principal_id, rule, subject_key, title,
+        due_at, lead_s, fire_at, "check")
+      values (${id}, ${spaceId}, ${ownerId}, 'deadline.at_risk', 'subject:slow', 'Due',
+        ${new Date(Date.now() + 3_600_000).toISOString()}::timestamptz, 3600,
+        ${new Date(Date.now() - 60_000).toISOString()}::timestamptz, '{}'::jsonb)`;
+    const deps = {
+      jobs: required(jobs),
+      triggers: { registerWait: async () => {} } as never,
+      detectors: false,
+    };
+    // The second sweep runs once the first one's claim has run out.
+    const slow = new SituationService(deps);
+    const later = new SituationService({
+      ...deps,
+      now: () => Date.now() + (CHECK_SECONDS + 10) * 1000,
+    });
+    const gate = () => {
+      let open = () => {};
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return { open, opened };
+    };
+    const [slowIn, slowOut, laterIn, laterOut] = [gate(), gate(), gate(), gate()];
+    type Checks = { check: (entry: { id: string }) => Promise<string> };
+    const slowCheck = spyOn(slow as unknown as Checks, 'check').mockImplementation(
+      async (entry) => {
+        if (entry.id !== id) return 'deferred';
+        slowIn.open();
+        await slowOut.opened;
+        throw new Error('the reading took too long');
+      },
+    );
+    const laterCheck = spyOn(later as unknown as Checks, 'check').mockImplementation(
+      async (entry) => {
+        if (entry.id !== id) return 'deferred';
+        laterIn.open();
+        await laterOut.opened;
+        return 'deferred';
+      },
+    );
+    const claim = async () => {
+      const [row] = await db.sql`select state, claimed_until from clock where id = ${id}`;
+      return { state: row?.state, until: new Date(String(row?.claimed_until)).getTime() };
+    };
+    let first: Promise<unknown> = Promise.resolve();
+    let second: Promise<unknown> = Promise.resolve();
+    try {
+      first = slow.sweep();
+      await slowIn.opened;
+      second = later.sweep();
+      await laterIn.opened;
+      const taken = await claim();
+      expect(taken.state).toBe('checking');
+      // The first check now fails, while the second sweep holds the clock.
+      slowOut.open();
+      await first;
+      expect(await claim()).toEqual(taken);
+    } finally {
+      slowOut.open();
+      laterOut.open();
+      await Promise.allSettled([first, second]);
+      slowCheck.mockRestore();
+      laterCheck.mockRestore();
+    }
+  });
+
   test("a routine whose schedule cannot be registered never stops the other routines' schedules", async () => {
     const triggers = new TriggerService(required(jobs), required(runner));
     const scope = await memorySpace();
@@ -258,6 +331,40 @@ withDb('one item that keeps failing', () => {
     expect(keys).not.toContain(broken);
     // The routine just saved still hears its own error.
     await expect(triggers.syncSchedules(broken)).rejects.toThrow();
+  });
+
+  test('a schedule whose removal failed is no longer stuck once it is removed', async () => {
+    const triggers = new TriggerService(required(jobs), required(runner));
+    const boss = required(queue).boss;
+    const scope = await memorySpace();
+    const work = await required(jobs).create({
+      space_id: scope.spaceId,
+      title: 'Routines',
+      objective: 'Routines',
+    });
+    const stopped = newId('trg');
+    await required(handle).sql`insert into trigger (id, job_id, kind, spec) values
+      (${stopped}, ${work.id}, 'schedule', ${JSON.stringify({ kind: 'schedule', cron: '0 9 * * *', timezone: 'UTC' })}::jsonb)`;
+    await triggers.syncSchedules();
+    const keys = async () =>
+      (await boss.getSchedules(QUEUES.triggerSchedule)).map((schedule) => schedule.key);
+    expect(await keys()).toContain(stopped);
+    await required(handle).sql`update trigger set enabled = false where id = ${stopped}`;
+    const unschedule = boss.unschedule.bind(boss);
+    const refused = spyOn(boss, 'unschedule').mockImplementation(async (name, key) => {
+      if (key === stopped) throw new Error('the queue refused');
+      return unschedule(name, key);
+    });
+    const listed = () => stuckItems().filter((item) => item.id === stopped);
+    try {
+      for (let i = 0; i < 3; i++) await triggers.syncSchedules();
+      expect(listed()).toMatchObject([{ pass: 'routine schedules', failures: 3 }]);
+    } finally {
+      refused.mockRestore();
+    }
+    await triggers.syncSchedules();
+    expect(await keys()).not.toContain(stopped);
+    expect(listed()).toEqual([]);
   });
 
   test('blob collection deletes the blobs after one it cannot delete', async () => {

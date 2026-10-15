@@ -306,6 +306,7 @@ export class SituationService {
   private readonly failures = new ItemFailures('situation checks', {
     firstMs: 60_000,
     maxMs: 60 * 60_000,
+    now: () => this.now(),
   });
 
   constructor(readonly deps: SituationDeps) {}
@@ -1336,11 +1337,21 @@ export class SituationService {
           this.failures.succeeded(entry.id);
         } catch (error) {
           const retryAt = this.failures.failed(entry.id, error, `${entry.id} in ${entry.spaceId}`);
-          await this.db
-            .update(clock)
-            .set({ claimedUntil: new Date(retryAt) })
-            .where(and(eq(clock.id, entry.id), eq(clock.state, 'checking')))
-            .catch(() => {});
+          // Only while the claim is still this sweep's: a check that outlived
+          // it may find another sweep holding the clock, whose claim stays.
+          if (entry.claimedUntil)
+            await this.db
+              .update(clock)
+              .set({ claimedUntil: new Date(retryAt) })
+              .where(
+                and(
+                  eq(clock.id, entry.id),
+                  eq(clock.state, 'checking'),
+                  eq(clock.fireAt, entry.fireAt),
+                  eq(clock.claimedUntil, entry.claimedUntil),
+                ),
+              )
+              .catch(() => {});
         }
       }
       if (due.length < 20) break;

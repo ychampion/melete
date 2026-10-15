@@ -22,7 +22,8 @@ export async function sweepStagedWrites(
   spacesRoot: string,
   now = Date.now(),
   days = STAGED_WRITE_DAYS,
-  failures = stagedSweepFailures(),
+  // A sweep run once on its own: kept out of the health detail, which reads the loop's.
+  failures = stagedSweepFailures(undefined, false),
 ): Promise<number> {
   let spaces: string[];
   try {
@@ -48,10 +49,11 @@ export async function sweepStagedWrites(
 }
 
 /** Tried again on the very next sweep; only the log and the health detail are spared. */
-function stagedSweepFailures(say?: (line: string) => void) {
+function stagedSweepFailures(say?: (line: string) => void, reported = true) {
   return new ItemFailures('staged write sweep', {
     firstMs: 60 * 60_000,
     maxMs: 60 * 60_000,
+    reported,
     ...(say ? { say } : {}),
   });
 }
