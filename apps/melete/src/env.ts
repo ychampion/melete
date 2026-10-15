@@ -1166,7 +1166,7 @@ export const envSchema = variables.transform((value, context) => {
       context.addIssue({
         code: 'custom',
         path: ['MELETE_PRIVATE_HOSTS'],
-        message: `${formatRange(overlap)} overlaps MELETE_NETWORK_POOL (${value.MELETE_NETWORK_POOL}), the range Melete's own computers take; list a narrower range, or move the pool`,
+        message: `${formatRange(overlap)} overlaps MELETE_NETWORK_POOL (${value.MELETE_NETWORK_POOL}), the range Melete's own computers take; list a range outside it, or move the pool`,
       });
   } catch {
     // Either setting is already refused on its own.

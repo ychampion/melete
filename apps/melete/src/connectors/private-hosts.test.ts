@@ -69,6 +69,17 @@ describe('the operator’s list of internal hosts', () => {
     expect(inPrivateRange('10.20.0.1', NO_PRIVATE_HOSTS)).toBe(false);
   });
 
+  test('a range written as IPv4-mapped IPv6 is the IPv4 range it carries, held to the same limits', () => {
+    const mapped = parsePrivateHosts('::ffff:10.20.0.0/112, ::ffff:192.168.7.9');
+    expect(mapped.ranges.map(formatRange)).toEqual(['10.20.0.0/16', '192.168.7.9/32']);
+    for (const address of ['10.20.0.5', '::ffff:10.20.0.5', '192.168.7.9'])
+      expect([address, inPrivateRange(address, mapped)]).toEqual([address, true]);
+    expect(inPrivateRange('10.21.0.5', mapped)).toBe(false);
+    // Every IPv4 address at once is still too wide, however it is written.
+    expect(() => parsePrivateHosts('::ffff:0:0/96')).toThrow('covers too much; name a range of /8');
+    expect(() => parsePrivateHosts('::ffff:10.20.0.1/112')).toThrow('host bits set');
+  });
+
   test('a host is listed by its name, by a wildcard above it, or as an address in a range', () => {
     const hosts = parsePrivateHosts('mcp.corp.internal, *.tools.corp.internal, 10.20.0.0/16');
     for (const host of [

@@ -465,7 +465,10 @@ describe('internal hosts everyone may reach', () => {
     const overlapping = readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8' });
     expect(overlapping.ok).toBe(false);
     if (!overlapping.ok) expect(overlapping.issues.join('\n')).toContain('MELETE_NETWORK_POOL');
-    expect(readEnv({ MELETE_PRIVATE_HOSTS: '10.215.3.0/24' }).ok).toBe(false);
+    const inside = readEnv({ MELETE_PRIVATE_HOSTS: '10.215.3.0/24' });
+    expect(inside.ok).toBe(false);
+    if (!inside.ok) expect(inside.issues.join('\n')).toContain('list a range outside it');
+    expect(readEnv({ MELETE_PRIVATE_HOSTS: '::ffff:10.215.3.0/120' }).ok).toBe(false);
     expect(readEnv({ MELETE_PRIVATE_HOSTS: '10.20.0.0/16' }).ok).toBe(true);
     expect(
       readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8', MELETE_NETWORK_POOL: '172.30.0.0/16' }).ok,

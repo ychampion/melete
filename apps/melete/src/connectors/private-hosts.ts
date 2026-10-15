@@ -106,19 +106,28 @@ function parseRange(entry: string): Range | string {
   if (rest.length) return `"${entry}" is not an address range`;
   const family = isIP(base);
   if (!family || base.includes('%')) return `"${entry}" is not an address range`;
-  const value = family === 4 ? ipv4Number(base) : ipv6Number(base);
+  let value = family === 4 ? ipv4Number(base) : ipv6Number(base);
   if (value === undefined) return `"${entry}" is not an address range`;
-  const width = bitsOf(family as 4 | 6);
   if (bits !== undefined && !/^\d{1,3}$/.test(bits))
     return `"${entry}" has no usable prefix length`;
-  const prefix = bits === undefined ? width : Number(bits);
+  let width = bitsOf(family as 4 | 6);
+  let prefix = bits === undefined ? width : Number(bits);
   if (prefix > width) return `"${entry}" has a prefix longer than /${width}`;
-  const widest = WIDEST[family as 4 | 6];
+  let kind = family as 4 | 6;
+  // An answer written as ::ffff:a.b.c.d is matched as the IPv4 address it
+  // carries, so a range written that way is held to the IPv4 rules too.
+  if (kind === 6 && prefix >= 96 && value >> 32n === 0xffffn) {
+    kind = 4;
+    value &= 0xffffffffn;
+    prefix -= 96;
+    width = 32;
+  }
+  const widest = WIDEST[kind];
   if (prefix < widest) return `"${entry}" covers too much; name a range of /${widest} or narrower`;
   const hostBits = BigInt(width - prefix);
   if ((value & ((1n << hostBits) - 1n)) !== 0n)
     return `"${entry}" has host bits set; write the range from its first address`;
-  return { family: family as 4 | 6, base: value, prefix };
+  return { family: kind, base: value, prefix };
 }
 
 /**
