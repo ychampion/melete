@@ -25,7 +25,7 @@ import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -261,11 +261,7 @@ export function triageModelSource(options: {
   const setting = options.env.MELETE_MODEL_TRIAGE?.trim();
   const pinned =
     setting && setting !== 'off' ? parseModelChoice(setting, 'MELETE_MODEL_TRIAGE') : null;
-  const side = serviceModelSource({
-    env: options.env,
-    settings: options.settings,
-    fast: options.routing.fast,
-  });
+  const side = sideCallSource('triage', options);
   return {
     async current(spaceId) {
       if (setting === 'off') return null;

@@ -1,12 +1,13 @@
 /**
  * Before an attempt starts, the privacy router may need the person: a
  * conversation that must stay private has no local model to stay on. The
- * engine is not started; the attempt ends waiting for their answer with one
+ * attempt is not started, so its engine is told nothing (one got ready ahead
+ * of it is given up); the attempt ends waiting for their answer with one
  * quick question, and nothing has been sent anywhere.
  *
  * The check fails closed. It is the only place a job's own words are judged
  * for a sensitive topic before they reach the gateway, so when it cannot
- * finish, the engine is not started either: the attempt ends waiting, the
+ * finish, the attempt is not started either: the attempt ends waiting, the
  * person is told plainly that nothing was sent, and their next message tries
  * again.
  */

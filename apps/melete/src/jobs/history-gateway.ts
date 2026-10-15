@@ -25,7 +25,7 @@ import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -336,11 +336,7 @@ export function historyModelSource(options: {
   settings?: ModelSettingsService;
   routing: ModelRouting;
 }): HistoryModelSource {
-  const side = serviceModelSource({
-    env: options.env,
-    settings: options.settings,
-    fast: options.routing.fast,
-  });
+  const side = sideCallSource('summary', options);
   return {
     async current(spaceId) {
       if (options.settings) {

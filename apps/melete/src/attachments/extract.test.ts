@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { deflateRawSync } from 'node:zlib';
+import { ATTACHMENT_ACCEPT, ATTACHMENT_TYPES_SENTENCE, attachmentKindFor } from '@melete/contracts';
 import { extractText, looksLike, UnreadableFile, zipEntries, zipText } from './extract.ts';
 import { docxWith, pdfWith, TINY_PNG, xlsxWith, zipOf } from './fixtures.ts';
 
@@ -94,5 +95,39 @@ describe('the words in a file', () => {
         size: 1,
       }),
     ).toThrow(UnreadableFile);
+  });
+});
+
+describe('code and data files', () => {
+  // The types browsers give these files, or none at all.
+  const files: Array<[string, string, string]> = [
+    ['script.py', 'text/x-python', 'print("hello")\n'],
+    ['data.json', 'application/json', '{"rows": [1, 2, 3]}\n'],
+    ['index.ts', 'video/mp2t', 'export const answer = 42;\n'],
+    ['app.js', 'text/javascript', 'console.log(1);\n'],
+    ['config.yaml', 'application/yaml', 'name: melete\n'],
+    ['config.yml', '', 'name: melete\n'],
+    ['pyproject.toml', 'application/toml', '[project]\nname = "x"\n'],
+    ['run.sh', 'application/x-sh', 'echo hi\n'],
+    ['query.sql', 'application/sql', 'select 1;\n'],
+    ['feed.xml', 'application/xml', '<feed/>\n'],
+    ['settings.ini', '', '[main]\nkey = value\n'],
+  ];
+
+  test('are taken as text files and read for their words', async () => {
+    for (const [name, type, body] of files) {
+      const kind = attachmentKindFor(name, type);
+      expect(kind).toEqual({ kind: 'text', type: 'text/plain' });
+      const bytes = new TextEncoder().encode(body);
+      expect(looksLike('text', bytes, 'text/plain')).toBe(true);
+      expect((await extractText('text', bytes)).text).toBe(body.trim());
+    }
+    expect(ATTACHMENT_ACCEPT.split(',')).toContain('.py');
+    expect(ATTACHMENT_TYPES_SENTENCE).toContain('.json');
+  });
+
+  test('still need to be text: a binary file with a code name is not read', () => {
+    expect(looksLike('text', Uint8Array.from([0x7b, 0x00, 0x7d]), 'text/plain')).toBe(false);
+    expect(attachmentKindFor('archive.zip', 'application/zip')).toBeNull();
   });
 });

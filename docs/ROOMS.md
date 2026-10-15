@@ -245,10 +245,19 @@ only ones its requests use.
 
 Everything anyone says in a room's threads becomes the room's memory, under the
 name of the person who said it. Everyone in the room sees it, with whose words
-each detail rests on (`GET /rooms/{id}/memory`). A room's owner can forget any
-detail, and anyone can forget a detail that came from their own words alone, in
-the room or in plain words ("forget that"). Deleting one's own message takes its
-words out of the thread, the request it asked and the room's memory.
+each detail rests on (`GET /rooms/{id}/memory`).
+
+That includes who is taking on what and by when ("I'm taking the vendor
+contract review, done by Thursday"), which a personal chat would treat as one
+week's work and not keep. Anyone in the room can ask "who's on the vendor
+contract?" later, in any of its threads, and the agent reads the detail with
+the name of the person who said it. It stays in that room: other rooms and
+each person's own memory never see it.
+
+A room's owner can forget any detail, and anyone can forget a detail that came
+from their own words alone, in the room or in plain words ("forget that").
+Deleting one's own message takes its words out of the thread, the request it
+asked and the room's memory.
 
 A person can share a detail from their own memory into a room
 (`POST /rooms/{id}/shares`). The room reads it from the person's memory as it

@@ -34,7 +34,7 @@ import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -484,7 +484,7 @@ export function configuredVoiceCompanion(
     model: env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, connected.signIn),
     // An aside is short and must come back quickly: the fast model when there is one.
-    source: serviceModelSource({ env, settings: connected.settings, fast: routing.fast }),
+    source: sideCallSource('voice', { env, settings: connected.settings, routing }),
     fake,
     privacy,
     spending: connected.spending,

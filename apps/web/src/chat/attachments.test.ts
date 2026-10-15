@@ -175,3 +175,10 @@ test('asking for a new chat while one is open says so, so a file that never uplo
     place.window = before;
   }
 });
+
+test('code and data files go into the box as text files', () => {
+  expect(refusal(file('script.py', 'text/x-python', 200), 0)).toBeNull();
+  expect(refusal(file('data.json', 'application/json', 200), 0)).toBeNull();
+  expect(refusal(file('index.ts', 'video/mp2t', 200), 0)).toBeNull();
+  expect(refusal(file('config.yaml', '', 200), 0)).toBeNull();
+});
