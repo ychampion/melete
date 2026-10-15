@@ -17,6 +17,7 @@ import {
   type EventSink,
   hookCaptureErrorCode,
   hookObservation,
+  type ProviderFailure,
   type RuntimeAdapter,
   type RuntimeCapabilities,
   type RuntimeEvent,
@@ -48,6 +49,20 @@ import { steerContinuation, steerInput } from './steer.ts';
 import { RUNTIME_VERSION } from './version.ts';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * The class of a provider refusal, when the engine's failure carries the code
+ * the gateway answered with (`provider_key_refused`, `provider_down`, ...).
+ * The engine quotes the gateway's error, and the gateway sends only the code.
+ */
+export function providerFailureIn(error: string): ProviderFailure | null {
+  const match =
+    /\bprovider_(key_refused|quota|rate_limited|model_not_found|context_too_long|down)\b/.exec(
+      error,
+    );
+  if (!match?.[1]) return null;
+  return match[1] === 'down' ? 'provider_down' : (match[1] as ProviderFailure);
+}
 
 /**
  * The action ids this attempt left parked on the ledger.
@@ -775,10 +790,15 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         };
       }
       if (name === 'run.failed') {
+        const reason = String(event.error ?? 'the runtime reported a failure');
+        const failure = providerFailureIn(reason);
         return {
           kind: 'failed',
-          reason: String(event.error ?? 'the runtime reported a failure'),
-          retryable: true,
+          reason,
+          // A refused key, a spent account or a missing model fails the same
+          // way next time; a busy or failing provider may answer later.
+          retryable: !failure || failure === 'rate_limited' || failure === 'provider_down',
+          ...(failure ? { failure } : {}),
         };
       }
       // interrupted and cancelled: the owner process died or the attempt was

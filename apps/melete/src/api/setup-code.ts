@@ -172,17 +172,20 @@ export async function issueSetupCode(
   configuredHash?: string,
 ): Promise<{ code: string; expiresAt: Date } | null> {
   const code = newSetupCode();
-  const expiresAt = new Date(Date.now() + SETUP_CODE_HOURS * 3_600_000);
-  const issued = await sql.begin(async (tx) => {
+  const expiresAt = await sql.begin(async (tx) => {
     const [installed] = await tx`select id from owner limit 1`;
-    if (installed) return false;
+    if (installed) return null;
     // Recorded first, so the cancellation below reaches the configured code
     // even when the service has not started with it yet.
     await recordConfiguredCode(tx, configuredHash);
     await tx`update setup_code set used_at = now() where used_at is null`;
-    await tx`insert into setup_code (code_hash, expires_at)
-      values (${setupCodeHash(code)}, ${expiresAt.toISOString()})`;
-    return true;
+    // Timed by the database's clock, which is the one spending it checks.
+    const [row] = await tx<
+      { expires_at: Date | string }[]
+    >`insert into setup_code (code_hash, expires_at)
+      values (${setupCodeHash(code)}, now() + make_interval(hours => ${SETUP_CODE_HOURS}))
+      returning expires_at`;
+    return row ? new Date(row.expires_at) : null;
   });
-  return issued ? { code, expiresAt } : null;
+  return expiresAt ? { code, expiresAt } : null;
 }

@@ -50,6 +50,10 @@ import { iso, ownedSpaces } from './export.ts';
 export const removedEmail = (principalId: string) =>
   `removed+${principalId.toLowerCase()}@removed.invalid`;
 
+/** Whether an account's address is the one its deletion left it with: it is no account to sign in to. */
+export const isRemovedEmail = (principalId: string, email: string) =>
+  email === removedEmail(principalId);
+
 export const SETUP_OWNER_KEPT =
   'The account that set Melete up can’t be deleted: it runs this Melete and manages the other accounts. You can erase everything in your space instead, or remove Melete from the computer it runs on.';
 
@@ -69,6 +73,7 @@ const ACCOUNT_RECORDS = [
 const LEFTOVER_RECORDS = [
   ...ACCOUNT_RECORDS,
   'push_setting',
+  'client_focus',
   'memory_settings',
   'model_secondary',
   'engine_skill_prohibition',
@@ -106,6 +111,8 @@ type Account = {
   display_name: string | null;
   kind: string;
   created_at: string;
+  /** Granted by the setup owner, and still able to sign in. */
+  admin: boolean;
 };
 
 export class AccountRemovalService {
@@ -114,6 +121,13 @@ export class AccountRemovalService {
   private readonly log: (line: string) => void;
   /** Accounts whose deletion pass failed, each tried again later on its own. */
   private readonly failures: ItemFailures;
+  /**
+   * Deleted accounts whose row had to stay, empty, because a room someone
+   * else owns still names it, once every other step went through. There is
+   * nothing more to do for them, so they are not tried again until the
+   * service restarts.
+   */
+  private readonly settled = new Set<string>();
 
   constructor(readonly deps: AccountRemovalDeps) {
     this.log = deps.log ?? ((line) => process.stderr.write(`${line}\n`));
@@ -130,7 +144,8 @@ export class AccountRemovalService {
   }
 
   private async account(principalId: string): Promise<Account | undefined> {
-    const [row] = await this.deps.sql<Account[]>`select id, email, display_name, kind, created_at
+    const [row] = await this.deps.sql<Account[]>`select id, email, display_name, kind, created_at,
+        admin and disabled_at is null as admin
       from principal where id = ${principalId}`;
     return row;
   }
@@ -166,7 +181,8 @@ export class AccountRemovalService {
     }
     const rooms = await this.deps.sql<{ id: string; name: string }[]>`
       select s.id, s.name from space s join space_membership m on m.space_id = s.id
-      where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'owner'
+      where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'agent'
+        and s.owner_principal_id is distinct from ${principalId}
         and s.kind = 'shared' and s.removed_at is null order by s.name`;
     const blocked =
       principalId === setupOwner
@@ -259,19 +275,26 @@ export class AccountRemovalService {
   /**
    * Steps 2 and 3: leave other people's rooms and start removing each space
    * it owns that is not being removed yet. Safe to run again at any point.
+   * Answers whether every step went through.
    */
-  private async carryOn(principalId: string): Promise<void> {
+  private async carryOn(principalId: string): Promise<boolean> {
     const { sql, spaces, principals } = this.deps;
+    let done = true;
+    const missed = (line: string) => {
+      done = false;
+      this.log(line);
+    };
     await principalContext.run(principalId, async () => {
       const rooms = await sql<{ space_id: string }[]>`select m.space_id from space_membership m
         join space s on s.id = m.space_id
-        where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'owner'
-          and m.role <> 'agent' and s.kind = 'shared' and s.removed_at is null`;
+        where m.principal_id = ${principalId} and m.revoked_at is null and m.role <> 'agent'
+          and s.owner_principal_id is distinct from ${principalId}
+          and s.kind = 'shared' and s.removed_at is null`;
       for (const room of rooms)
         await principals
           .revoke(principalId, room.space_id, principalId)
           .catch((error) =>
-            this.log(
+            missed(
               `account deletion: leaving ${room.space_id} did not finish yet (${describe(error)})`,
             ),
           );
@@ -279,9 +302,7 @@ export class AccountRemovalService {
         const row = await spaces
           .fence(principalId, space.id, space.name, { forAccountDeletion: true })
           .catch((error) => {
-            this.log(
-              `account deletion: removing ${space.id} did not start yet (${describe(error)})`,
-            );
+            missed(`account deletion: removing ${space.id} did not start yet (${describe(error)})`);
             return null;
           });
         if (row) spaces.dispatch(row.id);
@@ -290,25 +311,25 @@ export class AccountRemovalService {
     // Its own chats in rooms someone else owns: nobody else could read them,
     // so nothing of the room's is lost with them. Rooms it owns go whole above.
     const removeChats = this.deps.removeChats;
-    if (!removeChats) return;
+    if (!removeChats) return done;
     const own = await sql<{ id: string }[]>`select j.id from job j join space s on s.id = j.space_id
       where j.principal_id = ${principalId} and j.audience = 'principal'
         and s.kind = 'shared' and s.removed_at is null
         and s.owner_principal_id is distinct from ${principalId}
-        and not exists (select 1 from space_membership m where m.space_id = s.id
-          and m.principal_id = ${principalId} and m.role = 'owner')
       order by j.id`;
     if (own.length)
       await removeChats(own.map((row) => row.id)).catch((error) =>
-        this.log(`account deletion: its chats in rooms did not go yet (${describe(error)})`),
+        missed(`account deletion: its chats in rooms did not go yet (${describe(error)})`),
       );
+    return done;
   }
 
   /**
    * Step 4, once nothing of the account's spaces is left: its remaining
-   * records and its row. Answers whether the account is fully gone.
+   * records and its row. Answers whether the account is fully gone. `settle`
+   * says the steps before went through, so a row that has to stay is done.
    */
-  private async finish(principalId: string): Promise<boolean> {
+  private async finish(principalId: string, settle: boolean): Promise<boolean> {
     const { sql } = this.deps;
     if ((await ownedSpaces(sql, principalId)).length) return false;
     const [unfinished] = await sql`select 1 from space_removal
@@ -329,6 +350,7 @@ export class AccountRemovalService {
       // message it wrote there. Its records go; the row stays, empty.
       for (const table of LEFTOVER_RECORDS)
         await sql`delete from ${sql(table)} where principal_id = ${principalId}`.catch(() => {});
+      if (settle) this.settled.add(principalId);
       return true;
     }
   }
@@ -345,10 +367,10 @@ export class AccountRemovalService {
     let finished = 0;
     // One account whose deletion fails never holds up the others.
     for (const { id } of pending) {
-      if (!this.failures.due(id)) continue;
+      if (this.settled.has(id) || !this.failures.due(id)) continue;
       try {
-        await this.carryOn(id);
-        if (await this.finish(id)) finished += 1;
+        const done = await this.carryOn(id);
+        if (await this.finish(id, done)) finished += 1;
         this.failures.succeeded(id);
       } catch (error) {
         this.failures.failed(id, error);
@@ -381,16 +403,19 @@ export class AccountRemovalService {
   /** The accounts on this Melete, for the person who set it up. */
   async list(actor: string): Promise<AccountSummary[]> {
     const setupOwner = await this.setupOwner();
-    if (actor !== setupOwner)
+    const [standing] = await this.deps.sql<{ admin: boolean }[]>`select exists (select 1
+      from principal where id = ${actor} and admin and kind = 'person' and disabled_at is null)
+      as admin`;
+    if (actor !== setupOwner && !standing?.admin)
       throw new ServiceError(
         'scope_denied',
-        'Only the account that set Melete up manages accounts.',
+        'Only the account that set Melete up, or an admin, sees the accounts.',
         403,
       );
     // A deleted account whose row has to stay, because a room someone else
     // owns still names it, is not an account any more and is not listed.
     const rows = await this.deps.sql<Account[]>`select p.id, p.email, p.display_name, p.kind,
-        p.created_at from principal p
+        p.created_at, p.admin and p.disabled_at is null as admin from principal p
       where p.kind <> 'room' and (p.email <> 'removed+' || lower(p.id) || '@removed.invalid'
         or exists (select 1 from space_removal r where r.requested_by = p.id
           and r.state <> 'complete')
@@ -409,6 +434,7 @@ function summary(row: Account, setupOwner: string | null): AccountSummary {
     kind: row.kind === 'guest' ? 'guest' : 'person',
     created_at: iso(row.created_at),
     setup_owner: row.id === setupOwner,
+    admin: row.id === setupOwner || (row.admin && row.kind === 'person' && !removing),
     state: removing ? 'removing' : 'active',
   };
 }

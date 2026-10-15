@@ -10,7 +10,8 @@
  * `--offline` skips both.
  *
  * It also counts how many more networks Docker's address pools and the
- * service's own network pool (MELETE_NETWORK_POOL) can give, and
+ * service's own network pool (MELETE_NETWORK_POOL, this shell's value before
+ * deploy/.env's, as Compose reads it) can give, and
  * lists the agents' computers and networks that sandbox projects no
  * installation on this engine uses have left behind. `--remove-leftovers`
  * removes those, and is the only way doctor changes anything.
@@ -115,6 +116,8 @@ export type DoctorFacts = {
   database: DatabaseFact | null;
   /** How many more networks the engine's pools and the service's pool can give; left out when not asked. */
   addressPools?: AddressPoolFacts;
+  /** MELETE_NETWORK_POOL as this shell sets it, beside deploy/.env's; left out when the shell sets none. */
+  networkPoolShell?: { shell: string; file: string | undefined };
   /** What unused sandbox projects left; null when it could not be listed, left out when not asked. */
   leftovers?: Leftovers[] | null;
   /** What `--remove-leftovers` did, in place of the list. */
@@ -286,6 +289,7 @@ export function judgeDoctor(facts: DoctorFacts): Result[] {
     results.push(...judgeAddressPools(facts.addressPools.engine));
     if (facts.addressPools.melete) results.push(...judgeAddressPools(facts.addressPools.melete));
   }
+  if (facts.networkPoolShell) results.push(judgeNetworkPoolShell(facts.networkPoolShell));
   if (facts.removed) results.push(facts.removed);
   else if (facts.leftovers !== undefined) results.push(judgeLeftovers(facts.leftovers));
 
@@ -303,6 +307,30 @@ export function judgeDoctor(facts: DoctorFacts): Result[] {
           },
     );
   return results;
+}
+
+const poolSetting = (value: string | undefined) =>
+  value?.trim() ? `MELETE_NETWORK_POOL=${value.trim()}` : 'MELETE_NETWORK_POOL empty';
+
+/**
+ * A MELETE_NETWORK_POOL this shell sets is the one Compose hands the service,
+ * whatever deploy/.env says, so it is the one judged; said, and warned about
+ * when deploy/.env says otherwise.
+ */
+function judgeNetworkPoolShell({
+  shell,
+  file,
+}: NonNullable<DoctorFacts['networkPoolShell']>): Result {
+  const id = 'docker.network_pool_shell';
+  const sets = `This shell sets ${poolSetting(shell)}, which Compose reads before deploy/.env`;
+  if (shell.trim() === (file ?? '').trim())
+    return { id, level: 'ok', detail: `${sets}; deploy/.env says the same.` };
+  return {
+    id,
+    level: 'warn',
+    detail: `${sets} (${file === undefined ? 'which does not set it' : poolSetting(file)}), so a stack started from this shell gets the shell's value, and that is the one judged here.`,
+    fix: 'Run unset MELETE_NETWORK_POOL to run and judge what deploy/.env says, or keep this value in deploy/.env: bun run melete set MELETE_NETWORK_POOL=<range>.',
+  };
 }
 
 function judgePort(port: PortFact): Result {
@@ -371,27 +399,32 @@ export function publishedByProject(stdout: string): Set<number> {
  * every Compose network takes a block of, and the installation's
  * MELETE_NETWORK_POOL (its default when unset), cut into the /28s the service
  * takes, unless it is `off`. A value the service refuses is reported whether
- * or not Docker answers. This machine's routes are read only when the engine
- * runs here, on Linux.
+ * or not Docker answers, and so is a `reference` to another setting, which
+ * Compose fills in and this does not, in place of judging it. This machine's
+ * routes are read only when the engine runs here, on Linux.
  */
 export function readAddressPools(
   run: Run,
   host: DockerHostFacts,
   networkPoolSetting?: string,
+  reference = false,
 ): AddressPoolFacts {
   let melete: NetworkPool | null = null;
-  let invalid: AddressPoolFact | undefined;
-  try {
-    melete = parseNetworkPool(networkPoolSetting);
-  } catch (error) {
-    invalid = {
-      source: 'melete',
-      builtIn: false,
-      pools: [],
-      invalid: error instanceof Error ? error.message : String(error),
-    };
-  }
-  const unknown: AddressPoolFacts = { engine: null, ...(invalid ? { melete: invalid } : {}) };
+  let unjudged: AddressPoolFact | undefined;
+  if (reference)
+    unjudged = { source: 'melete', builtIn: false, pools: [], reference: networkPoolSetting ?? '' };
+  else
+    try {
+      melete = parseNetworkPool(networkPoolSetting);
+    } catch (error) {
+      unjudged = {
+        source: 'melete',
+        builtIn: false,
+        pools: [],
+        invalid: error instanceof Error ? error.message : String(error),
+      };
+    }
+  const unknown: AddressPoolFacts = { engine: null, ...(unjudged ? { melete: unjudged } : {}) };
   const listed = run(['docker', 'network', 'ls', '--quiet']);
   if (listed.code !== 0) return unknown;
   const ids = listed.stdout.split(/\s+/).filter((id) => /^[0-9a-f]{6,64}$/.test(id));
@@ -428,12 +461,12 @@ export function readAddressPools(
     engine: {
       source: 'docker',
       builtIn,
-      attempts: melete === null && invalid === undefined,
+      attempts: melete === null && unjudged === undefined,
       ...(ipv6Only ? { ipv6Only } : {}),
       pools: headroom(pools),
     },
-    ...(invalid
-      ? { melete: invalid }
+    ...(unjudged
+      ? { melete: unjudged }
       : melete
         ? {
             melete: {
@@ -446,6 +479,9 @@ export function readAddressPools(
         : {}),
   };
 }
+
+/** A `$NAME` or `${...}` in a deploy/.env value, which Compose fills in from other settings. */
+const COMPOSE_REFERENCE = /\$(?:\{|[A-Za-z_])/;
 
 /** The registry's API root: any HTTP answer, a 401 included, means it is reachable. */
 export const registryUrl = (registry: string): string => `https://${registry.split('/')[0]}/v2/`;
@@ -477,7 +513,17 @@ export async function gatherDoctor(
   };
   if (docker.length > 0) return facts;
 
-  facts.addressPools = readAddressPools(run, host, installation.env?.MELETE_NETWORK_POOL);
+  // Compose takes a value this shell sets over deploy/.env's, and fills in a
+  // reference only in deploy/.env's.
+  const shellPool = context.environment.MELETE_NETWORK_POOL;
+  const filePool = installation.env?.MELETE_NETWORK_POOL;
+  facts.addressPools = readAddressPools(
+    run,
+    host,
+    shellPool ?? filePool,
+    shellPool === undefined && filePool !== undefined && COMPOSE_REFERENCE.test(filePool),
+  );
+  if (shellPool !== undefined) facts.networkPoolShell = { shell: shellPool, file: filePool };
   facts.leftovers = readSandboxLeftovers(
     run,
     installation.env?.MELETE_SANDBOX_PROJECT?.trim() || null,

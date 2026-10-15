@@ -41,11 +41,13 @@ export const NAV: {
  * Files, Apps and Settings are a person's own and stay out of their sidebar. Rooms are
  * listed only where the server has them switched on. A member of someone
  * else's shared space chats with its agents but does not make or change them,
- * so Agents is not theirs.
+ * so Agents is not theirs; nor is Memory, which is kept in a person's own space.
  */
+const OWNERS_ONLY: ReadonlySet<string> = new Set(['/agents', '/settings/memory']);
 export const sidebarNav = (guest: boolean, multiplayer = true, member = false): typeof NAV =>
   guest
     ? NAV.filter((item) => item.path === '/rooms')
     : NAV.filter(
-        (item) => (multiplayer || item.path !== '/rooms') && !(member && item.path === '/agents'),
+        (item) =>
+          (multiplayer || item.path !== '/rooms') && !(member && OWNERS_ONLY.has(item.path)),
       );

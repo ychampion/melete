@@ -107,6 +107,7 @@ import { executionSettlement, executionStartResponse } from './execution-admissi
 import { experiencePaths } from './experience-openapi.ts';
 import {
   createFeedbackRequest,
+  feedbackForwarding,
   feedbackListQuery,
   feedbackListResponse,
   feedbackResponse,
@@ -199,6 +200,7 @@ import {
 } from './model-settings.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
+  accountAdminResponse,
   accountList,
   accountRemoval,
   accountRemovalPreview,
@@ -208,6 +210,7 @@ import {
   grantMembershipRequest,
   principal,
   spaceMembership,
+  updateAccountRequest,
 } from './principals.ts';
 import { processPreviewPaths } from './process-preview-openapi.ts';
 import {
@@ -317,6 +320,7 @@ import {
   roomThreadView,
   shareToRoomRequest,
   updateMeRequest,
+  updateRoomMemberRequest,
 } from './rooms.ts';
 import { runtimeEvent } from './runtime.ts';
 import {
@@ -333,6 +337,8 @@ import {
 } from './situations.ts';
 import {
   deleteSpaceRequest,
+  spacePolicyResponse,
+  spacePolicyRules,
   spaceRemoval,
   spaceRemovalPreview,
   spaceRemovalReport,
@@ -901,7 +907,9 @@ function roomsPaths() {
         tags: ['rooms'],
         summary: 'Add a person to a room',
         description:
-          'Who can read the room changes, so work under way in it starts again with the new people.',
+          'Who can read the room changes, so work under way in it starts again with the new people. ' +
+          'They join as a member unless `role` is `owner`; adding someone already in the room ' +
+          'with the other role changes it, as the PATCH does.',
         requestParams: room,
         requestBody: json(addRoomMemberRequest),
         responses: {
@@ -922,6 +930,26 @@ function roomsPaths() {
           '200': jsonResponse('Removed', roomLeaveResponse),
           '403': problem('Only an owner removes someone else; the owner cannot be removed'),
           '404': notIn,
+        },
+      },
+      patch: {
+        tags: ['rooms'],
+        summary: 'Make someone in a room an owner, or an owner a member again',
+        description:
+          'Owners only. An owner manages the room as its maker does: adds and removes people, ' +
+          'invites guests, sets how the room works and answers what the room leaves to its owners. ' +
+          'The room always keeps at least one owner, and the person who made it stays one. The ' +
+          "person's membership generation moves on, so work of theirs under way checks again " +
+          'with what they may now do.',
+        requestParams: { path: z.object({ id: z.string(), principalId: z.string() }) },
+        requestBody: json(updateRoomMemberRequest),
+        responses: {
+          '200': jsonResponse('Their place in the room now', roomMembershipResponse),
+          '403': problem('Only an owner of the room changes who owns it'),
+          '404': notIn,
+          '409': problem(
+            'The last owner, or the person who made the room, cannot become a member; a guest stays a guest',
+          ),
         },
       },
     },
@@ -2020,6 +2048,22 @@ export function buildOpenApiDocument() {
           },
         },
         '/principals/{id}': {
+          patch: {
+            tags: ['spaces'],
+            summary: "Give another person's account admin, or take it away, for the setup owner",
+            description:
+              'An admin provisions accounts and chooses the installation’s model, as the setup ' +
+              'owner does. Only a person’s account can hold it. Only the setup owner grants or ' +
+              'takes it away, and the setup owner is always an admin.',
+            requestParams: idParam('id', 'Account id'),
+            requestBody: json(updateAccountRequest),
+            responses: {
+              '200': jsonResponse('The account now', accountAdminResponse),
+              '403': problem('Setup owner required'),
+              '404': problem('No such account, or one that cannot be an admin'),
+              '409': problem('The setup owner is always an admin'),
+            },
+          },
           delete: {
             tags: ['spaces'],
             summary: 'Delete an account, for the setup owner',
@@ -2037,19 +2081,19 @@ export function buildOpenApiDocument() {
         '/principals': {
           get: {
             tags: ['spaces'],
-            summary: 'The accounts on this Melete, for the account that set it up',
+            summary: 'The accounts on this Melete, for the setup owner and admins',
             responses: {
               '200': jsonResponse('Accounts', accountList),
-              '403': problem('Setup owner required'),
+              '403': problem('Setup owner or admin required'),
             },
           },
           post: {
             tags: ['spaces'],
-            summary: 'Provision an additional account as the setup owner',
+            summary: 'Provision an additional account, as the setup owner or an admin',
             requestBody: json(createPrincipalRequest),
             responses: {
               '201': jsonResponse('Principal created', z.object({ principal })),
-              '403': problem('Setup owner required'),
+              '403': problem('Setup owner or admin required'),
               '409': problem('Email already registered'),
             },
           },
@@ -2107,6 +2151,38 @@ export function buildOpenApiDocument() {
               '400': problem('The name does not match the space'),
               '403': problem('Space owner required, or no such space'),
               '409': problem('The browser worker uses this space'),
+            },
+          },
+        },
+        '/spaces/{id}/policy': {
+          get: {
+            tags: ['spaces'],
+            summary: 'What work in a space may use',
+            description:
+              'The models its work may run on and the kinds of connected app and tool it may ' +
+              'not use. Anyone the space admits may read them, and so may the setup owner. ' +
+              'Every list empty means nothing is restricted, which is the default.',
+            requestParams: idParam('id', 'Space id'),
+            responses: {
+              '200': jsonResponse('The rules', spacePolicyResponse),
+              '403': problem('No such space, or not one this person can see'),
+            },
+          },
+          put: {
+            tags: ['spaces'],
+            summary: 'Change what work in a space may use',
+            description:
+              "Set by the space's owner, or by the setup owner for any space. The lists given " +
+              'replace the ones there. A model outside `allowed_models` is not used: work falls ' +
+              'back to the first allowed model that is connected, or stops with a message saying ' +
+              'why. Denied connector and tool kinds are hidden from the agent and refused if ' +
+              'asked for, and a denied kind of connection cannot be installed.',
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(spacePolicyRules),
+            responses: {
+              '200': jsonResponse('The rules', spacePolicyResponse),
+              '400': problem('A model or kind is not written the way the rules need'),
+              '403': problem("Only the space's owner or the setup owner changes its rules"),
             },
           },
         },
@@ -4246,6 +4322,21 @@ export function buildOpenApiDocument() {
             requestParams: { query: feedbackListQuery },
             responses: {
               '200': jsonResponse('Reports', feedbackListResponse),
+              '401': problem('A session is required'),
+            },
+          },
+        },
+
+        '/feedback/forwarding': {
+          get: {
+            tags: ['feedback'],
+            summary: 'Whether new reports are also sent outside the app',
+            description:
+              'True when the installation forwards each new report, with the reporter’s email ' +
+              'address, to the webhook its operator set (`MELETE_FEEDBACK_WEBHOOK_URL`). The ' +
+              'report dialog asks before anything is sent, so it can say so.',
+            responses: {
+              '200': jsonResponse('Forwarding', feedbackForwarding),
               '401': problem('A session is required'),
             },
           },

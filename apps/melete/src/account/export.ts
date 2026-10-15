@@ -48,6 +48,8 @@ const WITHHELD_TABLES = new Set([
   'password_reset',
   'magic_link',
   'mcp_token',
+  // A browser's push address and keys, which let whoever holds them notify it.
+  'push_subscription',
   'privacy_vault',
   'provider_credential',
 ]);
@@ -110,6 +112,9 @@ async function readableTables(sql: Sql): Promise<Table[]> {
     join information_schema.tables t
       on t.table_schema = c.table_schema and t.table_name = c.table_name
     where c.table_schema = 'public' and t.table_type = 'BASE TABLE'
+      -- A partition's rows are read once, through the table it is part of.
+      and not exists (select 1 from pg_class p join pg_namespace n on n.oid = p.relnamespace
+        where n.nspname = c.table_schema and p.relname = c.table_name and p.relispartition)
     order by c.table_name, c.ordinal_position`;
   // Read from the catalog itself: information_schema shows a table's key only
   // to a role that may do more than read it.
@@ -249,7 +254,10 @@ function chatMarkdown(
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
-/** The spaces an account owns and can still open. */
+/**
+ * The spaces an account owns and can still open: its personal space and the
+ * rooms it made. A room it was made an owner of is someone else's room.
+ */
 export async function ownedSpaces(sql: Sql, principalId: string) {
   return sql<{ id: string; name: string; kind: string; created_at: string }[]>`
     select s.id, s.name, s.kind, s.created_at from space s
@@ -257,7 +265,8 @@ export async function ownedSpaces(sql: Sql, principalId: string) {
       (s.kind = 'personal'
         and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
       or exists (select 1 from space_membership m where m.space_id = s.id
-        and m.principal_id = ${principalId} and m.role = 'owner' and m.revoked_at is null))
+        and m.principal_id = ${principalId} and m.role = 'owner' and m.revoked_at is null
+        and s.owner_principal_id = ${principalId}))
     order by s.created_at, s.id`;
 }
 

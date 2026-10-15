@@ -3,6 +3,7 @@ import {
   createSharedSpaceRequest,
   grantMembershipRequest,
   space as spaceContract,
+  updateAccountRequest,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import type { Hono } from 'hono';
@@ -25,7 +26,7 @@ import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
-import { requireJobAccess, spaceAuthority } from './authority.ts';
+import { managesConnection, requireJobAccess, spaceAuthority } from './authority.ts';
 import { PrincipalService } from './service.ts';
 
 /** Resource IDs and space headers select a resource; authenticated membership authorizes it. */
@@ -88,14 +89,24 @@ export function mountPrincipals(
       method === 'GET' &&
       parts[2] === 'audit' &&
       (parts.length === 3 || (parts.length === 4 && parts[3] === 'export'));
-    if (resource === 'spaces' && id && id !== 'shared' && !removalRequest && !auditRead) {
+    // A space's rules answer for themselves too: the setup owner sets them for
+    // any space, including one they are not a member of (spaces/policy.ts).
+    const rulesRequest = resource === 'spaces' && parts.length === 3 && parts[2] === 'policy';
+    if (
+      resource === 'spaces' &&
+      id &&
+      id !== 'shared' &&
+      !removalRequest &&
+      !auditRead &&
+      !rulesRequest
+    ) {
       const access = await spaceAuthority(db, id, actor);
       if (method !== 'GET' && access.role !== 'owner')
         throw new ServiceError('scope_denied', 'Space administration requires its owner.', 403);
     }
     if (resource === 'connections' && id) {
       const [row] = await db.select().from(connection).where(eq(connection.id, id));
-      if (!row || (await spaceAuthority(db, row.spaceId, actor)).role !== 'owner')
+      if (!row || !managesConnection(await spaceAuthority(db, row.spaceId, actor), row.sharedUse))
         throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
     }
     if (resource === 'approvals' && id) {
@@ -144,6 +155,10 @@ export function mountPrincipals(
     const made = await service.create(c.get('owner').id, request.email, request.password);
     c.set('createdSpaceId', made.spaceId);
     return c.json({ principal: made.principal }, 201);
+  });
+  app.patch('/principals/:id', async (c) => {
+    const request = updateAccountRequest.parse(await c.req.json());
+    return c.json(await service.setAdmin(c.get('owner').id, c.req.param('id'), request.admin));
   });
   app.post('/spaces/shared', async (c) => {
     const request = createSharedSpaceRequest.parse(await c.req.json());

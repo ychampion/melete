@@ -9,7 +9,7 @@
  * installation's backups, unless `--backup-dir` names another folder. An
  * installation that runs published images updates with `melete deploy` instead.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
@@ -107,9 +107,13 @@ export async function runUpgrade(context: Context, args: readonly string[]): Pro
       );
     else mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   }
+  // The folder the script makes its upgrade-<version>-<time> backup in.
+  const given = args.indexOf('--backup-dir');
+  const backupParent = given >= 0 ? (args[given + 1] ?? null) : ownFolder ? backupDir : null;
   const run = async () => {
     const before = { tag: envImageTag(installation.env ?? {}), revision: head(context) };
     const migrations = journalCount(context, null);
+    const earlier = upgradeBackups(backupParent, version);
     const code = await context.attach(command);
     if (code === 2)
       context.err(
@@ -127,13 +131,17 @@ export async function runUpgrade(context: Context, args: readonly string[]): Pro
         to: { tag: tag === before.tag ? version : tag, revision: head(context) },
         checkout: null,
         migrations: { from: migrations, to: journalCount(context, null) },
-        backup: null,
+        backup:
+          upgradeBackups(backupParent, version)
+            .filter((entry) => !earlier.includes(entry))
+            .at(-1) ?? null,
         result: code === 0 ? 'deployed' : 'failed',
         detail: code === 0 ? `upgraded to ${version}` : `upgrade.ts exited ${code}`,
       });
     }
     // upgrade.ts says which step stopped it and prints the rollback; its exit 1 covers both.
-    return code === 0 ? EXIT.ok : code === 2 ? EXIT.refused : EXIT.failed;
+    // It exits 3 when the repository it was given is not there, and says so itself.
+    return code === 0 ? EXIT.ok : code === 2 || code === 3 ? EXIT.refused : EXIT.failed;
   };
   try {
     if (dryRun) return await run();
@@ -185,6 +193,29 @@ function takeRelease(
     };
   }
   return { directory };
+}
+
+/**
+ * The backups an upgrade to `version` made in `parent`, oldest first, as paths.
+ * The script names each upgrade-<version>-<time>; the one a run made is the one
+ * that was not there before it.
+ */
+function upgradeBackups(parent: string | null, version: string): string[] {
+  if (parent === null) return [];
+  const prefix = `upgrade-${version}-`;
+  try {
+    return readdirSync(parent, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          entry.name.startsWith(prefix) &&
+          /^\d{8}T\d{6}Z$/.test(entry.name.slice(prefix.length)),
+      )
+      .map((entry) => join(parent, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 function head(context: Context): string | null {

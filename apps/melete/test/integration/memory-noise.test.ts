@@ -572,7 +572,7 @@ function score(
   const facts = new Map<string, Proposed>();
   for (const item of proposed) {
     facts.set(plain(item.content), item);
-    facts.set(plain(inPersonsWords(item.content)), item);
+    facts.set(plain(inPersonsWords(item.content, item.domain_key)), item);
     if (item.followed) facts.set(plain(item.followed), item);
   }
   const stated = beliefs.map((belief) => facts.get(plain(belief.value)));

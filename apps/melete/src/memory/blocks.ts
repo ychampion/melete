@@ -199,10 +199,18 @@ export type Block = {
 };
 export type Blocks = { list: Block[]; key: Key | null };
 
-/** How far a stored block reaches. Blocks kept for their subject reach all of it. */
-export function storedScope(stored: string): BlockScope {
-  const at = stored.indexOf(DETAIL);
-  return at >= 0 && !stored.startsWith(WHOLE, at + DETAIL.length) ? 'detail' : 'topic';
+/**
+ * How far each of a space's blocks reaches, as `blockedDetail` holds it.
+ * Blocks kept for their subject reach all of it, and so does a block on a
+ * detail whose tags were made with a key this install no longer has: its
+ * detail can no longer be told apart.
+ */
+export function storedScopes(blocks: Blocks): BlockScope[] {
+  return blocks.list.map((block) =>
+    block.tags && !block.whole && blocks.key && block.check === blocks.key.check
+      ? 'detail'
+      : 'topic',
+  );
 }
 
 /** Read the blocks of one space, as stored. */

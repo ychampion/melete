@@ -5,6 +5,7 @@ import {
   type ExperienceEvent,
   experienceEvent,
   MEMORY_TOOL_NOTICE,
+  providerFailure,
   TOOL_TRACE_NOTICE,
   type ToolCall,
   type TrailStep,
@@ -30,6 +31,11 @@ import { appendEvent } from '../events/store.ts';
 import { answerJoin } from '../jobs/answer-join.ts';
 import { HISTORY_SUMMARY_KIND } from '../jobs/history-summary.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../jobs/limits.ts';
+import {
+  PROVIDER_FAILURE_NOTES,
+  providerFailureCard,
+  providerRetryNote,
+} from '../jobs/provider-notes.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
 import type { ExperienceEffects } from './effects.ts';
@@ -346,6 +352,7 @@ async function toolCalls(
           latencyMs: payload.latency_ms,
           at: source.createdAt,
           stopped: payload.stopped === true,
+          failure: payload.failure,
         },
       }),
     ];
@@ -817,10 +824,45 @@ export class ExperienceEvents {
                   { type: 'card', card: projectArtifact(file) },
                   `file:${file.id}`,
                 );
+            } else if (typeof payload.retry_at === 'string' && source.jobId === id) {
+              // The work runs again by itself, so the turn stays under way. A
+              // provider that turned it away says why and when it is asked again.
+              const failure = providerFailure.safeParse(outcome.failure);
+              const waitMs = Date.parse(payload.retry_at) - source.createdAt.getTime();
+              if (failure.success)
+                await emit(source, {
+                  type: 'note',
+                  text: providerRetryNote(
+                    failure.data,
+                    Math.round(Math.max(0, Number.isFinite(waitMs) ? waitMs : 0) / 1000),
+                  ),
+                  // It is about the wait under way; once the turn has ended it says nothing.
+                  transient: true,
+                });
+              await emit(source, { type: 'status', status: 'working', composer: 'pause' });
+            } else if (
+              outcome.kind === 'failed' &&
+              providerFailure.safeParse(outcome.failure).success &&
+              source.jobId === id
+            ) {
+              // The provider turned the turn away for good: the person reads
+              // why in plain words, and where the fix is when it is a setting.
+              const failure = providerFailure.parse(outcome.failure);
+              await emit(source, { type: 'note', text: PROVIDER_FAILURE_NOTES[failure] });
+              const card = providerFailureCard(failure, source.attemptId ?? String(source.seq));
+              if (card) await emit(source, { type: 'card', card }, `card:${card.id}`);
+              if (!settled)
+                await emit(source, { type: 'status', status: 'failed', composer: 'send' });
             } else if (payload.experience_completed === false) {
               // The saved turn ends with this sentence; a page following live reads it too.
               if (source.jobId === id && outcome.kind === 'budget_exhausted')
-                await emit(source, { type: 'note', text: LIMIT_REACHED_NOTE });
+                await emit(source, {
+                  type: 'note',
+                  text:
+                    typeof payload.limit_note === 'string' && payload.limit_note.trim()
+                      ? payload.limit_note
+                      : LIMIT_REACHED_NOTE,
+                });
               if (!settled)
                 await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
             } else if (outcome.kind === 'failed')

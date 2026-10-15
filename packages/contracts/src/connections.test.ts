@@ -571,6 +571,12 @@ describe('connection views and checks', () => {
       false,
     );
   });
+
+  test('what a person is told about a check names no setting only the operator can change', () => {
+    for (const detail of Object.values(CONNECTION_CHECK_DETAIL))
+      expect(detail).not.toContain('MELETE_');
+    expect(CONNECTION_CHECK_DETAIL.needs_sign_in).toContain('Choose Sign in');
+  });
 });
 
 describe('what a person is told when a request is refused', () => {

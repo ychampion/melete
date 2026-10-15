@@ -1,5 +1,5 @@
 {
-  "id": "39adfc46-a735-4807-abc4-1a0353d0d62b",
+  "id": "2e8f02c6-2606-4ac2-8400-0404faf6868d",
   "prevId": "2e3282e8-5828-4994-a9f2-bf12907f4779",
   "version": "7",
   "dialect": "postgresql",
@@ -1513,12 +1513,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "requested_by_principal_id": {
-          "name": "requested_by_principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "membership_generation": {
           "name": "membership_generation",
           "type": "integer",
@@ -1711,19 +1705,6 @@
           "tableTo": "principal",
           "columnsFrom": [
             "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "attempt_requested_by_principal_id_principal_id_fk": {
-          "name": "attempt_requested_by_principal_id_principal_id_fk",
-          "tableFrom": "attempt",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "requested_by_principal_id"
           ],
           "columnsTo": [
             "id"
@@ -4542,6 +4523,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "admin": {
+          "name": "admin",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {},

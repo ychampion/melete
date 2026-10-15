@@ -16,7 +16,10 @@
  * A computer and its network also name the Compose project of the
  * installation that made them (INSTALL_PROJECT). While that project has any
  * container or volume on the engine, running or not, they are its own, even
- * with the installation down; once it has neither, they are left over. One
+ * with the installation down; once it has neither, they are left over. They
+ * stay its own after its MELETE_SANDBOX_PROJECT changes, too: an agent's
+ * paused workspace is resumed by the name it was made with, so the earlier
+ * project's computers can still be in use. One
  * made before computers carried that name has an unknown owner: it is judged
  * by its sandbox project alone, as before, and said to have an unknown owner,
  * unless a computer or network that does carry an installation's name shares

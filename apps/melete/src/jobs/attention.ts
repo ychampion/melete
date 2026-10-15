@@ -6,19 +6,50 @@ import {
   UNREAD_WEIGHT_OF_THUMBS_DOWN,
   waitSpec,
 } from '@melete/contracts';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { event, job } from '../db/schema.ts';
+import { event, job, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobRow, JobService } from './service.ts';
 
 export const REDUCED_CADENCE_MULTIPLIER = 4;
+
+/**
+ * Whether a job runs on a schedule the person asked for: a routine, or
+ * repeating work whose schedule was set when it was started. Such a schedule
+ * runs every time it is due, whether or not its results were read; only
+ * timing the work chose for itself is slowed down when nobody reads it.
+ */
+export async function personSetSchedule(
+  tx: Transaction,
+  row: Pick<JobRow, 'id' | 'kind' | 'objectiveOrigin'>,
+): Promise<boolean> {
+  if (row.kind === 'routine') return true;
+  if (row.kind !== 'run') return false;
+  const [registration] = await tx
+    .select({ id: trigger.id, kind: trigger.kind })
+    .from(trigger)
+    .where(eq(trigger.jobId, row.id))
+    .orderBy(desc(trigger.createdAt))
+    .limit(1);
+  if (registration?.kind !== 'schedule') return false;
+  const [created] = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(and(eq(event.jobId, row.id), eq(event.dedupKey, `${registration.id}:created`)))
+    .limit(1);
+  const asked = (created?.payload as { person_asked?: unknown } | undefined)?.person_asked;
+  // A schedule recorded before this was noted is the person's when they typed the work themselves.
+  return typeof asked === 'boolean' ? asked : row.objectiveOrigin === 'owner_request';
+}
+
 function attention(
   row: Pick<JobRow, 'unreadResults' | 'unreadThreshold' | 'importance' | 'schedulingClass'>,
+  personSet: boolean,
 ) {
-  if (row.schedulingClass === 'interactive' || row.unreadResults < row.unreadThreshold)
+  if (personSet || row.schedulingClass === 'interactive' || row.unreadResults < row.unreadThreshold)
     return { attentionStatus: 'normal', cadenceMultiplier: 1 };
   return row.importance === 'important'
     ? { attentionStatus: 'needs_attention', cadenceMultiplier: 1 }
@@ -137,7 +168,7 @@ export class AttentionService {
     // A quiet monitor's first observation establishes its baseline; unchanged checks stay quiet.
     const unreadResults =
       row.unreadResults + (row.schedulingClass === 'quiet' && current.baseline ? 0 : 1);
-    const state = attention({ ...row, unreadResults });
+    const state = attention({ ...row, unreadResults }, await personSetSchedule(tx, row));
     await this.update(
       tx,
       row,
@@ -177,7 +208,7 @@ export class AttentionService {
       );
     }
     const unreadResults = row.unreadResults + (UNREAD_WEIGHT_OF_THUMBS_DOWN - 1);
-    const state = attention({ ...row, unreadResults });
+    const state = attention({ ...row, unreadResults }, await personSetSchedule(tx, row));
     return this.update(
       tx,
       row,
@@ -214,7 +245,7 @@ export class AttentionService {
         importance: value.importance ?? row.importance,
         unreadThreshold: value.unread_threshold ?? row.unreadThreshold,
       };
-      const state = attention({ ...row, ...settings });
+      const state = attention({ ...row, ...settings }, await personSetSchedule(tx, row));
       return this.update(
         tx,
         row,

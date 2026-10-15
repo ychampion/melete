@@ -376,11 +376,26 @@ export function proposalType(proposal: Proposal): KnowledgeType | null {
   return parsed.ok ? parsed.record.frontmatter.type : null;
 }
 
+/** A staged file's text, or null when it was removed after the folder was listed. */
+function readStaged(file: string): string | null {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 export function listProposals(paths: SpacePaths): Proposal[] {
   if (!existsSync(paths.proposed)) return [];
+  // Another instance can discard or expire a staged write between the listing
+  // and the read; that one is simply no longer staged.
   return readdirSync(paths.proposed)
     .filter((f) => f.endsWith('.json'))
-    .map((f) => JSON.parse(readFileSync(join(paths.proposed, f), 'utf8')) as Proposal)
+    .flatMap((f) => {
+      const text = readStaged(join(paths.proposed, f));
+      return text === null ? [] : [JSON.parse(text) as Proposal];
+    })
     .sort((a, b) => a.proposedAt.localeCompare(b.proposedAt) || a.id.localeCompare(b.id));
 }
 
@@ -393,7 +408,8 @@ export function getProposal(paths: SpacePaths, id: string): Proposal | null {
 export function discardProposal(paths: SpacePaths, id: string): boolean {
   const file = stagePath(paths, id);
   if (!existsSync(file)) return false;
-  rmSync(file);
+  // Gone already if another instance discarded it in between, which is fine.
+  rmSync(file, { force: true });
   return true;
 }
 

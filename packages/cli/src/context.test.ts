@@ -81,4 +81,32 @@ ${CHANGED_WHILE_READ}
     const result = await stream(noisy, [{ file: join(dir, 'd.dump') }]);
     expect(result).toMatchObject({ ok: true, bytes: 4 });
   }, 20_000);
+
+  test('what a sink says after its input has ended is kept, as `compose run -T` says it', async () => {
+    // As a container goes on after the load it was streamed, then reports how it ended.
+    const late = await stream({ bytes: new TextEncoder().encode('x'.repeat(100_000)) }, [
+      { command: ['sh', '-c', 'cat >/dev/null; sleep 0.3; echo late >&2; exit 3'] },
+    ]);
+    expect(late).toMatchObject({ ok: false, bytes: 100_000 });
+    expect(late.detail).toBe('sh exited 3: late');
+  });
+
+  test('a sink that stops reading early fails the stream by its exit, with no stray error', async () => {
+    const stray: unknown[] = [];
+    const keep = (error: unknown) => stray.push(error);
+    process.on('unhandledRejection', keep);
+    process.on('uncaughtException', keep);
+    try {
+      // As pg_restore --exit-on-error stops at the first error while the dump still flows.
+      const early = await stream({ bytes: new Uint8Array(4 * 1024 * 1024) }, [
+        { command: ['sh', '-c', 'head -c 10 >/dev/null; echo stopped >&2; exit 4'] },
+      ]);
+      expect(early).toMatchObject({ ok: false, detail: 'sh exited 4: stopped' });
+      await Bun.sleep(200);
+      expect(stray).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', keep);
+      process.off('uncaughtException', keep);
+    }
+  }, 20_000);
 });

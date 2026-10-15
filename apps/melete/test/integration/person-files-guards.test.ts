@@ -33,6 +33,7 @@ import {
 } from '../../src/connectors/files-trash.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
+import { LocalWorkspaceFs } from '../../src/runtime/workspace-fs.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -442,6 +443,27 @@ databaseTest(
 );
 
 databaseTest(
+  'a working record is never put back by its id, even with its file in the trash',
+  async () => {
+    await mkdir(inChat('.melete', 'exec'), { recursive: true });
+    await writeFile(inChat('.melete', 'exec', 'run.log'), 'run log\n');
+    const working = await fileAction({
+      path: '.melete/exec/run.log',
+      area: 'work',
+      content_hash: hash('run log\n'),
+    });
+    const trashed = await moveToTrash(
+      await new LocalWorkspaceFs(workRoot).trash(jobId),
+      [{ path: '.melete/exec/run.log', hash: null }],
+      { days: 7 },
+    );
+    expect(await exists(inChat('.melete', 'exec', 'run.log'))).toBe(false);
+    expect((await restore(working, trashed.trash_id as string)).status).toBe(404);
+    expect(await exists(inChat('.melete', 'exec', 'run.log'))).toBe(false);
+  },
+);
+
+databaseTest(
   'a delete that makes room in a full trash says how many earlier deletes it took out',
   async () => {
     const small = createApp({
@@ -526,6 +548,84 @@ databaseTest(
         await sql()`update session set space_id = ${row.space_id},
           membership_generation = ${row.membership_generation} where token_hash = ${row.token_hash}`;
     }
+  },
+);
+
+databaseTest(
+  "in a shared space, a member's own record deletes only the file it saved, not one put at its name since",
+  async () => {
+    const digestOf = (value: string) => hash(value.split('=')[1] ?? '');
+    const [me] = await sql()`select principal_id from session
+      where token_hash = ${digestOf(cookie)}`;
+    const shared = recordId('sp');
+    await sql()`insert into space (id, name, kind, owner_principal_id, audience, git_path)
+      values (${shared}, 'Flat', 'shared', ${me?.principal_id}, 'space', ${join(spacesRoot, shared)})`;
+    await sql()`insert into space_membership (principal_id, space_id, role)
+      values (${me?.principal_id}, ${shared}, 'owner'), (${otherPrincipal}, ${shared}, 'member')`;
+    // A chat of the member's own in the shared space, which saved two files into its Files.
+    const chat = recordId('job');
+    await sql()`insert into job (id, space_id, principal_id, kind, title, objective, state,
+        lease_epoch, budget, constraints)
+      select ${chat}, ${shared}, ${otherPrincipal}, 'chat', 'Plans', objective, state, lease_epoch,
+        budget, constraints
+      from job where id = ${jobId}`;
+    const at = (name: string) => join(spacesRoot, shared, 'artifacts', 'plans', name);
+    await mkdir(dirname(at('week.md')), { recursive: true });
+    const saved = async (name: string, text: string) => {
+      await writeFile(at(name), text);
+      return fileAction(
+        { path: `plans/${name}`, area: 'artifacts', content_hash: hash(text) },
+        chat,
+      );
+    };
+    const week = await saved('week.md', "the member's week\n");
+    const swapped = await saved('month.md', "the member's month\n");
+    const kept = await saved('year.md', "the member's year\n");
+    const sessions = [digestOf(cookie), digestOf(otherCookie)];
+    const before = await sql()`select token_hash, space_id, membership_generation from session
+      where token_hash in ${sql()(sessions)}`;
+    try {
+      await sql()`update session set space_id = ${shared}, membership_generation = 0
+        where token_hash in ${sql()(sessions)}`;
+      // The owner saves over one in place, and puts a new file at the other's name.
+      await writeFile(at('week.md'), "the owner's week\n");
+      await writeFile(`${at('month.md')}.new`, "the owner's month\n");
+      await rename(`${at('month.md')}.new`, at('month.md'));
+      const listed = await list({ cookie: otherCookie });
+      expect(listed.find((file) => file.id === week)?.deletable).toBe(false);
+      expect(listed.find((file) => file.id === swapped)?.deletable).toBe(false);
+      expect(listed.find((file) => file.id === kept)?.deletable).toBe(true);
+      const refused = await remove(week, otherCookie);
+      expect(refused.status).toBe(403);
+      expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(
+        'Only the owner of this space can delete a file that no chat of yours made.',
+      );
+      expect((await remove(swapped, otherCookie)).status).toBe(403);
+      expect(await readFile(at('week.md'), 'utf8')).toBe("the owner's week\n");
+      expect(await readFile(at('month.md'), 'utf8')).toBe("the owner's month\n");
+      // The one still as the member's chat saved it goes, and comes back.
+      const trash = await trashOf(await remove(kept, otherCookie));
+      expect(await exists(at('year.md'))).toBe(false);
+      expect((await restore(kept, trash, otherCookie)).status).toBe(200);
+      expect(await readFile(at('year.md'), 'utf8')).toBe("the member's year\n");
+    } finally {
+      for (const row of before)
+        await sql()`update session set space_id = ${row.space_id},
+          membership_generation = ${row.membership_generation} where token_hash = ${row.token_hash}`;
+    }
+  },
+);
+
+databaseTest(
+  'in a space of their own, a record still deletes the file at its name after it was saved over',
+  async () => {
+    const id = await savedInFiles('drafts/letter.md', 'first draft\n');
+    await writeFile(inFiles('drafts', 'letter.md'), 'second draft\n');
+    expect((await list()).find((file) => file.id === id)?.deletable).toBe(true);
+    const trash = await trashOf(await remove(id));
+    expect(await exists(inFiles('drafts', 'letter.md'))).toBe(false);
+    expect((await restore(id, trash)).status).toBe(200);
+    expect(await readFile(inFiles('drafts', 'letter.md'), 'utf8')).toBe('second draft\n');
   },
 );
 

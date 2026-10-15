@@ -147,6 +147,11 @@ export type AddressPoolFact = {
   defaultPool?: boolean;
   /** Why MELETE_NETWORK_POOL cannot be used, in the service's own words; nothing else is judged. */
   invalid?: string;
+  /**
+   * deploy/.env's MELETE_NETWORK_POOL as written, when it refers to another
+   * setting that Compose fills in and doctor does not; nothing else is judged.
+   */
+  reference?: string;
 };
 
 /** What doctor judges: the engine's pools, and the service's own pool unless it is off. */
@@ -199,6 +204,15 @@ export function judgeAddressPools(fact: AddressPoolFact | null): Result[] {
         level: 'fail',
         detail: `Docker's address pools (${fact.ipv6Only.join(', ')}) are all IPv6, so an IPv4 network that names no subnet of its own has no pool: docker compose up fails with "invalid address pool"${needs ? `, and so does ${needs.toLowerCase()} that needs a network of its own` : ''}.`,
         fix: `Add an IPv4 pool beside them in /etc/docker/daemon.json, such as {"base": "10.216.0.0/14", "size": 24} in "default-address-pools" (any private range nothing on your network uses), then restart Docker (${DOCS}).`,
+      },
+    ];
+  if (fact.reference !== undefined)
+    return [
+      {
+        id,
+        level: 'warn',
+        detail: `MELETE_NETWORK_POOL in deploy/.env is ${fact.reference}, which Compose fills in from other settings when it starts the stack. Doctor does not fill in references, so the pool is not judged.`,
+        fix: `To have it judged, write the range itself: bun run melete set MELETE_NETWORK_POOL=<range> (${DOCS}).`,
       },
     ];
   if (fact.invalid !== undefined)

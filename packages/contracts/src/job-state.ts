@@ -40,11 +40,16 @@ export const isTerminal = (state: JobState): boolean =>
 export const isWaiting = (state: JobState): boolean =>
   (WAITING_STATES as readonly JobState[]).includes(state);
 
-/** Where a conversation's next message starts a new turn instead of answering a wait. */
+/**
+ * Where a conversation's next message starts a new turn instead of answering a
+ * wait. A conversation resting until a reminder is due takes one too: the
+ * person can talk while it waits, and the reminder is kept for after the reply.
+ */
 export const CONTINUABLE_STATES: readonly JobState[] = [
   'failed',
   'completed',
   'needs_reconciliation',
+  'waiting_for_event_or_time',
 ];
 
 /**
@@ -143,8 +148,8 @@ export function transition(
       : ok('cancelled');
   }
 
-  // A failed or finished turn, or one whose effect is still being reconciled,
-  // does not end a conversation. Anything unresolved stays recorded and in the
+  // A failed or finished turn, one whose effect is still being reconciled, or
+  // one resting until a reminder is due, does not end a conversation. Anything unresolved stays recorded and in the
   // person's queue; the next turn starts beside it. A cancelled conversation
   // was ended on purpose and stays ended.
   if (input.kind === 'conversation_continued') {
@@ -284,6 +289,7 @@ export const LEGAL_EDGES: ReadonlyArray<{
   { from: 'failed', input: 'conversation_continued', to: 'queued' },
   { from: 'completed', input: 'conversation_continued', to: 'queued' },
   { from: 'needs_reconciliation', input: 'conversation_continued', to: 'queued' },
+  { from: 'waiting_for_event_or_time', input: 'conversation_continued', to: 'queued' },
   { from: 'queued', input: 'cancelled', to: 'cancelled' },
   { from: 'running', input: 'cancelled', to: 'cancelled' },
   { from: 'waiting_for_input', input: 'cancelled', to: 'cancelled' },

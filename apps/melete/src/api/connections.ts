@@ -111,7 +111,12 @@ import { awsSecret } from '../egress/aws-session.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import { signInStore } from '../ops/signin-store.ts';
-import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
+import {
+  managesConnection,
+  ownedSpace,
+  ownsSpace,
+  spaceAuthority,
+} from '../principals/authority.ts';
 import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled } from '../rooms/preview.ts';
 import {
   checkSandboxConfiguration,
@@ -121,6 +126,7 @@ import {
 } from '../sandbox/connection.ts';
 import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { SMS_INBOUND_LIMITED, SMS_INBOUND_NEEDS, smsWebhookUrl } from '../sms/inbox.ts';
+import { connectorDenied, connectorRefusal, readSpaceRules } from '../spaces/policy.ts';
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 
@@ -587,7 +593,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const id = c.req.param('id');
     const [row] = await deps.db.select().from(connection).where(eq(connection.id, id));
     if (!row) throw new ServiceError('not_found', 'Connection not found.', 404);
-    if ((await spaceAuthority(deps.db, row.spaceId, c.get('owner').id)).role !== 'owner')
+    if (
+      !managesConnection(
+        await spaceAuthority(deps.db, row.spaceId, c.get('owner').id),
+        row.sharedUse,
+      )
+    )
       throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
     const tested = await retest(row);
     return c.json(
@@ -641,6 +652,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
     await installer(deps.db, spaceId, actor, installation.kind);
+    // Nor of a kind the space's rules keep out.
+    await allowedKind(deps.db, spaceId, installation.provider);
     // An address outside the setup owner's own space must be public; the
     // connector holds it to that again on every connection it makes.
     const reach = await spaceReach(deps.sql, spaceId);
@@ -688,6 +701,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
       const access = await installer(tx, spaceId, actor, installation.kind, true);
+      await allowedKind(tx, spaceId, installation.provider);
       if (installation.kind === 'sandbox') {
         // One execution backend per space, as one browser worker per space:
         // two would mean two places a command could run, and two answers to
@@ -744,7 +758,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           },
           status: 'disabled',
           setupState: 'connecting',
-          sharedUse: installedUse(access),
+          sharedUse: installedUse(access, installation.kind),
         })
         .returning({ generation: connection.generation });
       if (!created) throw new Error('Connection installation was not created');
@@ -790,7 +804,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       const checkedAt = new Date(outcome.checked_at);
       await serviceTransaction(deps.db, async (tx) => {
         const access = await spaceAuthority(tx, spaceId, actor, true);
-        if (!mayInstall(access))
+        if (!mayInstall(access, installation.kind))
           throw new ServiceError('scope_denied', 'Installation authority changed.', 403);
         // Registry publication precedes activation so discovery cannot observe an active row without a worker.
         const [published] = await tx
@@ -1623,16 +1637,34 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 /**
  * Installing is an owner's act: the owner of a personal space, adding their own
  * account, or an owner of a room, adding an account the room uses as its own.
+ * Texts to a number speak as the space's own owner, so in a room only its
+ * maker adds one.
  */
-function mayInstall(access: Awaited<ReturnType<typeof spaceAuthority>>): boolean {
+function mayInstall(
+  access: Awaited<ReturnType<typeof spaceAuthority>>,
+  kind: Installation['kind'],
+): boolean {
+  if (access.space.kind === 'shared' && kind === 'sms') return ownsSpace(access);
   return (
     access.role === 'owner' && (access.space.audience === 'owner' || access.space.kind === 'shared')
   );
 }
 
-/** How a new connection is shared: a room's account serves the room's requests. */
-function installedUse(access: Awaited<ReturnType<typeof spaceAuthority>>): 'owner' | 'room' {
-  return access.space.kind === 'shared' ? 'room' : 'owner';
+/** Refuses a new connection of a kind the space's rules keep out, in words the person reads. */
+async function allowedKind(reader: Database | Transaction, spaceId: string, provider: string) {
+  if (connectorDenied(await readSpaceRules(reader, spaceId), provider))
+    throw new ServiceError('scope_denied', connectorRefusal(provider), 403);
+}
+
+/**
+ * How a new connection is shared: a room's account serves the room's requests,
+ * and a number its maker adds is kept for them, as the texts to it are theirs.
+ */
+function installedUse(
+  access: Awaited<ReturnType<typeof spaceAuthority>>,
+  kind: Installation['kind'],
+): 'owner' | 'room' {
+  return access.space.kind === 'shared' && kind !== 'sms' ? 'room' : 'owner';
 }
 
 /**
@@ -1647,7 +1679,7 @@ async function requireInstaller(
   lock = false,
 ) {
   const access = await spaceAuthority(reader, spaceId, actor, lock);
-  if (!mayInstall(access))
+  if (!mayInstall(access, kind))
     throw new ServiceError(
       'scope_denied',
       kind === 'mcp' || kind === 'mcp_stdio'

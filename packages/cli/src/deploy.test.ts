@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { runDeploy } from './commands/deploy.ts';
 import { DEPLOY_FILE } from './deploy-config.ts';
@@ -290,6 +290,34 @@ describe('melete deploy', () => {
     expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(2);
     expect(rig.context.printed()).toMatch(/fail\s+migrations\.forward_only/);
     expect(rig.state.pulls).toEqual([]);
+  });
+
+  test('a deploy that needs no backup never measures the files', async () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      // The same migrations on both sides: no backup step.
+      const rig = deployRig(deployDir);
+      expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(0);
+      expect(rig.context.printed()).toMatch(/ok\s+backup\.database\s+bbbbbbb adds no migrations/);
+      expect(rig.state.calls.filter((call) => call.includes(' --entrypoint du '))).toEqual([]);
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test("a health report that answers 503 names the database's state in the failure", async () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      const rig = deployRig(deployDir);
+      rig.context.fetch = async () =>
+        Response.json({ status: 'degraded', database: 'unreachable' }, { status: 503 });
+      expect(await runDeploy(rig.context, ['--checkout'], false, rig.dependencies)).toBe(3);
+      expect(rig.context.printed()).toMatch(
+        /fail\s+verify\.health\s+http:\/\/127\.0\.0\.1:3101\/api\/health reports degraded \(database unreachable\)\./,
+      );
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
   });
 
   test('a failure after the switch exits 3 and names the rollback', async () => {

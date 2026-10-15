@@ -34,6 +34,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { ItemFailures } from '../ops/item-failures.ts';
+import { personSetSchedule } from './attention.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
 import type { AttemptRunner } from './runner.ts';
@@ -658,7 +659,10 @@ export class TriggerService {
       registration.kind === 'schedule' &&
       payload.kind === 'schedule_event' &&
       row.scheduleSkipRemaining > 0 &&
-      row.importance !== 'important'
+      row.importance !== 'important' &&
+      // A schedule the person asked for is never skipped, even one an earlier
+      // version left counting down.
+      !(await personSetSchedule(tx, row))
     ) {
       const [updated] = await tx
         .update(job)
@@ -939,6 +943,14 @@ export class TriggerService {
     const schedules = await this.jobs.boss.getSchedules(QUEUES.triggerSchedule);
     const desired = new Set<string>();
     let ownError: { error: unknown } | undefined;
+    // A failure kept for a routine or schedule that is gone (another instance
+    // removed it) has nothing left to retry, so it leaves the health detail now.
+    this.scheduleFailures.keepOnly(
+      new Set([
+        ...rows.filter((row) => row.enabled).map((row) => row.id),
+        ...schedules.map((schedule) => schedule.key),
+      ]),
+    );
     for (const row of rows) {
       if (!row.enabled) continue;
       desired.add(row.id);

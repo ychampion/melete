@@ -792,3 +792,16 @@
     flex: 1 1 140px;
   }
 }
+
+/* An owner's choices for one person: they stack on a narrow screen rather than squeeze the name. */
+.people-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 50%;
+}
+.people-actions:empty {
+  display: none;
+}

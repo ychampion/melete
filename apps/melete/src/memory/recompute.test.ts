@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { testDatabase } from '../../test/helpers/database.ts';
+import { EventStream } from '../events/stream.ts';
 import type { Commits } from '../ops/quiet-loop.ts';
 import { enqueue, provisionMemorySpace } from './db.ts';
 import { startJobRecompute } from './recompute.ts';
@@ -95,6 +96,33 @@ withDb('job recompute delivery', () => {
       expect(row?.completed_at).not.toBeNull();
     } finally {
       await recompute.stop();
+    }
+  });
+
+  test('a memory change made outside any job wakes the loops through the change notice', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const spaceId = await memorySpace();
+    // The service's own change source: LISTEN, with its slow repair tick kept out of the way.
+    const events = new EventStream(handle, { repairMs: 120_000 });
+    const delivered: { jobId: string; at: number }[] = [];
+    const recompute = startJobRecompute(
+      handle.sql,
+      async (jobId) => {
+        delivered.push({ jobId, at: Date.now() });
+      },
+      { idleMs: 60_000, wakeOn: events },
+    );
+    try {
+      // LISTEN is up and the loop has backed off far past its quarter-second pace.
+      await Bun.sleep(2500);
+      // A direct edit writes no job event; only its queued work says it happened.
+      await handle.sql.begin((tx) => enqueue(tx, spaceId, 'job_recompute', 'job_direct_edit'));
+      const committed = Date.now();
+      expect(await until(() => delivered.length === 1, 3000)).toBe(true);
+      expect((delivered[0]?.at ?? Number.POSITIVE_INFINITY) - committed).toBeLessThan(1000);
+    } finally {
+      await recompute.stop();
+      await events.close();
     }
   });
 });

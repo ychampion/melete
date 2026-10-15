@@ -13,7 +13,7 @@ import type {
   BeliefTrust,
   OriginTrust,
 } from '@melete/contracts';
-import { type BlockScope, blockedSubject, readBlocks, storedScope } from './blocks.ts';
+import { type BlockScope, blockedSubject, readBlocks, storedScopes } from './blocks.ts';
 import { type ClaimHead, eligibleRevision, getHead, listClaims } from './claims.ts';
 import {
   lockSpace,
@@ -136,6 +136,7 @@ export function beliefLabel(key: string | null, domainKey: string, content: stri
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/[.!]+$/, ''),
+    domainKey,
   );
   if (key || text.length > SENTENCE_LABEL || text.split(' ').length < 3 || !/\p{L}/u.test(text))
     return subjectLabel(key, domainKey);
@@ -290,7 +291,7 @@ export async function beliefFromHead(
     label: beliefLabel(head.key, head.domain_key, head.current.content),
     topic: subjectLabel(head.key, head.domain_key),
     // Saved before details were put in the person's words, it may still say "the owner".
-    value: inPersonsWords(head.current.content),
+    value: inPersonsWords(head.current.content, head.domain_key),
     category: beliefCategoryOf({
       key: head.key,
       domainKey: head.domain_key,
@@ -358,7 +359,7 @@ export async function beliefHistory(
       if (!(await eligibleRevision(tx, scope, id, Number(row.revision)))) continue;
       const at = new Date(String(row.recorded_at)).toISOString();
       versions.push({
-        value: inPersonsWords(String(row.content)),
+        value: inPersonsWords(String(row.content), head.domain_key),
         at,
         source: await sourceView(
           tx,
@@ -380,6 +381,10 @@ export async function blockedSubjects(sql: MemorySql | MemoryTx, spaceId: string
     where space_id = ${spaceId} and removed_at is null`;
   return readBlocks(spaceId, rows);
 }
+
+/** How a block on just one detail is named: "Home city, the detail you forgot". */
+const DETAIL_SAID = ', the detail you forgot';
+const DETAIL_LABEL = new RegExp(`${DETAIL_SAID}$`);
 
 /**
  * Forget a belief and stop learning it again. The block is written before the
@@ -406,7 +411,7 @@ export async function blockBelief(
     const label = subjectLabel(found.key, found.domain_key);
     await tx`insert into memory_blocks (id, space_id, domain_key, key, label)
       values (${newId('blk')}, ${scope.spaceId}, ${kept.subject}, ${found.key},
-        ${kept.scope === 'detail' ? `${label}, the detail you forgot` : label})
+        ${kept.scope === 'detail' ? `${label}${DETAIL_SAID}` : label})
       on conflict (space_id, domain_key) where removed_at is null do nothing`;
     return { head: found, block: kept };
   });
@@ -416,17 +421,22 @@ export async function blockBelief(
 /**
  * What the person asked Melete not to learn again, each said with how far it
  * reaches: "Home city, the detail you forgot", or "Anything about Home city"
- * for a block on the whole subject, as every block made before the choice is.
+ * for a block on the whole subject, as every block made before the choice is,
+ * and a detail's block made before the install key changed.
  */
 export async function listBlocks(sql: MemorySql, scope: MemoryScope) {
   const rows = await sql`select id, label, domain_key, created_at from memory_blocks
     where space_id = ${scope.spaceId} and removed_at is null order by created_at desc limit 500`;
+  const reaches = storedScopes(readBlocks(scope.spaceId, rows));
   return {
-    blocks: rows.map((row) => {
-      const reach = storedScope(String(row.domain_key));
+    blocks: rows.map((row, index) => {
+      const reach = reaches[index] ?? 'topic';
       return {
         id: String(row.id),
-        label: reach === 'topic' ? `Anything about ${String(row.label)}` : String(row.label),
+        label:
+          reach === 'topic'
+            ? `Anything about ${String(row.label).replace(DETAIL_LABEL, '')}`
+            : String(row.label),
         scope: reach,
         created_at: new Date(String(row.created_at)).toISOString(),
       };

@@ -76,6 +76,27 @@ describeWithDb('problem reports against Postgres', () => {
     expect((await app().request('/feedback')).status).toBe(401);
   });
 
+  test('says, before anything is sent, whether reports also go to an outside address', async () => {
+    const off = app();
+    const { member } = await people(off);
+    const forwarding = async (api: Api, cookie: string) => {
+      const response = await api.request('/feedback/forwarding', { headers: { Cookie: cookie } });
+      return { status: response.status, body: await response.json() };
+    };
+    expect(await forwarding(off, member)).toEqual({ status: 200, body: { forwarded: false } });
+    const on = createApp({
+      env: loadEnv({
+        NODE_ENV: 'test',
+        MELETE_FEEDBACK_WEBHOOK_URL: 'https://hooks.example.test/melete',
+      }),
+      db: database().db,
+      checkDatabase: async () => 'ok',
+      feedbackLimiter: new FeedbackLimiter(),
+    });
+    expect(await forwarding(on, member)).toEqual({ status: 200, body: { forwarded: true } });
+    expect((await on.request('/feedback/forwarding')).status).toBe(401);
+  });
+
   test('stores a report, answers with a short id, and redacts what the page sent', async () => {
     const api = app();
     const { member } = await people(api);

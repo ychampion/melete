@@ -242,3 +242,91 @@ describe('urgency lanes', () => {
     expect(spilled).toEqual({ hold: 'quiet' });
   });
 });
+
+describe('what the person timed', () => {
+  // Day hours 08:00-22:00 in New York; 10:30 UTC is 06:30 there.
+  const dayNY = { start: '08:00', end: '22:00', timeZone: 'America/New_York' };
+  const half6 = at('2026-09-28T10:30:00Z');
+  const reminder = (id: string, createdAt: string): Waiting => ({
+    id,
+    kind: 'reminder',
+    title: 'Airport',
+    body: 'Time to leave for the airport.',
+    because: 'Because you asked for this at this time.',
+    url: `/#/chat/job_${id}`,
+    createdAt: at(createdAt),
+  });
+  const answer = (id: string, createdAt: string): Waiting => ({
+    id,
+    kind: 'done',
+    title: 'Trip notes',
+    body: 'I tidied the packing list.',
+    because: 'Because it finished while you were away.',
+    url: `/#/chat/job_${id}`,
+    createdAt: at(createdAt),
+    urgency: 'soon',
+  });
+
+  test('a 06:30 reminder goes at 06:30, before the day starts', () => {
+    expect(isQuiet(half6, dayNY)).toBe(true);
+    const plan = planPush({
+      waiting: [reminder('r', '2026-09-28T10:30:00Z')],
+      day: dayNY,
+      pacing,
+      sentToday: 0,
+      now: half6,
+    });
+    if (!('send' in plan)) throw new Error(`held: ${plan.hold}`);
+    expect(plan.ids).toEqual(['r']);
+    expect(plan.onTime).toBe(true);
+    expect(pushPayload.parse(plan.send)).toMatchObject({
+      title: 'Airport',
+      body: 'Time to leave for the airport.',
+      because: 'Because you asked for this at this time.',
+      tag: 'reminder:r',
+    });
+  });
+
+  test('no cap holds it back, and it does not wait for company', () => {
+    const plan = planPush({
+      waiting: [reminder('r', '2026-09-28T16:00:00Z')],
+      day: dayNY,
+      pacing,
+      sentToday: { normal: pacing.dailyCap, soon: 6, urgent: 3 },
+      now: at('2026-09-28T16:00:00Z'),
+    });
+    expect('send' in plan && plan.ids).toEqual(['r']);
+  });
+
+  test('what Melete says by itself still waits for the day, even beside a reminder', () => {
+    const notice = answer('d', '2026-09-28T10:00:00Z');
+    expect(planPush({ waiting: [notice], day: dayNY, pacing, sentToday: 0, now: half6 })).toEqual({
+      hold: 'quiet',
+    });
+    const plan = planPush({
+      waiting: [notice, reminder('r', '2026-09-28T10:30:00Z')],
+      day: dayNY,
+      pacing,
+      sentToday: 0,
+      now: half6,
+    });
+    expect('send' in plan && plan.ids).toEqual(['r']);
+  });
+
+  test('two that come due together go as one push that counts them', () => {
+    const plan = planPush({
+      waiting: [reminder('a', '2026-09-28T10:30:00Z'), reminder('b', '2026-09-28T10:30:10Z')],
+      day: dayNY,
+      pacing,
+      sentToday: 0,
+      now: half6,
+    });
+    if (!('send' in plan)) throw new Error(`held: ${plan.hold}`);
+    expect(plan.ids).toEqual(['a', 'b']);
+    expect(pushPayload.parse(plan.send)).toMatchObject({
+      title: 'Two things you asked for',
+      because: 'Because you asked for these at this time.',
+      tag: 'reminder:a',
+    });
+  });
+});

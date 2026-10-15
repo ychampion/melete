@@ -58,6 +58,12 @@ export const principal = pgTable(
      * the account cannot sign in, and nothing it had signed in still works.
      */
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    /**
+     * Granted by the account that set Melete up: an admin provisions accounts
+     * and chooses the installation's model, as the setup owner does. Only a
+     * person holds it, and only the setup owner grants or takes it away.
+     */
+    admin: boolean('admin').notNull().default(false),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );

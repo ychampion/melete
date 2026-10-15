@@ -48,9 +48,16 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
 import type { Context, Endpoint, Source } from '../context.ts';
 import { clientCommand, databaseShell, psqlLine } from '../database.ts';
-import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
+import {
+  composeCommand,
+  DEPLOY_FILE,
+  type DeployConfig,
+  PROJECT_NAME,
+  parseDeployConfig,
+} from '../deploy-config.ts';
 import {
   archiveCommand,
   CELLS_SERVICE,
@@ -71,6 +78,7 @@ import {
   PART_NAMES,
   partFile,
   stopCellsCommand,
+  volumePresence,
 } from '../files.ts';
 import { lastSwitched, readHistory } from '../history.ts';
 import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
@@ -332,6 +340,8 @@ async function backupFiles(
     );
   let computers: ComputerVolume[];
   const skipped: string[] = [];
+  /** Computers' volumes the engine no longer has: their computer ended after they were listed. */
+  const gone: string[] = [];
   try {
     computers = listComputerVolumes(context, settings.sandboxProject, skipped);
   } catch (error) {
@@ -394,6 +404,21 @@ async function backupFiles(
       let resumed = true;
       try {
         for (const volume of volumes) {
+          // Mounting a volume that is gone would make a new, empty one with no labels.
+          const presence = volumePresence(context, volume.volume);
+          if (presence === 'absent') {
+            gone.push(volume.volume);
+            continue;
+          }
+          if (presence !== 'present') {
+            results.push({
+              id: 'backup.computer',
+              level: 'fail',
+              detail: `Whether ${volume.volume} is still on this engine could not be read (${presence.unreadable}), so ${computer} was not copied.`,
+            });
+            copied = false;
+            break;
+          }
           // Online, a computer the service resumes during its copy can change a file under
           // tar, which exits 1 for it; the archive is still whole, and a warning below says
           // so. Offline nothing resumes it, so a change is an error.
@@ -475,11 +500,17 @@ async function backupFiles(
     if (started.code !== 0) ok = false;
   } else ok = await archive();
   if (!ok) return null;
+  if (gone.length > 0)
+    results.push({
+      id: 'backup.computer_gone',
+      level: 'warn',
+      detail: `${gone.join(', ')} ${gone.length === 1 ? 'was' : 'were'} removed while the backup ran, as the service removes a computer whose time is up, so this backup does not hold ${gone.length === 1 ? 'it' : 'them'}.`,
+    });
   return {
     format: 1,
     taken: mode,
     parts: FILE_PARTS.map((each) => ({ part: each, file: partFile(each) })),
-    computers,
+    computers: computers.filter((volume) => !gone.includes(volume.volume)),
     blobs: settings.blobs.store,
   };
 }
@@ -656,9 +687,13 @@ export async function takeBackup(
   if (ok && mode !== 'database') {
     contents = await backupFiles(context, config, compose, mode, settings, part, results);
     ok = contents !== null;
+    // It names the installation, readable even when the rest is encrypted, so another
+    // installation that keeps its backups in the same folder never removes this one.
     if (ok)
       ok = await part('backup.contents', CONTENTS_FILE, {
-        bytes: new TextEncoder().encode(`${JSON.stringify(contents, null, 2)}\n`),
+        bytes: new TextEncoder().encode(
+          `${JSON.stringify({ ...contents, project: config.project }, null, 2)}\n`,
+        ),
       });
   }
 
@@ -714,56 +749,163 @@ export async function takeBackup(
     });
 
   if (destination.kind === 'dir')
-    results.push(...pruneBackups(context, config, destination.dir, name));
+    results.push(
+      ...pruneBackups(
+        context,
+        config,
+        destination.dir,
+        name,
+        stripped.key === null ? null : masterKeyFingerprint(stripped.key),
+      ),
+    );
   return { ok: true, location, results };
 }
 
-/** When a backup named `melete-<time>` was made. */
-const madeAt = (entry: string): number => {
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** When a backup named `melete-<time>` was made, by its name. */
+export const madeAt = (entry: string): number => {
   const [, y, mo, d, h, mi, s] =
     /^melete-(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/.exec(entry) ?? [];
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
 };
 
 /**
- * Removes, from the directory a backup was just written to, the backups beyond
- * the newest `backup.keep`, and every one older than `backup.max_age_days`.
- * The one just made always stays. The backup the last deploy took is the one
- * rollback restores from, so `keep` never removes it; the age limit does, since
- * it is what bounds how long a removed thing survives in a backup.
+ * Whose backup a set is, from its own files: contents.json names the
+ * installation's Compose project; an unencrypted set's contract, or its
+ * deploy/.env when it has none, names it too; and a set made under this
+ * installation's master key is this installation's. A set named for this
+ * project but made under another master key is from another machine's
+ * installation of the same name, or from before the key was replaced:
+ * `unknown`, as is a set in which nothing says. A set that holds no file is
+ * no one's backup.
  */
-function pruneBackups(context: Context, config: DeployConfig, dir: string, made: string): Result[] {
+function ownerOf(
+  set: string,
+  project: string,
+  fingerprint: string | null,
+): 'ours' | 'another' | 'unknown' {
+  const read = (file: string) => {
+    try {
+      return readFileSync(join(set, file), 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  let files: string[];
+  try {
+    files = readdirSync(set);
+  } catch {
+    return 'unknown';
+  }
+  if (files.length === 0) return 'ours';
+  const recorded = read(FINGERPRINT_FILE)?.trim() || null;
+  const sameKey = recorded === null || fingerprint === null || recorded === fingerprint;
+  const named = (value: unknown) =>
+    typeof value === 'string' && PROJECT_NAME.test(value)
+      ? value !== project
+        ? 'another'
+        : sameKey
+          ? 'ours'
+          : 'unknown'
+      : null;
+  const contents = read(CONTENTS_FILE);
+  if (contents !== null) {
+    try {
+      const owner = named(JSON.parse(contents)?.project);
+      if (owner) return owner;
+    } catch {
+      // Read as unnamed; the files below may still say.
+    }
+  }
+  const contract = read(DEPLOY_FILE);
+  const loaded = contract === null ? null : parseDeployConfig(contract);
+  if (loaded?.kind === 'found') return named(loaded.config.project) ?? 'unknown';
+  const env = read('deploy.env');
+  if (env !== null)
+    return named(parseEnvFile(env).COMPOSE_PROJECT_NAME?.trim() || 'melete') ?? 'unknown';
+  if (fingerprint !== null && recorded === fingerprint) return 'ours';
+  return 'unknown';
+}
+
+/**
+ * Removes, from the directory a backup was just written to, this
+ * installation's backups beyond the newest `backup.keep`, and every one of
+ * them older than `backup.max_age_days`. Backups another installation made
+ * there are left alone, and so is one that does not say who made it. The one
+ * just made always stays. The backup the last deploy took is the one rollback
+ * restores from, so `keep` never removes it; the age limit does, since it is
+ * what bounds how long a removed thing survives in a backup. A backup is as
+ * old as the earlier of its name and the last change to its directory, so one
+ * named while the clock was ahead still ages.
+ */
+function pruneBackups(
+  context: Context,
+  config: DeployConfig,
+  dir: string,
+  made: string,
+  fingerprint: string | null,
+): Result[] {
   const named = lastSwitched(readHistory(context.deployDir))?.backup;
   const isNamed = (entry: string) => !!named && resolve(join(dir, entry)) === resolve(named);
   const { keep, max_age_days: days } = config.backup;
-  const oldest = days === null ? null : context.now().getTime() - days * 24 * 60 * 60 * 1000;
-  const kept = readdirSync(dir)
+  const now = context.now().getTime();
+  const oldest = days === null ? null : now - days * DAY_MS;
+  const sets = readdirSync(dir)
     .filter((entry) => BACKUP_NAME.test(entry))
     .filter((entry) => statSync(join(dir, entry)).isDirectory())
     .sort();
+  const owners = new Map(
+    sets.map((entry) => [
+      entry,
+      entry === made ? 'ours' : ownerOf(join(dir, entry), config.project, fingerprint),
+    ]),
+  );
+  const kept = sets.filter((entry) => owners.get(entry) === 'ours');
+  const age = (entry: string) => Math.min(madeAt(entry), statSync(join(dir, entry)).mtimeMs);
   const beyond = new Set(kept.slice(0, Math.max(0, kept.length - keep)));
   const removed = kept.filter(
     (entry) =>
       entry !== made &&
-      ((beyond.has(entry) && !isNamed(entry)) || (oldest !== null && madeAt(entry) < oldest)),
+      ((beyond.has(entry) && !isNamed(entry)) || (oldest !== null && age(entry) < oldest)),
   );
   for (const entry of removed) rmSync(join(dir, entry), { recursive: true, force: true });
-  if (removed.length === 0) return [];
-  const rule =
-    days === null
-      ? `Kept the newest ${keep}`
-      : `Kept the newest ${keep}, none older than ${days} days`;
-  return [
-    {
+  const results: Result[] = [];
+  if (removed.length > 0) {
+    const rule =
+      days === null
+        ? `Kept the newest ${keep}`
+        : `Kept the newest ${keep}, none older than ${days} days`;
+    const lost = removed.some(isNamed);
+    results.push({
       id: 'backup.keep',
-      level: 'ok',
+      level: lost ? 'warn' : 'ok',
       detail: `${rule}; removed ${removed.join(', ')}.${
-        removed.some(isNamed)
+        lost
           ? ' One of them was the backup the last deploy took, so rollback can no longer restore from it.'
           : ''
       }`,
-    },
-  ];
+    });
+  }
+  const one = (count: number, singular: string, plural: string) =>
+    count === 1 ? singular : plural;
+  const ahead = kept.filter((entry) => !removed.includes(entry) && madeAt(entry) > now + DAY_MS);
+  if (ahead.length > 0)
+    results.push({
+      id: 'backup.future_name',
+      level: 'warn',
+      detail: `${ahead.join(', ')} ${one(ahead.length, 'is', 'are')} named for more than a day after this machine's clock, so a clock was wrong when ${one(ahead.length, 'it was', 'they were')} made. ${one(ahead.length, 'It ages', 'They age')} from the last change to ${one(ahead.length, 'its', 'their')} folder instead.`,
+      fix: "Check this machine's clock (timedatectl on Linux).",
+    });
+  const unknown = sets.filter((entry) => owners.get(entry) === 'unknown');
+  if (unknown.length > 0)
+    results.push({
+      id: 'backup.keep_unknown',
+      level: 'warn',
+      detail: `${unknown.join(', ')} in ${dir} ${one(unknown.length, 'does', 'do')} not show which installation made ${one(unknown.length, 'it', 'them')}, or ${one(unknown.length, 'was', 'were')} made under another master key, so keep and max_age_days leave ${one(unknown.length, 'it', 'them')} alone.`,
+      fix: 'Remove a backup no installation needs by hand. Give an installation on another machine its own backup.dir.',
+    });
+  return results;
 }
 
 /**
