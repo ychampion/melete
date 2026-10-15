@@ -55,12 +55,41 @@ function scriptedGateway(): ExtractionGateway {
       const input = JSON.parse(body.messages.at(-1)?.content ?? '{}') as {
         evidence: {
           source: { source_id: string; source_version: string };
+          speaker?: string;
           start: number;
           text: string;
         };
         claims: { id: string; key: string | null; head_revision: number }[];
       };
       const proposals: ExtractionProposal[] = [];
+      // Work someone takes on, read as a model reads it: one week's work, and
+      // the room's shared work, written with the name of whoever said it.
+      const taking = /I'm taking the ([\w ]+?), done by (\w+)/.exec(input.evidence.text);
+      if (taking) {
+        const who = input.evidence.speaker?.split(' <')[0] ?? 'Someone';
+        const start = input.evidence.start + taking.index;
+        proposals.push({
+          op: 'add',
+          expected_revision: null,
+          domain_key: `work.${taking[1]?.replaceAll(' ', '_')}`,
+          content: `${who} is taking the ${taking[1]}, due ${taking[2]}`,
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: new Date(Date.now() - 60_000).toISOString(),
+          valid_until: null,
+          lasting: false,
+          about: 'shared_work',
+          sources: [
+            {
+              source_id: input.evidence.source.source_id,
+              source_version: input.evidence.source.source_version,
+              start,
+              end: start + taking[0].length,
+              quote: taking[0],
+            },
+          ],
+        } as ExtractionProposal);
+      }
       for (const read of READS) {
         const found = read.match.exec(input.evidence.text);
         if (!found) continue;
@@ -510,6 +539,41 @@ withDb('room memory', () => {
     ]);
     await attempt.finish();
     void opened;
+  }, 90_000);
+
+  test('work someone takes on in a room is recalled there, by name, and nowhere else', async () => {
+    const { sql, memory: started } = database();
+    const legal = await makeRoom('Legal', [bob]);
+    const ops = await makeRoom('Ops', [bob]);
+    await startThread(bob, legal, "I'm taking the vendor contract review, done by Thursday.");
+    await settle(legal);
+
+    // Asked later, in another thread of the same room, by someone else.
+    const here = await ask(alice, legal, "Who's on the vendor contract?");
+    const attempt = await attemptOf(here.jobId);
+    const knowledge = handed(attempt.bundle);
+    expect(knowledge).toContain('Bob is taking the vendor contract review, due Thursday');
+    expect(knowledge).toContain(`Said in this room by ${JSON.stringify(labelOf(bob, legal))}`);
+    await attempt.finish();
+
+    // Another room the same people share knows nothing of it.
+    const there = await ask(alice, ops, "Who's on the vendor contract?");
+    const other = await attemptOf(there.jobId);
+    expect(handed(other.bundle)).not.toContain('vendor contract review');
+    await other.finish();
+
+    // Nor does the personal memory of the person who said it, or of anyone else.
+    for (const person of [bob, alice]) {
+      const [own] = await sql`select id from space
+        where kind = 'personal' and owner_principal_id = ${person.id}`;
+      const scope = await started.storageScope(own?.id as string);
+      const recalled = await recall(sql, scope, { query: 'vendor contract review' });
+      expect(recalled.items.map((item) => item.content)).toEqual([]);
+    }
+    const [elsewhere] = await sql`select count(*)::int as n from memory_revision_content b
+      join memory_claims c on c.id = b.claim_id
+      where c.space_id <> ${legal} and b.content like '%vendor contract%'`;
+    expect(elsewhere?.n).toBe(0);
   }, 90_000);
 
   test('forgetting a shared personal claim removes it from the room, and a restored old database keeps it out', async () => {
