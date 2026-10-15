@@ -322,12 +322,10 @@ installation's computers are never listed; they are told apart by the
 project of the installation that made them. While that project still has a
 container or a volume on this engine they are its own, even with the
 installation down (`docker compose down` removes its service container but
-keeps its volumes); once it has neither, they are listed. They are listed too
-when that installation's service container is here and runs with another
-sandbox project, while no service on this engine runs with theirs: an
-installation whose `MELETE_SANDBOX_PROJECT` changed leaves the earlier
-project's computers behind. When the sandbox project in that container cannot
-be read, they stay its own. Computers made before
+keeps its volumes); once it has neither, they are listed. They stay its own
+after its `MELETE_SANDBOX_PROJECT` changes, too: an agent's paused workspace is
+resumed by the name it was made with, so the earlier project's computers can
+still be in use. Computers made before
 they carried that label are listed with an unknown owner when their sandbox
 project is not in use, since an installation that is down cannot be told from
 one that was removed that way; check those before
