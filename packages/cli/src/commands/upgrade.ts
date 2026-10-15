@@ -9,7 +9,7 @@
  * installation's backups, unless `--backup-dir` names another folder. An
  * installation that runs published images updates with `melete deploy` instead.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
@@ -95,6 +95,18 @@ export async function runUpgrade(context: Context, args: readonly string[]): Pro
     ...(args.includes('--backup-dir') || !isAbsolute(backupDir) ? [] : ['--backup-dir', backupDir]),
     ...upgradeOverlayArguments(config),
   ];
+  // The installation's own backup folder is made the way melete backup makes it, so a
+  // second installation that has not backed up yet can upgrade. A folder named with
+  // --backup-dir must already exist: the release's script refuses one that does not.
+  const ownFolder = !args.includes('--backup-dir') && isAbsolute(backupDir);
+  if (ownFolder && !existsSync(backupDir)) {
+    if (dryRun)
+      context.out(
+        `${backupDir} does not exist yet; a real upgrade creates it (mode 700) before the backup.
+`,
+      );
+    else mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  }
   const run = async () => {
     const before = { tag: envImageTag(installation.env ?? {}), revision: head(context) };
     const migrations = journalCount(context, null);

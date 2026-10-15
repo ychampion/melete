@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import {
@@ -172,6 +172,40 @@ describe('melete upgrade', () => {
     expect(await backupDir({ project: 'assistant' }, ['--backup-dir', '/mnt/b'])).toEqual([
       '/mnt/b',
     ]);
+  });
+
+  test("a real upgrade makes the installation's own backup folder, as melete backup does", async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'melete-upgrade-folder-'));
+    try {
+      const folder = join(parent, 'melete-backups', 'assistant');
+      const config = { project: 'assistant', backup: { dir: folder, keep: 3 } };
+      // A dry run changes nothing; it says the real run will make the folder.
+      const dry = rig(config, [
+        ['git -C', ok('')],
+        ['tar -x', ok('')],
+      ]).context;
+      expect(await runUpgrade(dry, ['v1.0.0', '--dry-run'])).toBe(0);
+      expect(existsSync(folder)).toBe(false);
+      expect(dry.printed()).toContain(`${folder} does not exist yet`);
+      const real = rig(config, [
+        ['git -C', ok('')],
+        ['tar -x', ok('')],
+      ]).context;
+      expect(await runUpgrade(real, ['v1.0.0'])).toBe(0);
+      expect(statSync(folder).isDirectory()).toBe(true);
+      if (process.platform !== 'win32') expect(statSync(folder).mode & 0o777).toBe(0o700);
+      expect(real.attached[0]).toContain(folder);
+      // A folder named with --backup-dir is left to the release's script, which refuses a missing one.
+      const named = join(parent, 'named');
+      const own = rig(config, [
+        ['git -C', ok('')],
+        ['tar -x', ok('')],
+      ]).context;
+      expect(await runUpgrade(own, ['v1.0.0', '--backup-dir', named])).toBe(0);
+      expect(existsSync(named)).toBe(false);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
   });
 
   test('a tag this clone lacks is fetched, and one that still is not there is refused', async () => {

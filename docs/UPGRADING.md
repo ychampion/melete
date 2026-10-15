@@ -100,7 +100,8 @@ machine (a `COMPOSE_PROJECT_NAME` other than `melete` in `deploy/.env`) keeps
 its backups in a folder of its own, `~/melete-backups/<project>`, as `melete
 backup` does; make that one instead (`mkdir -p -m 700
 ~/melete-backups/<project>`). Its upgrades from before this default left their
-backups in `~/melete-backups`. Run the same command without
+backups in `~/melete-backups`. `bun run melete upgrade` makes the deploy file's
+`backup.dir` itself when it is missing, private to you. Run the same command without
 `--dry-run` to upgrade, and remove the copy afterwards with `rm -rf "$release"`.
 Take the copy from the tag you are upgrading to, and give that same tag to the
 script.
@@ -111,7 +112,7 @@ non-zero when the preflight found a problem; the plan is printed either way.
 | Option | Meaning |
 | --- | --- |
 | `--dry-run` | Print the preflight result, the plan and the rollback. Execute nothing. |
-| `--backup-dir /absolute/parent` | Parent directory for this run's backup. Default: `~/melete-backups` for the project `melete`, `~/melete-backups/<project>` for any other; `melete upgrade` names the deploy file's `backup.dir`. It must exist. |
+| `--backup-dir /absolute/parent` | Parent directory for this run's backup. Default: `~/melete-backups` for the project `melete`, `~/melete-backups/<project>` for any other; `melete upgrade` names the deploy file's `backup.dir`, and makes it if it is missing. A folder given here must exist. |
 | `--browser` | Include `deploy/docker-compose.browser.yml` in every Compose command and stop the browser worker with the other writers. Use it if you start the stack with that override. |
 | `--tailscale` | Include `deploy/docker-compose.tailscale.yml` in every Compose command and stop the Tailscale node with the other writers. Use it if you start the stack with that override. |
 | `--tailscale-kernel` | Also include `deploy/docker-compose.tailscale-kernel.yml`, read on top of the Tailscale file. Needs `--tailscale`. |
