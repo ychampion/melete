@@ -402,6 +402,8 @@ services:
       OPENAI_COMPAT_API_KEY: ${OPENAI_COMPAT_API_KEY:-}
       # Cloud metadata stays out of reach of every address set in the app unless this is true.
       MELETE_ALLOW_CLOUD_METADATA: ${MELETE_ALLOW_CLOUD_METADATA:-false}
+      # Internal hosts every space may reach, not only the owner's; empty keeps them to public addresses.
+      MELETE_PRIVATE_HOSTS: ${MELETE_PRIVATE_HOSTS:-}
       MELETE_CHATGPT_CLIENT_ID: ${MELETE_CHATGPT_CLIENT_ID:-}
       OPENAI_COMPAT_OAUTH_ISSUER: ${OPENAI_COMPAT_OAUTH_ISSUER:-}
       OPENAI_COMPAT_OAUTH_AUTHORIZE_URL: ${OPENAI_COMPAT_OAUTH_AUTHORIZE_URL:-}
