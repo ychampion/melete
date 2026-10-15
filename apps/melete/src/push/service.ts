@@ -114,9 +114,14 @@ const view = (row: SubscriptionRow) => ({
 const clip = (text: string, length: number) =>
   text.length > length ? `${text.slice(0, length - 1)}…` : text;
 
+/** The lane a reminder the person timed is recorded as sent in: no lane's cap counts it. */
+const ON_TIME_LANE = 'reminder';
 /** How far back a change of state is still news. */
 export const STATUS_LOOKBACK_MS = 60 * 60_000;
-/** One push per conversation and kind in this window; what changes inside it is recorded and not sent. */
+/**
+ * One push per conversation and kind in this window; what changes inside it is
+ * recorded and not sent. A reminder the person timed is never held by it.
+ */
 export const STATUS_THROTTLE_MINUTES = 10;
 /** A client focused this close to an answer, or after it, means the person saw it. */
 export const FOCUS_GRACE_MINUTES = 2;
@@ -363,7 +368,7 @@ export class PushService {
     // A kind turned off stops what of it was still waiting.
     const off: IntentKind[] = [
       ...(next.decisions ? [] : (['decision', 'needs_you'] as const)),
-      ...(next.settled ? [] : (['settled', 'progress', 'done'] as const)),
+      ...(next.settled ? [] : (['settled', 'progress', 'done', 'reminder'] as const)),
       ...(next.weeklySummary ? [] : (['weekly'] as const)),
     ];
     if (off.length) await this.dropWaiting(principalId, off);
@@ -491,6 +496,9 @@ export class PushService {
    *   that finished and only waits for the next message, is not stopped.
    * - `done`: a conversation's turn finished with an answer while no client of
    *   the person had focus. Long work is told by its own run reports.
+   * - `reminder`: the same, for a turn the person timed: a conversation's own
+   *   timer or schedule coming due, or a routine's scheduled run. It goes out
+   *   at that time, whatever the hour, and no throttle holds it back.
    *
    * One per change of state, by its dedup key. Within the throttle window a
    * second change in the same conversation, of the same kind, is recorded as
@@ -550,11 +558,15 @@ export class PushService {
     }
     if (pacing.settled) {
       const answered = (await this.db.execute(sql`
-        select t.id as turn_id, j.id as job_id, j.title, t.answer, ${pageOf(sql`j`)} as url
+        select t.id as turn_id, j.id as job_id, j.kind, j.title, t.answer,
+               -- A turn its own timer or schedule opened (see jobs/wake-turn.ts), or a routine's run.
+               (j.kind = 'chat' and starts_with(t.submission_id, 'wake:'))
+                 or (j.kind = 'routine' and starts_with(t.submission_id, 'routine:')) as timed,
+               ${pageOf(sql`j`)} as url
         from experience_turn t
         join job j on j.id = t.job_id
         where j.principal_id = ${principalId}
-          and j.kind = 'chat'
+          and j.kind in ('chat', 'routine')
           and j.audience = 'principal'
           and j.experience_parent_id is null
           and t.status = 'done'
@@ -566,20 +578,29 @@ export class PushService {
       `)) as unknown as Array<{
         turn_id: string;
         job_id: string;
+        kind: string;
         title: string;
         answer: string;
+        timed: boolean;
         url: string;
       }>;
-      for (const row of answered)
+      for (const row of answered) {
+        // What the person timed comes due as a reminder; any other answer is news Melete tells.
+        const kind: IntentKind = row.timed ? 'reminder' : 'done';
         candidates.push({
-          kind: 'done',
-          key: `status:done:${row.job_id}:${row.turn_id}`,
+          kind,
+          key: `status:${kind}:${row.job_id}:${row.turn_id}`,
           job: row.job_id,
           title: clip(row.title.trim() || 'Your answer is ready', 120),
           body: answerPreview(row.answer),
-          because: 'Because it finished while you were away.',
+          because: row.timed
+            ? row.kind === 'routine'
+              ? 'Because your routine ran at the time you set.'
+              : 'Because you asked for this at this time.'
+            : 'Because it finished while you were away.',
           url: row.url,
         });
+      }
       // Looked at since: the person has seen it.
       await this.db.execute(sql`update push_intent p set dropped_at = now()
         from client_focus f
@@ -593,7 +614,7 @@ export class PushService {
         insert into push_intent (id, principal_id, kind, title, body, because, url, dedup_key, urgency, dropped_at)
         values (${newId('pint')}, ${principalId}, ${row.kind}, ${row.title}, ${row.body}, ${row.because},
           ${row.url}, ${row.key}, 'soon',
-          case when exists (select 1 from push_intent p
+          case when ${row.kind} <> 'reminder' and exists (select 1 from push_intent p
             where p.principal_id = ${principalId} and p.kind = ${row.kind}
               and starts_with(p.dedup_key, ${prefix}) and p.dropped_at is null
               and p.created_at > now() - make_interval(mins => ${STATUS_THROTTLE_MINUTES}))
@@ -682,6 +703,8 @@ export class PushService {
     for (const row of rows) {
       if (!row.sentAt || !row.batchId || localTime(row.sentAt, day.timeZone).day !== today)
         continue;
+      // A reminder the person timed counts against no cap.
+      if (row.lane === ON_TIME_LANE) continue;
       // Pushes sent before lanes were recorded went out in the normal lane.
       const lane = (row.lane && row.lane in rank ? row.lane : 'normal') as keyof SentToday;
       const before = lanes.get(row.batchId);
@@ -700,7 +723,7 @@ export class PushService {
     // What Melete noticed has no switch of its own: it is paced by its urgency.
     const on: IntentKind[] = [
       ...(pacing.decisions ? (['decision', 'needs_you'] as const) : []),
-      ...(pacing.settled ? (['settled', 'progress', 'done'] as const) : []),
+      ...(pacing.settled ? (['settled', 'progress', 'done', 'reminder'] as const) : []),
       ...(pacing.weeklySummary ? (['weekly'] as const) : []),
       'situation',
     ];
@@ -775,7 +798,11 @@ export class PushService {
     if (!outcomes.includes('sent')) return 'failed';
     await this.db
       .update(pushIntent)
-      .set({ sentAt: now, batchId: newId('pbat'), sentLane: plan.urgency })
+      .set({
+        sentAt: now,
+        batchId: newId('pbat'),
+        sentLane: plan.onTime ? ON_TIME_LANE : plan.urgency,
+      })
       .where(inArray(pushIntent.id, plan.ids));
     return 'sent';
   }

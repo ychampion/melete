@@ -18,6 +18,12 @@
  *   goes now, whatever the hour.
  *
  * A push past its lane's cap is not lost: it waits in the lane below.
+ *
+ * What the person asked for at a time they chose (a reminder coming due, a
+ * routine's result, a scheduled report) is a `reminder`. The person set the
+ * hour, so it goes the moment it comes, quiet hours or not, and no cap holds
+ * it back or counts it. What Melete decides to say by itself keeps every rule
+ * above.
  */
 import type { PushPayload, Urgency } from '@melete/contracts';
 
@@ -25,7 +31,8 @@ import type { PushPayload, Urgency } from '@melete/contracts';
  * `progress` is news from long work: a report, or that it is done. `situation`
  * is something noticed. `needs_you` is a conversation or job that stopped on
  * the person for a reason no decision card names; `done` is a conversation
- * that answered while they were away.
+ * that answered while they were away. `reminder` is something the person asked
+ * for at a time they chose, coming due.
  */
 export type IntentKind =
   | 'decision'
@@ -34,7 +41,8 @@ export type IntentKind =
   | 'progress'
   | 'situation'
   | 'needs_you'
-  | 'done';
+  | 'done'
+  | 'reminder';
 
 /** The faster lanes' own pacing. */
 export const SOON_PACING = { dailyCap: 6, batchMinutes: 1 } as const;
@@ -61,7 +69,13 @@ export type DayWindow = { start: string; end: string; timeZone: string };
 export type Pacing = { dailyCap: number; batchMinutes: number };
 
 export type Plan =
-  | { send: PushPayload; ids: string[]; urgency: Urgency }
+  | {
+      send: PushPayload;
+      ids: string[];
+      urgency: Urgency;
+      /** Reminders the person timed: sent whatever the hour, and counted against no cap. */
+      onTime?: true;
+    }
   | { hold: 'nothing' | 'quiet' | 'cap' | 'batching' };
 
 /** Pushes already sent today, in each lane. */
@@ -127,7 +141,8 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
       body: first.body,
       because: first.because,
       url: first.url,
-      tag: first.kind,
+      // Each reminder is its own notification: one must never silently replace another.
+      tag: first.kind === 'reminder' ? `reminder:${first.id}`.slice(0, 64) : first.kind,
       ...(first.ack ? { ack: first.ack } : {}),
     };
   const decisions = waiting.filter((w) => w.kind === 'decision');
@@ -137,6 +152,18 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
   const noticed = waiting.filter((w) => w.kind === 'situation');
   const needs = waiting.filter((w) => w.kind === 'needs_you');
   const done = waiting.filter((w) => w.kind === 'done');
+  const asked = waiting.filter((w) => w.kind === 'reminder');
+  if (asked.length === waiting.length)
+    return {
+      title: `${counted(asked.length, 'thing', 'things')} you asked for`,
+      body: waiting
+        .map((w) => w.body)
+        .join(' · ')
+        .slice(0, 400),
+      because: 'Because you asked for these at this time.',
+      url: first.url,
+      tag: `reminder:${first.id}`.slice(0, 64),
+    };
   const title =
     noticed.length > 0 && noticed.length === waiting.length
       ? `${counted(noticed.length, 'thing needs', 'things need')} you`
@@ -161,6 +188,9 @@ export function composeBatch(waiting: Waiting[]): PushPayload {
     decisions.length ? counted(decisions.length, 'decision waits', 'decisions wait') : null,
     needs.length ? counted(needs.length, 'conversation stopped', 'conversations stopped') : null,
     done.length ? counted(done.length, 'answer came', 'answers came') : null,
+    asked.length
+      ? counted(asked.length, 'thing you asked for came', 'things you asked for came')
+      : null,
     settled.length ? counted(settled.length, 'chase settled', 'chases settled') : null,
     progress.length ? counted(progress.length, 'work update', 'work updates') : null,
     noticed.length ? counted(noticed.length, 'thing came up', 'things came up') : null,
@@ -205,6 +235,17 @@ export function planPush(input: {
       ? { normal: input.sentToday, soon: 0, urgent: 0 }
       : input.sentToday;
   if (waiting.length === 0) return { hold: 'nothing' };
+  // The person chose this hour: it goes now, ahead of anything paced, never held by quiet or a cap.
+  const due = waiting.filter((w) => w.kind === 'reminder');
+  if (due.length) {
+    const ordered = byAge(due);
+    return {
+      send: composeBatch(ordered),
+      ids: ordered.map((w) => w.id),
+      urgency: 'urgent',
+      onTime: true,
+    };
+  }
   const quiet = isQuiet(now, day);
   // Each push in its lane; one past its lane's cap waits in the lane below.
   const urgentRoom = sent.urgent < URGENT_DAILY_CAP;

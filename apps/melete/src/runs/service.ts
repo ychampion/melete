@@ -612,10 +612,14 @@ export class RunService {
       data,
     });
     // A report from a shift its trigger woke is why the work stands: never held back.
-    if (input.kind === 'report')
+    // One its schedule woke is the occurrence the person asked for, told on time.
+    if (input.kind === 'report') {
+      const woke = row.kind === 'run' ? await wokenBy(tx, row.id) : null;
       await this.reported(tx, run, row, input.title, input.body ?? '', {
-        spaced: !(row.kind === 'run' && (await wokenBy(tx, row.id))),
+        spaced: !woke,
+        onTime: object(object(woke?.payload).event).kind === 'schedule_event',
       });
+    }
     return {
       status: 'recorded',
       entry_id: entry.id,
@@ -841,6 +845,9 @@ export class RunService {
    * Progress is sent at most once per `PUSH_EVERY_MS` for a run; the rest stays
    * in the record and the view. What is not `spaced` (the result, a change to
    * what standing work waits for, a report a trigger woke) is always sent.
+   * A report from an occurrence of the work's schedule (`onTime`) is what the
+   * person asked for at that time: it goes out as a reminder, whatever the
+   * hour and however many pushes went out today.
    */
   private async reported(
     tx: Transaction,
@@ -848,7 +855,11 @@ export class RunService {
     row: JobRow,
     title: string,
     body: string,
-    { spaced = true, key = 'run-report' }: { spaced?: boolean; key?: string } = {},
+    {
+      spaced = true,
+      key = 'run-report',
+      onTime = false,
+    }: { spaced?: boolean; key?: string; onTime?: boolean } = {},
   ) {
     await tx.update(runState).set({ lastReportAt: new Date() }).where(eq(runState.jobId, run));
     const [root] = await tx.select().from(job).where(eq(job.id, run));
@@ -874,10 +885,12 @@ export class RunService {
       .values({
         id: newId('pint'),
         principalId: principal,
-        kind: 'progress',
+        kind: onTime ? 'reminder' : 'progress',
         title: clip(`${root.title}: ${title}`, 120),
         body: clip(body || title, 300),
-        because: 'Because it is working on this for you and has news.',
+        because: onTime
+          ? 'Because you asked for this at this time.'
+          : 'Because it is working on this for you and has news.',
         url: `/#/runs/${run}`,
         dedupKey: `${key}:${run}:${newId('rune')}`,
       })
@@ -1490,7 +1503,7 @@ export class RunService {
           body: clip(words, 4000),
           data: { from_shift_end: true },
         });
-        await this.reported(tx, run, row, title, words, { spaced: false });
+        await this.reported(tx, run, row, title, words, { spaced: false, onTime: true });
       }
     }
     // Standing work tells the person only what it reports: no daily summary
