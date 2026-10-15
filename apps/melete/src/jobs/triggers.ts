@@ -34,6 +34,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { ItemFailures } from '../ops/item-failures.ts';
+import { personSetSchedule } from './attention.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
 import type { AttemptRunner } from './runner.ts';
@@ -658,7 +659,10 @@ export class TriggerService {
       registration.kind === 'schedule' &&
       payload.kind === 'schedule_event' &&
       row.scheduleSkipRemaining > 0 &&
-      row.importance !== 'important'
+      row.importance !== 'important' &&
+      // A schedule the person asked for is never skipped, even one an earlier
+      // version left counting down.
+      !(await personSetSchedule(tx, row))
     ) {
       const [updated] = await tx
         .update(job)
