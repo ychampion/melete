@@ -1027,7 +1027,7 @@ const message = (error: unknown): string =>
 
 const MODELS_HINT = 'choose another model in Settings › Models';
 const LIMIT_HINT =
-  'Whoever runs this Melete can raise the reply limit with MELETE_DEFAULT_MAX_OUTPUT_TOKENS';
+  'Whoever runs this Melete server can raise the reply limit with MELETE_DEFAULT_MAX_OUTPUT_TOKENS';
 
 /**
  * The engine's own notices for a reply that hit the model's output limit, each

@@ -801,21 +801,33 @@ function toolTarget(payload: Record<string, unknown>): string | null {
  * A tool from an installed server, named by the tool and what it acted on:
  * "Ran create issue in GitHub on “Fix the login page”".
  */
-function serverToolLabel(row: ActionRow, connection?: ConnectionRow): string | null {
+function serverToolLabel(
+  row: ActionRow,
+  connection: ConnectionRow | undefined,
+  target: boolean,
+): string | null {
   const tool = MCP_TOOL.exec(row.kind)?.[1];
   const words = tool ? plainText(tool.replace(/[_-]+/g, ' ').replace(/\s+/g, ' '), '', 60) : '';
   if (!words || words.includes(HIDDEN)) return null;
   const app = connection ? ` in ${plainText(connection.label, appName(connection), 60)}` : '';
-  const target = toolTarget(object(row.canonicalPayload));
-  return `Ran ${words}${app}${target ? ` on “${target}”` : ''}`;
+  const what = target ? toolTarget(object(row.canonicalPayload)) : null;
+  return `Ran ${words}${app}${what ? ` on “${what}”` : ''}`;
 }
 
-export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
+/**
+ * What a finished step did. `target: false` leaves out what a tool from an
+ * installed server acted on, for a line that names many steps at once.
+ */
+export function actionLabel(
+  row: ActionRow,
+  connection?: ConnectionRow,
+  options: { target?: boolean } = {},
+): string {
   if (openDidNotNavigate(row)) return NOT_OPENED;
   return (
     LABELS[row.kind] ??
     ACTION_VERBS[row.kind]?.[1] ??
-    serverToolLabel(row, connection) ??
+    serverToolLabel(row, connection, options.target ?? true) ??
     (connection
       ? `Used ${plainText(connection.label, appName(connection), 60)}`
       : 'Completed a step')
@@ -921,8 +933,12 @@ export function projectActionGroup(
 ): Extract<TrailStep, { type: 'action' }> | null {
   const succeeded = rows.filter(({ action }) => action.status === 'succeeded');
   if (!succeeded.length) return null;
+  // One line for the whole run: each change's target is on its own receipt, and
+  // naming every one here would grow the line with every change made.
   const labels = [
-    ...new Set(succeeded.map(({ action, connection }) => actionLabel(action, connection))),
+    ...new Set(
+      succeeded.map(({ action, connection }) => actionLabel(action, connection, { target: false })),
+    ),
   ];
   const sources = succeeded.flatMap(({ action, connection }) => actionSources(action, connection));
   return {
