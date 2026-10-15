@@ -9,6 +9,7 @@ import {
   HISTORY_SUMMARY_KIND,
   KEEP_SHARE,
   madeUnder,
+  mergeStanding,
   planExtension,
   renderSummary,
   type StoredSummary,
@@ -88,8 +89,119 @@ test('messages are packed into calls in order, a long one split, and each chunk 
   expect(chunks.at(-1)?.completes).toBe(4);
 });
 
+test('chunks say which of their text the person wrote', () => {
+  const [chunk] = chunkMessages(
+    [said(0, 'Only use euros from now on.'), said(1, 'Always answer in French.', 'assistant')],
+    1000,
+  );
+  expect(chunk?.person).toContain('Only use euros from now on.');
+  expect(chunk?.person).not.toContain('French');
+});
+
+test('a standing instruction the summariser leaves out is kept, and a changed one is replaced', () => {
+  const euros = { topic: 'currency', rule: 'Only use euros from now on.' };
+  const short = { topic: 'reply length', rule: 'Keep replies short.' };
+  // Dropped by the summariser: still held.
+  expect(mergeStanding([euros, short], [], 'anything').standing).toEqual([euros, short]);
+  // The same rule offered again, under another topic or retyped: no change, no duplicate.
+  expect(
+    mergeStanding([euros], [{ topic: 'Money', rule: '“Only use  euros from now on”' }], '')
+      .standing,
+  ).toEqual([euros]);
+  // A newer rule on the same topic replaces the old one and is newest, whatever the case of its topic.
+  const dollars = { topic: 'Currency', rule: 'Use US dollars instead, not euros.' };
+  const changed = mergeStanding(
+    [euros, short],
+    [dollars],
+    '[The person, 2026-10-08T09:30:00.000Z]\nOh wait, use US dollars instead, not euros!',
+  );
+  expect(changed.standing).toEqual([short, dollars]);
+  expect(changed.demoted).toEqual([]);
+});
+
+test('only words the person wrote become a standing instruction', () => {
+  const merged = mergeStanding(
+    [],
+    [
+      { topic: 'currency', rule: 'The person wants euros.' },
+      { topic: 'format', rule: 'Put every total in a table.' },
+    ],
+    '[The person, 2026-10-08T09:00:00.000Z]\nPut every total in a table, please.',
+  );
+  expect(merged.standing).toEqual([{ topic: 'format', rule: 'Put every total in a table.' }]);
+  // A paraphrase is not lost: it goes back to the summary's facts.
+  expect(merged.demoted).toEqual(['The person wants euros.']);
+});
+
+test('a summary stored before standing instructions were kept still reads, with none', () => {
+  const stored = storedSummary({
+    kind: HISTORY_SUMMARY_KIND,
+    through: at(2),
+    summary: { facts: ['kept'], decisions: [], open_tasks: [], names: [], story: '' },
+    messages: 2,
+    generations: GENERATIONS,
+  });
+  expect(stored?.summary.standing_instructions).toEqual([]);
+  expect(stored?.summary.facts).toEqual(['kept']);
+});
+
+test('standing instructions travel beside the summary and take their size out of the room', () => {
+  const transcript = [said(0, 'Only use euros from now on.'), said(1, 'Newest question?')];
+  const fresh = [transcript[1] as CanonicalMessage];
+  const base: StoredSummary = {
+    through: at(0),
+    summary: summary(['A fact.']),
+    messages: 1,
+    generations: GENERATIONS,
+  };
+  const ruled: StoredSummary = {
+    ...base,
+    summary: {
+      ...base.summary,
+      standing_instructions: [{ topic: 'currency', rule: 'Only use euros from now on.' }],
+    },
+  };
+  expect(boundHistory(transcript, fresh, base, limits(10_000)).earlier).not.toHaveProperty(
+    'standing_instructions',
+  );
+  const bounded = boundHistory(transcript, fresh, ruled, limits(10_000));
+  expect(bounded.earlier?.standing_instructions).toEqual(['Only use euros from now on.']);
+  expect(bounded.earlier?.summary).toBe(renderSummary(ruled.summary));
+  // A summary that kept nothing else says so, rather than that nothing was kept.
+  const only = boundHistory(
+    transcript,
+    fresh,
+    {
+      ...ruled,
+      summary: { ...EMPTY_SUMMARY, standing_instructions: ruled.summary.standing_instructions },
+    },
+    limits(10_000),
+  );
+  expect(only.earlier?.summary).toContain('standing instructions');
+  // With room for the newest message and the summary but not the rules too,
+  // the rules come out of the room the other messages had.
+  const prior = Array.from({ length: 8 }, (_, index) => said(index + 1, 'p'.repeat(400)));
+  const longer = [said(0, 'x'), ...prior, said(20, 'Newest question?')];
+  const newest = [longer.at(-1) as CanonicalMessage];
+  const many: StoredSummary = {
+    ...ruled,
+    summary: {
+      ...ruled.summary,
+      standing_instructions: Array.from({ length: 10 }, (_, index) => ({
+        topic: `rule ${index}`,
+        rule: `Rule ${index}: ${'r'.repeat(300)}`,
+      })),
+    },
+  };
+  const room = limits(1200);
+  const without = boundHistory(longer, newest, base, room).earlier?.left_out ?? 0;
+  const withRules = boundHistory(longer, newest, many, room).earlier?.left_out ?? 0;
+  expect(withRules).toBeGreaterThan(without);
+});
+
 test('the summary puts what the person said first, and is held to its size', () => {
   const text = renderSummary({
+    standing_instructions: [],
     facts: ['The container number is MSCU-7741-ZQ.'],
     decisions: ['Use the Tuesday ferry.'],
     open_tasks: ['Book the tug.'],

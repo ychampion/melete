@@ -60,7 +60,8 @@ export type RunPlacement = {
  * A run's `instructions`: the persona, then the task notes. Nothing here is
  * chosen per turn, so the system prompt, and the tool definitions after it,
  * stay a cached prefix from one turn to the next and across a person's
- * conversations. The skills chosen for a turn go in its input (`renderSkills`).
+ * conversations; the person's standing instructions change only when they
+ * change one. The skills chosen for a turn go in its input (`renderSkills`).
  */
 export function renderInstructions(bundle: AttemptBundle, placement: RunPlacement = {}): string {
   const parts: string[] = [];
@@ -83,8 +84,30 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
     );
   }
 
+  parts.push(...renderStanding(bundle.earlier));
   parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
   return parts.join('\n\n');
+}
+
+/**
+ * The rules the person set in messages that are now summarised, in their own
+ * words. They go in the system prompt rather than beside the summary because
+ * the engine never compacts its system prompt: a rule set early in a long
+ * conversation then holds after Melete's summary and after the engine's own
+ * compaction inside a long turn. They change only when the person changes one.
+ */
+export function renderStanding(earlier: AttemptBundle['earlier']): string[] {
+  const rules = earlier?.standing_instructions ?? [];
+  if (!rules.length) return [];
+  return [
+    [
+      '# Standing instructions from the person',
+      '',
+      'The person set these earlier in this conversation. The messages they came from are no longer shown, but the instructions still hold: follow them in everything you do, unless a newer message from the person changes one.',
+      '',
+      ...rules.map((rule) => `- ${rule}`),
+    ].join('\n'),
+  ];
 }
 
 /**
@@ -630,7 +653,8 @@ export function measureRenderedInput(bundle: AttemptBundle) {
   // The summary of earlier messages is conversation, as the transcript is.
   const transcriptChars =
     (bundle.transcript.length ? JSON.stringify(bundle.transcript).length : 0) +
-    (bundle.earlier?.summary?.length ?? 0);
+    (bundle.earlier?.summary?.length ?? 0) +
+    (bundle.earlier?.standing_instructions ?? []).reduce((sum, rule) => sum + rule.length, 0);
   const knowledgeChars = bundle.knowledge.reduce((sum, entry) => sum + entry.excerpt.length, 0);
   return {
     total: estimateTokens(rendered),

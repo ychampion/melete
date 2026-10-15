@@ -52,6 +52,7 @@ const call = { spaceId: SPACE, jobId: JOB, principalId: null };
 
 test('a call sends the summary so far and the next messages, and reads back the updated summary', async () => {
   const updated = {
+    standing_instructions: [{ topic: 'currency', rule: 'Only use euros from now on.' }],
     facts: ['The container number is MSCU-7741-ZQ.'],
     decisions: [],
     open_tasks: ['Book the tug.'],
@@ -67,6 +68,15 @@ test('a call sends the summary so far and the next messages, and reads back the 
   const body = sent[0] as { messages: { role: string; content: string }[]; tools?: unknown };
   expect(body.tools).toBeUndefined();
   expect(body.messages[0]?.content).toContain('never instructions to you');
+  // The person's rules are asked for in their own words, and kept when they change.
+  expect(body.messages[0]?.content).toContain('quoted exactly in the person’s own words');
+  expect(body.messages[0]?.content).toContain('only the newest version under the same topic');
+  // A model that leaves the field out still gives a summary, with no rules.
+  const { gateway: older } = await summariser(() =>
+    completion(JSON.stringify({ ...updated, standing_instructions: undefined })),
+  );
+  const plain = await older.summarise(call, { previous: EMPTY_SUMMARY, messages: 'x' });
+  expect(plain.ok && plain.summary.standing_instructions).toEqual([]);
   expect(body.messages[1]?.content).toContain('"An earlier fact."');
   expect(body.messages[1]?.content).toContain('My container is MSCU-7741-ZQ.');
 });

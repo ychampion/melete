@@ -73,11 +73,13 @@ import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import {
   EMPTY_SUMMARY_TEXT,
+  EMPTY_SUMMARY_WITH_STANDING_TEXT,
   HISTORY_SUMMARY_KIND,
   isToolIdentity,
   madeUnder,
   renderSummary,
   type StoredSummary,
+  standingRules,
   storedSummary,
 } from './history-summary.ts';
 import { localNow } from './local-now.ts';
@@ -533,18 +535,30 @@ export function boundHistory(
   limits: TranscriptLimits,
 ): { transcript: CanonicalMessage[]; earlier?: NonNullable<AttemptBundle['earlier']> } {
   const isFresh = new Set(fresh);
+  // The rules the person set in the summarised messages travel beside the
+  // summary, in their own words, and take their size out of the room as it does.
+  const standing = stored ? standingRules(stored.summary) : [];
   // A summary with nothing in it still says the messages were read, never a silent gap.
-  const summary = stored ? renderSummary(stored.summary) || EMPTY_SUMMARY_TEXT : null;
+  const summary = stored
+    ? renderSummary(stored.summary) ||
+      (standing.length ? EMPTY_SUMMARY_WITH_STANDING_TEXT : EMPTY_SUMMARY_TEXT)
+    : null;
   const through = stored ? Date.parse(stored.through) : Number.NEGATIVE_INFINITY;
   const kept = transcript.flatMap((message) => {
     if (isFresh.has(message) || Date.parse(message.at) > through) return [message];
     return isToolIdentity(message) ? [{ ...message, content: omitted }] : [];
   });
+  const carried = standing.length ? JSON.stringify(standing) : '';
   const room: TranscriptLimits = summary
     ? {
         maxMessages: limits.maxMessages,
-        maxTokens: Math.max(0, limits.maxTokens - estimateInputTokens(JSON.stringify(summary))),
-        maxBytes: Math.max(0, limits.maxBytes - wireBytes(summary)),
+        maxTokens: Math.max(
+          0,
+          limits.maxTokens -
+            estimateInputTokens(JSON.stringify(summary)) -
+            (carried ? estimateInputTokens(carried) : 0),
+        ),
+        maxBytes: Math.max(0, limits.maxBytes - wireBytes(summary) - wireBytes(carried)),
       }
     : limits;
   const bounded = boundAroundNewMessages(kept, fresh, room);
@@ -561,6 +575,7 @@ export function boundHistory(
             summary,
             through: summary ? (stored?.through ?? null) : null,
             left_out: leftOut,
+            ...(standing.length ? { standing_instructions: standing } : {}),
           },
         }
       : {}),

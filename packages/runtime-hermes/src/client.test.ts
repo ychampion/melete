@@ -529,6 +529,26 @@ describe('context assembly', () => {
     expect(text).toContain('job.wait takes the trigger id or the event name');
   });
 
+  test('standing instructions from summarised messages are held in the system prompt, in the person’s words', () => {
+    expect(renderInstructions(bundle)).not.toContain('Standing instructions');
+    const ruled: AttemptBundle = {
+      ...bundle,
+      earlier: {
+        summary: 'They planned a shipment.',
+        through: '2026-09-10T00:00:00.000Z',
+        left_out: 0,
+        standing_instructions: ['Keep every reply short.', 'Only use euros from now on.'],
+      },
+    };
+    const text = renderInstructions(ruled);
+    expect(text).toContain('# Standing instructions from the person');
+    expect(text).toContain('- Keep every reply short.\n- Only use euros from now on.');
+    expect(text).toContain('unless a newer message from the person changes one');
+    // The input carries the summary; the rules are not repeated there.
+    expect(renderInput(ruled)).toContain('They planned a shipment.');
+    expect(renderInput(ruled)).not.toContain('Only use euros');
+  });
+
   test('the identity is short enough to be a prefix, not a personality', () => {
     // A rough four-characters-per-token estimate; the contract caps it at 250.
     expect(Math.ceil(IDENTITY.length / 4)).toBeLessThan(CONTEXT_LIMITS.identity_tokens);

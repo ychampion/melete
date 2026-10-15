@@ -16,7 +16,7 @@ import type {
   CanonicalMessage,
   RuntimeAdapter,
 } from '@melete/contracts';
-import { renderInput } from '@melete/runtime-hermes';
+import { renderInput, renderInstructions } from '@melete/runtime-hermes';
 import { and, eq, sql } from 'drizzle-orm';
 import { event, space } from '../../src/db/schema.ts';
 import { estimateInputTokens } from '../../src/gateway/metering.ts';
@@ -201,6 +201,82 @@ withDb('a long conversation', () => {
       expect(kept.slice(0, before.transcript.length)).toEqual(before.transcript.map(key));
     }
     expect(steady).toBeGreaterThan(TURNS / 2);
+  }, 240_000);
+
+  test('keeps the rules the person set early, and the newest version of one they change', async () => {
+    // The summariser offers only the rules in the messages it was just given,
+    // never the ones it was handed, so whatever survives is kept by Melete.
+    const calls: string[] = [];
+    const summariser: HistorySummariser = {
+      async summarise(_call, input): Promise<HistoryAnswer> {
+        calls.push(input.messages);
+        const rules = [...input.messages.matchAll(/RULE\(([a-z ]+)\): ([^\n]+)/g)].map((match) => ({
+          topic: match[1] ?? '',
+          rule: match[2] ?? '',
+        }));
+        return {
+          ok: true,
+          model: 'fake/fake-scripted-v1',
+          summary: { ...input.previous, standing_instructions: rules, story: 'More shipping.' },
+        };
+      },
+      async close() {},
+    };
+    const { runtime, seen } = capture();
+    const wrapped = withHistorySummary(runtime, {
+      jobs: required(jobs),
+      summariser,
+      chunkTokens: 4000,
+    });
+    const EUROS = 'Only use euros from now on.';
+    const SHORT = 'Keep every reply under a hundred words.';
+    const DOLLARS = 'Actually, use US dollars from now on, not euros.';
+    let row = await conversation();
+    row = await turn(wrapped, row, null);
+    row = await turn(wrapped, row, `RULE(currency): ${EUROS}\n${filler(1)}`);
+    row = await turn(wrapped, row, `RULE(reply length): ${SHORT}\n${filler(2)}`);
+    for (let index = 3; index <= TURNS; index++)
+      row = await turn(
+        wrapped,
+        row,
+        index === 10 ? `RULE(currency): ${DOLLARS}\n${filler(index)}` : filler(index),
+      );
+    row = await turn(wrapped, row, 'How much would the berth cost?');
+    expect(calls.length).toBeGreaterThan(1);
+
+    // Once the first turns are summarised, their rules are still in force, in
+    // the person's own words and in the system prompt, which no compaction reaches.
+    const early = seen.find(
+      (bundle) =>
+        bundle.earlier?.summary &&
+        !JSON.stringify(bundle.transcript).includes('TURN-2 ') &&
+        JSON.stringify(bundle.transcript).includes('TURN-10 '),
+    );
+    if (!early) throw new Error('expected an attempt after the first rules were summarised');
+    expect(early.earlier?.standing_instructions).toEqual([EUROS, SHORT]);
+    expect(renderInstructions(early)).toContain(`- ${EUROS}`);
+    expect(renderInstructions(early)).toContain(`- ${SHORT}`);
+
+    // At the end the change is summarised too: the newest currency rule has
+    // replaced the old one, and the rule nobody changed is still there.
+    const last = required(seen.at(-1));
+    expect(JSON.stringify(last.transcript)).not.toContain('TURN-10 ');
+    expect(last.earlier?.standing_instructions).toEqual([SHORT, DOLLARS]);
+    const instructions = renderInstructions(last);
+    expect(instructions).toContain('# Standing instructions from the person');
+    expect(instructions).toContain(`- ${DOLLARS}`);
+    expect(instructions).not.toContain(EUROS);
+
+    // The stored summary keeps them apart from the narrative, so a later
+    // extension starts from the same list.
+    const stored = (await summaries(row.id)).map(
+      (entry) => entry.payload as { through: string; summary: { standing_instructions?: unknown } },
+    );
+    const newest = stored.sort((a, b) => Date.parse(a.through) - Date.parse(b.through)).at(-1);
+    expect(newest?.summary.standing_instructions).toEqual([
+      { topic: 'reply length', rule: SHORT },
+      { topic: 'currency', rule: DOLLARS },
+    ]);
   }, 240_000);
 
   test('when the summary cannot be made, the attempt is told how much it cannot see', async () => {
