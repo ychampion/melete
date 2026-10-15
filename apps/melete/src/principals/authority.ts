@@ -172,6 +172,19 @@ export async function spaceAuthority(
   };
 }
 
+/**
+ * Whether the principal owns the space itself: the owner of a personal space,
+ * or the person who made a room. The owners a room's maker adds manage the
+ * room, but what is kept private to it stays the maker's, as its memory does.
+ */
+export function ownsSpace(access: {
+  role: MembershipRole;
+  ownerId: string | null;
+  principalId: string | null;
+}): boolean {
+  return access.role === 'owner' && access.ownerId === access.principalId;
+}
+
 export async function requireJobAccess(db: Reader, id: string, actor = requestPrincipal()) {
   const [row] = await db.select().from(job).where(eq(job.id, id));
   if (!row) throw new ServiceError('not_found', 'Job not found.', 404);

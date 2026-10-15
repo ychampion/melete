@@ -3,6 +3,7 @@ import {
   createSharedSpaceRequest,
   grantMembershipRequest,
   space as spaceContract,
+  updateAccountRequest,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import type { Hono } from 'hono';
@@ -136,6 +137,10 @@ export function mountPrincipals(
     const made = await service.create(c.get('owner').id, request.email, request.password);
     c.set('createdSpaceId', made.spaceId);
     return c.json({ principal: made.principal }, 201);
+  });
+  app.patch('/principals/:id', async (c) => {
+    const request = updateAccountRequest.parse(await c.req.json());
+    return c.json(await service.setAdmin(c.get('owner').id, c.req.param('id'), request.admin));
   });
   app.post('/spaces/shared', async (c) => {
     const request = createSharedSpaceRequest.parse(await c.req.json());
