@@ -19,7 +19,7 @@ import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -233,13 +233,12 @@ export async function configuredReviewGateway(
     providers: configuredProviders(env, () => {}, signIn),
     privacy,
     // A review is a short classification: the fast model, unless one is pinned.
-    source: serviceModelSource({
+    // It decides whether a risky action runs, so no person's secondary takes it.
+    source: sideCallSource('review', {
       env,
       settings: connected.settings,
       pinned,
-      fast: routingFromEnv(env).fast,
-      // It decides whether a risky action runs, so no person's secondary takes it.
-      sideTask: false,
+      routing: routingFromEnv(env),
     }),
     fake,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),
