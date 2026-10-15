@@ -81,11 +81,17 @@ async function setup(options: { holdSeconds: number }) {
   guards.push(guard);
   const relayPort = await guard.listen(0, '127.0.0.1');
   const sandbox = `melete-sbx-${recordId('sbx').toLowerCase()}`;
-  guard.allow('127.0.0.1', sandbox, { mode: 'open', session: 'sbx_one', space: claims.space_id });
+  // The computer the commands run on, as its session row names it.
+  const sessionId = recordId('sbx');
+  await sql`insert into sandbox_session (id, connection_id, space_id, adapter, provider_sandbox_id,
+      image_ref, egress_policy, persistence, status, lease_expires_at)
+    values (${sessionId}, ${connectionId}, ${claims.space_id}, 'docker', ${sandbox}, 'image',
+      '{"kind":"open"}'::jsonb, 'pause', 'ready', now() + interval '10 minutes')`;
+  guard.allow('127.0.0.1', sandbox, { mode: 'open', session: sessionId, space: claims.space_id });
   const mint = (attemptId: string) =>
     guard.mint(sandbox, {
       kind: 'command',
-      sessionId: 'sbx_one',
+      sessionId,
       jobId: claims.job_id,
       attemptId,
       actionId: 'act_cmd',
@@ -122,6 +128,9 @@ async function setup(options: { holdSeconds: number }) {
     caPem,
     credentials,
     secrets,
+    sandbox,
+    sessionId,
+    guard,
   };
 }
 
@@ -391,9 +400,9 @@ withDb('where an account is offered', () => {
   });
 
   test("a room's account set to each person's own uses the asker's own account, and nobody else's", async () => {
-    const { claims, credentials, sql, connectionId, secrets, mint, relayPort, caPem } = await setup(
-      { holdSeconds: 0 },
-    );
+    const s = await setup({ holdSeconds: 0 });
+    const { claims, credentials, sql, connectionId, secrets, mint, relayPort, caPem } = s;
+    const { sessionId, guard } = s;
     const room = claims.space_id;
     const person = async (kind: 'person' | 'room', name: string | null = null) => {
       const id = recordId('own');
@@ -459,7 +468,7 @@ withDb('where an account is offered', () => {
         space: room,
         attribution: {
           kind: 'command',
-          sessionId: 'sbx_one',
+          sessionId,
           jobId,
           attemptId: claims.attempt_id,
           actionId: 'act_cmd',
@@ -534,19 +543,26 @@ withDb('where an account is offered', () => {
     // Through the relay: Ana's request carries Ana's token, and Cal's sends nothing.
     await sql`update job set audience = 'room', principal_id = ${agent},
       requested_by_principal_id = ${ana} where id = ${claims.job_id}`;
-    const read = () =>
+    const read = (token = mint(claims.attempt_id)) =>
       throughRelay({
         relayPort,
         host: HOST,
         ca: caPem,
-        token: mint(claims.attempt_id),
+        token,
         requests: [rawRequest('GET', HOST, '/user')],
       }).then((answers) => answers[0]);
-    const anaRead = await read();
+    const anaToken = mint(claims.attempt_id);
+    const anaRead = await read(anaToken);
     expect(anaRead?.status).toBe(200);
     expect(upstream.seen.map((seen) => seen.headers.authorization)).toEqual([
       `Bearer ${anaSecret}`,
     ]);
+    // The command's receipt says whose own account the room lent it, and never the secret.
+    const receipt = guard.tokens.settle(anaToken);
+    expect(receipt).toMatchObject([
+      { host: HOST, credentialed: true, reads: 1, lent_by: "Ana's own this service account" },
+    ]);
+    expect(JSON.stringify(receipt)).not.toContain(anaSecret);
     await sql`update job set requested_by_principal_id = ${cal} where id = ${claims.job_id}`;
     const calRead = await read();
     expect(calRead?.status).toBe(403);
@@ -563,5 +579,142 @@ withDb('where an account is offered', () => {
     expect(upstream.seen.some((seen) => seen.headers.authorization === `Bearer ${SECRET}`)).toBe(
       false,
     );
+  });
+
+  test("a person's own account is not lent while anyone else's work shares the room's computer", async () => {
+    // Every process in the computer runs as one user and can read another's
+    // proxy token, so a command of Ben's request could present the token of a
+    // command of Ana's. While Ben's work is on the computer, Ana's account is
+    // used by nobody.
+    const { claims, credentials, sql, connectionId, secrets, sandbox, sessionId } = await setup({
+      holdSeconds: 0,
+    });
+    const room = claims.space_id;
+    const person = async (name: string) => {
+      const id = recordId('own');
+      await sql`insert into principal (id, email, kind, display_name)
+        values (${id}, ${`${id.toLowerCase()}@example.test`}, 'person', ${name})`;
+      return id;
+    };
+    const [owner, ana, ben] = [await person('Olive'), await person('Ana'), await person('Ben')];
+    const agent = recordId('own');
+    await sql`insert into principal (id, email, kind) values (${agent}, ${`${agent.toLowerCase()}@example.test`}, 'room')`;
+    await sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${owner}
+      where id = ${room}`;
+    for (const [principal, role] of [
+      [owner, 'owner'],
+      [ana, 'member'],
+      [ben, 'member'],
+    ] as const)
+      await sql`insert into space_membership (principal_id, space_id, role)
+        values (${principal}, ${room}, ${role})`;
+    await sql`update connection set shared_use = 'room', per_member = true where id = ${connectionId}`;
+    const own = recordId('sp');
+    await sql`insert into space (id, name, git_path, kind, audience, owner_principal_id)
+      values (${own}, 'Own', ${`spaces/${own}`}, 'personal', 'owner', ${ana})`;
+    const anaSecret = `tok_${randomBytes(18).toString('hex')}`;
+    await sql`insert into connection (id, space_id, provider, label, scopes, status, secret_ref,
+        configuration)
+      values (${recordId('conn')}, ${own}, 'command_line', 'Own account',
+        '["egress.test_read", "egress.test_write"]'::jsonb, 'active', ${await secrets.put(own, anaSecret)},
+        ${JSON.stringify({ kind: 'command_line', adapter: 'test', config: { hosts: [HOST] } })}::jsonb)`;
+    const computerAgent = recordId('agt');
+    await sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+        standing_instruction)
+      values (${computerAgent}, ${room}, 'Room', 'Helper', 'blue', 'plain', 'dark', 'calm', '')`;
+    await sql`update sandbox_session set agent_id = ${computerAgent} where id = ${sessionId}`;
+    /** A request of the room, with an attempt running. */
+    const request = async (requestedBy: string) => {
+      const id = recordId('job');
+      const attempt = recordId('att');
+      await sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget,
+          constraints, principal_id, audience, requested_by_principal_id)
+        values (${id}, ${room}, 'Fixture', 'Read the repository', 'running', 1, '{}'::jsonb,
+          '{"public_compartment": false, "allowed_domains": []}'::jsonb, ${agent}, 'room',
+          ${requestedBy})`;
+      await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${attempt}, ${id}, 1, 'fake', 'fake', 'scripted')`;
+      return { id, attempt };
+    };
+    const ask = (job: { id: string; attempt: string }, session = sessionId) =>
+      credentials.find({
+        space: room,
+        attribution: {
+          kind: 'command',
+          sessionId: session,
+          jobId: job.id,
+          attemptId: job.attempt,
+          actionId: 'act_cmd',
+        },
+        host: HOST,
+      });
+    const lent = async (job: { id: string; attempt: string }) => {
+      const use = await ask(job);
+      if (use?.missing !== undefined) return use.missing;
+      return use?.withSecret(async (secret) => secret);
+    };
+    const anas = await request(ana);
+    await sql`update sandbox_session set job_id = ${anas.id}, attempt_id = ${anas.attempt}
+      where id = ${sessionId}`;
+    // Ana's request alone on the computer uses Ana's account.
+    expect(await lent(anas)).toBe(anaSecret);
+
+    // Ben's request joins the computer on a display of its own: from then on a
+    // command presenting Ana's token is not lent her account.
+    const bens = await request(ben);
+    const display = recordId('sbd');
+    await sql`insert into sandbox_display (id, space_id, connection_id, adapter, provider_sandbox_id,
+        display, owner_job_id, job_id, attempt_id)
+      values (${display}, ${room}, ${connectionId}, 'docker', ${sandbox}, 1, ${bens.id}, ${bens.id},
+        ${bens.attempt})`;
+    const shared = await ask(anas);
+    expect(shared?.missing).toContain("someone else's work");
+    await expect(shared?.withSecret(async (secret) => secret) ?? null).rejects.toThrow();
+    // Ben's attempt ended: Ana's account is hers to use again.
+    await sql`update attempt set ended_at = now() where id = ${bens.attempt}`;
+    expect(await lent(anas)).toBe(anaSecret);
+
+    // A run Ana's request started is her work; one with nobody's request behind it is not.
+    const run = recordId('job');
+    const runAttempt = recordId('att');
+    await sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget,
+        constraints, principal_id, kind)
+      values (${run}, ${room}, 'Run', 'Keep going', 'running', 1, '{}'::jsonb,
+        '{"public_compartment": false, "allowed_domains": []}'::jsonb, ${agent}, 'run')`;
+    await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${runAttempt}, ${run}, 1, 'fake', 'fake', 'scripted')`;
+    await sql`insert into run_state (job_id, space_id, conversation_id, goal)
+      values (${run}, ${room}, ${anas.id}, 'Keep going')`;
+    await sql`insert into sandbox_display (id, space_id, connection_id, adapter, provider_sandbox_id,
+        display, owner_job_id, job_id, attempt_id)
+      values (${recordId('sbd')}, ${room}, ${connectionId}, 'docker', ${sandbox}, 2, ${run}, ${run},
+        ${runAttempt})`;
+    expect(await lent(anas)).toBe(anaSecret);
+    await sql`update run_state set conversation_id = null where job_id = ${run}`;
+    expect(await lent(anas)).toContain("someone else's work");
+    await sql`update attempt set ended_at = now() where id = ${runAttempt}`;
+    expect(await lent(anas)).toBe(anaSecret);
+
+    // A background process Ben's request left running shares the computer too.
+    const process = recordId('prc');
+    await sql`insert into sandbox_process (id, space_id, agent_id, connection_id, job_id, session_id,
+        command_redacted, command_digest, cwd, name, state, expires_at)
+      values (${process}, ${room}, ${computerAgent}, ${connectionId}, ${bens.id}, ${sessionId},
+        'sleep 600', 'd', '/work', 'loop', 'running', now() + interval '1 hour')`;
+    expect(await lent(anas)).toContain("someone else's work");
+    await sql`update sandbox_process set state = 'stopped', ended_at = now() where id = ${process}`;
+    expect(await lent(anas)).toBe(anaSecret);
+
+    // So does a person who took a display of it over, the room's owner included.
+    await sql`insert into sandbox_control (provider_sandbox_id, control, epoch, principal_id)
+      values (${`${sandbox}#1`}, 'human', 1, ${owner})`;
+    expect(await lent(anas)).toContain("someone else's work");
+    // Ana holding it herself is her own work.
+    await sql`update sandbox_control set principal_id = ${ana}
+      where provider_sandbox_id = ${`${sandbox}#1`}`;
+    expect(await lent(anas)).toBe(anaSecret);
+
+    // A computer the service cannot find lends nobody's account.
+    expect(await (await ask(anas, recordId('sbx')))?.missing).toContain("someone else's work");
   });
 });

@@ -49,6 +49,7 @@ import {
 import {
   actionCall,
   deviceWaitCall,
+  lentCalls,
   memoryCall,
   modelCall,
   retryCall,
@@ -249,6 +250,7 @@ async function toolCalls(
     return [
       actionCall({ ...row, raw, at: source.createdAt, approvalId: pending?.id }),
       ...sentCalls(row.action, raw, source.createdAt),
+      ...lentCalls(row.action, source.createdAt),
     ];
   }
   if (source.type === 'notice' && payload.phase === 'admission_rejected') {

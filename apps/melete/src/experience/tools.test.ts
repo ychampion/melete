@@ -19,6 +19,7 @@ import {
   appendToolTrace,
   deviceWaitCall,
   displayUrl,
+  lentCalls,
   memoryCall,
   modelCall,
   runtimeCall,
@@ -703,5 +704,51 @@ describe('where a command sent something for the first time', () => {
         later,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("where a room lent a person's own account to a command", () => {
+  const command = (hosts: unknown[], kind = 'terminal.run') =>
+    row(kind, {
+      effectClass: 'write_reversible',
+      status: 'succeeded',
+      receipt: { detail: { egress_hosts: hosts } } as ActionRow['receipt'],
+    });
+
+  test('names whose account it was, where, and what was done with it', () => {
+    const calls = lentCalls(
+      command([
+        {
+          host: 'api.github.com',
+          tunnels: 1,
+          refused: 0,
+          bytes_up: 900,
+          bytes_down: 9000,
+          credentialed: true,
+          reads: 3,
+          writes: 1,
+          lent_by: "Ana's own GitHub account",
+        },
+        { host: 'pypi.org', tunnels: 1, refused: 0, bytes_up: 100, bytes_down: 900 },
+      ]),
+      later,
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      kind: 'sandbox',
+      title: "Used Ana's own GitHub account on api.github.com",
+      status: 'done',
+      parent: 'action:act_01J00000000000000000000000',
+    });
+    expect(calls[0]?.output_summary?.text).toBe('3 reads and 1 change with it.');
+  });
+
+  test('nothing for an account the room owns, or for another tool', () => {
+    const owned = [
+      { host: 'api.github.com', tunnels: 1, refused: 0, bytes_up: 1, bytes_down: 1, reads: 1 },
+    ];
+    expect(lentCalls(command(owned), later)).toEqual([]);
+    const lent = [{ host: 'api.github.com', reads: 1, lent_by: "Ana's own GitHub account" }];
+    expect(lentCalls(command(lent, 'web.fetch'), later)).toEqual([]);
   });
 });

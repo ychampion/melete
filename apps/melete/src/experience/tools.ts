@@ -828,6 +828,47 @@ export function sentCalls(row: ActionRow, raw: string, at: Date): ToolCall[] {
     });
 }
 
+/**
+ * Where a room lent a person's own account to a command, one row each under
+ * the command, naming whose account it was, the host and what was done with
+ * it, so everyone who sees the request sees whose access it used.
+ */
+export function lentCalls(row: ActionRow, at: Date): ToolCall[] {
+  if (!COMMAND_KINDS.has(row.kind)) return [];
+  const detail = object(object(row.receipt).detail);
+  return array(detail.egress_hosts)
+    .map(object)
+    .filter((each) => typeof each.lent_by === 'string' && typeof each.host === 'string')
+    .slice(0, SENT_ROWS)
+    .flatMap((each) => {
+      const name = toolText(each.host, 80);
+      const whose = toolText(each.lent_by, 120);
+      if (!name || !whose) return [];
+      const reads = typeof each.reads === 'number' ? each.reads : 0;
+      const writes = typeof each.writes === 'number' ? each.writes : 0;
+      const done = [
+        ...(reads ? [`${reads} ${reads === 1 ? 'read' : 'reads'}`] : []),
+        ...(writes ? [`${writes} ${writes === 1 ? 'change' : 'changes'}`] : []),
+      ].join(' and ');
+      return [
+        toolCall.parse({
+          id: toolId('lent', row.id, name),
+          kind: 'sandbox',
+          title: clip(`Used ${whose} on ${name}`, TOOL_TITLE_LIMIT),
+          status: 'done',
+          started_at: row.createdAt.toISOString(),
+          ended_at: at.toISOString(),
+          input_summary: null,
+          output_summary: done
+            ? summary(`${done[0]?.toUpperCase()}${done.slice(1)} with it.`)
+            : null,
+          detail: null,
+          parent: toolId('action', row.id),
+        }),
+      ];
+    });
+}
+
 /** Commands run on the agent's computer, whose receipts name where they reached. */
 const COMMAND_KINDS = new Set(['terminal.run', 'exec.run', 'exec.python']);
 

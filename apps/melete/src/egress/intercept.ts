@@ -96,6 +96,11 @@ export type InterceptContext = {
   options: InterceptOptions;
 };
 
+/** A request that went out with a person's own account a room lent says whose, on the receipt. */
+function markLent(context: InterceptContext, use: CredentialUse) {
+  if (use.lentBy && context.counters) context.counters.lentBy = use.lentBy;
+}
+
 /** Headers that never travel upstream from the computer. */
 const DROPPED_UP = new Set([
   'authorization',
@@ -453,6 +458,7 @@ async function read(
         outbound,
         (upstream) => {
           context.onRead();
+          markLent(context, use);
           // Compressed despite being asked not to, or to be checked whole: held, so the
           // redactor and the check see all of it before the computer sees any.
           if (check || encodingOf(upstream.headers).length) {
@@ -894,7 +900,10 @@ async function handleBody(
       signal: aborted.signal,
       live: () => context.tokens.isLive(context.token),
     });
-    if (outcome.kind === 'sent') context.onWrite(outcome.actionId);
+    if (outcome.kind === 'sent') {
+      context.onWrite(outcome.actionId);
+      markLent(context, use);
+    }
     answer(response, outcome, (message, status) => {
       try {
         return use.adapter.heldAnswer?.(intercepted, write, message, status) ?? null;

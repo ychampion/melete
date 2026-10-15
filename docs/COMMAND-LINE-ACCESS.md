@@ -119,6 +119,23 @@ agent's turn ends. A guest, or someone who has left the room, is never asked: on
 who is a member can lend their own account, and someone who leaves stops
 lending it at once.
 
+The room's computer is one machine, and any process in it can read another
+command's proxy token. So a person's own account is used only while the
+computer is doing that person's work alone. While another person's request is
+on it (on a display of its own), a background process someone else's work
+started is still running in it, or someone other than the asker has taken it
+over, every request through the account is answered with a note instead, and
+nothing is sent:
+
+```
+This room uses each person's own GitHub account, and the agent's computer is also running someone else's work right now, so Ana's account is not used on it. Nothing was sent. Run the same command again once the other requests on the computer have finished and their background processes have stopped.
+```
+
+Every command that used a person's own account shows it under the command, in
+the room's view of the request: "Used Ana's own GitHub account on
+api.github.com", with how many reads and changes went through it. The
+command's receipt carries the same words (`lent_by`), never the secret.
+
 ## The egress certificate authority
 
 - Its key is ECDSA P-256, made the first time it is needed, sealed with the

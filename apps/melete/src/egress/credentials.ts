@@ -26,6 +26,14 @@
  * with a plain note and nothing goes out as anyone, and the person who asked
  * is asked on their screen to connect their own: the turn then waits for them.
  *
+ * A person's own account is lent only while the room's computer does nothing
+ * but their work. Every process in it runs as one user and can read another's
+ * proxy token, so a token says which command it was minted for, never which
+ * process presents it. While another request's attempt, a background process
+ * started by someone else's work, or a person other than the asker holding the
+ * computer shares it, or when the computer cannot be found, nobody's own
+ * account is used: every request is answered with a note instead.
+ *
  * Anything else gets a blind tunnel, exactly as a host with no account does.
  * The secret is opened for one request at a time and never leaves the service.
  */
@@ -62,6 +70,11 @@ export type CredentialUse = {
    * read only: every change is refused with this note before it is proposed.
    */
   readOnly?: string;
+  /**
+   * Set when the account in use is the asker's own, lent by a room: whose it
+   * is, in words, for the command's receipt and the room's view of it.
+   */
+  lentBy?: string;
 };
 
 /** What a computer of a space with a connected account is given. */
@@ -133,6 +146,13 @@ export function ownAccountReadOnly(adapter: string, name: string | null): string
   const service = serviceOf(adapter);
   const who = name ?? 'The person who asked';
   return `This room uses each person's own ${service} account, and ${who} connected theirs for reading only, so it cannot make this change. Nothing was sent. To make it, ${name ?? 'they'} can allow changes on their own ${service} connection in Settings, under Connections, then run the same command again.`;
+}
+
+/** What a request hears while the room's computer is shared with someone else's work. */
+export function ownAccountShared(adapter: string, name: string | null): string {
+  const service = serviceOf(adapter);
+  const whose = name ? `${name}'s` : "the asker's";
+  return `This room uses each person's own ${service} account, and the agent's computer is also running someone else's work right now, so ${whose} account is not used on it. Nothing was sent. Run the same command again once the other requests on the computer have finished and their background processes have stopped.`;
 }
 
 let bound: EgressAdmission | undefined;
@@ -250,6 +270,49 @@ export function postgresEgressCredentials(options: {
     return null;
   };
   /**
+   * Whether anything but the asker's own work shares the computer a command
+   * runs on: an attempt holding it or on one of its displays, a background
+   * process still running in it, or a person holding it or one of its
+   * displays. Work is the asker's when it is their request, a step of it, or
+   * a run it started. A computer that cannot be found counts as shared.
+   */
+  const sharedWithOthers = async (sessionId: string, asker: string) => {
+    const [row] = await sql`with computer as (
+        select provider_sandbox_id, adapter, space_id, agent_id from sandbox_session
+        where id = ${sessionId}),
+      work as (
+        select a.job_id from computer c
+          join sandbox_session s on s.provider_sandbox_id = c.provider_sandbox_id
+            and s.adapter = c.adapter and s.status in ('opening', 'ready', 'paused')
+          join attempt a on a.id = s.attempt_id and a.ended_at is null
+        union
+        select a.job_id from computer c
+          join sandbox_display d on d.provider_sandbox_id = c.provider_sandbox_id
+            and d.adapter = c.adapter and d.ended_at is null
+          join attempt a on a.id = d.attempt_id and a.ended_at is null
+        union
+        select p.job_id from computer c
+          join sandbox_process p on p.space_id = c.space_id and p.agent_id = c.agent_id
+            and p.state in ('starting', 'running'))
+      select not exists (select 1 from computer) as unknown,
+        exists (select 1 from work w
+          left join job j on j.id = w.job_id
+          left join job r on r.id = j.experience_parent_id and r.space_id = j.space_id
+          left join run_state rs on rs.job_id = j.id
+          left join job q on q.id = rs.conversation_id and q.space_id = j.space_id
+          where (case
+              when r.audience = 'room' then r.requested_by_principal_id
+              when j.audience = 'room' then j.requested_by_principal_id
+              when q.audience = 'room' then q.requested_by_principal_id end)
+            is distinct from ${asker}) as others,
+        exists (select 1 from computer c join sandbox_control k
+            on k.provider_sandbox_id = c.provider_sandbox_id
+              or left(k.provider_sandbox_id, length(c.provider_sandbox_id) + 1)
+                = c.provider_sandbox_id || '#'
+          where k.control = 'human' and k.principal_id is distinct from ${asker}) as held`;
+    return !row || row.unknown === true || row.others === true || row.held === true;
+  };
+  /**
    * The kinds of space an account reaches: a person's own, for the owner's
    * audience, and a room, whose own accounts serve its requests. Any other
    * kind, including ones added later, gets none.
@@ -307,8 +370,9 @@ export function postgresEgressCredentials(options: {
       if (account.perMember) {
         // Each person's own: the room's secret is never opened for anyone.
         const asker = audience.audience === 'room' ? await askerOf(attribution.jobId, space) : null;
-        const own = asker?.id ? await ownAccount(asker.id, account.adapter.id, host) : null;
-        if (!own) {
+        const askerId = asker?.id ?? null;
+        const own = askerId ? await ownAccount(askerId, account.adapter.id, host) : null;
+        if (!own || !askerId) {
           const name = asker?.name ?? null;
           // A person in the room is asked, once per turn, to connect theirs; the turn then waits.
           const asked =
@@ -329,11 +393,21 @@ export function postgresEgressCredentials(options: {
             withSecret: () => Promise.reject(new Error('No account of their own to use')),
           };
         }
+        // Any process on a shared computer could be the one presenting this token.
+        if (await sharedWithOthers(attribution.sessionId, askerId))
+          return {
+            connectionId: account.id,
+            adapter: account.adapter,
+            config: account.config,
+            missing: ownAccountShared(account.adapter.id, asker?.name ?? null),
+            withSecret: () => Promise.reject(new Error('The computer is shared with other work')),
+          };
         return {
           connectionId: account.id,
           adapter: own.adapter,
           config: own.config,
           withSecret: (use) => options.secrets.withSecret(own.secretRef, own.space, use),
+          lentBy: `${asker?.name ?? 'the asker'}'s own ${serviceOf(own.adapter.id)} account`,
           // Their own grants hold here too: one connected for reading makes no changes.
           ...(own.scopes.includes(egressWriteTool(own.adapter.id))
             ? {}

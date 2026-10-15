@@ -11,7 +11,10 @@
  *
  * Inside one computer every process runs as the same user, so a process can
  * read another's environment and borrow its token. That moves attribution
- * between commands of the same computer and changes nothing else.
+ * between commands of the same computer. Where a room lends the account of
+ * the person who asked, it would also move whose account is used, so that
+ * account is lent only while the computer runs nobody else's work
+ * (`credentials.ts`).
  */
 import { createHash, randomBytes } from 'node:crypto';
 import type { ExecEnvName } from '@melete/contracts';
@@ -49,6 +52,8 @@ export type EgressHostSummary = {
   reads?: number;
   /** Requests on this host that changed something, each through its own approval. */
   writes?: number;
+  /** Whose own account a room lent for these requests, in words; never a secret. */
+  lent_by?: string;
 };
 
 /** Counters one tunnel adds to while it lasts, even after its command settled. */
@@ -60,6 +65,8 @@ export type EgressHostCounters = {
   credentialed?: boolean;
   reads?: number;
   writes?: number;
+  /** Set once a request here went out with a person's own account a room lent. */
+  lentBy?: string;
 };
 
 export type EgressTokenEntry = {
@@ -184,6 +191,7 @@ export function summarize(hosts: ReadonlyMap<string, EgressHostCounters>): Egres
       ...(each.credentialed
         ? { credentialed: true as const, reads: each.reads ?? 0, writes: each.writes ?? 0 }
         : {}),
+      ...(each.credentialed && each.lentBy ? { lent_by: each.lentBy } : {}),
     }))
     .sort((a, b) => a.host.localeCompare(b.host));
 }
