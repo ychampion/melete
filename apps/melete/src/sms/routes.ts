@@ -5,7 +5,7 @@ import type { SecretAccess } from '../connectors/secrets.ts';
 import type { TwilioOptions } from '../connectors/twilio.ts';
 import type { Database } from '../db/client.ts';
 import type { ExperienceService } from '../experience/service.ts';
-import { ownsSpace, spaceAuthority } from '../principals/authority.ts';
+import { managesConnection, spaceAuthority } from '../principals/authority.ts';
 import { SmsInbox } from './inbox.ts';
 
 /** Twilio reads an empty TwiML document as "nothing to send back now". */
@@ -53,7 +53,7 @@ export function mountSms(app: Hono, deps: SmsRouteDeps): SmsInbox {
     const access = await spaceAuthority(deps.db, String(row.space_id), c.get('owner').id);
     // A number kept for a room's maker is theirs: the owners they added read
     // only the texts of a number that serves the room.
-    if (access.role !== 'owner' || (row.shared_use === 'owner' && !ownsSpace(access)))
+    if (!managesConnection(access, String(row.shared_use)))
       throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
     return c.json(await inbox.texts(id));
   });

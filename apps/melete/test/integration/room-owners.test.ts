@@ -26,14 +26,18 @@ import type { PgBoss } from 'pg-boss';
 import { ownedSpaces } from '../../src/account/export.ts';
 import { AccountRemovalService } from '../../src/account/removal.ts';
 import { ServiceError } from '../../src/api/errors.ts';
+import { mountTriggers } from '../../src/api/triggers.ts';
 import { recordId } from '../../src/broker/records.ts';
+import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { SecretAccess } from '../../src/connectors/secrets.ts';
 import { loadEnv } from '../../src/env.ts';
 import { removeJobs } from '../../src/experience/removal.ts';
 import { createApp } from '../../src/index.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { FileRestrictionJournal } from '../../src/memory/restore.ts';
-import { spaceStanding } from '../../src/principals/authority.ts';
+import { principalContext, spaceStanding } from '../../src/principals/authority.ts';
 import { PrincipalService } from '../../src/principals/service.ts';
 import { selectedSpace } from '../../src/principals/session-space.ts';
 import { mountSms } from '../../src/sms/routes.ts';
@@ -47,7 +51,12 @@ const spacesRoot = join(root, 'spaces');
 const workRoot = join(root, 'work');
 await mkdir(spacesRoot, { recursive: true });
 await mkdir(workRoot, { recursive: true });
+const registry = new ConnectorRegistry();
+/** Every request made of Twilio. None should be: nothing here installs a number. */
+const twilioCalls: string[] = [];
+const MASTER_KEY = '7c'.repeat(32);
 afterAll(async () => {
+  await registry.close();
   await handle?.close();
   await rm(root, { recursive: true, force: true });
 }, 30_000);
@@ -62,6 +71,21 @@ async function harness() {
   const journal = new FileRestrictionJournal(join(root, 'journal.jsonl'));
   await journal.initializeNew();
   const jobs = new JobService(db, {} as PgBoss);
+  useConnectorFactory(
+    registry,
+    new ConnectorFactory({
+      sql,
+      workRoot,
+      spacesRoot,
+      masterKey: MASTER_KEY,
+      twilio: {
+        fetch: async (input) => {
+          twilioCalls.push(String(input));
+          return new Response('', { status: 401 });
+        },
+      },
+    }),
+  );
   const removals = new SpaceRemovalService({
     db,
     sql,
@@ -86,11 +110,13 @@ async function harness() {
       MELETE_SPACES_DIR: spacesRoot,
       MELETE_WORK_DIR: workRoot,
       MELETE_PREVIEW_MULTIPLAYER: 'true',
+      MELETE_MASTER_KEY: MASTER_KEY,
     }),
     checkDatabase: async () => 'ok',
     jobs,
     removals,
     accountRemovals: accounts,
+    registry,
   });
   const call = (cookie: string, path: string, method = 'GET', body?: unknown) =>
     app.request(path, {
@@ -117,7 +143,7 @@ async function harness() {
       cookie: cookieOf(await call('', '/login', 'POST', { email, password })),
     };
   };
-  return { app, call, db, sql, alice, person };
+  return { app, call, db, sql, jobs, alice, person };
 }
 
 const h = handle ? await harness() : null;
@@ -334,6 +360,131 @@ withDb('room owners', () => {
     await ok(read(alice, kept));
     await refused(read(kim, kept), 403, 'scope_denied');
     await ok(read(kim, shared));
+  });
+
+  test('a connection kept for the maker is theirs to open, test and change, by its id too', async () => {
+    const { alice, person, call, sql, jobs } = world();
+    const lee = await person('lee@example.test');
+    const roomId = await makeRoom(alice, 'Archive');
+    await ok(add(alice, roomId, lee, 'owner'), 201);
+    const connectionIn = async (sharedUse: 'owner' | 'room') => {
+      const id = recordId('conn');
+      await sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
+        values (${id}, ${roomId}, 'notes', 'Notes', '[]'::jsonb, ${sharedUse})`;
+      return id;
+    };
+    const kept = await connectionIn('owner');
+    const shared = await connectionIn('room');
+    const [{ generation } = { generation: 0 }] = await sql<{ generation: number }[]>`
+      select generation from connection where id = ${kept}`;
+
+    // The maker opens it; the owner they added does not, whatever the route.
+    await ok(call(alice.cookie, `/connections/${kept}`));
+    await refused(call(lee.cookie, `/connections/${kept}`), 403, 'scope_denied');
+    await refused(call(lee.cookie, `/connections/${kept}/health`, 'POST'), 403, 'scope_denied');
+    await refused(
+      call(lee.cookie, `/connections/${kept}/lifecycle`, 'POST', {
+        kind: 'revoke',
+        expected_generation: generation,
+      }),
+      403,
+      'scope_denied',
+    );
+    // Asked of the service directly, as other callers do, the answer is the same.
+    const asked = principalContext.run(lee.id, () =>
+      new PolicyService(jobs).changeConnection(kept, {
+        kind: 'revoke',
+        expected_generation: generation,
+      }),
+    );
+    expect(
+      await asked.then(
+        () => 'changed',
+        (error: ServiceError) => error.code,
+      ),
+    ).toBe('scope_denied');
+    const [after] = await sql`select status from connection where id = ${kept}`;
+    expect(after?.status).not.toBe('revoked');
+
+    // A connection that serves the room is any owner's to open.
+    await ok(call(lee.cookie, `/connections/${shared}`));
+
+    // Events from a connection are delivered into its feed only by someone who manages it.
+    const events = new Hono();
+    events.onError((error, c) =>
+      error instanceof ServiceError
+        ? c.json({ error: { code: error.code } }, error.status)
+        : c.json({ error: { code: 'internal' } }, 500),
+    );
+    events.use(async (c, next) => {
+      c.set('owner' as never, { id: c.req.header('x-as') } as never);
+      await next();
+    });
+    const delivered = { seq: 1, duplicate: false };
+    mountTriggers(events, { deliver: async () => delivered } as never, world().db);
+    const deliver = (who: Person, connectionId: string) =>
+      events.request('/internal/events/deliver', {
+        method: 'POST',
+        headers: { 'x-as': who.id, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          connection_id: connectionId,
+          event_name: 'note.added',
+          cursor: '1',
+          dedup_key: `${who.id}-${connectionId}`,
+          payload: {},
+        }),
+      });
+    await refused(deliver(lee, kept), 403, 'scope_denied');
+    expect(await ok<typeof delivered>(deliver(alice, kept), 202)).toEqual(delivered);
+    expect(await ok<typeof delivered>(deliver(lee, shared), 202)).toEqual(delivered);
+  });
+
+  test('only the maker adds a texting number to a room, since texts to it speak as the maker', async () => {
+    const { alice, person, call, sql } = world();
+    const max = await person('max@example.test');
+    const roomId = await makeRoom(alice, 'Phones');
+    await ok(add(alice, roomId, max, 'owner'), 201);
+    await refused(
+      call(max.cookie, '/connections', 'POST', {
+        space_id: roomId,
+        provider: 'twilio',
+        label: 'My phone',
+        credentials: {
+          account_sid: `AC${'5a'.repeat(16)}`,
+          auth_token: 'b7'.repeat(16),
+          from_number: '+15550002222',
+        },
+        sms: { allowed_numbers: ['+15557650000'] },
+      }),
+      403,
+      'scope_denied',
+    );
+    // Refused before anything in the request is acted on.
+    expect(twilioCalls).toEqual([]);
+    expect(
+      await sql`select 1 from connection where space_id = ${roomId} and provider = 'twilio'`,
+    ).toHaveLength(0);
+  });
+
+  test('adding an owner again without a role leaves them an owner', async () => {
+    const { alice, person, call } = world();
+    const nia = await person('nia@example.test');
+    const roomId = await makeRoom(alice, 'Library');
+    await ok(add(alice, roomId, nia, 'owner'), 201);
+    const before = await generationOf(roomId, nia.id);
+    expect(roomMembershipResponse.parse(await ok(add(alice, roomId, nia), 201)).member.role).toBe(
+      'owner',
+    );
+    await ok(
+      call(alice.cookie, `/spaces/${roomId}/memberships`, 'POST', { principal_id: nia.id }),
+      201,
+    );
+    expect(await generationOf(roomId, nia.id)).toEqual(before);
+    // Someone new, added without a role, is a member.
+    const ola = await person('ola@example.test');
+    expect(roomMembershipResponse.parse(await ok(add(alice, roomId, ola), 201)).member.role).toBe(
+      'member',
+    );
   });
 });
 

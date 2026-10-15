@@ -159,7 +159,7 @@ export class PrincipalService {
     return { account: row };
   }
 
-  async grant(actor: string, spaceId: string, memberId: string, role: MemberRole = 'member') {
+  async grant(actor: string, spaceId: string, memberId: string, role?: MemberRole) {
     const jobs = this.jobs;
     const result = await serviceTransaction(this.db, async (tx) => {
       await tx.select({ id: space.id }).from(space).where(eq(space.id, spaceId)).for('update');
@@ -182,22 +182,26 @@ export class PrincipalService {
         );
       if (existing && !existing.revokedAt) {
         // Someone already in the room keeps their place, unless they were
-        // added again as the other of owner and member.
+        // added again as the other of owner and member. Added again without a
+        // role, they keep the one they have.
         const membership =
-          existing.role === role || (existing.role !== 'owner' && existing.role !== 'member')
+          !role ||
+          existing.role === role ||
+          (existing.role !== 'owner' && existing.role !== 'member')
             ? existing
             : await changeRole(tx, spaceId, existing, role, access.ownerId);
         return { membership: membershipView(membership), controls: [] as ContextInvalidated[] };
       }
-      // Someone coming back starts afresh: the role they are given now, with
-      // no end date left from an earlier place.
+      // Someone coming back starts afresh: the role they are given now, a
+      // member's unless one is named, with no end date left from an earlier place.
+      const given = role ?? 'member';
       const [row] = await tx
         .insert(spaceMembership)
-        .values({ spaceId, principalId: memberId, role })
+        .values({ spaceId, principalId: memberId, role: given })
         .onConflictDoUpdate({
           target: [spaceMembership.principalId, spaceMembership.spaceId],
           set: {
-            role,
+            role: given,
             expiresAt: null,
             generation: sql`${spaceMembership.generation} + 1`,
             revokedAt: null,

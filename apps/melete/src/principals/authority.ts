@@ -189,6 +189,18 @@ export function ownsSpace(access: {
   return access.role === 'owner' && access.ownerId === access.principalId;
 }
 
+/**
+ * Whether the principal may open, test or change a connection in the space:
+ * an owner of the space, and only the space's own owner (a room's maker) for a
+ * connection kept for them, which serves only their work.
+ */
+export function managesConnection(
+  access: { role: MembershipRole; ownerId: string | null; principalId: string | null },
+  sharedUse: string,
+): boolean {
+  return access.role === 'owner' && (sharedUse !== 'owner' || ownsSpace(access));
+}
+
 export async function requireJobAccess(db: Reader, id: string, actor = requestPrincipal()) {
   const [row] = await db.select().from(job).where(eq(job.id, id));
   if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
