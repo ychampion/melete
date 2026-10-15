@@ -49,6 +49,13 @@ export type EmbeddingProvider = {
 };
 /** How many texts one embedding request carries. */
 export const EMBED_BATCH = 64;
+/** How many index rows one statement writes. */
+const INDEX_INSERT_BATCH = 500;
+/**
+ * How many times one pass builds a space's index again when a newer fact was
+ * committed while it was being built. Each try reads the facts afresh.
+ */
+export const STALE_BUILD_TRIES = 3;
 export type IndexableRevision = {
   claim_id: string;
   revision: number;
@@ -251,15 +258,26 @@ export async function buildViews(
     const [old] =
       await tx`select * from memory_index_manifest where space_id = ${scope.spaceId} for update`;
     const nextGeneration = (old?.generation ?? 0) + 1;
-    for (let i = 0; i < snapshot.rows.length; i++) {
-      const row = snapshot.rows[i];
-      if (!row) continue;
+    // A few statements per rebuild rather than one or two per claim: the space
+    // stays locked while they run, and a fact is not recalled until they have.
+    for (let start = 0; start < snapshot.rows.length; start += INDEX_INSERT_BATCH) {
+      const rows = snapshot.rows.slice(start, start + INDEX_INSERT_BATCH);
       await tx`insert into memory_index_entries (space_id, generation, claim_id, revision, tokens)
-        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, to_tsvector('simple', ${row.text}))`;
-      const vector = vectors.get(`${row.claim_id}:${row.revision}`);
-      if (embedding && vector)
+        select ${scope.spaceId}, ${nextGeneration}, row.claim_id, row.revision, to_tsvector('simple', row.text)
+        from unnest(${rows.map((row) => row.claim_id)}::text[], ${rows.map((row) => row.revision)}::integer[],
+          ${rows.map((row) => row.text)}::text[]) as row(claim_id, revision, text)`;
+      const dense = embedding
+        ? rows.flatMap((row) => {
+            const vector = vectors.get(`${row.claim_id}:${row.revision}`);
+            return vector ? [{ row, vector: JSON.stringify(encodeVector(vector)) }] : [];
+          })
+        : [];
+      if (embedding && dense.length)
         await tx`insert into memory_dense_entries (space_id, generation, claim_id, revision, model, version, dimensions, recipe, vector)
-        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, ${embedding.model}, ${embedding.version}, ${embedding.dimensions}, ${embedding.recipe}, ${JSON.stringify(encodeVector(vector))}::text::jsonb)`;
+          select ${scope.spaceId}, ${nextGeneration}, entry.claim_id, entry.revision, ${embedding.model}, ${embedding.version},
+            ${embedding.dimensions}, ${embedding.recipe}, entry.vector::jsonb
+          from unnest(${dense.map((entry) => entry.row.claim_id)}::text[], ${dense.map((entry) => entry.row.revision)}::integer[],
+            ${dense.map((entry) => entry.vector)}::text[]) as entry(claim_id, revision, vector)`;
     }
     const embeddingInfo = embedding
       ? { model: embedding.model, version: embedding.version, dimensions: embedding.dimensions }
@@ -296,11 +314,22 @@ export async function runViewWork(
   const [pending] =
     await sql`select id from memory_outbox where space_id = ${scope.spaceId} and kind = 'index' and completed_at is null limit 1`;
   if (!pending) return false;
-  try {
-    await buildViews(sql, scope, embedding);
-    return true;
-  } catch (error) {
-    await sql`update memory_outbox set failures = failures + 1, error_code = 'index_build_failed' where id = ${pending.id}`;
-    throw error;
+  // A fact committed while the index was built (a chat is often still saying
+  // things) leaves the build behind it. That is not a failure: the build reads
+  // the facts again at once, rather than the space waiting out a failure's
+  // pause before what was just said can be recalled. Still behind after a few
+  // tries, the index stays pending for the next pass, uncounted.
+  for (let tries = 1; ; tries++) {
+    try {
+      await buildViews(sql, scope, embedding);
+      return true;
+    } catch (error) {
+      if (error instanceof MemoryError && error.code === 'stale_index_build') {
+        if (tries < STALE_BUILD_TRIES) continue;
+        return true;
+      }
+      await sql`update memory_outbox set failures = failures + 1, error_code = 'index_build_failed' where id = ${pending.id}`;
+      throw error;
+    }
   }
 }
