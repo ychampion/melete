@@ -7,7 +7,7 @@ import {
   runListResponse,
   runResponse,
 } from '@melete/contracts';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, DrizzleQueryError, eq, isNull, sql } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import {
   action,
@@ -393,5 +393,62 @@ withDb('background work that needs the person’s OK', () => {
         ),
       );
     expect(gaveUp).toHaveLength(1);
+  });
+
+  test('one run whose OK cannot be surfaced is logged without its values, and the others are still told of', async () => {
+    const waitingRun = async (goal: string) => {
+      const { run } = await startFromChat(goal, 'Five named, with sources');
+      const shift = await claim(run.id);
+      const asked = await askToScroll(run.id, shift.claims.attempt_id);
+      await commit(shift.claims, { kind: 'waiting_for_approval', action_ids: [asked.actionId] });
+      return { run, asked };
+    };
+    const broken = await waitingRun('Compare three standing desks for a small room');
+    const fine = await waitingRun('Find two quiet dehumidifiers for a basement');
+    const watchdog = required(runs) as unknown as {
+      write: (tx: unknown, entry: { run: string }) => Promise<unknown>;
+    };
+    const write = watchdog.write;
+    const logged: string[] = [];
+    const stderr = process.stderr.write;
+    let failure: Error = new DrizzleQueryError(
+      'insert into run_entry values ($1, $2)',
+      [broken.run.id, 'Private desk measurements'],
+      new Error('value too long for type character varying(40)'),
+    );
+    watchdog.write = async function (this: unknown, tx, entry) {
+      if (entry.run === broken.run.id) throw failure;
+      return write.call(this, tx, entry);
+    };
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      logged.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      // The broken run is logged and left; the other is told of all the same.
+      expect(await required(runs).surfacePermissions()).toEqual([fine.asked.approvalId]);
+    } finally {
+      process.stderr.write = stderr;
+    }
+    const line = logged.find((entry) => entry.includes(broken.run.id));
+    expect(line).toContain('not surfaced: value too long');
+    expect(line).not.toContain('Private desk measurements');
+    expect(line).not.toContain('insert into');
+    try {
+      // A database out of reach stops the sweep instead of failing every run in turn.
+      failure = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+      const stopped = await required(runs)
+        .surfacePermissions()
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(stopped).toMatchObject({ code: 'ECONNREFUSED' });
+    } finally {
+      watchdog.write = write;
+    }
+    // Once it can be, the broken run is told of too, and only once.
+    expect(await required(runs).surfacePermissions()).toEqual([broken.asked.approvalId]);
+    expect(await required(runs).surfacePermissions()).toEqual([]);
   });
 });
