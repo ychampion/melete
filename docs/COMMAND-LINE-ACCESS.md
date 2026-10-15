@@ -101,18 +101,23 @@ uses the account of the same kind (GitHub, GitLab, npm or AWS) that the person
 who asked connected in their own space, while they are still a person in the
 room; a step of that request uses the same person's. Nobody else's account is
 ever used for it, and only the person who asked answers the changes made with
-it, since they go out as them.
+it, since they go out as them. Their own account's grants hold in the room
+too: one they connected for reading only reads, and every change through it
+is refused before it is asked for.
 
 If the person who asked has no account of that kind, the relay still takes the
 connection, sends nothing and answers every request with a note the command
 prints, such as:
 
 ```
-This room uses each person's own GitHub account, and Ana has not connected one yet. Nothing was sent. Ask Ana to connect GitHub for the agent's computer in Settings, under Connections, then run the same command again.
+This room uses each person's own GitHub account, and Ana has not connected one yet. Nothing was sent. Ana has been asked to connect GitHub for the agent's computer in Settings, under Connections. End this turn; once they reply, run the same command again.
 ```
 
-The agent stops there and asks them to connect it. Someone who leaves the room
-stops lending it their account at once.
+At the same time Ana is asked on their screen to connect it, as if the agent
+had asked them a question, and the request waits for their reply once the
+agent's turn ends. A guest, or someone who has left the room, is never asked: only a person
+who is a member can lend their own account, and someone who leaves stops
+lending it at once.
 
 ## The egress certificate authority
 

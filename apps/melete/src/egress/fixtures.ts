@@ -14,7 +14,7 @@ import { selfSignedPair } from '../gateway/fixtures/self-signed.ts';
 import { testAdapter } from './adapters/test.ts';
 import { type CredentialAdapter, hostCovered } from './adapters/types.ts';
 import { EgressCertificateAuthority, memoryEgressCaStore } from './ca.ts';
-import type { EgressCredentialPort } from './credentials.ts';
+import type { CredentialUse, EgressCredentialPort } from './credentials.ts';
 
 export type SeenRequest = {
   method: string;
@@ -94,6 +94,8 @@ export function memoryCredentialPort(input: {
   admitWrite?: EgressAdmission;
   /** Answers no account at all: the tunnel stays blind. */
   none?: () => boolean;
+  /** A room's account set to each person's own: the asker has none, or theirs only reads. */
+  use?: Pick<CredentialUse, 'missing' | 'readOnly'>;
 }): EgressCredentialPort & { ca: EgressCertificateAuthority; lookups: number } {
   const adapter = input.account?.adapter ?? (testAdapter as CredentialAdapter);
   const ca = new EgressCertificateAuthority({
@@ -119,6 +121,7 @@ export function memoryCredentialPort(input: {
         adapter,
         config,
         withSecret: <T>(use: (secret: string) => Promise<T>) => use(input.secret),
+        ...input.use,
       };
     },
     async computer() {

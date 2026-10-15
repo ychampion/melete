@@ -401,11 +401,12 @@ withDb('where an account is offered', () => {
         values (${id}, ${`${id.toLowerCase()}@example.test`}, ${kind}, ${name})`;
       return id;
     };
-    const [owner, ana, ben, cal, agent] = await Promise.all([
+    const [owner, ana, ben, cal, dee, agent] = await Promise.all([
       person('person', 'Olive'),
       person('person', 'Ana'),
       person('person', 'Ben'),
       person('person', 'Cal'),
+      person('person', 'Dee'),
       person('room'),
     ]);
     await sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${owner}
@@ -415,13 +416,19 @@ withDb('where an account is offered', () => {
       [ana, 'member'],
       [ben, 'member'],
       [cal, 'member'],
+      [dee, 'member'],
     ] as const)
       await sql`insert into space_membership (principal_id, space_id, role)
         values (${principal}, ${room}, ${role})`;
     // The room's own account, set to each person's own: its secret is never used.
     await sql`update connection set shared_use = 'room', per_member = true where id = ${connectionId}`;
-    // Ana and Ben each connected their own account in their own space; Cal has none.
-    const own = async (principal: string, secret: string) => {
+    // Ana and Ben each connected their own account in their own space; Cal has
+    // none, and Dee connected hers for reading only.
+    const own = async (
+      principal: string,
+      secret: string,
+      scopes = ['egress.test_read', 'egress.test_write'],
+    ) => {
       const space = recordId('sp');
       await sql`insert into space (id, name, git_path, kind, audience, owner_principal_id)
         values (${space}, 'Own', ${`spaces/${space}`}, 'personal', 'owner', ${principal})`;
@@ -429,13 +436,15 @@ withDb('where an account is offered', () => {
       await sql`insert into connection (id, space_id, provider, label, scopes, status, secret_ref,
           configuration)
         values (${recordId('conn')}, ${space}, 'command_line', 'Own account',
-          '["egress.test_read", "egress.test_write"]'::jsonb, 'active', ${ref},
+          ${JSON.stringify(scopes)}::jsonb, 'active', ${ref},
           ${JSON.stringify({ kind: 'command_line', adapter: 'test', config: { hosts: [HOST] } })}::jsonb)`;
     };
     const anaSecret = `tok_${randomBytes(18).toString('hex')}`;
     const benSecret = `tok_${randomBytes(18).toString('hex')}`;
     await own(ana, anaSecret);
     await own(ben, benSecret);
+    const deeSecret = `tok_${randomBytes(18).toString('hex')}`;
+    await own(dee, deeSecret, ['egress.test_read']);
     const request = async (requestedBy: string, parent: string | null = null) => {
       const id = recordId('job');
       await sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget,
@@ -467,8 +476,14 @@ withDb('where an account is offered', () => {
     // Each request uses the account of the person who asked it; a step, its request's asker's.
     const anas = await request(ana);
     expect(await secretOf(anas)).toBe(anaSecret);
+    expect((await ask(anas))?.readOnly).toBeUndefined();
     expect(await secretOf(await request(ben))).toBe(benSecret);
     expect(await secretOf(await request(ana, anas))).toBe(anaSecret);
+
+    // An own account connected for reading reads for its owner, and makes no changes.
+    const dees = await request(dee);
+    expect(await secretOf(dees)).toBe(deeSecret);
+    expect((await ask(dees))?.readOnly).toContain('Dee connected theirs for reading only');
 
     // Someone with no account of their own is asked to connect one; nothing is opened.
     const missing = await ask(await request(cal));
@@ -480,7 +495,7 @@ withDb('where an account is offered', () => {
     const bens = await request(ben);
     await sql`update space_membership set revoked_at = now()
       where space_id = ${room} and principal_id = ${ben}`;
-    expect((await ask(bens))?.missing).toBeString();
+    expect((await ask(bens))?.missing).toContain('only a person who is a member of the room');
 
     // Through the relay: Ana's request carries Ana's token, and Cal's sends nothing.
     await sql`update job set audience = 'room', principal_id = ${agent},
@@ -502,6 +517,13 @@ withDb('where an account is offered', () => {
     const calRead = await read();
     expect(calRead?.status).toBe(403);
     expect(calRead?.body).toContain('Cal has not connected one yet');
+    // Cal is asked on the screen, once for the turn, and the turn then waits for Cal.
+    expect(calRead?.body).toContain('Cal has been asked to connect');
+    expect((await read())?.status).toBe(403);
+    const asked = await sql`select payload from event
+      where dedup_key = ${`${claims.attempt_id}:ask-person`}`;
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.payload.question.text).toStartWith('Cal, to do this I need your own');
     expect(upstream.seen).toHaveLength(1);
     // The room's own secret was never sent for anyone.
     expect(upstream.seen.some((seen) => seen.headers.authorization === `Bearer ${SECRET}`)).toBe(

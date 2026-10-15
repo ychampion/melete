@@ -20,20 +20,28 @@
  * A room's account may be set to each person's own (`per_member`). Then its
  * own secret is never used: a request of the room uses the account of the
  * same kind the person who asked connected in their own space, while they are
- * a person still in the room, and nobody else's. With none, the account is
- * still terminated, and every request through it is answered with a plain
- * note asking that person to connect their own, so nothing goes out as anyone.
+ * a person still in the room, and nobody else's. Their own account's grants
+ * hold there too: one they connected for reading only makes no changes. With
+ * none, the account is still terminated, every request through it is answered
+ * with a plain note and nothing goes out as anyone, and the person who asked
+ * is asked on their screen to connect their own: the turn then waits for them.
  *
  * Anything else gets a blind tunnel, exactly as a host with no account does.
  * The secret is opened for one request at a time and never leaves the service.
  */
 import type { Sql } from 'postgres';
+import { raisePersonQuestion } from '../broker/ask-person.ts';
 import type { EgressAdmission } from '../broker/egress-admission.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
 import { agentAccess } from '../experience/access.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import type { AdapterSet } from './adapters/index.ts';
-import { type CredentialAdapter, egressReadScope, hostCovered } from './adapters/types.ts';
+import {
+  type CredentialAdapter,
+  egressReadScope,
+  egressWriteTool,
+  hostCovered,
+} from './adapters/types.ts';
 import type { EgressCertificateAuthority } from './ca.ts';
 import type { EgressAttribution } from './tokens.ts';
 
@@ -49,6 +57,11 @@ export type CredentialUse = {
    * ever opened.
    */
   missing?: string;
+  /**
+   * Set when the account in use is the asker's own and they allowed it to
+   * read only: every change is refused with this note before it is proposed.
+   */
+  readOnly?: string;
 };
 
 /** What a computer of a space with a connected account is given. */
@@ -85,11 +98,40 @@ const SERVICE_NAME: Record<string, string> = {
   aws: 'AWS',
 };
 
-/** What a request of the room hears when the person who asked has no account of their own. */
-export function ownAccountMissing(adapter: string, name: string | null): string {
-  const service = SERVICE_NAME[adapter] ?? 'this service';
+const serviceOf = (adapter: string) => SERVICE_NAME[adapter] ?? 'this service';
+
+/**
+ * What a request of the room hears when its account is each person's own and
+ * the person who asked has none to use. Someone who is not a person in the
+ * room (a guest, someone who left, or nobody) can never lend one. `asked` is
+ * true when the person was asked on their screen to connect theirs.
+ */
+export function ownAccountMissing(
+  adapter: string,
+  asker: { name: string | null; member: boolean },
+  asked = false,
+): string {
+  const service = serviceOf(adapter);
+  if (!asker.member)
+    return `This room uses each person's own ${service} account, and only a person who is a member of the room can use theirs here. Nothing was sent.`;
+  const who = asker.name ?? 'the person who asked';
+  const missing = `This room uses each person's own ${service} account, and ${who} has not connected one yet. Nothing was sent.`;
+  return asked
+    ? `${missing} ${asker.name ? `${asker.name} has` : 'They have'} been asked to connect ${service} for the agent's computer in Settings, under Connections. End this turn; once they reply, run the same command again.`
+    : `${missing} Ask ${asker.name ?? 'them'} to connect ${service} for the agent's computer in Settings, under Connections, then run the same command again.`;
+}
+
+/** The question put to the person who asked, on their screen, when they have no account to use. */
+export function connectOwnAccount(adapter: string, name: string | null): string {
+  const service = serviceOf(adapter);
+  return `${name ? `${name}, to` : 'To'} do this I need your own ${service} account, since this room uses each person's own. Connect ${service} for the agent's computer in Settings, under Connections, then reply here and I'll run it again.`;
+}
+
+/** What a change hears when the person's own account was connected for reading only. */
+export function ownAccountReadOnly(adapter: string, name: string | null): string {
+  const service = serviceOf(adapter);
   const who = name ?? 'The person who asked';
-  return `This room uses each person's own ${service} account, and ${who} has not connected one yet. Nothing was sent. Ask ${name ?? 'them'} to connect ${service} for the agent's computer in Settings, under Connections, then run the same command again.`;
+  return `This room uses each person's own ${service} account, and ${who} connected theirs for reading only, so it cannot make this change. Nothing was sent. To make it, ${name ?? 'they'} can allow changes on their own ${service} connection in Settings, under Connections, then run the same command again.`;
 }
 
 let bound: EgressAdmission | undefined;
@@ -163,13 +205,15 @@ export function postgresEgressCredentials(options: {
   };
   /**
    * The person who asked a room's request, read from the request itself (or
-   * the request a step belongs to), with their name, while they are a person
-   * still in the room. Anyone else, or no one, is null.
+   * the request a step belongs to, as `roomAuthorityOf` reads it, so the
+   * account used is that of the one person who may approve its changes), with
+   * their name, while they are a person still in the room. Anyone else, or no
+   * one, is null.
    */
   const askerOf = async (jobId: string, room: string) => {
-    const [row] = await sql`select coalesce(
-          case when r.audience = 'room' then r.requested_by_principal_id end,
-          case when j.audience = 'room' then j.requested_by_principal_id end) as asker
+    const [row] = await sql`select case
+          when r.audience = 'room' then r.requested_by_principal_id
+          when j.audience = 'room' then j.requested_by_principal_id end as asker
       from job j left join job r on r.id = j.experience_parent_id and r.space_id = j.space_id
       where j.id = ${jobId}`;
     const asker = row?.asker ? String(row.asker) : null;
@@ -260,19 +304,36 @@ export function postgresEgressCredentials(options: {
         // Each person's own: the room's secret is never opened for anyone.
         const asker = audience.audience === 'room' ? await askerOf(attribution.jobId, space) : null;
         const own = asker?.id ? await ownAccount(asker.id, account.adapter.id, host) : null;
-        if (!own)
+        if (!own) {
+          const name = asker?.name ?? null;
+          // A person in the room is asked, once per turn, to connect theirs; the turn then waits.
+          const asked =
+            asker?.id && attribution.attemptId
+              ? await raisePersonQuestion(sql, {
+                  jobId: attribution.jobId,
+                  attemptId: attribution.attemptId,
+                  question: connectOwnAccount(account.adapter.id, name),
+                  why: 'Nothing was sent. What you ask here only ever uses your own account, never anyone else’s.',
+                  // Not asked after all (the turn just ended): the note tells the agent to ask.
+                }).catch(() => false)
+              : false;
           return {
             connectionId: account.id,
             adapter: account.adapter,
             config: account.config,
-            missing: ownAccountMissing(account.adapter.id, asker?.name ?? null),
+            missing: ownAccountMissing(account.adapter.id, { name, member: !!asker?.id }, asked),
             withSecret: () => Promise.reject(new Error('No account of their own to use')),
           };
+        }
         return {
           connectionId: account.id,
           adapter: own.adapter,
           config: own.config,
           withSecret: (use) => options.secrets.withSecret(own.secretRef, own.space, use),
+          // Their own grants hold here too: one connected for reading makes no changes.
+          ...(own.scopes.includes(egressWriteTool(own.adapter.id))
+            ? {}
+            : { readOnly: ownAccountReadOnly(own.adapter.id, asker?.name ?? null) }),
         };
       }
       return {

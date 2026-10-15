@@ -1188,6 +1188,12 @@ Thanks`,
           'invalid_request',
           "Only a command-line account (GitHub, GitLab, npm or AWS for the agent's computer) can use each person's own account.",
         );
+      if (input.per_member && use !== 'room')
+        throw new RoomError(
+          400,
+          'invalid_request',
+          "Let the room's requests use this account before setting it to each person's own.",
+        );
       sharedUse.set(entry.id, use);
       if (own) perMember.add(entry.id);
       else perMember.delete(entry.id);

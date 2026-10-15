@@ -839,6 +839,9 @@ async function handleBody(
   const verdict = classifySafely(use, intercepted);
   if (verdict.kind === 'refuse') return plain(response, 403, 'refused', verdict.reason);
   if (verdict.kind === 'read') return read(context, use, base, response, max, signing, check);
+  // The asker's own account, connected for reading only: no change is even proposed.
+  if (use.readOnly !== undefined)
+    return plain(response, 403, 'own_account_read_only', use.readOnly);
   // The approval binds the exact bytes and every header that will be sent;
   // the write forwards exactly those, plus headers that say nothing about it.
   const binding = requestBinding(intercepted.headers, body, verdict.boundBody, volatile);

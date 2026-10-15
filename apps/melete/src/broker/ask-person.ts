@@ -128,3 +128,45 @@ export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, 
     };
   });
 }
+
+/**
+ * The same question, raised by the service on an attempt's behalf rather than
+ * by the agent: the egress relay asks the person who made a room's request to
+ * connect their own account before it can go on. It is recorded once, only
+ * while the attempt is still running and has not asked or set a wait already,
+ * and the attempt then ends waiting for that person's answer, exactly as if
+ * the agent had asked. Returns whether this is the question the attempt asked.
+ */
+export async function raisePersonQuestion(
+  sql: Sql,
+  input: { jobId: string; attemptId: string; question: string; why?: string },
+): Promise<boolean> {
+  const spec = specOf(
+    { question: input.question, ...(input.why ? { why: input.why } : {}) },
+    input.attemptId,
+  );
+  return sql.begin(async (tx) => {
+    const job = await lockJob(tx, input.jobId);
+    const [live] = await tx`SELECT 1 FROM attempt
+      WHERE id=${input.attemptId} AND job_id=${job.id} AND outcome IS NULL`;
+    if (!live) return false;
+    const key = personQuestionKey(input.attemptId);
+    const [existing] = await tx`SELECT payload FROM event WHERE dedup_key=${key}`;
+    if (existing)
+      return canonicalizePayload(existing.payload.question).hash === canonicalizePayload(spec).hash;
+    const [open] = await tx`SELECT 1 FROM question WHERE job_id=${job.id} AND state='open' LIMIT 1`;
+    if (open) return false;
+    const [waiting] =
+      await tx`SELECT 1 FROM event WHERE dedup_key=${`${input.attemptId}:runtime-wait`}`;
+    if (waiting) return false;
+    await appendEvent(
+      tx,
+      job.id,
+      input.attemptId,
+      'notice',
+      { kind: PERSON_QUESTION_KIND, question: spec },
+      key,
+    );
+    return true;
+  });
+}
