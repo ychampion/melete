@@ -41,6 +41,22 @@ export type InviteCreated = Ok<paths['/rooms/{id}/invites'], 'post'>;
 export type InviteView = Ok<paths['/invites/view'], 'post'>;
 export type Handoff = Ok<paths['/handoffs'], 'get'>['handoffs'][number];
 export type RoomConnection = Ok<paths['/rooms/{id}/connections'], 'get'>['connections'][number];
+export type AuditPage = Ok<paths['/spaces/{spaceId}/audit'], 'get'>;
+export type AuditEntry = AuditPage['entries'][number];
+/** What the activity log is narrowed to; the export takes the same. */
+export type AuditFilter = {
+  principal_id?: string;
+  since?: string;
+  until?: string;
+  effect_class?: AuditEntry['effect_class'];
+};
+
+/** A filter as query parameters, leaving out what is not set. */
+export function auditQuery(filter: AuditFilter): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(filter).filter((entry): entry is [string, string] => Boolean(entry[1])),
+  );
+}
 
 /** One frame of a thread's live stream; its `seq` resumes the stream. */
 export type RoomFrame =
@@ -161,6 +177,22 @@ export const roomsApi = {
     call<{ withdrawn: string }>(() =>
       api.DELETE('/rooms/{id}/shares/{shareId}', { params: { path: { id, shareId } } }),
     ),
+
+  /* ---------- the activity log, for the room's owners ---------- */
+  audit: (id: string, filter: AuditFilter, cursor: string | null) =>
+    call<AuditPage>(() =>
+      api.GET('/spaces/{spaceId}/audit', {
+        params: {
+          path: { spaceId: id },
+          query: { ...auditQuery(filter), ...(cursor ? { cursor } : {}) },
+        },
+      }),
+    ),
+  /** Where the log downloads as CSV; a plain link carries the session. */
+  auditExportUrl: (id: string, filter: AuditFilter) => {
+    const query = new URLSearchParams(auditQuery(filter)).toString();
+    return `${client.options.baseUrl}/spaces/${encodeURIComponent(id)}/audit/export${query ? `?${query}` : ''}`;
+  },
 
   /* ---------- guests ---------- */
   invites: (id: string) => call<InviteList>(() => api.GET('/rooms/{id}/invites', room(id))),

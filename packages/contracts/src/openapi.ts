@@ -48,6 +48,12 @@ import {
   personFileRestored,
 } from './artifacts.ts';
 import { attachmentContentQuery, attachmentLimits, attachmentResponse } from './attachments.ts';
+import {
+  AUDIT_EXPORT_MAX,
+  spaceAuditFilter,
+  spaceAuditQuery,
+  spaceAuditResponse,
+} from './audit.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -355,6 +361,45 @@ const jsonResponse = <T extends z.ZodType>(description: string, schema: T) => ({
 });
 
 const problem = (description: string) => jsonResponse(description, errorResponse);
+
+/** A space's activity log and its CSV export. */
+const spaceAuditPaths = () => ({
+  '/spaces/{spaceId}/audit': {
+    get: {
+      tags: ['spaces'],
+      summary: 'Every effect the space’s work proposed, with who asked and who approved',
+      description:
+        'For the space’s owners, and for the person who set the installation up. Each ' +
+        'entry names the connection it went through, whose work it was, the member who ' +
+        'asked when it was a request of a room’s agent, and the answer to its permission. ' +
+        'What it said is never returned: the payload appears only as its hash. Newest ' +
+        'first; pass `next_cursor` back as `cursor` for the next page.',
+      requestParams: { ...idParam('spaceId', 'Space id'), query: spaceAuditQuery },
+      responses: {
+        '200': jsonResponse('A page of the log', spaceAuditResponse),
+        '400': problem('A filter or cursor that cannot be read'),
+        '403': problem('Only the space’s owners read its log'),
+      },
+    },
+  },
+  '/spaces/{spaceId}/audit/export': {
+    get: {
+      tags: ['spaces'],
+      summary: 'The same log as a CSV file',
+      description:
+        `The entries the same filters select, newest first, up to ${AUDIT_EXPORT_MAX} ` +
+        'rows. Narrow `since` and `until` to export a longer log in parts.',
+      requestParams: { ...idParam('spaceId', 'Space id'), query: spaceAuditFilter },
+      responses: {
+        '200': {
+          description: 'The log, one row per effect',
+          content: { 'text/csv': { schema: z.string() } },
+        },
+        '403': problem('Only the space’s owners read its log'),
+      },
+    },
+  },
+});
 
 /** The four routes of signing in with one account provider. */
 const accountSignInPaths = (
@@ -4583,6 +4628,7 @@ export function buildOpenApiDocument() {
         ...devicePaths(),
         ...appsPaths(),
         ...processPreviewPaths(),
+        ...spaceAuditPaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

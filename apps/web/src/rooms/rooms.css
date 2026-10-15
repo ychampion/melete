@@ -735,3 +735,60 @@
     flex-wrap: wrap;
   }
 }
+
+/* Room → Activity log */
+.activity-log {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+.activity-log-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+}
+.activity-log-row:first-child {
+  border-top: 0;
+}
+.activity-log-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.activity-log-sub,
+.activity-log-meta {
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.activity-log-meta {
+  font-size: 12px;
+}
+.activity-log-status {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--secondary);
+  white-space: nowrap;
+}
+.activity-log-status[data-status="succeeded"] {
+  color: var(--success);
+}
+.activity-log-filters {
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+@media (max-width: 767px) {
+  .activity-log-row {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .activity-log-filters > * {
+    flex: 1 1 140px;
+  }
+}

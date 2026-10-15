@@ -119,6 +119,7 @@ export function jobView(row: JobRow) {
     id: row.id,
     space_id: row.spaceId,
     principal_id: row.principalId,
+    requested_by: row.requestedByPrincipalId,
     title: row.title,
     objective: row.objective,
     constraints: row.constraints,
@@ -253,6 +254,14 @@ export class JobService {
     );
     if (room && access.role !== 'agent')
       throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
+    // A member's own job in a shared space is allowed on purpose: it reads what
+    // the space shares (its knowledge and the procedures its people taught it)
+    // for the member's own task. It acts through none of the space's
+    // connections (`connectionServesJob`): the owner's serve only the owner's
+    // jobs, and the room's serve only requests made of the room's agent. So
+    // every effect in a shared space is either the owner's own work or a room
+    // request, and both appear in the space's audit log. Guests make no jobs
+    // of their own at all; they ask the room.
     const base = experience?.kind === 'chat' ? CONVERSATION_BUDGET : DEFAULT_BUDGET;
     // A job offered background processes gets the wall time to use them,
     // unless its creator named one.

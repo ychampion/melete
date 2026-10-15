@@ -436,6 +436,12 @@ export const attempt = pgTable(
       .references(() => job.id, { onDelete: 'cascade' }),
     epoch: integer('epoch').notNull(),
     principalId: text('principal_id').references(() => principal.id),
+    /**
+     * For a request made of a room's agent, the member who asked, copied from
+     * the job when the attempt starts. `principal_id` is the room's own
+     * principal then, so this is what says whose request the work was.
+     */
+    requestedByPrincipalId: text('requested_by_principal_id').references(() => principal.id),
     membershipGeneration: integer('membership_generation'),
     turnId: text('turn_id'),
     runtimeVersion: text('runtime_version').notNull(),

@@ -80,7 +80,15 @@ export function mountPrincipals(
       resource === 'spaces' &&
       ((method === 'DELETE' && parts.length === 2) ||
         (method === 'GET' && parts.length === 3 && parts[2] === 'removal'));
-    if (resource === 'spaces' && id && id !== 'shared' && !removalRequest) {
+    // A space's activity log is read by its owners and by the person who set
+    // the installation up, who need not be in the space; spaces/audit.ts
+    // checks exactly that on both of its routes.
+    const auditRead =
+      resource === 'spaces' &&
+      method === 'GET' &&
+      parts[2] === 'audit' &&
+      (parts.length === 3 || (parts.length === 4 && parts[3] === 'export'));
+    if (resource === 'spaces' && id && id !== 'shared' && !removalRequest && !auditRead) {
       const access = await spaceAuthority(db, id, actor);
       if (method !== 'GET' && access.role !== 'owner')
         throw new ServiceError('scope_denied', 'Space administration requires its owner.', 403);
