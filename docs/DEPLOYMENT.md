@@ -2214,7 +2214,7 @@ Melete pick a better model per call:
 
 | Setting | Used for |
 | --- | --- |
-| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier and the companies scan |
+| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier, the companies scan, conversation summaries and learning from corrections |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
 | `MELETE_MODEL_TRIAGE` | Sorting new mail and calendar changes for Home's "Needs you" list, or `off`. Unset, the owner's secondary model for scheduled work, else `MELETE_MODEL_FAST`, else the default. See [Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in) |

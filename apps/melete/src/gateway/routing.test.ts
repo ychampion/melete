@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
 import { loadEnv } from '../env.ts';
+import { proposalModelSource } from '../learning/start.ts';
 import {
   acceptsEffort,
   asksForDepth,
@@ -11,7 +12,12 @@ import {
   withEffort,
 } from './effort.ts';
 import { createModelGateway, type GatewayOptions, providersFromEnv } from './index.ts';
-import { ModelSettingsService, serviceModelSource } from './model-settings.ts';
+import {
+  ModelSettingsService,
+  type SideCallKind,
+  serviceModelSource,
+  sideCallSource,
+} from './model-settings.ts';
 import { PriceTable, parseModelPrices } from './prices.ts';
 import {
   agentRoutes,
@@ -170,6 +176,25 @@ describe('routing a call to the best model', () => {
       await serviceModelSource({ env, fast, pinned: { model: 'pinned-model' } }).current(),
     ).toEqual({ provider: STRONG.provider, model: 'pinned-model' });
     expect(await serviceModelSource({ env, fast: null }).current()).toEqual(STRONG);
+  });
+
+  test('every kind of side call, learning included, follows the fast route', async () => {
+    const fast = { provider: 'fireworks', model: 'accounts/fireworks/models/llama-8b' };
+    const raw = {
+      MELETE_DEFAULT_PROVIDER: STRONG.provider,
+      MELETE_DEFAULT_MODEL: STRONG.model,
+      MELETE_MODEL_FAST: `${fast.provider}/${fast.model}`,
+    };
+    const env = loadEnv(raw);
+    const routing = routingFromEnv(env);
+    const kinds: SideCallKind[] = ['memory', 'summary', 'triage', 'voice', 'companies', 'learning'];
+    for (const kind of kinds)
+      expect(await sideCallSource(kind, { env, routing }).current()).toEqual(fast);
+    // Writing a proposal from a correction is one of them, not a call on the default model.
+    expect(await proposalModelSource(env).current({ spaceId: 'space' })).toEqual(fast);
+    expect(await proposalModelSource(loadEnv({ ...raw, MELETE_MODEL_FAST: '' })).current()).toEqual(
+      STRONG,
+    );
   });
 
   test("an agent turn gets a vision route only when its model reads no pictures, and none on the owner's own choice", () => {

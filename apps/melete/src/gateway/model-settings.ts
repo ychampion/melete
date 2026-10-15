@@ -1280,6 +1280,44 @@ export function serviceModelSource(options: {
   };
 }
 
+/** The service's own short model calls, by what each is for. */
+export type SideCallKind =
+  | 'memory'
+  | 'summary'
+  | 'triage'
+  | 'voice'
+  | 'review'
+  | 'companies'
+  | 'learning';
+
+/**
+ * The model source for one kind of side call. Every side call the service
+ * makes gets its model here, so a route for a kind of call is decided in one
+ * place and reaches every call of that kind. Today every kind takes the
+ * operator's fast model (MELETE_MODEL_FAST), or the space owner's secondary
+ * when they chose one; a model pinned for the use wins over both. A review
+ * decides whether a risky action runs, so no person's secondary takes it.
+ */
+export function sideCallSource(
+  kind: SideCallKind,
+  options: {
+    env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'> & {
+      OPENAI_COMPAT_BASE_URL?: string;
+    };
+    settings?: ModelSettingsService;
+    routing: ModelRouting;
+    pinned?: { provider?: string; model?: string };
+  },
+): ServiceModelSource {
+  return serviceModelSource({
+    env: options.env,
+    settings: options.settings,
+    pinned: options.pinned,
+    fast: options.routing.fast,
+    sideTask: kind !== 'review',
+  });
+}
+
 const INVALID_ADDRESS =
   'Give the endpoint’s http:// or https:// address, without a user name, query or fragment, for example https://models.example.net/v1.';
 
