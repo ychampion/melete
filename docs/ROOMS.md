@@ -48,9 +48,12 @@ owners an owner adds run the room as its maker does: they add and remove
 people, invite guests, set how the room works and answer what the room leaves
 to its owners. Three things stay with the person who made the room: they
 always stay an owner, only they remove the room for everyone, and a connection
-kept for them serves only their work, so only they see it or share it with the
-room. The room's memory reads for the other owners as it does for its members,
-and deleting another owner's account leaves the room, as any member's does. A
+kept for them serves only their work, so only they see it, read its texts or
+share it with the room. The room's memory, and the skills and records kept
+private to it, read for the other owners as they do for its members; so does
+the room when one of them works in it from their own session or assistant, so
+the maker's home, tasks and conversations there stay the maker's. Deleting
+another owner's account leaves the room, as any member's does. A
 room always keeps at least one owner. Each change of role moves that person's
 membership generation on, so work of theirs under way checks again with what
 they may now do. A guest stays a guest.

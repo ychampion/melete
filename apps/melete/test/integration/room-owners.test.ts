@@ -21,16 +21,22 @@ import {
   roomDetail,
   roomMembershipResponse,
 } from '@melete/contracts';
+import { Hono } from 'hono';
 import type { PgBoss } from 'pg-boss';
 import { ownedSpaces } from '../../src/account/export.ts';
 import { AccountRemovalService } from '../../src/account/removal.ts';
+import { ServiceError } from '../../src/api/errors.ts';
 import { recordId } from '../../src/broker/records.ts';
+import type { SecretAccess } from '../../src/connectors/secrets.ts';
 import { loadEnv } from '../../src/env.ts';
 import { removeJobs } from '../../src/experience/removal.ts';
 import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { FileRestrictionJournal } from '../../src/memory/restore.ts';
+import { spaceStanding } from '../../src/principals/authority.ts';
 import { PrincipalService } from '../../src/principals/service.ts';
+import { selectedSpace } from '../../src/principals/session-space.ts';
+import { mountSms } from '../../src/sms/routes.ts';
 import { SpaceRemovalService } from '../../src/spaces/removal.ts';
 import { LocalBlobStore } from '../../src/storage/local.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -111,7 +117,7 @@ async function harness() {
       cookie: cookieOf(await call('', '/login', 'POST', { email, password })),
     };
   };
-  return { app, call, sql, alice, person };
+  return { app, call, db, sql, alice, person };
 }
 
 const h = handle ? await harness() : null;
@@ -280,6 +286,54 @@ withDb('room owners', () => {
     );
     expect(preview.rooms_left.map((room) => room.id)).toContain(roomId);
     expect(preview.spaces.map((space) => space.id)).not.toContain(roomId);
+  });
+
+  test('outside the room’s own routes, an owner the maker added works there as a member does', async () => {
+    const { alice, person, db, sql } = world();
+    const kim = await person('kim@example.test');
+    const roomId = await makeRoom(alice, 'Workshop');
+    await ok(add(alice, roomId, kim, 'owner'), 201);
+    const selection = async (who: Person) =>
+      selectedSpace(db, who.id, {
+        spaceId: roomId,
+        generation: (await generationOf(roomId, who.id)).generation,
+      });
+
+    // A session in the room: the owner's surfaces there (home, tasks, every
+    // conversation) are the maker's alone.
+    expect((await selection(alice))?.role).toBe('owner');
+    expect((await selection(kim))?.role).toBe('member');
+
+    // The skills a run is handed: a private one is the maker's.
+    expect(await spaceStanding(sql, roomId, alice.id)).toEqual({ role: 'owner', owns: true });
+    expect(await spaceStanding(sql, roomId, kim.id)).toEqual({ role: 'owner', owns: false });
+
+    // A number kept for the maker: only they read its texts. One that serves
+    // the room, any owner reads.
+    const texts = new Hono();
+    texts.onError((error, c) =>
+      error instanceof ServiceError
+        ? c.json({ error: { code: error.code } }, error.status)
+        : c.json({ error: { code: 'internal' } }, 500),
+    );
+    texts.use(async (c, next) => {
+      c.set('owner' as never, { id: c.req.header('x-as') } as never);
+      await next();
+    });
+    mountSms(texts, { db, sql, secrets: {} as SecretAccess });
+    const read = (who: Person, id: string) =>
+      texts.request(`/connections/${id}/texts`, { headers: { 'x-as': who.id } });
+    const number = async (sharedUse: 'owner' | 'room') => {
+      const id = recordId('conn');
+      await sql`insert into connection (id, space_id, provider, label, scopes, shared_use)
+        values (${id}, ${roomId}, 'twilio', 'Phone', '[]'::jsonb, ${sharedUse})`;
+      return id;
+    };
+    const kept = await number('owner');
+    const shared = await number('room');
+    await ok(read(alice, kept));
+    await refused(read(kim, kept), 403, 'scope_denied');
+    await ok(read(kim, shared));
   });
 });
 
