@@ -88,6 +88,8 @@ import {
 import {
   addressIsLocal,
   agentRoutes,
+  isRouteModel,
+  type ModelChoice,
   type ModelRouting,
   NO_ROUTING,
   type PersonRoles,
@@ -96,6 +98,7 @@ import {
 } from './routing.ts';
 import type { GatewayProvider, GatewayRoutes, SignedInCredential } from './types.ts';
 import type { UsageClass } from './usage-class.ts';
+import type { WorkKind } from './work-routes.ts';
 
 export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
   anthropic: 'Anthropic',
@@ -309,26 +312,61 @@ export class ModelSettingsService {
    * Background work runs on the `background` role when one is filled: an
    * attempt nobody is waiting on, as its cause says (`jobs/wake-guard.ts`
    * `attemptCause`), the same reading that meters it as background.
+   *
+   * With routes per kind of work (MELETE_MODEL_ROUTES), an attempt that would
+   * otherwise run on the server's default runs on the route of the first of
+   * its kinds, in precedence order, whose provider is connected now; `route`
+   * names that kind. The owner's choice in the app always wins for agent
+   * turns, and a default on the owner's own machine keeps its turns.
    */
   async routedChoice(
     routing: ModelRouting,
     db: Runner = this.options.db,
     work?: AttemptWork,
-  ): Promise<{ provider: string; model: string; vision: boolean }> {
-    const background =
-      work?.usageClass === 'background'
-        ? (await this.routingFor(work.spaceId, routing, db)).background
-        : null;
-    if (background) {
-      const reads = effectiveVision(
-        background.provider,
-        background.model,
-        await this.visionSaid(background.provider, background.model, db),
-      );
-      return { ...background, vision: reads };
+  ): Promise<{ provider: string; model: string; vision: boolean; route?: WorkKind }> {
+    const shown = async (choice: ModelChoice) => ({
+      provider: choice.provider,
+      model: choice.model,
+      vision: effectiveVision(
+        choice.provider,
+        choice.model,
+        await this.visionSaid(choice.provider, choice.model, db),
+      ),
+    });
+    let inUse: Awaited<ReturnType<ModelSettingsService['active']>> | undefined;
+    const activeNow = async () => {
+      inUse ??= await this.active(await this.chosen(db), db);
+      return inUse;
+    };
+    if (work?.usageClass === 'background') {
+      const own = (await this.personRoles(work.spaceId, db)).background;
+      if (own) return shown(own);
+      const background = routing.background;
+      const routed = routing.work?.background?.[0];
+      const fromRoute = Boolean(background && routed && sameModel(background, routed));
+      const usable =
+        background &&
+        (!fromRoute ||
+          ((await this.connected(background.provider, await this.keyRows(db))) &&
+            // Like every route, it leaves a default on the owner's own machine its turns.
+            !(await this.servesLocally((await activeNow()).provider))));
+      if (background && usable)
+        return { ...(await shown(background)), ...(fromRoute ? { route: 'background' } : {}) };
     }
-    const { provider, model, vision } = await this.active(await this.chosen(db), db);
-    return { provider, model, vision };
+    const active = await activeNow();
+    const current = { provider: active.provider, model: active.model, vision: active.vision };
+    if (!routing.work || !work?.kinds || this.ownerChose(active)) return current;
+    if (await this.servesLocally(active.provider)) return current;
+    const kinds = await work.kinds(current);
+    const rows = await this.keyRows(db);
+    for (const kind of kinds) {
+      if (kind === 'background') continue;
+      const first = routing.work[kind]?.[0];
+      if (!first || !(await this.connected(first.provider, rows))) continue;
+      if (sameModel(first, current)) return { ...current, route: kind };
+      return { ...(await shown(first)), route: kind };
+    }
+    return current;
   }
 
   /**
@@ -346,16 +384,21 @@ export class ModelSettingsService {
    * The operator's alternatives for an attempt on this model: a vision model
    * for its pictures when it reads none, and fallbacks. None when the owner
    * chose the model in the app, except for background work on a secondary
-   * model, which keeps them.
+   * model, which keeps them. An attempt a route sent to its model is not the
+   * owner's choice: it keeps them too, its route's fallbacks first.
    */
   async attemptRoutes(
     routing: ModelRouting,
     primary: { provider: string; model: string; usageClass?: 'interactive' | 'background' },
   ): Promise<GatewayRoutes | undefined> {
-    const onSecondary =
-      primary.usageClass === 'background' &&
+    // The model in use is only read when the attempt may be on another one.
+    const routeModel = isRouteModel(routing, primary);
+    const notActive =
+      (primary.usageClass === 'background' || routeModel) &&
       !sameModel(primary, await this.active(await this.chosen()));
-    if (this.ownerChose(primary) && !onSecondary) return undefined;
+    const onSecondary = primary.usageClass === 'background' && notActive;
+    const routed = notActive && routeModel;
+    if (this.ownerChose(primary) && !onSecondary && !routed) return undefined;
     const owner = await this.visionSaid(primary.provider, primary.model);
     const readsImages = effectiveVision(
       primary.provider,
@@ -1125,7 +1168,15 @@ export class ModelSettingsService {
 export type ServiceModel = { provider: string; model: string };
 
 /** The attempt being claimed, as far as choosing its model needs it. */
-export type AttemptWork = { spaceId: string; usageClass: UsageClass };
+export type AttemptWork = {
+  spaceId: string;
+  usageClass: UsageClass;
+  /**
+   * The kinds of work the attempt is, in precedence order, read only when
+   * routes per kind apply to it. Given the model it would otherwise run on.
+   */
+  kinds?: (otherwise: ModelChoice) => Promise<readonly WorkKind[]>;
+};
 
 /**
  * The space a side call is about. It runs on the secondary of that space's

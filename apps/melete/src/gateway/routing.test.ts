@@ -486,6 +486,45 @@ describe('the price table', () => {
     ).toBeCloseTo(3.1, 6);
     expect(() => parseModelPrices('{"x": {"input": "cheap"}}')).toThrow('MELETE_MODEL_PRICES');
   });
+
+  test('a model that charges more for a long prompt is counted at that price past it', () => {
+    const table = new PriceTable();
+    const call = (inputTokens: number) =>
+      table.cost('anthropic', 'claude-haiku-5-5', {
+        inputTokens,
+        cachedInputTokens: 0,
+        outputTokens: 1_000_000,
+      });
+    // 100K input at $0.10 and a million output at $0.50.
+    expect(call(100_000)).toBeCloseTo(0.51, 6);
+    // Over 100K, both at five times: 200K at $0.50 and a million at $2.50.
+    expect(call(200_000)).toBeCloseTo(2.6, 6);
+    // Opus 5.5 at its own listed price, not the older Opus estimate.
+    expect(
+      table.cost('anthropic', 'claude-opus-5-5', {
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 1_000_000,
+      }),
+    ).toBeCloseTo(24, 6);
+    const operator = new PriceTable(
+      parseModelPrices(
+        '{"openai/x":{"input":1,"output":1,"long_prompt":{"over_tokens":10,"input":2,"output":2}}}',
+      ),
+    );
+    expect(
+      operator.cost('openai', 'x', { inputTokens: 11, cachedInputTokens: 0, outputTokens: 0 }),
+    ).toBeCloseTo(0.000022, 9);
+    // The charged input weighs a long call's cached part by the long prompt's own cached price.
+    const cachedLong = new PriceTable(
+      parseModelPrices(
+        '{"openai/y":{"input":1,"output":1,"cached_input":0.5,"long_prompt":{"over_tokens":10,"input":2,"output":2,"cached_input":0.2}}}',
+      ),
+    );
+    const usage = { inputTokens: 100, cachedInputTokens: 100, outputTokens: 0 };
+    expect(cachedLong.chargedInputTokens('openai', 'y', usage)).toBe(10);
+    expect(cachedLong.cost('openai', 'y', usage)).toBeCloseTo(0.00002, 9);
+  });
 });
 
 describe("a model on the owner's own machine keeps its calls", () => {
