@@ -235,6 +235,7 @@ import { mountSituations } from './situations/routes.ts';
 import { SituationService } from './situations/service.ts';
 import { startSmsReplies } from './sms/inbox.ts';
 import { mountSms } from './sms/routes.ts';
+import { mountSpacePolicy } from './spaces/policy.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
@@ -449,6 +450,8 @@ export function createApp(deps: AppDeps) {
   // non-GET under /spaces/:id runs before the handler that removes one.
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
+  // What work in a space may use, set by its owner or the setup owner.
+  if (deps.db) mountSpacePolicy(app, { db: deps.db });
   if (connections) mountConnections(app, connections);
   if (devices) mountDevices(app, devices, limits);
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);

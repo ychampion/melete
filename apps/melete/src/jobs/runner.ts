@@ -124,12 +124,14 @@ export type RunnerOptions = {
    * owner chooses in the app applies from the next attempt without a restart.
    * Left out, `provider` and `model` decide. It is given the job, whose
    * person may have moved scheduled work to their secondary model.
+   * `refused`, set, is the sentence that says no model the space's rules
+   * allow can be used: the attempt then ends on it instead of starting.
    */
   resolveModel?: (
     tx: Transaction,
     row: JobRow,
     usageClass: UsageClass,
-  ) => Promise<{ provider: string; model: string; vision?: boolean }>;
+  ) => Promise<{ provider: string; model: string; vision?: boolean; refused?: string }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
@@ -311,7 +313,7 @@ export class AttemptRunner {
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
-      const chosen: { provider: string; model: string; vision?: boolean } =
+      const chosen: { provider: string; model: string; vision?: boolean; refused?: string } =
         (await this.options.resolveModel?.(tx, row, cause.usageClass)) ?? {
           provider: this.options.provider ?? 'stub',
           model: this.options.model ?? 'script',
@@ -464,6 +466,17 @@ export class AttemptRunner {
           question: WAKE_GUARD_QUESTION,
         });
         await tellOnce(tx, row, WAKE_GUARD_QUESTION, `wake-guard:${row.id}:${attemptId}`);
+        return null;
+      }
+      // A space whose rules allow no model that can be used starts no engine
+      // either: the turn ends on the sentence that says so, as it would at a
+      // spending limit, rather than as a failure to run again.
+      if (chosen.refused) {
+        await unread();
+        await this.finish(tx, row, attemptId, {
+          kind: 'budget_exhausted',
+          summary: chosen.refused,
+        });
         return null;
       }
       // Past a spending limit no engine is started: the turn, routine run or

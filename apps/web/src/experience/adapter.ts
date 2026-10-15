@@ -129,6 +129,8 @@ import type {
   SpaceRemovalPreview,
   SpaceRemovalReport,
   SpaceRemovalStarted,
+  SpaceRulesChange,
+  SpaceRulesView,
   StreamGap,
   Task,
   TaskInput,
@@ -818,6 +820,11 @@ export const adapter = {
     ),
   /** Who is in the space this session uses. */
   spaceMembers: () => guard<SpaceMembers>(() => api.GET('/space/members')),
+  /** What work in a space may use: models, and kinds of app and tool kept out. */
+  spaceRules: (spaceId: string) =>
+    guard<SpaceRulesView>(() => api.GET('/spaces/{id}/policy', path(spaceId))),
+  setSpaceRules: (spaceId: string, rules: SpaceRulesChange) =>
+    guard<SpaceRulesView>(() => api.PUT('/spaces/{id}/policy', { ...path(spaceId), body: rules })),
   /** The space's owner removes someone from a shared space. */
   removeMember: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),

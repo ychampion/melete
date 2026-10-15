@@ -69,6 +69,13 @@ import { jobVisibleTo } from '../principals/authority.ts';
 import { mayDecide, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { SandboxRun, TrySandbox } from '../runs/try.ts';
 import { closedComputerStep } from '../sandbox/closed-step.ts';
+import {
+  connectorDenied,
+  connectorRefusal,
+  spaceRulesFor,
+  toolDenied,
+  toolRefusal,
+} from '../spaces/policy.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -611,6 +618,11 @@ export class BrokerService implements BrokerOperations {
       throw new BrokerFault('scope_denied');
     const tool = resolveToolAlias(connector, connectionId, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
+    // The space's rules refuse what they leave out, whatever the catalog offered.
+    const rules = await spaceRulesFor(tx, job.space_id);
+    if (connectorDenied(rules, String(connection.provider)))
+      throw new BrokerFault('scope_denied', connectorRefusal(String(connection.provider)));
+    if (toolDenied(rules, tool.name)) throw new BrokerFault('scope_denied', toolRefusal(tool.name));
     // An agent set not to use the computer is refused it here, whatever the catalog offered.
     if (!access.usesComputer && computerTool(tool.name)) throw new BrokerFault('scope_denied');
     const required = new Set([...tool.required_scopes, tool.name]);

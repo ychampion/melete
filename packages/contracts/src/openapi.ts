@@ -327,6 +327,8 @@ import {
 } from './situations.ts';
 import {
   deleteSpaceRequest,
+  spacePolicyResponse,
+  spacePolicyRules,
   spaceRemoval,
   spaceRemovalPreview,
   spaceRemovalReport,
@@ -2059,6 +2061,38 @@ export function buildOpenApiDocument() {
               '400': problem('The name does not match the space'),
               '403': problem('Space owner required, or no such space'),
               '409': problem('The browser worker uses this space'),
+            },
+          },
+        },
+        '/spaces/{id}/policy': {
+          get: {
+            tags: ['spaces'],
+            summary: 'What work in a space may use',
+            description:
+              'The models its work may run on and the kinds of connected app and tool it may ' +
+              'not use. Anyone the space admits may read them, and so may the setup owner. ' +
+              'Every list empty means nothing is restricted, which is the default.',
+            requestParams: idParam('id', 'Space id'),
+            responses: {
+              '200': jsonResponse('The rules', spacePolicyResponse),
+              '403': problem('No such space, or not one this person can see'),
+            },
+          },
+          put: {
+            tags: ['spaces'],
+            summary: 'Change what work in a space may use',
+            description:
+              "Set by the space's owner, or by the setup owner for any space. The lists given " +
+              'replace the ones there. A model outside `allowed_models` is not used: work falls ' +
+              'back to the first allowed model that is connected, or stops with a message saying ' +
+              'why. Denied connector and tool kinds are hidden from the agent and refused if ' +
+              'asked for, and a denied kind of connection cannot be installed.',
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(spacePolicyRules),
+            responses: {
+              '200': jsonResponse('The rules', spacePolicyResponse),
+              '400': problem('A model or kind is not written the way the rules need'),
+              '403': problem("Only the space's owner or the setup owner changes its rules"),
             },
           },
         },
