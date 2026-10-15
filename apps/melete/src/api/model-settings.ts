@@ -1,8 +1,8 @@
 /**
  * The installation's model, connected from the app. Any signed-in account can
- * see which model is active; only the setup owner can change a key or the
- * model, since both serve every space on the installation. The owner may also
- * set a secondary model, from the providers connected here, and which of the
+ * see which model is active; only the setup owner, or an account they made an
+ * admin, can change a key or the model, since both serve every space on the
+ * installation. The setup owner may also set a secondary model, from the providers connected here, and which of the
  * work in their spaces runs on it; each account reads only its own. No
  * response carries a key, and no request body is logged.
  */
@@ -20,6 +20,7 @@ import type { Context, Hono } from 'hono';
 import type { Database } from '../db/client.ts';
 import { owner } from '../db/schema.ts';
 import type { ModelSettingsService } from '../gateway/model-settings.ts';
+import { isAdmin } from '../principals/admin.ts';
 import { ServiceError } from './errors.ts';
 
 export function mountModelSettings(
@@ -28,21 +29,30 @@ export function mountModelSettings(
 ): void {
   const { db, settings } = deps;
 
-  async function isOwner(c: Context): Promise<boolean> {
-    const actor = c.get('owner')?.id;
-    if (!actor) return false;
-    const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
-    return installation?.id === actor;
-  }
+  /** The setup owner, or an admin: whoever may change the installation's keys and model. */
+  const mayEdit = (c: Context) => isAdmin(db, c.get('owner')?.id);
 
   async function requireOwner(c: Context): Promise<string> {
-    if (!(await isOwner(c)))
+    if (!(await mayEdit(c)))
       throw new ServiceError(
         'owner_required',
-        'Only the owner of this installation can change its model.',
+        'Only the owner of this installation, or an admin, can change its model.',
         403,
       );
     return c.get('owner')?.id as string;
+  }
+
+  /** The secondary model is the setup owner's own, so only they set it. */
+  async function requireSetupOwner(c: Context): Promise<string> {
+    const actor = c.get('owner')?.id;
+    const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
+    if (!actor || installation?.id !== actor)
+      throw new ServiceError(
+        'owner_required',
+        'Only the owner of this installation sets its secondary model.',
+        403,
+      );
+    return actor;
   }
 
   /** The signed-in account, for its own secondary model. */
@@ -52,7 +62,7 @@ export function mountModelSettings(
   };
 
   const view = async (c: Context) =>
-    c.json(modelSettingsResponse.parse(await settings.view(await isOwner(c), person(c))));
+    c.json(modelSettingsResponse.parse(await settings.view(await mayEdit(c), person(c))));
 
   app.get('/model-settings', view);
 
@@ -90,19 +100,19 @@ export function mountModelSettings(
   });
 
   app.put('/model-settings/secondary', async (c) => {
-    const principalId = await requireOwner(c);
+    const principalId = await requireSetupOwner(c);
     const input = setSecondaryModelRequest.parse(await c.req.json());
     await settings.setSecondary(principalId, input.provider, input.model);
     return view(c);
   });
 
   app.delete('/model-settings/secondary', async (c) => {
-    await settings.clearSecondary(await requireOwner(c));
+    await settings.clearSecondary(await requireSetupOwner(c));
     return view(c);
   });
 
   app.put('/model-settings/secondary/uses', async (c) => {
-    const principalId = await requireOwner(c);
+    const principalId = await requireSetupOwner(c);
     const input = setSecondaryUsesRequest.parse(await c.req.json());
     await settings.setSecondaryUses(principalId, input);
     return view(c);

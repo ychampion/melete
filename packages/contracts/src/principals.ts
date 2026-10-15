@@ -46,10 +46,23 @@ export const accountSummary = z.object({
   created_at: timestamp,
   /** The account that set Melete up, which manages the others and cannot be deleted. */
   setup_owner: z.boolean(),
+  /**
+   * Whether the account can provision accounts and choose the installation's
+   * model. Always true for the setup owner; anyone else holds it only when the
+   * setup owner gave it to them.
+   */
+  admin: z.boolean(),
   state: z.enum(['active', 'removing']),
 });
 export type AccountSummary = z.infer<typeof accountSummary>;
 export const accountList = z.object({ accounts: z.array(accountSummary) });
+
+/** The setup owner makes another person's account an admin, or takes that away. */
+export const updateAccountRequest = z.strictObject({ admin: z.boolean() });
+export type UpdateAccountRequest = z.infer<typeof updateAccountRequest>;
+export const accountAdminResponse = z.object({
+  account: z.object({ id: prefixedId(ID_PREFIXES.owner), admin: z.boolean() }),
+});
 
 /** What deleting an account takes with it, shown before anything is deleted. */
 export const accountRemovalPreview = z.object({

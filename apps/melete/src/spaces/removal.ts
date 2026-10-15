@@ -316,6 +316,14 @@ export class SpaceRemovalService {
       const access = await spaceAuthority(tx, spaceId, actor, true);
       if (access.role !== 'owner')
         throw new ServiceError('scope_denied', 'Space administration requires its owner.', 403);
+      // A room goes for everyone in it, so only the person who made it removes
+      // it; the owners they added manage it but do not end it.
+      if (access.space.kind === 'shared' && access.ownerId !== actor)
+        throw new ServiceError(
+          'scope_denied',
+          'Only the person who made this room can remove it.',
+          403,
+        );
 
       // The browser worker mounts this space's directory and keeps its profile
       // there; removing it would take the directory out from under a running
