@@ -72,6 +72,7 @@ import {
   modelVision,
   modelVisionReport,
   owner,
+  providerCredential,
   space,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -245,17 +246,30 @@ export class ModelSettingsService {
     return row ?? null;
   }
 
-  private async signedIn(provider: string): Promise<boolean> {
-    const signIn = this.options.signIn;
-    if (!signIn?.handles(provider)) return false;
-    return (await signIn.status(provider)).state === 'signed_in';
+  /**
+   * Whether the owner is signed in to this provider: its credential is there
+   * and still active, as the sign-in's own status says. Read through `db`, so
+   * an attempt's model is chosen inside its claim's transaction, which holds
+   * the event order lock, without waiting on the pool.
+   */
+  private async signedIn(provider: string, db: Runner = this.options.db): Promise<boolean> {
+    if (!this.options.signIn?.handles(provider)) return false;
+    const [row] = await db
+      .select({ status: providerCredential.status })
+      .from(providerCredential)
+      .where(eq(providerCredential.provider, provider));
+    return row?.status === 'active';
   }
 
   /** Whether a model call to this provider would carry a credential. */
-  private async connected(provider: string, rows: Map<string, KeyRow>): Promise<boolean> {
+  private async connected(
+    provider: string,
+    rows: Map<string, KeyRow>,
+    db: Runner = this.options.db,
+  ): Promise<boolean> {
     if (provider === 'fake') return this.env.MELETE_ENABLE_FAKE_PROVIDER;
     if (provider === CHATGPT_PROVIDER || this.operatorSignIn(provider))
-      return this.signedIn(provider);
+      return this.signedIn(provider, db);
     if (this.operatorKey(provider)) return true;
     return Boolean(this.usableRow(provider, rows));
   }
@@ -370,7 +384,7 @@ export class ModelSettingsService {
       return { provider: picked.provider, model: picked.model, allowed };
     const rows = await this.keyRows(db);
     for (const choice of allowedChoices(rules))
-      if (await this.connected(choice.provider, rows)) return { ...choice, allowed };
+      if (await this.connected(choice.provider, rows, db)) return { ...choice, allowed };
     return {
       provider: picked.provider,
       model: picked.model,
@@ -790,7 +804,7 @@ export class ModelSettingsService {
     if (!principalId || !(await this.isInstallationOwner(principalId, db))) return {};
     const row = await this.secondaryRow(principalId, db);
     if (!row?.provider || !row.model) return {};
-    if (!(await this.connected(row.provider, await this.keyRows(db)))) return {};
+    if (!(await this.connected(row.provider, await this.keyRows(db), db))) return {};
     const choice = { provider: row.provider, model: row.model };
     return {
       ...(row.sideTasks === 'secondary' ? { fast: choice } : {}),
