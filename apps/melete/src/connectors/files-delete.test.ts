@@ -41,8 +41,15 @@ const connector = () =>
     spacesRoot: path.join(root, 'spaces'),
   });
 
-/** A transaction that answers every query with these action rows. */
-const recorded = (rows: unknown[] = []) => (async () => rows) as unknown as Query;
+/**
+ * A transaction that answers every query with these action rows, and says the
+ * job is in a space of the person's own when asked (shared-files.ts).
+ */
+const recorded = (rows: unknown[] = []) =>
+  (async (strings: TemplateStringsArray) =>
+    strings.join('').includes('space_kind')
+      ? [{ space_kind: 'personal' }]
+      : rows) as unknown as Query;
 
 const ctx = {
   job_id: 'job_01',

@@ -61,7 +61,7 @@ export const MAX_SERVED_BYTES = 256 * 1024 * 1024;
 const CHUNK = 64 * 1024;
 
 /** A stored file opened for reading, with the size it had when opened. */
-type Opened = { handle: FileHandle; size: number };
+export type Opened = { handle: FileHandle; size: number };
 
 export async function openArtifact(
   roots: ArtifactRoots,
@@ -95,7 +95,7 @@ type Expected = { size: number | null; hash: string; max: number };
  * any read; its digest is then taken a chunk at a time, never the whole file in
  * memory, and reading stops once it passes the size it had when opened.
  */
-async function matches(opened: Opened, expected: Expected): Promise<boolean> {
+export async function matches(opened: Opened, expected: Expected): Promise<boolean> {
   if (opened.size > expected.max || (expected.size !== null && opened.size !== expected.size))
     return false;
   const digest = createHash('sha256');
