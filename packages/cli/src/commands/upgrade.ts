@@ -4,12 +4,14 @@
  * target release's own deploy/scripts/upgrade.ts out of its tag into a
  * temporary directory and runs that copy, the procedure in docs/UPGRADING.md,
  * with every overlay file and profile deploy/melete.deploy.json names, under the
- * deployment lock, and records the run in deploy/.melete/history.jsonl. An
+ * deployment lock, and records the run in deploy/.melete/history.jsonl. Its
+ * backup goes in the contract's backup.dir, where `melete backup` puts this
+ * installation's backups, unless `--backup-dir` names another folder. An
  * installation that runs published images updates with `melete deploy` instead.
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
 import type { Context } from '../context.ts';
 import { DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
@@ -17,6 +19,7 @@ import { appendHistory } from '../history.ts';
 import { envImageTag, readInstallation } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
+import { expandHome } from './backup.ts';
 import { journalCount } from './deploy.ts';
 
 export const UPGRADE_USAGE =
@@ -81,12 +84,15 @@ export async function runUpgrade(context: Context, args: readonly string[]): Pro
     context.err(`${release.problem}\n`);
     return EXIT.refused;
   }
+  // The upgrade's backup goes where this installation's backups go.
+  const backupDir = expandHome(config.backup.dir);
   const command = [
     process.execPath,
     join(release.directory, 'deploy', 'scripts', 'upgrade.ts'),
     ...args,
     '--repository',
     context.root,
+    ...(args.includes('--backup-dir') || !isAbsolute(backupDir) ? [] : ['--backup-dir', backupDir]),
     ...upgradeOverlayArguments(config),
   ];
   const run = async () => {

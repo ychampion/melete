@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import {
   composeArguments,
@@ -135,6 +135,8 @@ describe('melete upgrade', () => {
       '--dry-run',
       '--repository',
       context.root,
+      '--backup-dir',
+      join(homedir(), 'melete-backups'),
       '--browser',
       '--tailscale',
       '--tailscale-kernel',
@@ -147,6 +149,29 @@ describe('melete upgrade', () => {
     expect(archive).toContain('refs/tags/v1.0.0');
     // The copy is removed once the upgrade has run.
     expect(existsSync(release())).toBe(false);
+  });
+
+  test("the backup goes in the installation's backup folder, unless --backup-dir names one", async () => {
+    const backupDir = async (value: object, args: string[] = []) => {
+      const { context } = rig(value, [
+        ['git -C', ok('')],
+        ['tar -x', ok('')],
+      ]);
+      expect(await runUpgrade(context, ['v1.0.0', '--dry-run', ...args])).toBe(0);
+      const command = context.attached[0] ?? [];
+      return command.flatMap((arg, index) => (arg === '--backup-dir' ? [command[index + 1]] : []));
+    };
+    // A second installation's own folder, as melete backup and melete init have it.
+    expect(await backupDir({ project: 'assistant' })).toEqual([
+      join(homedir(), 'melete-backups', 'assistant'),
+    ]);
+    // A contract that names the folder keeps it, as an older installation's contract does.
+    expect(
+      await backupDir({ project: 'assistant', backup: { dir: '~/melete-backups', keep: 3 } }),
+    ).toEqual([join(homedir(), 'melete-backups')]);
+    expect(await backupDir({ project: 'assistant' }, ['--backup-dir', '/mnt/b'])).toEqual([
+      '/mnt/b',
+    ]);
   });
 
   test('a tag this clone lacks is fetched, and one that still is not there is refused', async () => {
