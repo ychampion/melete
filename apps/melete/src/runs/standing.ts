@@ -21,10 +21,11 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, gt, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { connection, event, experienceProfile, trigger } from '../db/schema.ts';
+import { connection, event, experienceProfile, runState, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { workZone } from '../jobs/local-now.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import {
@@ -67,6 +68,19 @@ async function profileZone(tx: Transaction, spaceId: string): Promise<string> {
   return profile?.zone ?? 'UTC';
 }
 
+/**
+ * The zone a schedule named without one runs in: the zone the work was told
+ * it is in, which before the person confirms theirs is their device's, read
+ * from the conversation the work was set up from.
+ */
+async function defaultZone(tx: Transaction, row: JobRow): Promise<string> {
+  const [run] = await tx
+    .select({ conversationId: runState.conversationId })
+    .from(runState)
+    .where(eq(runState.jobId, row.id));
+  return workZone(tx, row, run?.conversationId);
+}
+
 async function latestSeq(tx: Transaction): Promise<number> {
   const [latest] = await tx
     .select({ seq: sql<number>`coalesce(max(${event.seq}), 0)::bigint` })
@@ -95,7 +109,7 @@ export async function stand(
           ...(wake.rrule === undefined
             ? { cron: wake.cron }
             : { rrule: wake.rrule, starts: wake.starts }),
-          timezone: wake.timezone ?? (await profileZone(tx, row.spaceId)),
+          timezone: wake.timezone ?? (await defaultZone(tx, row)),
         })
       : triggerSpec.parse(wake);
   checkTriggerSpec(jobs, spec);
