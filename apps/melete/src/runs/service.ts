@@ -2579,9 +2579,7 @@ export class RunService {
     if (this.watching) return;
     this.watching = setInterval(() => {
       void this.watch(capacity).catch((error: unknown) =>
-        process.stderr.write(
-          `run watchdog failed: ${error instanceof Error ? error.message : 'error'}\n`,
-        ),
+        process.stderr.write(`run watchdog failed: ${failureMessage(error)}\n`),
       );
     }, WATCH_EVERY_MS);
     this.watching.unref?.();

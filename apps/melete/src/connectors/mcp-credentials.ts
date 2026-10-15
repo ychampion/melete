@@ -2,19 +2,37 @@ import type { Row, Sql } from 'postgres';
 import { z } from 'zod';
 import { ConnectorFaultError } from './faults.ts';
 import { jsonDepthWithin } from './mcp-transport.ts';
+import { type PrivateHosts, privateHostListed, privateHostsFromEnv } from './private-hosts.ts';
 import type { SealedSecretStore } from './secrets.ts';
 
-/** Credentials only travel over TLS, except an explicit loopback fixture endpoint. */
-export const mcpCredentialUrl = z.url().refine((value) => {
-  const url = new URL(value);
+/**
+ * Whether a token may be sent to this address: over TLS, or over plain http to
+ * this machine or to an internal host the operator listed in
+ * MELETE_PRIVATE_HOSTS, whose network they vouch for.
+ */
+export function tokenMayTravel(
+  value: string,
+  privateHosts: PrivateHosts = privateHostsFromEnv(),
+): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
   return (
     !url.username &&
     !url.password &&
     !url.hash &&
     (url.protocol === 'https:' ||
-      (url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)))
+      (url.protocol === 'http:' &&
+        (['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname) ||
+          privateHostListed(url.hostname, privateHosts))))
   );
-});
+}
+
+/** Credentials only travel over TLS, except to loopback or a listed internal host. */
+export const mcpCredentialUrl = z.url().refine((value) => tokenMayTravel(value));
 
 export const mcpCredentials = z
   .object({
