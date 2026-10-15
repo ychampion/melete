@@ -738,6 +738,35 @@ withDb('standing work', () => {
     expect(Date.parse(required(standing?.next_wake_at))).toBeGreaterThan(Date.now());
     expect((await request(`/runs/${run_id}/stop`, 'POST')).status).toBe(200);
 
+    // What a cron cannot say goes as a calendar rule, read in the person's zone.
+    const fortnightly = await call({
+      goal: 'Check the account on payday',
+      title: 'payday',
+      repeat: { rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR', starts: '2026-10-16T09:00' },
+    });
+    expect(fortnightly.status).toBe(200);
+    const payday = ((await fortnightly.json()) as { run_id: string }).run_id;
+    expect((await triggerOf(payday)).spec).toEqual({
+      kind: 'schedule',
+      rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR',
+      starts: '2026-10-16T09:00',
+      timezone: 'America/Los_Angeles',
+    });
+    const paydayStanding = (await view(payday)).standing;
+    expect(paydayStanding).toMatchObject({
+      kind: 'schedule',
+      description: 'Every other Friday at 9:00',
+    });
+    // The next wake is a Friday at 9:00 in Los Angeles, a whole number of fortnights on.
+    const nextPayday = Date.parse(required(paydayStanding?.next_wake_at));
+    expect(nextPayday).toBeGreaterThan(Date.now());
+    const fortnights = (nextPayday - Date.parse('2026-10-16T16:00:00Z')) / (14 * 86_400_000);
+    expect(Math.abs(fortnights - Math.round(fortnights))).toBeLessThan(0.01);
+    expect((await request(`/runs/${payday}/stop`, 'POST')).status).toBe(200);
+    expect(await refusal({ goal, repeat: { rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR' } })).toContain(
+      'repeat.starts',
+    );
+
     // A zone the model names is kept.
     const named = await call({
       goal,
@@ -762,6 +791,61 @@ withDb('standing work', () => {
     expect(await refusal({ goal, repeat: { cron: '0 9 * * 1', every: 'week' } })).toContain(
       'repeat: Unrecognized key: "every"',
     );
+  });
+  test('a schedule given no zone runs in the zone the conversation was told, until the person confirms theirs', async () => {
+    // The profile's zone is Los Angeles but not yet confirmed; the person
+    // writes from a phone in Kolkata, so the model was told Kolkata time.
+    const startFromKolkata = async () => {
+      const chat = await required(jobs).transaction(async (tx) => {
+        const created = await required(jobs).createInTransaction(
+          tx,
+          { space_id: spaceId, title: 'Payday', objective: 'Payday' },
+          { kind: 'chat' },
+        );
+        return required(jobs).inputInTransaction(
+          tx,
+          created.id,
+          'Every other Friday at 9, check my account',
+          undefined,
+          [],
+          [],
+          'Asia/Kolkata',
+        );
+      });
+      const turn = await claim(chat.id);
+      const started = (await tool(turn.claims, 'run.start', {
+        goal: 'Check the account on payday',
+        repeat: { rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=FR', starts: '2026-10-16T09:00' },
+      })) as { run_id: string };
+      return started.run_id;
+    };
+
+    const guessed = await startFromKolkata();
+    expect((await triggerOf(guessed)).spec).toMatchObject({ timezone: 'Asia/Kolkata' });
+    // It is not the profile's zone, so the person sees which one it is.
+    expect((await view(guessed)).standing?.description).toBe(
+      'Every other Friday at 9:00 (Asia/Kolkata)',
+    );
+    expect((await request(`/runs/${guessed}/stop`, 'POST')).status).toBe(200);
+
+    // Once the person confirms their zone, it wins over the device's.
+    await required(handle)
+      .db.update(experienceProfile)
+      .set({ timeZoneConfirmedAt: new Date() })
+      .where(eq(experienceProfile.spaceId, spaceId));
+    try {
+      const confirmed = await startFromKolkata();
+      expect((await triggerOf(confirmed)).spec).toMatchObject({
+        timezone: 'America/Los_Angeles',
+      });
+      expect((await view(confirmed)).standing?.description).toBe('Every other Friday at 9:00');
+      expect((await request(`/runs/${confirmed}/stop`, 'POST')).status).toBe(200);
+    } finally {
+      await required(handle)
+        .db.update(experienceProfile)
+        .set({ timeZoneConfirmedAt: null })
+        .where(eq(experienceProfile.spaceId, spaceId));
+    }
   });
   test('a conversation finds, pauses, resumes and stops the person’s own routine, and no one else’s', async () => {
     const broker = new BrokerService({

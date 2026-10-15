@@ -49,6 +49,13 @@ export type EmbeddingProvider = {
 };
 /** How many texts one embedding request carries. */
 export const EMBED_BATCH = 64;
+/** How many index rows one statement writes. */
+const INDEX_INSERT_BATCH = 500;
+/**
+ * How many times one pass builds a space's index again when a newer fact was
+ * committed while it was being built. Each try reads the facts afresh.
+ */
+export const STALE_BUILD_TRIES = 3;
 export type IndexableRevision = {
   claim_id: string;
   revision: number;
@@ -166,6 +173,7 @@ async function vectorsFor(
   scope: MemoryScope,
   rows: IndexableRevision[],
   embedding: EmbeddingProvider,
+  earlier?: EarlierVectors,
 ): Promise<{ vectors: Map<string, number[]>; partial: boolean }> {
   if (
     !Number.isInteger(embedding.dimensions) ||
@@ -178,7 +186,7 @@ async function vectorsFor(
   const missing: IndexableRevision[] = [];
   for (const row of rows) {
     const key = `${row.claim_id}:${row.revision}`;
-    const vector = kept.get(key);
+    const vector = kept.get(key) ?? earlier?.vectors.get(`${earlier.policy}|${key}`);
     if (vector) vectors.set(key, vector);
     else if (embedding.local || !row.private) missing.push(row);
   }
@@ -223,22 +231,31 @@ async function vectorsFor(
       const vector = made[i] ?? [];
       validateVector(vector, embedding.dimensions);
       vectors.set(`${row.claim_id}:${row.revision}`, vector);
+      earlier?.vectors.set(`${earlier.policy}|${row.claim_id}:${row.revision}`, vector);
     });
   }
   return { vectors, partial };
 }
+/**
+ * Vectors made by an earlier build that was overtaken before it could keep
+ * them, so the build after it does not send the same facts to be embedded
+ * again. Only reused while the space's privacy and access are as they were.
+ */
+type EarlierVectors = { policy: string; vectors: Map<string, number[]> };
 /** Embedding work is outside the transaction. The manifest moves only after a fresh validation. */
 export async function buildViews(
   sql: MemorySql,
   scope: MemoryScope,
   embedding?: EmbeddingProvider,
+  made?: Map<string, number[]>,
 ): Promise<IndexManifest> {
   const snapshot = await sql.begin(async (tx) => {
     const space = await lockSpace(tx, scope);
     return { generation: generation(space), rows: await indexableRows(tx, scope) };
   });
+  const policy = `${snapshot.generation.policy_generation}:${snapshot.generation.access_generation}`;
   const { vectors, partial } = embedding
-    ? await vectorsFor(sql, scope, snapshot.rows, embedding)
+    ? await vectorsFor(sql, scope, snapshot.rows, embedding, made && { policy, vectors: made })
     : { vectors: new Map<string, number[]>(), partial: false };
   return sql.begin(async (tx) => {
     const space = await lockSpace(tx, scope);
@@ -251,15 +268,26 @@ export async function buildViews(
     const [old] =
       await tx`select * from memory_index_manifest where space_id = ${scope.spaceId} for update`;
     const nextGeneration = (old?.generation ?? 0) + 1;
-    for (let i = 0; i < snapshot.rows.length; i++) {
-      const row = snapshot.rows[i];
-      if (!row) continue;
+    // A few statements per rebuild rather than one or two per claim: the space
+    // stays locked while they run, and a fact is not recalled until they have.
+    for (let start = 0; start < snapshot.rows.length; start += INDEX_INSERT_BATCH) {
+      const rows = snapshot.rows.slice(start, start + INDEX_INSERT_BATCH);
       await tx`insert into memory_index_entries (space_id, generation, claim_id, revision, tokens)
-        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, to_tsvector('simple', ${row.text}))`;
-      const vector = vectors.get(`${row.claim_id}:${row.revision}`);
-      if (embedding && vector)
+        select ${scope.spaceId}, ${nextGeneration}, row.claim_id, row.revision, to_tsvector('simple', row.text)
+        from unnest(${rows.map((row) => row.claim_id)}::text[], ${rows.map((row) => row.revision)}::integer[],
+          ${rows.map((row) => row.text)}::text[]) as row(claim_id, revision, text)`;
+      const dense = embedding
+        ? rows.flatMap((row) => {
+            const vector = vectors.get(`${row.claim_id}:${row.revision}`);
+            return vector ? [{ row, vector: JSON.stringify(encodeVector(vector)) }] : [];
+          })
+        : [];
+      if (embedding && dense.length)
         await tx`insert into memory_dense_entries (space_id, generation, claim_id, revision, model, version, dimensions, recipe, vector)
-        values (${scope.spaceId}, ${nextGeneration}, ${row.claim_id}, ${row.revision}, ${embedding.model}, ${embedding.version}, ${embedding.dimensions}, ${embedding.recipe}, ${JSON.stringify(encodeVector(vector))}::text::jsonb)`;
+          select ${scope.spaceId}, ${nextGeneration}, entry.claim_id, entry.revision, ${embedding.model}, ${embedding.version},
+            ${embedding.dimensions}, ${embedding.recipe}, entry.vector::jsonb
+          from unnest(${dense.map((entry) => entry.row.claim_id)}::text[], ${dense.map((entry) => entry.row.revision)}::integer[],
+            ${dense.map((entry) => entry.vector)}::text[]) as entry(claim_id, revision, vector)`;
     }
     const embeddingInfo = embedding
       ? { model: embedding.model, version: embedding.version, dimensions: embedding.dimensions }
@@ -296,11 +324,24 @@ export async function runViewWork(
   const [pending] =
     await sql`select id from memory_outbox where space_id = ${scope.spaceId} and kind = 'index' and completed_at is null limit 1`;
   if (!pending) return false;
-  try {
-    await buildViews(sql, scope, embedding);
-    return true;
-  } catch (error) {
-    await sql`update memory_outbox set failures = failures + 1, error_code = 'index_build_failed' where id = ${pending.id}`;
-    throw error;
+  // A fact committed while the index was built (a chat is often still saying
+  // things) leaves the build behind it. That is not a failure: the build reads
+  // the facts again at once, rather than the space waiting out a failure's
+  // pause before what was just said can be recalled. Still behind after a few
+  // tries, the index stays pending for the next pass, uncounted. What one try
+  // embedded is kept for the next, so only facts new since then are sent.
+  const made = new Map<string, number[]>();
+  for (let tries = 1; ; tries++) {
+    try {
+      await buildViews(sql, scope, embedding, made);
+      return true;
+    } catch (error) {
+      if (error instanceof MemoryError && error.code === 'stale_index_build') {
+        if (tries < STALE_BUILD_TRIES) continue;
+        return true;
+      }
+      await sql`update memory_outbox set failures = failures + 1, error_code = 'index_build_failed' where id = ${pending.id}`;
+      throw error;
+    }
   }
 }

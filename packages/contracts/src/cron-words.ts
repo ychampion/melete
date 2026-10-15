@@ -3,6 +3,8 @@
  * standing work.
  */
 
+import { recurrenceWords, type ScheduleTiming, scheduleRecurrence } from './recurrence.ts';
+
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 const listWords = (items: string[]) =>
@@ -83,4 +85,21 @@ export function cronWords(cron: string): string {
     return `On the ${listWords(dates.map(ordinal))} of every month ${times}`;
   }
   return fallback;
+}
+
+/**
+ * A schedule in plain words, whether a cron or a calendar rule says when.
+ * `clock: '12h'` says a rule's time as "9:00 AM", for pages that do.
+ */
+export function scheduleWords(
+  timing: ScheduleTiming,
+  options: { clock?: '24h' | '12h' } = {},
+): string {
+  if (timing.rrule !== undefined) {
+    const read = scheduleRecurrence(timing);
+    return read
+      ? recurrenceWords(read.rule, read.start, { zone: timing.timezone, clock: options.clock })
+      : 'On a set schedule';
+  }
+  return cronWords(timing.cron ?? '');
 }

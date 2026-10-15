@@ -5,6 +5,7 @@ import {
   type SpaceGeneration,
 } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
+import { personLabel } from '../rooms/transcript.ts';
 import { type ClaimHead, eligibleRevision, getHead } from './claims.ts';
 import {
   generation,
@@ -50,6 +51,11 @@ export type ExtractionBatch = {
   source_job_id: string | null;
   /** Why the source was private when it was captured, or null. */
   private_origin: string | null;
+  /**
+   * Who said it, as the room names them, when it was said in a room: "I" in
+   * those words is that person, not whoever owns the room. Null elsewhere.
+   */
+  speaker?: string | null;
 };
 function toWork(row: Record<string, unknown>): MemoryWork {
   return memoryWork.parse({
@@ -99,6 +105,19 @@ export async function claimWork(
     // words: one member's detail is never taken for, changed into, or merged
     // with another's, however alike they are.
     const author = (evidence.author_principal_id as string | null) ?? null;
+    const [said] = author
+      ? await tx`select id, display_name, email from principal where id = ${author}`
+      : [];
+    const speaker = said
+      ? personLabel(
+          {
+            id: String(said.id),
+            displayName: (said.display_name as string | null) ?? null,
+            email: String(said.email),
+          },
+          scope.spaceId,
+        )
+      : null;
     // The claims this evidence is most likely about come first, so an update to
     // something said weeks ago can name the claim it replaces; the newest fill
     // the rest of the snapshot.
@@ -169,6 +188,7 @@ export async function claimWork(
       time_zone: (evidence.time_zone as string | null) ?? null,
       source_job_id: capture?.job_id ? String(capture.job_id) : null,
       private_origin: privateOrigin,
+      speaker,
     };
   });
 }

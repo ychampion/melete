@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
@@ -7,7 +7,7 @@ import { parseRecord, serializeRecord } from './frontmatter.ts';
 import { query, SpaceIndex, toMatchQuery } from './fts.ts';
 import { recordPath, resolveInSpace, slugify, type spacePaths } from './layout.ts';
 import { renderUnifiedDiff } from './mediation.ts';
-import { buildIndex, ensureSpaceDirs, loadSpace } from './store.ts';
+import { buildIndex, ensureSpaceDirs, loadRecords, loadSpace } from './store.ts';
 
 const ID = {
   bun: 'k_01J8ZP3QWABCDEFGHJKMNPQRST',
@@ -180,6 +180,36 @@ describe('loading a space', () => {
     expect(contents.records).toHaveLength(3);
     expect(contents.failures).toHaveLength(1);
     expect(contents.failures[0]?.path).toBe('knowledge/broken.md');
+    rmSync(bad);
+  });
+
+  test('a search reads only the records it found, as loading the whole space would', () => {
+    const read: string[] = [];
+    const records = loadRecords(
+      paths,
+      [
+        'knowledge/landlord-contact.md',
+        'knowledge/prefers-bun.md',
+        'knowledge/landlord-contact.md',
+        'knowledge/gone.md',
+        '../outside.md',
+        'SCHEMA.md',
+      ],
+      (file) => {
+        read.push(file);
+        return readFileSync(file, 'utf8');
+      },
+    );
+    expect(records.map((record) => record.frontmatter.id)).toEqual([ID.landlord, ID.bun]);
+    expect(read).toHaveLength(2);
+    const whole = loadSpace(paths).records.find((record) => record.frontmatter.id === ID.landlord);
+    expect(records[0]).toEqual(whole as (typeof records)[number]);
+  });
+
+  test('a record that does not validate is left out of a search too', () => {
+    const bad = join(paths.knowledge, 'broken.md');
+    writeFileSync(bad, '---\nnot: a record\n---\nbody\n', 'utf8');
+    expect(loadRecords(paths, ['knowledge/broken.md'])).toEqual([]);
     rmSync(bad);
   });
 });
@@ -491,6 +521,16 @@ describeSymlinks('a symlink is a path that lies about where it goes', () => {
   test('a record that is really a link into another space is not read', () => {
     symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
     expect(loadSpace(mine).records).toEqual([]);
+  });
+
+  test('nor read when a search names it', () => {
+    symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
+    expect(loadRecords(mine, ['knowledge/borrowed.md'])).toEqual([]);
+  });
+
+  test('nor a record reached through a linked directory', () => {
+    symlinkSync(theirs.knowledge, join(mine.knowledge, 'borrowed-dir'));
+    expect(loadRecords(mine, ['knowledge/borrowed-dir/private.md'])).toEqual([]);
   });
 
   test('and never reaches the index, so a search cannot find it', () => {

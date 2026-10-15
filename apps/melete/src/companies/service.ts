@@ -22,7 +22,7 @@ import type { GatewayOptions } from '../gateway/index.ts';
 import {
   type ModelSettingsService,
   type ServiceModel,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { providerKeyVariables } from '../gateway/providers.ts';
 import { routingFromEnv } from '../gateway/routing.ts';
@@ -169,7 +169,7 @@ export function configuredExtractor(
     });
   }
   // Reading a message for companies is a short extraction: the fast model when there is one.
-  const source = serviceModelSource({ env, settings, fast: routingFromEnv(env).fast });
+  const source = sideCallSource('companies', { env, settings, routing: routingFromEnv(env) });
   const scripted = scriptedExtractor();
   const configured = providers();
   const live = async (): Promise<ServiceModel | null> => {

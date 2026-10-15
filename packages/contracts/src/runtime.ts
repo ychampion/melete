@@ -268,7 +268,9 @@ export type RegisteredTrigger = z.infer<typeof registeredTrigger>;
 export function describeTrigger(spec: TriggerSpec): string {
   switch (spec.kind) {
     case 'schedule':
-      return `fires on the schedule "${spec.cron}" (${spec.timezone})`;
+      return spec.rrule !== undefined
+        ? `fires on the rule "${spec.rrule}" from ${spec.starts} (${spec.timezone})`
+        : `fires on the schedule "${spec.cron}" (${spec.timezone})`;
     case 'event':
       return `fires on each ${spec.event_name} event from ${spec.connection_id}`;
     case 'watch':

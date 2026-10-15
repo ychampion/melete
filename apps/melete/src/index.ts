@@ -11,7 +11,7 @@
  * model traffic on its own internal port.
  */
 
-import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
+import type { AttemptBundle, QuestioningRuntimeAdapter, RuntimeAdapter } from '@melete/contracts';
 import { brokerCatalogState } from '@melete/runtime-hermes';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -201,6 +201,7 @@ import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
+import { requestFailureText } from './request-failure.ts';
 import { mountMultiplayerGate, multiplayerEnabled } from './rooms/preview.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
@@ -209,6 +210,7 @@ import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi, endpointName } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
 import { type AttemptTiming, SupervisedHermesRuntime } from './runtime/hermes.ts';
+import { withPreparedEngine } from './runtime/prepare.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 import {
   DockerRuntimeSupervisor,
@@ -353,7 +355,7 @@ export function createApp(deps: AppDeps) {
         { error: { code: 'invalid_request', message: 'Request data is invalid.' } },
         400,
       );
-    process.stderr.write(`request failed: ${error.message}\n`);
+    process.stderr.write(`request failed: ${requestFailureText(error)}\n`);
     return c.json(
       { error: { code: 'internal_error', message: 'The request could not be completed.' } },
       500,
@@ -368,6 +370,15 @@ export function createApp(deps: AppDeps) {
   // before sign-in, so an invite link and a guest's session meet the same answer.
   const multiplayer = multiplayerEnabled(deps.env);
   mountMultiplayerGate(app, multiplayer);
+  // No name, address, id or search holds a NUL, and the database refuses one in
+  // any text it is given: a query that carries one is refused here, for every
+  // route, as invalid request data, never answered with a server error.
+  app.use('*', async (c, next) => {
+    for (const [name, value] of new URL(c.req.url).searchParams)
+      if (name.includes('\u0000') || value.includes('\u0000'))
+        throw new ServiceError('invalid_request', 'Request data is invalid.', 400);
+    return next();
+  });
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -1477,14 +1488,14 @@ export async function bootstrap(
       const boundaryForCatalog = effectBoundary;
       // How the model an attempt runs on is reached, for the privacy checks before it starts.
       const engineOf = attemptEngine(env, modelSettings);
-      // A container engine is got ready while the attempt's memory is recalled.
+      // A container engine is got ready as soon as an attempt reaches the
+      // runtime: while its privacy is checked, a long conversation summarised,
+      // and its memory recalled.
       const engines = supervisedRuntime;
-      const prepareEngine = engines
-        ? {
-            prepareEngine: (bundle: AttemptBundle, signal: AbortSignal) =>
-              engines.prepare(bundle, signal),
-          }
-        : {};
+      const preparing = <T extends RuntimeAdapter | QuestioningRuntimeAdapter>(runtime: T): T =>
+        engines
+          ? withPreparedEngine(runtime, (bundle, signal) => engines.prepare(bundle, signal))
+          : runtime;
       const contextualRuntime =
         deploymentMemory && handle
           ? withDeploymentContext(observed, {
@@ -1492,12 +1503,10 @@ export async function bootstrap(
               spaces: databaseSpaces(handle.db, env.MELETE_SPACES_DIR),
               scopeForJob: deploymentMemory.scopeForJob,
               ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
-              ...prepareEngine,
             })
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
                 ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
-                ...prepareEngine,
                 // Private memory is recalled only into attempts that stay on the person's own model.
                 // Judged by the model the attempt runs on, which may not be the server's default.
                 recallsPrivateMemory: async (jobId, attemptId, model) =>
@@ -1547,7 +1556,7 @@ export async function bootstrap(
         engineFor: engineOf,
         onError: (error) => process.stderr.write(`privacy gate: ${error.message}\n`),
       });
-      runner = new AttemptRunner(jobs, gatedRuntime, {
+      runner = new AttemptRunner(jobs, preparing(gatedRuntime), {
         key: env.MELETE_CAPABILITY_KEY,
         concurrency: env.MELETE_ATTEMPT_CONCURRENCY,
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
@@ -1648,7 +1657,7 @@ export async function bootstrap(
         spending,
         events,
       );
-      evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
+      evaluator = new ProcedureEvaluator(jobs, preparing(contextualRuntime), runner.options);
       triggers = new TriggerService(jobs, runner);
       if (runs) runs.triggers = triggers;
       // What Melete notices on its own: the built-in detectors read each

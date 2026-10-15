@@ -148,6 +148,44 @@ export function sharedKnowledgeNote(sharedBy: string) {
   return `Shared into this room by ${JSON.stringify(sharedBy)} from their own memory.`;
 }
 
+/** A detail of the room's own memory as the agent reads it: whose words it rests on. */
+export function saidInRoomNote(saidBy: readonly string[]) {
+  return `Said in this room by ${saidBy.map((name) => JSON.stringify(name)).join(', ')}.`;
+}
+
+/**
+ * Who in the room said the words each recalled detail's current value rests
+ * on, by claim and revision. Only what people said in a room has a speaker,
+ * so details from anywhere else get none.
+ */
+async function roomSpeakers(
+  sql: MemorySql,
+  scope: MemoryScope,
+  items: readonly RecallItem[],
+): Promise<Map<string, string[]>> {
+  const speakers = new Map<string, string[]>();
+  if (!items.length) return speakers;
+  const rows = await sql`select distinct ref.claim_id, ref.revision, p.id, p.display_name, p.email
+    from memory_references ref
+    join memory_sources s on s.id = ref.source_id
+    join principal p on p.id = s.author_principal_id
+    where s.space_id = ${scope.spaceId} and ref.claim_id = any(${items.map((item) => item.claim_id)})
+    order by ref.claim_id, ref.revision, p.id`;
+  for (const row of rows) {
+    const key = `${row.claim_id}@${row.revision}`;
+    const label = personLabel(
+      {
+        id: String(row.id),
+        displayName: (row.display_name as string | null) ?? null,
+        email: String(row.email),
+      },
+      scope.spaceId,
+    );
+    speakers.set(key, [...(speakers.get(key) ?? []), label]);
+  }
+  return speakers;
+}
+
 /**
  * Share one of a person's own saved details into a room they are in. The
  * detail must be in their personal space and remembered now. Sharing the same
@@ -256,9 +294,10 @@ export async function roomShares(
 
 /**
  * A recall, with the details shared into the room added after what the room
- * itself remembers: the knowledge the attempt is handed, each shared detail
- * saying whose it is, and the recall the attempt's context record lists, so
- * forgetting a shared detail invalidates the attempt that holds it.
+ * itself remembers: the knowledge the attempt is handed, each detail the room
+ * remembers saying who said it there and each shared detail whose it is, and
+ * the recall the attempt's context record lists, so forgetting a shared
+ * detail invalidates the attempt that holds it.
  */
 export async function withSharedItems(
   sql: MemorySql,
@@ -267,12 +306,20 @@ export async function withSharedItems(
   result: RecallResult,
 ): Promise<{ recall: RecallResult; knowledge: KnowledgeExcerpt[] }> {
   const shared = await sharedItems(sql, scope, jobId);
+  // "Who's on the vendor contract?" is answered by whose words a detail rests on.
+  const speakers = await roomSpeakers(sql, scope, result.items);
   return {
     recall: shared.length
       ? { ...result, items: [...result.items, ...shared.map((entry) => entry.item)] }
       : result,
     knowledge: [
-      ...result.items.map(asKnowledge),
+      ...result.items.map((item) => {
+        const excerpt = asKnowledge(item);
+        const saidBy = speakers.get(`${item.claim_id}@${item.revision}`);
+        return saidBy?.length
+          ? { ...excerpt, excerpt: `${saidInRoomNote(saidBy)}\n${excerpt.excerpt}` }
+          : excerpt;
+      }),
       ...shared.map((entry) => {
         const excerpt = asKnowledge(entry.item);
         return {

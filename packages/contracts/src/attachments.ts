@@ -60,6 +60,24 @@ const MEDIA_TYPES: Record<AttachmentKind, readonly string[]> = {
   text: ['text/plain', 'text/markdown'],
 };
 
+/** Code and data files read as plain text, by extension. */
+const TEXT_EXTENSIONS = [
+  'py',
+  'json',
+  'ts',
+  'tsx',
+  'js',
+  'jsx',
+  'yaml',
+  'yml',
+  'toml',
+  'sh',
+  'sql',
+  'xml',
+  'ini',
+  'log',
+] as const;
+
 const EXTENSIONS: Record<string, { kind: AttachmentKind; type: string }> = {
   png: { kind: 'image', type: 'image/png' },
   jpg: { kind: 'image', type: 'image/jpeg' },
@@ -74,6 +92,12 @@ const EXTENSIONS: Record<string, { kind: AttachmentKind; type: string }> = {
   text: { kind: 'text', type: 'text/plain' },
   md: { kind: 'text', type: 'text/markdown' },
   markdown: { kind: 'text', type: 'text/markdown' },
+  // Code, data and settings files are plain text and are kept as such, whatever
+  // type the browser named (`application/json`, `text/x-python`, `video/mp2t` for
+  // a .ts file): they are read for their words and never run or shown as a page.
+  ...Object.fromEntries(
+    TEXT_EXTENSIONS.map((extension) => [extension, { kind: 'text', type: 'text/plain' } as const]),
+  ),
 };
 
 /** The `accept` list for a file picker: every type and extension above. */
@@ -100,7 +124,7 @@ export function attachmentKindFor(
 
 /** A sentence naming what Melete reads, for a file it refused. */
 export const ATTACHMENT_TYPES_SENTENCE =
-  'Melete can read pictures (PNG, JPEG, WebP, GIF), PDFs, Word documents (.docx), spreadsheets (.xlsx, .csv) and text files (.txt, .md).';
+  'Melete can read pictures (PNG, JPEG, WebP, GIF), PDFs, Word documents (.docx), spreadsheets (.xlsx, .csv), text files (.txt, .md) and code or data files such as .py, .js, .ts, .json, .yaml, .toml, .xml, .sql and .sh.';
 
 /** A size for a person to read: "340 KB", "4.2 MB". */
 export function attachmentSize(bytes: number): string {

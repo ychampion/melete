@@ -776,6 +776,86 @@ withDb('installing each kind of connection through the API', () => {
     expect(removed.check.code).toBe('revoked');
   }, 120_000);
 
+  test('switching a mailbox or a calendar to another password is used at once, without reopening it', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const sealer = new SealedSecretStore(new PostgresSecretRepository(h.sql), () => MASTER_KEY);
+    const switchTo = async (id: string, password: string) => {
+      const current = connectionResponse.parse(
+        await (await h.app.request(`/connections/${id}`, h.as(h.cookie))).json(),
+      ).connection;
+      const secretRef = await sealer.put(h.spaceId, password);
+      const switched = await h.app.request(
+        `/connections/${id}/lifecycle`,
+        h.as(h.cookie, {
+          kind: 'switch',
+          expected_generation: current.generation,
+          secret_ref: secretRef,
+        }),
+      );
+      expect(switched.status).toBe(200);
+    };
+
+    // The mailbox takes only the password it was last given.
+    let mailPassword = 'first-mail-password';
+    const port = await imapDouble(() => mailPassword);
+    const smtpPort = await smtpDouble(() => mailPassword);
+    const mail = await h.install({
+      provider: 'imap',
+      label: 'Switched mail',
+      credentials: { password: mailPassword },
+      mail: {
+        username: 'switch@example.test',
+        from: 'switch@example.test',
+        imap: { host: '127.0.0.1', port, secure: false },
+        smtp: { host: '127.0.0.1', port: smtpPort, secure: false },
+      },
+    });
+    const mailId = connectionResponse.parse(mail.json).connection.id;
+    const mailbox = registry.get(mailId);
+    expect((await mailbox?.health())?.status).toBe('ok');
+    await switchTo(mailId, 'second-mail-password');
+    mailPassword = 'second-mail-password';
+    // The same connector, still registered, signs in with the new password.
+    expect(registry.get(mailId)).toBe(mailbox);
+    expect((await mailbox?.health())?.status).toBe('ok');
+
+    let davPassword = 'first-dav-password';
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(request) {
+        const expected = `Basic ${Buffer.from(`owner:${davPassword}`).toString('base64')}`;
+        if (request.headers.get('authorization') !== expected)
+          return new Response(null, { status: 401 });
+        return new Response('<multistatus xmlns="DAV:"/>', { status: 207 });
+      },
+    });
+    closers.push(() => server.stop(true));
+    const calendar = await h.install({
+      provider: 'caldav',
+      label: 'Switched calendar',
+      credentials: { password: davPassword },
+      caldav: { calendar_url: `${server.url}calendars/owner/home/`, username: 'owner' },
+    });
+    const calendarId = connectionResponse.parse(calendar.json).connection.id;
+    const opened = registry.get(calendarId);
+    expect((await opened?.health())?.status).toBe('ok');
+    await switchTo(calendarId, 'second-dav-password');
+    davPassword = 'second-dav-password';
+    expect(registry.get(calendarId)).toBe(opened);
+    expect((await opened?.health())?.status).toBe('ok');
+
+    // A revoked connection has no password left, and its connector says so rather than using an old one.
+    expect((await h.revoke(mailId)).status).toBe(200);
+    expect(await mailbox?.health()).toMatchObject({
+      status: 'failing',
+      reason: 'sign_in_required',
+    });
+    // The calendar goes too, so the tests after this one see only the connections they install.
+    expect((await h.revoke(calendarId)).status).toBe(200);
+    expect((await opened?.health())?.status).toBe('failing');
+  }, 120_000);
+
   test('CalDAV: validated, sealed, tested, offered to a new attempt, and gone after revocation', async () => {
     if (!h) throw new Error('Postgres unavailable');
     const authorizations: string[] = [];
@@ -1118,8 +1198,27 @@ withDb('installing each kind of connection through the API', () => {
       mcp: { ...body.mcp, url: 'http://mcp.example.test/mcp' },
     });
     expect(plainHttp.status).toBe(400);
-    expect(plainHttp.text).toContain('https');
+    expect(plainHttp.json).toMatchObject({
+      error: {
+        code: 'invalid_request',
+        message: 'A token is only sent to an https:// address. Use the server’s https:// address.',
+      },
+    });
     expectNoSecret(plainHttp.text);
+    // A token endpoint over plain http gets the same answer, not a field error.
+    const plainTokenUrl = await h.install({
+      ...body,
+      credentials: {
+        access_token: MCP_TOKEN,
+        refresh_token: 'kinds-refresh',
+        token_url: 'http://auth.example.test/token',
+      },
+    });
+    expect(plainTokenUrl.status).toBe(400);
+    expect(plainTokenUrl.json).toMatchObject({
+      error: { code: 'invalid_request', message: expect.stringContaining('https:// address') },
+    });
+    expectNoSecret(plainTokenUrl.text);
 
     const created = await h.install(body);
     expect(created.status).toBe(201);
@@ -1353,6 +1452,76 @@ withDb('installing each kind of connection through the API', () => {
     expect(hits).toBe(0);
     expect(checked.status).toBe(200);
     expect(((await checked.json()) as { check: { status: string } }).check.status).toBe('failing');
+  }, 120_000);
+
+  test('a room reaches an internal server the operator listed, and nothing else inside', async () => {
+    if (!h || !fixture) throw new Error('Postgres unavailable');
+    const bearer: string[] = [];
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request) {
+        bearer.push(request.headers.get('authorization') ?? '');
+        if (request.method === 'DELETE') return new Response(null, { status: 204 });
+        const message = (await request.json()) as { id?: number; method: string };
+        if (message.id === undefined) return new Response(null, { status: 202 });
+        const result =
+          message.method === 'initialize'
+            ? { protocolVersion: '2025-11-25', capabilities: { tools: {} } }
+            : {
+                tools: [
+                  { name: 'lookup', description: 'Fixture', inputSchema: { type: 'object' } },
+                ],
+              };
+        return Response.json({ jsonrpc: '2.0', id: message.id, result });
+      },
+    });
+    closers.push(() => server.stop(true));
+    const body = (roomId: string) => ({
+      provider: 'mcp',
+      label: 'Team server',
+      space_id: roomId,
+      credentials: { access_token: 'team-fixture-token' },
+      mcp: {
+        id: 'team',
+        url: `http://127.0.0.1:${server.port}/mcp`,
+        allowed_scopes: ['mcp_team.lookup'],
+        audience: 'owner',
+        tools: [
+          {
+            name: 'lookup',
+            alias: 'lookup',
+            required_scopes: ['mcp_team.lookup'],
+            effect_class: 'read',
+          },
+        ],
+      },
+    });
+    const madeRoom = await h.app.request('/rooms', h.as(h.cookie, { name: 'Team room' }));
+    expect(madeRoom.status).toBe(201);
+    const roomId = ((await madeRoom.json()) as { room: { id: string } }).room.id;
+    const saved = process.env.MELETE_PRIVATE_HOSTS;
+    try {
+      // A list that names another range leaves this server out of the room's reach.
+      process.env.MELETE_PRIVATE_HOSTS = '10.20.0.0/16, *.corp.internal';
+      const elsewhere = await h.install(body(roomId));
+      expect(elsewhere.status).toBe(400);
+      expect(elsewhere.json).toMatchObject({ error: { code: 'address_not_reachable' } });
+      expect(bearer).toEqual([]);
+
+      // Listed, the room installs it, the token goes over http, and it serves the room.
+      process.env.MELETE_PRIVATE_HOSTS = '127.0.0.1/32';
+      const created = await h.install(body(roomId));
+      expect(created.status).toBe(201);
+      const installed = connectionResponse.parse(created.json);
+      expect(installed.check?.code).toBe('ok');
+      expect(bearer).toContain('Bearer team-fixture-token');
+      expect(installed.connection).toMatchObject({ provider: 'mcp', status: 'active' });
+      expect((await h.revoke(installed.connection.id)).status).toBe(200);
+    } finally {
+      if (saved === undefined) delete process.env.MELETE_PRIVATE_HOSTS;
+      else process.env.MELETE_PRIVATE_HOSTS = saved;
+    }
   }, 120_000);
 
   test('a calendar service or mailbox at a private address is the setup owner’s alone', async () => {
