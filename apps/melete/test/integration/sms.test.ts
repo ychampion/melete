@@ -4,6 +4,7 @@ import {
   connectionResponse,
   smsTextListResponse,
 } from '@melete/contracts';
+import { setDisabled } from '../../src/account/cli.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorFactory, useConnectorFactory } from '../../src/connectors/configured.ts';
@@ -26,6 +27,7 @@ const TOKEN = 'b7'.repeat(16);
 const NUMBER = '+15550001111';
 const ME = '+15557654321';
 const STRANGER = '+15559998888';
+const OWNER_EMAIL = 'texting-owner@example.test';
 
 /** Twilio, as far as this service talks to it. Nothing here reaches the network. */
 function fakeTwilio() {
@@ -117,7 +119,7 @@ async function harness() {
   });
   const setup = await app.request(
     '/setup',
-    as('', { email: 'texting-owner@example.test', password: 'texting-owner-password' }),
+    as('', { email: OWNER_EMAIL, password: 'texting-owner-password' }),
   );
   const cookie = setup.headers.get('set-cookie')?.split(';')[0];
   if (!cookie) throw new Error(`Setup failed: ${setup.status}`);
@@ -323,6 +325,46 @@ withDb('text messages through Twilio', () => {
       where direction = 'out' and turn_id = ${row?.turn_id} order by part`;
     expect(recorded.map((item) => item.state)).toEqual(replies.map(() => 'sent'));
     expect(SMS_MORE_IN_APP).toContain('Melete');
+  });
+
+  // These two disable the account, which ends its sessions, so they come last.
+  test('a disabled account cannot reach its assistant by text', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    expect((await setDisabled(h.sql, OWNER_EMAIL, true)).ok).toBe(true);
+    try {
+      const sid = `SM${'f'.repeat(32)}`;
+      const sentBefore = twilio.sent.length;
+      const turnsBefore = await h.sql`select count(*)::int as n from experience_turn`;
+      expect((await h.deliver(ME, 'Read me my latest mail', { sid })).status).toBe(200);
+      // It neither started a turn nor joined one already open.
+      const turnsAfter = await h.sql`select count(*)::int as n from experience_turn`;
+      expect(turnsAfter[0]?.n).toBe(turnsBefore[0]?.n);
+      // The text is kept where the owner sees it was not taken, and nothing is texted back.
+      const [row] = await h.sql`select state, job_id, turn_id from sms_text
+        where message_sid = ${sid}`;
+      expect(row).toMatchObject({ state: 'refused', job_id: null, turn_id: null });
+      expect(twilio.sent.length).toBe(sentBefore);
+    } finally {
+      await setDisabled(h.sql, OWNER_EMAIL, false);
+    }
+  });
+
+  test('a turn that began before the account was disabled is not answered by text', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    // The finished turn the earlier text started, made unanswered again.
+    const [row] = await h.sql`select turn_id from sms_text
+      where message_sid = ${`SM${'e'.repeat(32)}`}`;
+    expect(row?.turn_id).toBeTruthy();
+    await h.sql`delete from sms_text where direction = 'out' and turn_id = ${row?.turn_id}`;
+    const deps = { sql: h.sql, secrets: h.factory.secrets, twilio: { fetch: twilio.fetch } };
+    expect((await setDisabled(h.sql, OWNER_EMAIL, true)).ok).toBe(true);
+    try {
+      const sentBefore = twilio.sent.length;
+      expect(await sweepSmsReplies(deps)).toBe(0);
+      expect(twilio.sent.length).toBe(sentBefore);
+    } finally {
+      await setDisabled(h.sql, OWNER_EMAIL, false);
+    }
   });
 });
 
