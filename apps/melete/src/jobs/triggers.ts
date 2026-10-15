@@ -101,8 +101,11 @@ export function scheduleTimes(
  * How far back a wake looks for the rule time it is for. The wake at the
  * rule's minute finds it at once; the margin covers a queue that ran late or
  * caught up after a restart, and a time already fired is never fired again.
+ * It stays under the hour between wakes, so a time belongs to the first wake
+ * at or after it and to no later one: a routine paused over one of its times
+ * and resumed after does not run it late, as with a cron.
  */
-export const RULE_WAKE_LOOKBACK_MS = 2 * 60 * 60_000;
+export const RULE_WAKE_LOOKBACK_MS = 55 * 60_000;
 
 /**
  * Refuses a trigger that could never fire as the person meant it: a watch

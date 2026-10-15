@@ -634,12 +634,26 @@ withDb('durable waits, triggers and approval inputs', () => {
       expect(await fired('2026-10-30T13:00:00Z', 'wake-3')).toEqual([
         'rule:2026-10-30T13:00:00.000Z',
       ]);
-      expect(await fired('2026-10-30T14:30:00Z', 'wake-4')).toHaveLength(1);
+      expect(await fired('2026-10-30T13:40:00Z', 'wake-4')).toHaveLength(1);
       // After the clocks go back, 9:00 in New York is 14:00 UTC.
       expect(await fired('2026-11-13T13:00:00Z', 'wake-5')).toHaveLength(1);
       expect(await fired('2026-11-13T14:00:00Z', 'wake-6')).toEqual([
         'rule:2026-10-30T13:00:00.000Z',
         'rule:2026-11-13T14:00:00.000Z',
+      ]);
+      // Paused over its next time and resumed after it: the first wake after
+      // the resume does not run the time it missed, and the next time runs.
+      await handle.db
+        .update(trigger)
+        .set({ enabled: false })
+        .where(eq(trigger.id, registration.id));
+      expect(await fired('2026-11-27T14:00:00Z', 'wake-7')).toHaveLength(2);
+      await handle.db.update(trigger).set({ enabled: true }).where(eq(trigger.id, registration.id));
+      expect(await fired('2026-11-27T15:00:00Z', 'wake-8')).toHaveLength(2);
+      expect(await fired('2026-12-11T14:00:00Z', 'wake-9')).toEqual([
+        'rule:2026-10-30T13:00:00.000Z',
+        'rule:2026-11-13T14:00:00.000Z',
+        'rule:2026-12-11T14:00:00.000Z',
       ]);
     } finally {
       triggers.clock = () => new Date();
