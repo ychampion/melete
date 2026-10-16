@@ -197,24 +197,34 @@ const PIPE_SLICE = 64 * 1024;
  * are wanted. Bun reads a command's own stdout as fast as the command writes it,
  * whatever the sinks take, so a dump decrypted faster than it loads would gather in
  * memory. On this pipe the command waits instead. Its name is removed at once.
+ * Null where none can be made (no mkfifo, or a temporary folder that cannot be
+ * written): the source is then read as Bun reads it, which works, only unbounded.
  */
-function sourcePipe(): { read: number; write: number } {
-  const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+function sourcePipe(): { read: number; write: number } | null {
+  let dir: string | null = null;
+  const opened: number[] = [];
   try {
+    dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
     const path = join(dir, 'source');
-    const made = Bun.spawnSync(['mkfifo', '-m', '600', path], { stdout: 'ignore', stderr: 'pipe' });
-    if (made.exitCode !== 0)
-      throw new Error(`mkfifo exited ${made.exitCode}: ${made.stderr.toString().trim()}`);
+    const made = Bun.spawnSync(['mkfifo', '-m', '600', path], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    if (made.exitCode !== 0) return null;
     // A read end that does not wait comes first, so neither of the others waits to open.
     const opening = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
-    try {
-      const write = openSync(path, constants.O_WRONLY);
-      return { read: openSync(path, constants.O_RDONLY), write };
-    } finally {
-      closeSync(opening);
-    }
+    opened.push(opening);
+    const write = openSync(path, constants.O_WRONLY);
+    opened.push(write);
+    const read = openSync(path, constants.O_RDONLY);
+    opened.length = 0;
+    closeSync(opening);
+    return { read, write };
+  } catch {
+    for (const fd of opened) closeSync(fd);
+    return null;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (dir !== null) rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -356,7 +366,8 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
     if ('bytes' in source) reader = new Blob([source.bytes]).stream();
     else if ('file' in source) reader = Bun.file(source.file).stream();
     else {
-      // Windows has no named pipes of this kind: there the source is read as Bun reads it.
+      // Windows has no named pipes of this kind: there, as where none can be made, the
+      // source is read as Bun reads it.
       const pipe = process.platform === 'win32' ? null : sourcePipe();
       try {
         producer = Bun.spawn([...source.command], {

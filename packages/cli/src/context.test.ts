@@ -292,4 +292,19 @@ for (;;) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20_000);
+
+  test('a source is still read where no private pipe can be made for it', async () => {
+    // A temporary folder that cannot be written (a read-only root), or no mkfifo.
+    const before = process.env.TMPDIR;
+    process.env.TMPDIR = join(tmpdir(), 'melete-stream-missing', 'nested');
+    try {
+      const result = await stream({ command: ['sh', '-c', 'printf "dump bytes"'] }, [
+        { command: ['sh', '-c', 'test "$(cat)" = "dump bytes"'] },
+      ]);
+      expect(result).toMatchObject({ ok: true, bytes: 10, sha256: sha('dump bytes'), detail: '' });
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+    }
+  });
 });
