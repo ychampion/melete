@@ -510,7 +510,7 @@ describe("the person's own details are filed under them, never as someone in the
       ['Sam is everything to me', 'sam'],
       ['Maya is essential to the team', 'maya'],
       ['Sam has been my friend since school', 'sam'],
-    ])
+    ] as const)
       expect([text, someoneFirst(text)]).toEqual([text, { name }]);
     // Days, meals, everyday things and what the person does are no one.
     for (const text of [
