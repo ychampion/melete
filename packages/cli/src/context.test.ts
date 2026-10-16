@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stream } from './context.ts';
@@ -108,5 +108,116 @@ ${CHANGED_WHILE_READ}
       process.off('unhandledRejection', keep);
       process.off('uncaughtException', keep);
     }
+  }, 20_000);
+
+  test('once a sink has failed, the source is stopped and the failure comes at once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    try {
+      const pidFile = join(dir, 'pid');
+      const chunks = 400;
+      // As a large dump decrypted on its way in: 25 MB at about 4 s, while
+      // pg_restore --exit-on-error stops at its first error.
+      const source = {
+        command: [
+          bun,
+          '-e',
+          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+const out = Bun.stdout.writer();
+for (let i = 0; i < ${chunks}; i++) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(10); }`,
+        ],
+      };
+      const started = performance.now();
+      const result = await stream(source, [
+        {
+          command: [
+            'sh',
+            '-c',
+            'head -c 100000 >/dev/null; echo "pg_restore: error: could not execute query" >&2; exit 1',
+          ],
+        },
+      ]);
+      const elapsed = performance.now() - started;
+      // Only the sink's failure: the source it stopped adds nothing to the detail.
+      expect(result).toMatchObject({
+        ok: false,
+        detail: 'sh exited 1: pg_restore: error: could not execute query',
+      });
+      expect(elapsed).toBeLessThan(2_000);
+      expect(result.bytes).toBeLessThan((chunks * 65536) / 4);
+      // The source is not left running behind the result.
+      const pid = Number(readFileSync(pidFile, 'utf8'));
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test('a file read for a sink that failed early stops there', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    try {
+      const file = join(dir, 'database.dump');
+      const size = 32 * 1024 * 1024;
+      writeFileSync(file, new Uint8Array(size));
+      const result = await stream({ file }, [
+        { command: ['sh', '-c', 'head -c 10 >/dev/null; echo stopped >&2; exit 1'] },
+      ]);
+      expect(result).toMatchObject({ ok: false, detail: 'sh exited 1: stopped' });
+      expect(result.bytes).toBeLessThan(size / 4);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test('a sink that stops reading early fails the stream even when it exits 0', async () => {
+    // A load that stopped part way and still said it succeeded would be a truncated restore.
+    const result = await stream({ bytes: new Uint8Array(4 * 1024 * 1024) }, [
+      { command: ['sh', '-c', 'head -c 10 >/dev/null; echo done >&2; exit 0'] },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe('sh exited 0 but stopped reading before the end of its input: done');
+  }, 20_000);
+
+  test('a sink that stops part way through a large write is seen to stop short', async () => {
+    // The source hands over 2 MB at a time; the sink stops 1 MB before the end.
+    const size = 4 * 1024 * 1024;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await stream({ bytes: new Uint8Array(size) }, [
+        { command: ['sh', '-c', `head -c ${size - 1024 * 1024} >/dev/null; exit 0`] },
+      ]);
+      expect(result.ok).toBe(false);
+      expect(result.detail).toBe('sh exited 0 but stopped reading before the end of its input');
+    }
+  }, 20_000);
+
+  test('beside a file, a sink that stops early fails the stream and the file still gets every byte', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    try {
+      const file = join(dir, 'database.dump');
+      const size = 4 * 1024 * 1024;
+      const result = await stream({ bytes: new Uint8Array(size) }, [
+        { file },
+        { command: ['sh', '-c', 'head -c 10 >/dev/null; exit 0'] },
+      ]);
+      expect(result).toMatchObject({ ok: false, bytes: size });
+      expect(result.detail).toBe('sh exited 0 but stopped reading before the end of its input');
+      expect(statSync(file).size).toBe(size);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test('a sink that has read every byte may exit before the source closes, as tar does at its end marker', async () => {
+    const size = 300_000;
+    const source = {
+      command: [
+        bun,
+        '-e',
+        `const out = Bun.stdout.writer(); out.write(new Uint8Array(${size})); await out.flush(); await Bun.sleep(400);`,
+      ],
+    };
+    const result = await stream(source, [
+      { command: ['sh', '-c', `head -c ${size} >/dev/null; exit 0`] },
+    ]);
+    expect(result).toMatchObject({ ok: true, bytes: size, detail: '' });
   }, 20_000);
 });
