@@ -152,6 +152,33 @@ for (let i = 0; i < ${chunks}; i++) { out.write(new Uint8Array(65536)); await ou
     }
   }, 20_000);
 
+  test('a source stopped because its sinks failed adds nothing, even when it exits with a code', async () => {
+    // As docker run does when stopped: it passes the signal to its container, then exits 1 on
+    // the pipe it can no longer write. The detail is the destination's failure alone.
+    const source = {
+      command: [
+        bun,
+        '-e',
+        `process.on('SIGTERM', () => { process.stderr.write('write /dev/stdout: broken pipe\\n'); process.exit(1); });
+const out = Bun.stdout.writer();
+for (;;) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(5); }`,
+      ],
+    };
+    const result = await stream(source, [
+      {
+        command: [
+          'sh',
+          '-c',
+          'head -c 100000 >/dev/null; echo "client_loop: send disconnect: Broken pipe" >&2; exit 255',
+        ],
+      },
+    ]);
+    expect(result).toMatchObject({
+      ok: false,
+      detail: 'sh exited 255: client_loop: send disconnect: Broken pipe',
+    });
+  }, 20_000);
+
   test('a file read for a sink that failed early stops there', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
     try {
@@ -220,4 +247,25 @@ for (let i = 0; i < ${chunks}; i++) { out.write(new Uint8Array(65536)); await ou
     ]);
     expect(result).toMatchObject({ ok: true, bytes: size, detail: '' });
   }, 20_000);
+
+  test('a long stream holds only the bytes on their way, never the whole stream', async () => {
+    // A restore streams a dump of many gigabytes; what has gone into the sink is let go.
+    const size = 192 * 1024 * 1024;
+    Bun.gc(true);
+    const before = process.memoryUsage().heapUsed;
+    let peak = 0;
+    const sample = setInterval(() => {
+      Bun.gc(true);
+      peak = Math.max(peak, process.memoryUsage().heapUsed - before);
+    }, 50);
+    try {
+      const result = await stream({ command: ['head', '-c', String(size), '/dev/zero'] }, [
+        { command: ['sh', '-c', 'cat >/dev/null'] },
+      ]);
+      expect(result).toMatchObject({ ok: true, bytes: size, detail: '' });
+    } finally {
+      clearInterval(sample);
+    }
+    expect(peak).toBeLessThan(48 * 1024 * 1024);
+  }, 60_000);
 });

@@ -200,6 +200,10 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
   let producer: ReturnType<typeof Bun.spawn> | null = null;
   // Set when every sink had stopped taking bytes, and the source was stopped before its end.
   let cut = false;
+  // Set when the source command was still running when it was stopped here.
+  let stoppedRunning = false;
+  // Called when a command sink exits, to wake the read that waits beside it.
+  let wake: (() => void) | undefined;
   let producerStderr: Promise<string> = Promise.resolve('');
   const short = (text: string) => text.trim().split('\n').slice(-3).join(' ').slice(0, 400);
   try {
@@ -229,6 +233,7 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
         children.push(entry);
         void child.exited.then((code) => {
           entry.exit = code;
+          wake?.();
         });
         const stdin = child.stdin as import('bun').FileSink;
         // A sink that stops reading early (pg_restore at its first error) says why by
@@ -294,14 +299,18 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
       let finished = false;
       for (;;) {
         // A sink's exit is raced with the next bytes, so a slow source does not delay its failure.
-        const running = watched ? children.filter((entry) => entry.exit === null) : [];
-        const step =
-          running.length === 0
-            ? await next
-            : await Promise.race([
-                next,
-                Promise.race(running.map((entry) => entry.child.exited)).then(() => null),
-              ]);
+        // The race is with a promise made for this read alone: one raced with a sink's own exit
+        // would hold every chunk read before that exit, so a long stream would fill memory.
+        const running = watched && children.some((entry) => entry.exit === null);
+        const step = running
+          ? await Promise.race([
+              next,
+              new Promise<null>((settle) => {
+                wake = () => settle(null);
+              }),
+            ])
+          : await next;
+        wake = undefined;
         if (step === null) {
           if (stopped()) break;
           continue;
@@ -318,6 +327,8 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
       }
       cut = !finished;
       if (cut) {
+        stoppedRunning =
+          producer !== null && producer.exitCode === null && producer.signalCode === null;
         producer?.kill();
         await chunks.cancel().catch(() => undefined);
       }
@@ -325,9 +336,10 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
       if (producer) {
         const [code, stderr] = await Promise.all([producer.exited, producerStderr]);
         sourceStderr = stderr.trimEnd().slice(-400);
-        // A source stopped here says nothing of its own; one that failed by itself still does.
-        const stoppedHere = cut && producer.signalCode !== null;
-        if (code !== 0 && !stoppedHere)
+        // A source stopped here says nothing of its own, whether the signal ended it or it
+        // exited on the pipe it could no longer write (docker run does); one that had already
+        // failed by itself still does.
+        if (code !== 0 && !stoppedRunning)
           problems.push(`${producerName} exited ${code}: ${short(stderr)}`);
       }
       for (const { name, child, stderr: text, short: left } of children) {
