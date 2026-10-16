@@ -30,11 +30,12 @@ import {
   capabilityTool,
   receipt,
 } from '@melete/contracts';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import type { ProviderCheck } from './elevenlabs.ts';
-import { alreadyInFiles, inFilesTurn, onlyNewFiles } from './shared-files.ts';
+import { alreadyInFiles, filesHold, inFilesTurn, onlyNewFiles } from './shared-files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { silentWav, WAV_MIME } from './wav.ts';
 
@@ -106,21 +107,26 @@ export const outputOnlyNew = (query: Query | undefined, ctx: ConnectorContext) =
 
 /**
  * Save a capability's output at `file` in the space's Files, in its turn
- * there (`inFilesTurn`), so it never replaces a file between another step's
- * check of it and its change to it. Only as a new file where
- * `outputOnlyNew` says so: false when that name is taken.
+ * there on every instance (`inFilesTurn`, held through `sql`), so it never
+ * replaces a file between another step's check of it and its change to it.
+ * Only as a new file where `outputOnlyNew` says so: false when that name is
+ * taken.
  */
 export const saveOutput = (
-  query: Query | undefined,
+  sql: Sql | undefined,
   ctx: ConnectorContext,
   file: string,
   bytes: Uint8Array,
 ): Promise<boolean> =>
-  inFilesTurn(ctx.space_id, async () => {
-    if (await outputOnlyNew(query, ctx)) return writeNew(file, bytes);
-    await atomicWrite(file, bytes);
-    return true;
-  });
+  inFilesTurn(
+    ctx.space_id,
+    async (query) => {
+      if (await outputOnlyNew(query ?? sql, ctx)) return writeNew(file, bytes);
+      await atomicWrite(file, bytes);
+      return true;
+    },
+    filesHold(sql),
+  );
 
 /**
  * Refuse, before anyone is asked, a capability step whose output name is
@@ -287,7 +293,7 @@ function safeName(value: string): string {
 export type CapabilityConnectorOptions = {
   spacesRoot: string;
   /** Where whose job it is is read, for the shared Files rule (`shared-files.ts`). */
-  sql?: Query;
+  sql?: Sql;
   adapter: SpeechAdapter | null;
   provider: string;
   unitCostUsd?: number;

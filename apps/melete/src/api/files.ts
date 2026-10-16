@@ -19,7 +19,7 @@ import {
   personFileRestored,
   prefixedId,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { FILE_TOOLS, mimeForName, savedFile } from '../artifact/shown.ts';
@@ -33,7 +33,15 @@ import {
   SPACE_FILES_TRASH,
   type TrashPlace,
 } from '../connectors/files-trash.ts';
-import { inFilesTurn, managesSharedFiles } from '../connectors/shared-files.ts';
+import {
+  FILES_TURN_IDLE_LIMIT,
+  FILES_TURN_LOCK,
+  FILES_TURN_LOCK_TIMEOUT,
+  type FilesHold,
+  heldThrough,
+  inFilesTurn,
+  managesSharedFiles,
+} from '../connectors/shared-files.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, job } from '../db/schema.ts';
 import { ownJob, spaceAuthority } from '../principals/authority.ts';
@@ -409,6 +417,22 @@ export function mountFiles(
     return c.json(personFileList.parse({ files }));
   });
 
+  /**
+   * A delete's turn in the space's Files held in the database too, so it is
+   * one turn with steps on every instance (`inFilesTurn`): the same lock as
+   * `lockFilesTurnIn`, in Drizzle form.
+   */
+  const filesTurnHold: FilesHold = <T>(spaceId: string, work: (query: null) => Promise<T>) =>
+    heldThrough<Parameters<Parameters<Database['transaction']>[0]>[0], T>(
+      (body) => db.transaction(body),
+      (tx) =>
+        tx.execute(sql`select pg_advisory_xact_lock(${FILES_TURN_LOCK}, hashtext(${spaceId}))
+          from (select set_config('lock_timeout', ${FILES_TURN_LOCK_TIMEOUT}, true) as timeout,
+              set_config('idle_in_transaction_session_timeout', ${FILES_TURN_IDLE_LIMIT}, true) as idle) limits
+          where limits.timeout is not null and limits.idle is not null`),
+      () => work(null),
+    );
+
   app.delete('/files/:id', async (c) => {
     const scope = await scopeOf(c, resolveSpace);
     const id = c.req.param('id');
@@ -428,46 +452,49 @@ export function mountFiles(
     // name since stays where it is. It is held open until the move is done,
     // so a file made at its name after it was deleted there cannot be given
     // its number on the disk and pass for it.
+    // A chat's record of a file in the space's Files deletes only the file it
+    // saved: anything put at its name since is the space's, and its owner's to
+    // delete. Who manages the space is read before the turn, which then
+    // sends nothing to the database but its own lock.
+    const onlyAsSaved =
+      found.job !== null && !inChatFolder(found.row) && !(await managesSpaceFiles(db, scope));
     let opened: Awaited<ReturnType<typeof openArtifact>>;
     try {
       opened = await openArtifact(roots, scope.spaceId, found.row);
     } catch {
       throw noFile();
     }
-    // The check and the delete are one turn in the space's Files: nothing the
-    // service saves there can change the open file between them.
-    const trashed = await inFilesTurn(scope.spaceId, async () => {
-      try {
-        // A chat's record of a file in the space's Files deletes only the file
-        // it saved: anything put at its name since is the space's, and its
-        // owner's to delete. The file checked is the open one, the one that goes.
-        if (
-          found.job !== null &&
-          !inChatFolder(found.row) &&
-          !(await managesSpaceFiles(db, scope)) &&
-          !(await stillSaved(found, opened))
-        )
-          throw notTheirs('delete');
-        const checked = await opened.handle.stat().catch(() => {
-          throw noFile();
-        });
-        const file = { dev: checked.dev, ino: checked.ino };
-        return await moveToTrash(place, [{ path: target.path, hash: null, file }], {
-          days: trash.days,
-          maxBytes: trash.maxBytes,
-        }).catch((error: unknown) => {
-          throw new ServiceError(
-            'file_not_deleted',
-            error instanceof Error
-              ? `The file was not deleted: ${error.message}.`
-              : 'The file was not deleted.',
-            409,
-          );
-        });
-      } finally {
-        await opened.handle.close();
-      }
-    });
+    let trashed: Awaited<ReturnType<typeof moveToTrash>>;
+    try {
+      // The check and the delete are one turn in the space's Files, on every
+      // instance: nothing saved there can change the open file between them.
+      trashed = await inFilesTurn(
+        scope.spaceId,
+        async () => {
+          // The file checked is the open one, the one that goes.
+          if (onlyAsSaved && !(await stillSaved(found, opened))) throw notTheirs('delete');
+          const checked = await opened.handle.stat().catch(() => {
+            throw noFile();
+          });
+          const file = { dev: checked.dev, ino: checked.ino };
+          return moveToTrash(place, [{ path: target.path, hash: null, file }], {
+            days: trash.days,
+            maxBytes: trash.maxBytes,
+          }).catch((error: unknown) => {
+            throw new ServiceError(
+              'file_not_deleted',
+              error instanceof Error
+                ? `The file was not deleted: ${error.message}.`
+                : 'The file was not deleted.',
+              409,
+            );
+          });
+        },
+        filesTurnHold,
+      );
+    } finally {
+      await opened.handle.close();
+    }
     // Anything kept means the file asked for is not what went: it changed
     // after the check, even when what took its place is now in the trash.
     if (!trashed.trash_id || !trashed.moved.length || trashed.kept.length) {

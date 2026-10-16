@@ -32,8 +32,8 @@ import {
   capabilityTool,
   receipt,
 } from '@melete/contracts';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
-import type { Query } from '../broker/records.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import type { ProviderCheck } from './elevenlabs.ts';
 import { noLinks, openBeneath, segmentsFor } from './files.ts';
@@ -226,7 +226,7 @@ export type TranscriptionConnectorOptions = {
   workRoot: string;
   spacesRoot: string;
   /** Where whose job it is is read, for the shared Files rule (`shared-files.ts`). */
-  sql?: Query;
+  sql?: Sql;
   adapter: TranscriptionAdapter | null;
   provider: string;
   unitCostUsd?: number;
