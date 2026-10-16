@@ -52,6 +52,7 @@ import {
   PERSON_HEADS,
   relatedSubject,
   relationsIn,
+  relativeName,
   relativeNamed,
   relativeOf,
   relativeSubject,
@@ -198,8 +199,9 @@ function relatedInQuotes(whose: Whose, sources: readonly { quote: string }[]): s
  * change is about the someone themself ("My brother Sam moved to Lagos"): it
  * is kept as theirs. Someone of the held name whom the change names only as
  * another's relative ("Alex's brother Sam moved to Faro", where Brother Sam
- * is held) is kept under whose relative they are ("person.alex.brother.city").
- * Null when relatives do not decide it; `apart` is null when the change is
+ * is held) is kept under whose relative they are ("person.alex.brother.city"),
+ * and a change that relates that name to the person, proposed to that
+ * detail ("My brother Sam moved to Lagos"), is kept as theirs. Null when relatives do not decide it; `apart` is null when the change is
  * about the relative the held detail is about.
  */
 async function relativeApart(
@@ -215,6 +217,17 @@ async function relativeApart(
   const heldRelative = subjectRelative(held.domain_key, name);
   if (heldRelative && words.some((text) => relativeOf(text, name) === heldRelative)) {
     const texts = [proposed.content, ...quotes];
+    // The relative held is named ("Alex's brother Sam"), and the person's
+    // words relate that name to them, not as the someone's: "My brother Sam
+    // moved to Lagos" is Brother Sam's own.
+    const named = words.map((text) => relativeName(text, name)).find(Boolean);
+    if (named && !quotes.some((quote) => namesIn(quote, name))) {
+      const [related] = [
+        ...quotes.flatMap((quote) => [...relationsIn(quote, named, true)]),
+        ...relationsIn(proposed.content, named),
+      ];
+      if (related) return { apart: themselfSubject(held.domain_key, name, related, named) };
+    }
     if (texts.some((text) => relativeOf(text, name) === heldRelative)) {
       // The same relative, unless the person's words say whose relative it is
       // and that someone is not the one held: "My cousin Sam's brother".

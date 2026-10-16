@@ -65,7 +65,8 @@ What it proposes is held to that bar before it is kept:
   kept as Sam's brother's ("Sam's brother's city"), never on "Brother Sam",
   and a later word about Sam himself never lands on his brother's detail.
   Someone named only as another's relative is theirs: "Alex's brother Sam"
-  is kept as Alex's brother's, apart from a Brother Sam memory holds. A short
+  is kept as Alex's brother's, apart from a Brother Sam memory holds, and "My
+  brother Sam" never lands on Alex's brother's detail. A short
   word for a relation ("bro", "sis") is that relation when it is the person's
   ("my bro Sam") or follows a name ("Sam's sis"), never when it is said to
   anyone ("Thanks bro"), and a name with an apostrophe ("O'Brien") is one

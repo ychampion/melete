@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   relationsIn,
+  relativeName,
   relativeNamed,
   relativeOf,
   relativeSubject,
@@ -165,6 +166,11 @@ describe('how a text relates the person to someone it names', () => {
       "Alex's brother Sam's wife moved to Faro",
     ])
       expect([text, relativeNamed(text, 'sam')]).toEqual([text, null]);
+    // The name such a relative is given.
+    expect(relativeName("Alex's brother Sam lives in Faro", 'alex')).toBe('sam');
+    expect(relativeName('My friend Alex’s little sis Maya lives in Faro', 'alex')).toBe('maya');
+    expect(relativeName("Alex's brother lives in Faro", 'alex')).toBeNull();
+    expect(relativeName("Alex's brother moved to Faro", 'alex')).toBeNull();
   });
 
   test('a name with an apostrophe is read as one name, never as whose something is', () => {

@@ -711,16 +711,43 @@ export function namesIn(text: string, name: string): boolean {
   return Boolean(last) && relationWords(text).some((word) => nameWord(word) === last);
 }
 /**
+ * The name a text gives someone's relative, written as a name is: "Alex's
+ * brother Sam lives in Faro" names Alex's brother Sam. Null when it gives none
+ * ("Alex's brother lives in Faro").
+ */
+export function relativeName(text: string, of: string): string | null {
+  const words = relationWords(text);
+  const last = nameWords(of).at(-1);
+  const written = capitalized(text);
+  for (const [index, word] of words.entries()) {
+    if (!last || nameWord(word) !== last || !/['’]s?$/u.test(word)) continue;
+    let next = index + 1;
+    while (DESCRIBING.has(words[next] ?? '')) next++;
+    if (!isRelationWord(words[next] ?? '')) continue;
+    const named = nameWord(words[next + 1] ?? '');
+    if (named && written.has(named) && !RELATIONS.has(named) && !NO_ONE.has(named)) return named;
+  }
+  return null;
+}
+/**
  * The subject of someone's own detail, for one held as their relative's:
  * "person.sam.brother.city" is "person.sam.city" for Sam himself, and
  * "person.brother.sam.city" when the person's words say Sam is their brother.
+ * For the relative a subject names someone's, `named` by the held words, it
+ * is that relative's own: "person.alex.brother.city" is
+ * "person.brother.sam.city" for Brother Sam, where it held Alex's brother Sam.
  */
-export function themselfSubject(domainKey: string, name: string, related?: string): string {
+export function themselfSubject(
+  domainKey: string,
+  name: string,
+  related?: string,
+  named?: string,
+): string {
   const parts = withoutMember(domainKey).split('.');
   const at = parts.findIndex((part, index) => index > 0 && part.replace(/[_-]+/g, ' ') === name);
   if (at < 0) return withoutMember(domainKey);
   const lead = related ? [related] : parts.slice(1, at);
-  return [parts[0], ...lead, parts[at], ...parts.slice(at + 2)].join('.');
+  return [parts[0], ...lead, named ?? parts[at], ...parts.slice(at + 2)].join('.');
 }
 /** The relative a subject names after someone's name: "person.sam.brother.city" is Sam's brother's. */
 export function subjectRelative(domainKey: string, name: string): string | null {
