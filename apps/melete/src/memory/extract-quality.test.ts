@@ -415,11 +415,73 @@ describe("the person's own details are filed under them, never as someone in the
         said('person.me', '!!!', 'I am', { about: 'the_person' }),
       ]),
     ).toEqual([
-      'self.about.works_nurse',
-      'self.about.two_cats',
-      'self.about.speaks_portuguese_english',
+      'self.about.nurse',
+      'self.about.2_cats',
+      'self.about.english_portuguese_speak',
       'self.about',
     ]);
+  });
+
+  test('a detail filed under the person alone keeps one subject however it is said again, and another detail another', () => {
+    const own = (content: string) =>
+      filed([said('person.user', content, content, { about: 'the_person' })])[0] ?? '';
+    // Said again in other words: one subject.
+    expect(own('Usually works at night')).toBe(own('Works nights'));
+    expect(own('Is a nurse')).toBe(own('Works as a nurse'));
+    expect(own('Nurse')).toBe(own('Works as a nurse'));
+    // Different details: two subjects, however many words they start with alike.
+    expect(own('Works night shifts on weekends')).not.toBe(
+      own('Works night shifts at the hospital'),
+    );
+    expect(own("Doesn't eat meat")).not.toBe(own('Eats meat'));
+    expect(own('Has two dogs')).not.toBe(own('Has two cats'));
+    expect(own('Has 2 cats')).toBe(own('Has two cats'));
+    // A long detail still gets a subject of its own that memory can hold.
+    const long = (end: string) =>
+      own(`Volunteers at the animal shelter near the old harbour every second Saturday ${end}`);
+    expect(long('with friends').length).toBeLessThanOrEqual(120);
+    expect(long('with friends')).not.toBe(long('with family'));
+    expect(long('with friends')).toBe(long('with friends'));
+    // With a topic in its subject, the topic is its subject.
+    expect(
+      filed([
+        said('person.user.work', 'Works as a nurse', 'I work as a nurse', { about: 'the_person' }),
+      ]),
+    ).toEqual(['self.work']);
+  });
+
+  test('a word that only starts the detail, as a thing or a place does, is not someone', () => {
+    // A capital at the start of a sentence says nothing of a name.
+    for (const own of [
+      'Coffee is a must',
+      'Coffee is a must for me',
+      'Lisbon is home now',
+      'Python is my main language',
+      "Maya's cat makes me sneeze",
+    ])
+      expect(someoneFirst(own)).toBeNull();
+    expect(
+      filed([
+        said('person.preference', 'Coffee is a must', 'Coffee is a must', { about: 'preference' }),
+        said('person.city', 'Lisbon is home now', 'Lisbon is home now', { about: 'the_person' }),
+        said('person.language', 'Python is my main language', 'Python is my main language', {
+          about: 'the_person',
+        }),
+        said('person.allergy', "Maya's cat makes me sneeze", "Maya's cat makes me sneeze", {
+          about: 'the_person',
+        }),
+      ]),
+    ).toEqual(['self.preference', 'self.city', 'self.language', 'self.allergy']);
+    // Someone they still are.
+    expect(someoneFirst('Maya is allergic to peanuts')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Maya is a teacher')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Maya is my sister')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Maya is my best friend')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Sam lives near me')).toEqual({ name: 'sam' });
+    expect(someoneFirst('Maya has two kids')).toEqual({ name: 'maya' });
+    expect(someoneFirst("Sam's diet is vegan")).toEqual({ name: 'sam' });
+    expect(someoneFirst("Sam's birthday is the same day as mine")).toEqual({ name: 'sam' });
+    expect(someoneFirst("Sam's dog is a labrador")).toEqual({ name: 'sam' });
   });
 
   test('a subject memory already holds, and a registry key, are never moved', () => {

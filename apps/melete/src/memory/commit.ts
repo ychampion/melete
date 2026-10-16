@@ -29,9 +29,18 @@ import {
   stableId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
-import { detailWords, listKey, ownSubject, sameWording } from './extract.ts';
+import {
+  aboutSubject,
+  detailWords,
+  listKey,
+  ownSubject,
+  sameDetail,
+  sameWording,
+  saysNoMore,
+} from './extract.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import {
+  aboutThem,
   GENERIC_HEADS,
   memberSubject,
   olderOwnSubject,
@@ -40,6 +49,7 @@ import {
   relatedSubject,
   relationsIn,
   SELF,
+  sameOwnDetail,
   sameWhose,
   saysRelation,
   twoPeople,
@@ -263,8 +273,9 @@ function ownDetailRenamed(held: string, proposed: string, heldContent: string | 
 
 /**
  * The claim that holds the person's own detail under an older subject (see
- * `olderOwnSubjects`), said by this author. A detail about the owner of
- * something, saved under "owner", is not theirs.
+ * `olderOwnSubjects`) or another name for it (see `sameOwnDetail`), said by
+ * this author. A detail about the owner of something, saved under "owner",
+ * is not theirs.
  */
 async function heldUnderOlderSubject(
   tx: MemoryTx,
@@ -273,7 +284,11 @@ async function heldUnderOlderSubject(
   author: Author,
   domainKey: string,
 ): Promise<ClaimHead | null> {
-  const older = olderOwnSubjects(domainKey);
+  const names = sameOwnDetail(domainKey);
+  const older = [
+    ...olderOwnSubjects(domainKey),
+    ...names.flatMap((name) => [name, memberSubject(name, author.part), ...olderOwnSubjects(name)]),
+  ];
   if (!older.length) return null;
   const rows = await tx`select c.id from memory_claims c where c.space_id = ${scope.spaceId}
     and c.audience = ${batch.source.audience} and not c.hidden and c.key is null
@@ -285,6 +300,53 @@ async function heldUnderOlderSubject(
   for (const row of rows) {
     const head = await getHead(tx, scope, String(row.id));
     if (head && whoseDetail(head.domain_key, head.current.content).kind !== 'other') return head;
+  }
+  return null;
+}
+
+/**
+ * The person's own detail filed under them alone (see `aboutSubject`), or as
+ * "self" by an older extraction, that this new one says again in other
+ * words: "Owns two cats" for "Has two cats". It names no topic to be found
+ * by, and the extractor is not always shown it. Said by this author only; a
+ * message from an ordinary conversation never lands on a detail learned only
+ * in a private one.
+ */
+async function heldAboutThem(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  author: Author,
+  proposal: Extract<ExtractionProposal, { op: 'add' }>,
+): Promise<ClaimHead | null> {
+  if (
+    !aboutThem(proposal.domain_key) ||
+    proposal.kind === 'exception' ||
+    proposal.kind === 'historical'
+  )
+    return null;
+  const fromPrivate = batch.private_origin !== null;
+  const rows = await tx`select c.id, c.domain_key, b.content from memory_claims c
+    join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
+    where c.space_id = ${scope.spaceId} and c.audience = ${batch.source.audience} and not c.hidden
+      and c.key is null and c.domain_key <> ${proposal.domain_key}
+      and (c.domain_key in ('self', 'self.about') or c.domain_key like 'self.about.%'
+        or c.domain_key like 'self.member%')
+      and position(':exception:' in c.domain_key) = 0
+      and (${fromPrivate} or not exists (select 1 from memory_references ref
+        join memory_sources p on p.id = ref.source_id
+        where ref.claim_id = c.id and ref.revision = c.head_revision and p.private_origin is not null))
+      and not exists (select 1 from memory_references said join memory_sources who
+        on who.id = said.source_id where said.claim_id = c.id and said.revision = c.head_revision
+          and who.author_principal_id is distinct from ${author.id})
+    order by c.id limit 500`;
+  const subject = aboutSubject(proposal.content);
+  for (const row of rows) {
+    const content = String(row.content ?? '');
+    if (!content || !aboutThem(String(row.domain_key))) continue;
+    if (aboutSubject(content) !== subject && !sameDetail(content, proposal.content)) continue;
+    const head = await getHead(tx, scope, String(row.id));
+    if (head?.current.content) return head;
   }
   return null;
 }
@@ -361,10 +423,14 @@ async function validateProposal(
       }
       // This author's own detail (see `saidBy`), proposed without the part
       // that keeps it apart from another room member's, or the person's own
-      // detail changed under the topic it is filed under now: the change
-      // lands on the claim, under the subject it is held as.
+      // detail changed under the topic it is filed under now or under another
+      // name for it (home.city for self.city): the change lands on the claim,
+      // under the subject it is held as.
       if (
         withoutMember(head.domain_key) !== withoutMember(proposal.domain_key) &&
+        !sameOwnDetail(withoutMember(head.domain_key)).includes(
+          withoutMember(proposal.domain_key),
+        ) &&
         !ownDetailRenamed(head.domain_key, proposal.domain_key, head.current.content)
       )
         throw new MemoryError('target_mismatch');
@@ -428,9 +494,23 @@ async function validateProposal(
           // The person's own detail, held under the subject an older
           // extraction gave it: said again or changed, it lands on that claim.
           const older = await heldUnderOlderSubject(tx, scope, batch, author, proposal.domain_key);
+          const again = older ? null : await heldAboutThem(tx, scope, batch, author, proposal);
           if (older) {
             head = older;
             filed = { ...proposal, domain_key: older.domain_key };
+          } else if (again?.current.content) {
+            // The person's own detail about them alone, said again in other
+            // words: it lands on that claim. Said with less ("Speaks English"
+            // after "Speaks Portuguese and English"), it is more evidence for
+            // the held wording.
+            head = again;
+            filed = {
+              ...proposal,
+              domain_key: again.domain_key,
+              content: saysNoMore(proposal.content, again.current.content)
+                ? again.current.content
+                : proposal.content,
+            };
           } else if (
             proposal.kind !== 'exception' &&
             proposal.kind !== 'historical' &&

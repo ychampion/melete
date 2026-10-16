@@ -275,13 +275,54 @@ const SAID_OF = new Set(
     'drinks isn wasn hasn doesn'
   ).split(' '),
 );
+/** Words after "is" that say what a thing or a place is to the person, never what someone is. */
+const THING_IS = new Set(
+  'must home essential staple favourite favorite best everything necessity nonnegotiable'.split(
+    ' ',
+  ),
+);
+/** Words between a verb and what it says that say nothing themselves: "is a must", "is now home". */
+const LEAD_IN = new Set('a an the now still really so very always definitely also just'.split(' '));
+/** Words after a detail's first word that a thing says as often as someone does: "Coffee is". */
+const EITHER = new Set('is was has had'.split(' '));
+/** Words that put the person after what a detail starts with: "makes me sneeze", "is my main language". */
+const THE_PERSON = new Set('me my us our'.split(' '));
+/**
+ * Whether a detail that starts with a capitalized word and "is", "has" or
+ * "'s" is about a thing or a place of the person's, not someone: "Coffee is a
+ * must", "Lisbon is home now", "Python is my main language", "Maya's cat
+ * makes me sneeze". The capital may only start the sentence. One that goes on
+ * to say who they are to the person ("Maya is my sister"), or what they are
+ * ("Maya is a teacher"), or that names a detail of theirs ("Sam's diet is
+ * vegan"), is someone's.
+ */
+function thingFirst(words: readonly string[], at: number): boolean {
+  const plain = (index: number) => (words[index] ?? '').replace(/['’]s$/u, '').toLowerCase();
+  let verb = at + 1;
+  if (/['’]s$/u.test(words[at] ?? '')) {
+    if (TOPICS.has(plain(verb))) return false;
+    verb++;
+    // What is theirs does something to the person.
+    if (THE_PERSON.has(plain(verb + 1)) && !RELATIONS.has(plain(verb + 2))) return true;
+  }
+  if (!EITHER.has(plain(verb))) return false;
+  let said = verb + 1;
+  while (LEAD_IN.has(plain(said))) said++;
+  if (THING_IS.has(plain(said))) return true;
+  if (!THE_PERSON.has(plain(said))) return false;
+  said++;
+  while (DESCRIBING.has(plain(said))) said++;
+  return !RELATIONS.has(plain(said));
+}
 /**
  * Who a detail's words are about, when they start with someone: "Maya is
  * allergic to peanuts", "Sam's diet is vegan", "My sister lives in Lisbon",
  * "Sister Maya is vegetarian", "my friend sam is vegetarian". Null when they
  * start with the detail itself ("Allergic to peanuts", "Will be away until
- * Friday") or with the person ("User lives in Lisbon"). A name on its own is
- * read only when written with a capital; after a relation, however written.
+ * Friday"), with the person ("User lives in Lisbon"), or with a thing or a
+ * place of theirs ("Coffee is a must", see `thingFirst`). A name on its own
+ * is read only when written with a capital; after a relation, however
+ * written.
  */
 export function someoneFirst(text: string): { name?: string; relation?: string } | null {
   const words = text
@@ -307,8 +348,10 @@ export function someoneFirst(text: string): { name?: string; relation?: string }
     !SAID_OF.has(name) &&
     (relation || /^\p{Lu}/u.test(word)) &&
     (possessive(word) || SAID_OF.has(plain(words[at + 1])))
-  )
+  ) {
+    if (!relation && thingFirst(words, at)) return null;
     return { name, ...(relation ? { relation } : {}) };
+  }
   if (relation && SAID_OF.has(plain(words[at]))) return { relation };
   return null;
 }
@@ -535,6 +578,31 @@ export function sameWhose(a: Whose, aText: string, b: Whose, bText: string): boo
     names(aText, nameOf(b) ?? b.who)
   );
 }
+
+/**
+ * Subjects that name one detail of the person's own: the city they live in is
+ * home.city, or self.city and self.home.city when it was filed under the
+ * person (person.user.city). Where they work, or anything else that also says
+ * "city", is another detail.
+ */
+const ONE_OWN_DETAIL: readonly (readonly string[])[] = [
+  ['home.city', 'self.city', 'self.home.city'],
+];
+/** The other subjects that name the same detail of the person's own (see `ONE_OWN_DETAIL`). */
+export function sameOwnDetail(domainKey: string): string[] {
+  const names = ONE_OWN_DETAIL.find((group) => group.includes(domainKey));
+  return names ? names.filter((name) => name !== domainKey) : [];
+}
+
+/**
+ * Whether a subject holds a detail of the person's own filed under them
+ * alone, with no topic: self.about.night_work, or "self" as an older
+ * extraction filed it.
+ */
+export const aboutThem = (domainKey: string) => {
+  const subject = withoutMember(domainKey);
+  return subject === 'self' || subject === 'self.about' || subject.startsWith('self.about.');
+};
 
 /** A subject an older extraction gave a detail of the person's own: a person heading naming no one. */
 export const olderOwnSubject = (domainKey: string) =>
