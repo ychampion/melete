@@ -188,6 +188,7 @@ import {
 import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
+import { requireSessionSpace } from './principals/session-space.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
@@ -424,7 +425,9 @@ export function createApp(deps: AppDeps) {
     deps.resolveSpace ??
     (async (c) => {
       const spaceId = c.get('experienceSpaceId');
-      return spaceId ? { spaceId, principalId: c.get('owner')?.id } : null;
+      if (!spaceId) return null;
+      requireSessionSpace(c, spaceId);
+      return { spaceId, principalId: c.get('owner')?.id };
     });
   if (deps.db)
     mountArtifacts(

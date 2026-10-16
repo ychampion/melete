@@ -34,7 +34,7 @@ import { actionBecause } from '../memory/basis.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
-import { ownsSessionSpace } from '../principals/session-space.ts';
+import { ownsSessionSpace, requireSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { HandoffService } from '../rooms/handoffs.ts';
 import type { RunService } from '../runs/service.ts';
@@ -117,21 +117,6 @@ const SPACE_OWNER_SURFACES = new Set([
   'DELETE /agents/{id}',
   'DELETE /space/members/{id}',
 ]);
-
-/**
- * These routes answer for the space the session is in. A request that names a
- * different space, even a room the person is in, is refused rather than
- * answered for the session's space as if it were the one asked about.
- */
-function requireSessionSpace(c: Context, spaceId: string) {
-  const named = c.req.header('x-melete-space');
-  if (named && named !== spaceId)
-    throw new ServiceError(
-      'scope_denied',
-      'This works only in the space you are signed in to.',
-      400,
-    );
-}
 
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
