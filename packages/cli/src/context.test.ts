@@ -268,4 +268,28 @@ for (;;) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(
     }
     expect(peak).toBeLessThan(48 * 1024 * 1024);
   }, 60_000);
+  test('a fast source waits for a slow sink, so what it has written is not held here', async () => {
+    // As gpg decrypts a dump faster than pg_restore loads it. The source can be no more than
+    // the pipes between them ahead of the sink: while the sink pauses, it cannot finish.
+    const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    try {
+      const done = join(dir, 'done');
+      const size = 32 * 1024 * 1024;
+      const result = await stream(
+        { command: ['sh', '-c', `head -c ${size} /dev/zero && : > '${done}'`] },
+        [
+          {
+            command: [
+              'sh',
+              '-c',
+              `head -c 1048576 >/dev/null; sleep 1; if [ -e '${done}' ]; then echo "source ran ahead" >&2; exit 5; fi; cat >/dev/null`,
+            ],
+          },
+        ],
+      );
+      expect(result).toMatchObject({ ok: true, bytes: size, detail: '' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

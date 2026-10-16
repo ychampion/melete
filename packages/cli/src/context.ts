@@ -4,10 +4,20 @@
  * Docker and a temporary directory.
  */
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, statfsSync, statSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  mkdtempSync,
+  openSync,
+  read,
+  rmSync,
+  statfsSync,
+  statSync,
+  writeSync,
+} from 'node:fs';
 import { connect } from 'node:net';
-import { networkInterfaces } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { networkInterfaces, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import {
   type CommandOutput,
   spawnCommand,
@@ -182,6 +192,80 @@ const STREAM_TIMEOUT_MS = 6 * 60 * 60_000;
 /** A pipe holds 64 KB on Linux. */
 const PIPE_SLICE = 64 * 1024;
 
+/**
+ * A pipe for a source command's output that is read here only when the next bytes
+ * are wanted. Bun reads a command's own stdout as fast as the command writes it,
+ * whatever the sinks take, so a dump decrypted faster than it loads would gather in
+ * memory. On this pipe the command waits instead. Its name is removed at once.
+ */
+function sourcePipe(): { read: number; write: number } {
+  const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+  try {
+    const path = join(dir, 'source');
+    const made = Bun.spawnSync(['mkfifo', '-m', '600', path], { stdout: 'ignore', stderr: 'pipe' });
+    if (made.exitCode !== 0)
+      throw new Error(`mkfifo exited ${made.exitCode}: ${made.stderr.toString().trim()}`);
+    // A read end that does not wait comes first, so neither of the others waits to open.
+    const opening = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      const write = openSync(path, constants.O_WRONLY);
+      return { read: openSync(path, constants.O_RDONLY), write };
+    } finally {
+      closeSync(opening);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** How far a source is read ahead of its sinks: enough that reading and writing overlap. */
+const READ_AHEAD = 16;
+
+/**
+ * Reads a descriptor a pipe's worth at a time, at most READ_AHEAD pieces ahead of
+ * what was asked for, so a source that outruns its sinks holds about 1 MB here.
+ */
+function pulled(fd: number): ReadableStream<Uint8Array> {
+  let reading: Promise<unknown> = Promise.resolve();
+  let closed = false;
+  let cancelled = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    closeSync(fd);
+  };
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        const buffer = new Uint8Array(PIPE_SLICE);
+        const count = new Promise<number>((settle, fail) =>
+          read(fd, buffer, 0, buffer.length, null, (error, n) => (error ? fail(error) : settle(n))),
+        );
+        reading = count.catch(() => undefined);
+        let n: number;
+        try {
+          n = await count;
+        } catch (error) {
+          close();
+          throw error;
+        }
+        if (cancelled) return;
+        if (n === 0) {
+          close();
+          controller.close();
+        } else controller.enqueue(buffer.subarray(0, n));
+      },
+      cancel() {
+        // A read under way still uses the descriptor, so it is closed once that read
+        // returns: at once when the source, stopped, has exited, or with its next bytes.
+        cancelled = true;
+        void reading.then(close);
+      },
+    },
+    { highWaterMark: READ_AHEAD },
+  );
+}
+
 export async function stream(source: Source, sinks: readonly Endpoint[]): Promise<StreamResult> {
   const hash = createHash('sha256');
   let bytes = 0;
@@ -272,12 +356,22 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
     if ('bytes' in source) reader = new Blob([source.bytes]).stream();
     else if ('file' in source) reader = Bun.file(source.file).stream();
     else {
-      producer = Bun.spawn([...source.command], {
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      reader = producer.stdout as ReadableStream<Uint8Array>;
+      // Windows has no named pipes of this kind: there the source is read as Bun reads it.
+      const pipe = process.platform === 'win32' ? null : sourcePipe();
+      try {
+        producer = Bun.spawn([...source.command], {
+          stdin: 'ignore',
+          stdout: pipe ? pipe.write : 'pipe',
+          stderr: 'pipe',
+        });
+      } catch (error) {
+        if (pipe) closeSync(pipe.read);
+        throw error;
+      } finally {
+        // The command holds the write end alone, so the read ends when it does.
+        if (pipe) closeSync(pipe.write);
+      }
+      reader = pipe ? pulled(pipe.read) : (producer.stdout as ReadableStream<Uint8Array>);
       producerStderr = new Response(producer.stderr as ReadableStream).text();
     }
     const timer = setTimeout(() => {
@@ -352,6 +446,8 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
       }
     } finally {
       clearTimeout(timer);
+      // Lets go of the source when something here failed part way; otherwise a no-op.
+      await chunks.cancel().catch(() => undefined);
     }
   } catch (error) {
     problems.push(error instanceof Error ? error.message : String(error));
