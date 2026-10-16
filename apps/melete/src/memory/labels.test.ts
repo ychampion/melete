@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   relationsIn,
+  relativeNamed,
   relativeOf,
   relativeSubject,
   subjectRelative,
@@ -105,5 +106,95 @@ describe('how a text relates the person to someone it names', () => {
     expect(subjectRelative('person.sam.brother.city', 'sam')).toBe('brother');
     expect(subjectRelative('person.sam.mom.city', 'sam')).toBe('mother');
     expect(subjectRelative('person.brother.sam.city', 'sam')).toBeNull();
+    // Someone else's relative is kept under the someone whose relative they are.
+    expect(relativeSubject('person.brother.sam.city', 'sam', 'brother', 'friend', 'alex')).toBe(
+      'person.friend.alex.brother.city',
+    );
+    expect(subjectRelative('person.sam.bro.city', 'sam')).toBe('brother');
+  });
+
+  test('a short word for a relation is that relation', () => {
+    expect([...relationsIn('My bro Sam lives in Oslo', 'Sam')]).toEqual(['brother']);
+    expect([...relationsIn('Maya, my sis, lives in Oslo', 'Maya')]).toEqual(['sister']);
+    expect(relativeOf("Sam's bro moved to Faro", 'sam')).toBe('brother');
+    expect(relativeOf('My friend Sam’s little sis lives in Faro', 'sam')).toBe('sister');
+    expect(whoseDetail('person.sis.maya.city', 'Sis Maya lives in Oslo')).toEqual({
+      kind: 'other',
+      who: 'sis',
+      name: 'maya',
+      relation: 'sis',
+    });
+    // Said to anyone, it relates no one: "Thanks bro, Sam moved".
+    expect([...relationsIn('Thanks bro, Sam moved to Faro', 'Sam')]).toEqual([]);
+    expect([...relationsIn('Sam, bro, moved to Faro', 'Sam')]).toEqual([]);
+    expect([...relationsIn('Hey sis! Maya lives in Oslo now', 'Maya')]).toEqual([]);
+    expect([...relationsIn('My little bro Sam lives in Oslo', 'Sam')]).toEqual(['brother']);
+    // So "my bro Sam" is not "my friend Sam".
+    expect(
+      twoPeople(
+        whoseDetail('person.sam.city', 'My bro Sam lives in Oslo'),
+        'My bro Sam lives in Oslo',
+        whoseDetail('person.friend.sam.city', 'Friend Sam lives in Rome'),
+        'Friend Sam lives in Rome',
+      ),
+    ).toBe(true);
+  });
+
+  test("a text named someone only as another's relative is about that relative", () => {
+    for (const [text, of, relative] of [
+      ["Alex's brother Sam moved to Faro", 'alex', 'brother'],
+      ["My friend Alex's older brother Sam moved to Faro", 'alex', 'brother'],
+      ['Alex’s sister, Sam, lives in Faro', 'alex', 'sister'],
+      ["Alex's bro Sam lives in Faro", 'alex', 'brother'],
+      ["James' brother Sam moved to Faro", 'james', 'brother'],
+      ["Alex's brother-in-law Sam moved to Faro", 'alex', 'brother-in-law'],
+    ] as const)
+      expect([text, relativeNamed(text, 'sam')]).toEqual([text, { of, relative }]);
+    for (const text of [
+      'My brother Sam moved to Faro',
+      'Sam moved to Faro',
+      "Sam's brother moved to Faro",
+      "Sam's brother Alex moved to Faro",
+      // A relative of one of the person's own, or no one's.
+      "My friend's brother Sam moved to Faro",
+      "Mom's brother Sam moved to Faro",
+      "It's brother Sam's birthday on Friday",
+      "Alex's dog Sam is in Faro",
+      // Sam is also named on his own, or the text is about his own relative.
+      "Alex's brother Sam says Sam moved to Faro",
+      "Alex's brother Sam's wife moved to Faro",
+    ])
+      expect([text, relativeNamed(text, 'sam')]).toEqual([text, null]);
+  });
+
+  test('a name with an apostrophe is read as one name, never as whose something is', () => {
+    for (const name of ['o brien', 'obrien', "o'brien"]) {
+      expect([name, [...relationsIn("My brother O'Brien lives in Oslo", name)]]).toEqual([
+        name,
+        ['brother'],
+      ]);
+      expect([name, [...relationsIn("O'Brien, my colleague, lives in Oslo", name)]]).toEqual([
+        name,
+        ['colleague'],
+      ]);
+      expect([name, [...relationsIn("O'Brien's sister lives in Oslo", name)]]).toEqual([name, []]);
+      expect([name, relativeOf("My friend O'Brien's sister moved to Faro", name)]).toEqual([
+        name,
+        'sister',
+      ]);
+      expect([name, relativeOf("O'Brien moved to Faro", name)]).toEqual([name, null]);
+      expect([name, relativeOf("My brother O'Brien moved to Faro", name)]).toEqual([name, null]);
+    }
+    expect([...relationsIn('My cousin D’Angelo lives in Rome', 'd angelo')]).toEqual(['cousin']);
+    expect(relativeOf("D'Angelo's mom lives in Rome", 'd angelo')).toBe('mother');
+    expect(relativeNamed("O'Brien's brother Sam moved to Faro", 'sam')).toEqual({
+      of: 'obrien',
+      relative: 'brother',
+    });
+    // A name that only ends like one is another name, and an initial inside a name stays one.
+    expect([...relationsIn("My brother O'Brien lives in Oslo", 'brien')]).toEqual([]);
+    expect([...relationsIn('My friend Jo D Smith lives in Oslo', 'jo d smith')]).toEqual([
+      'friend',
+    ]);
   });
 });

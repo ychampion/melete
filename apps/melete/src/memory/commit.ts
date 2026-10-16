@@ -52,6 +52,7 @@ import {
   PERSON_HEADS,
   relatedSubject,
   relationsIn,
+  relativeNamed,
   relativeOf,
   relativeSubject,
   SELF,
@@ -195,8 +196,11 @@ function relatedInQuotes(whose: Whose, sources: readonly { quote: string }[]): s
  * moved to Faro". The other way round, the held detail is a relative's
  * ("Sam's brother lives in Faro" under "person.sam.brother.city") and the
  * change is about the someone themself ("My brother Sam moved to Lagos"): it
- * is kept as theirs. Null when relatives do not decide it; `apart` is null
- * when the change is about the relative the held detail is about.
+ * is kept as theirs. Someone of the held name whom the change names only as
+ * another's relative ("Alex's brother Sam moved to Faro", where Brother Sam
+ * is held) is kept under whose relative they are ("person.alex.brother.city").
+ * Null when relatives do not decide it; `apart` is null when the change is
+ * about the relative the held detail is about.
  */
 async function relativeApart(
   tx: MemoryTx,
@@ -234,6 +238,28 @@ async function relativeApart(
     }
   }
   const said = relationsIn(proposed.content, name);
+  // Someone of that name named only as another's relative ("Alex's brother
+  // Sam"), where the person said how they know the one held, is not them.
+  const named =
+    (said.size === 0 && relativeOf(proposed.content, name) === null
+      ? relativeNamed(proposed.content, name)
+      : null) ??
+    quotes
+      .filter((quote) => relationsIn(quote, name, true).size === 0)
+      .map((quote) => relativeNamed(quote, name))
+      .find((found) => found !== null && [...said].every((word) => word === found.relative)) ??
+    null;
+  if (named && !words.some((text) => relativeNamed(text, name)?.of === named.of)) {
+    const before = whoseDetail(held.domain_key, held.current.content);
+    if (words.some((text) => saysRelation(before, text))) {
+      const [related] = [
+        ...quotes.flatMap((quote) => [...relationsIn(quote, named.of, true)]),
+        ...relationsIn(proposed.content, named.of),
+      ];
+      const subject = relativeSubject(proposed.domain_key, name, named.relative, related, named.of);
+      return subject !== withoutMember(held.domain_key) ? { apart: subject } : null;
+    }
+  }
   const relative =
     relativeOf(proposed.content, name) ??
     quotes
