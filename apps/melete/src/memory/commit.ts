@@ -44,16 +44,20 @@ import {
   aboutThem,
   GENERIC_HEADS,
   memberSubject,
+  nameOf,
   olderOwnSubject,
   olderOwnSubjects,
   ownDetailNow,
   PERSON_HEADS,
   relatedSubject,
   relationsIn,
+  relativeOf,
+  relativeSubject,
   SELF,
   sameOwnDetail,
   sameWhose,
   saysRelation,
+  subjectRelative,
   twoPeople,
   type Whose,
   whoseDetail,
@@ -118,14 +122,18 @@ async function saidBy(tx: MemoryTx, head: ClaimHead, author: Author): Promise<bo
 /**
  * The subject a change is kept under when the claim held where it was
  * proposed is about someone else: another person of the same name ("Brother
- * Sam" where "Friend Sam" is held) or the owner of something ("The owner of
- * my flat lives in Porto", where the person's own city was proposed). Null
- * when it is about the same someone, or memory cannot tell. How the person
- * relates someone is read from the claim's latest words that say it, so a
- * change that left the relation out ("Brother Sam lives in Madrid", then
- * "Sam lives in Porto") still holds the brother; and for the change, from
- * the person's words it cites when its own leave the relation out ("Sam
- * lives in Faro", citing "My friend Sam just moved to Faro").
+ * Sam" where "Friend Sam" is held), a relative of theirs ("Sam's brother"
+ * where Brother Sam is held, see `relativeApart`) or the owner of something
+ * ("The owner of my flat lives in Porto", where the person's own city was
+ * proposed). Null when it is about the same someone, or memory cannot tell.
+ * How the person relates someone is read from the claim's latest words that
+ * say it, so a change that left the relation out ("Brother Sam lives in
+ * Madrid", then "Sam lives in Porto") still holds the brother; and for the
+ * change, from its own words, or the person's words it cites when its own
+ * leave the relation out ("Sam lives in Faro", citing "My friend Sam just
+ * moved to Faro"). A change is proposed under the held subject, so a relation
+ * that subject names ("person.brother.sam.city") is the held one's, not the
+ * change's.
  */
 async function apartFrom(
   tx: MemoryTx,
@@ -135,8 +143,12 @@ async function apartFrom(
   const content = held.current.content;
   if (!content || held.domain_key.includes(':exception:')) return null;
   const before = whoseDetail(held.domain_key, content);
-  const now = whoseDetail(proposed.domain_key, proposed.content);
-  if (before.kind === 'other' && now.kind === 'other') {
+  const whose = whoseDetail(proposed.domain_key, proposed.content);
+  if (before.kind === 'other' && whose.kind === 'other') {
+    const relative = await relativeApart(tx, held, nameOf(before), proposed);
+    if (relative) return relative;
+    // Who the change is about, by name, without the relation its subject names.
+    const now: Whose = whose.name ? { kind: 'other', who: whose.who, name: whose.name } : whose;
     const related = saysRelation(before, content)
       ? content
       : ((await earlierWords(tx, held)).find((words) => saysRelation(before, words)) ?? content);
@@ -148,7 +160,7 @@ async function apartFrom(
     return subject && subject !== held.domain_key ? subject : null;
   }
   // The person's own detail, where the owner of something is held.
-  if (before.kind === 'other' && before.who === 'owner' && now.kind === 'self') {
+  if (before.kind === 'other' && before.who === 'owner' && whose.kind === 'self') {
     const parts = proposed.domain_key.split('.');
     if (!PERSON_HEADS.has(parts[0] ?? '') || parts.length < 3) return null;
     return ['self', ...parts.slice(2)].join('.');
@@ -170,6 +182,45 @@ function relatedInQuotes(whose: Whose, sources: readonly { quote: string }[]): s
     if (found) return `${found} ${name}`;
   }
   return null;
+}
+
+/**
+ * The subject a change is kept under when it is about a relative of the
+ * someone held, not them: "Sam's brother lives in Faro" proposed as a change
+ * to Brother Sam. The relative is read from the change's words, or from the
+ * person's words it cites when its own took the relative's relation for the
+ * person's: "Brother Sam lives in Faro", citing "My friend Sam's brother
+ * moved to Faro". Null when the held detail is about that relative too.
+ */
+async function relativeApart(
+  tx: MemoryTx,
+  held: ClaimHead,
+  name: string | null,
+  proposed: { domain_key: string; content: string; sources?: readonly { quote: string }[] },
+): Promise<string | null> {
+  if (!name) return null;
+  const quotes = (proposed.sources ?? []).map(({ quote }) => quote);
+  const said = relationsIn(proposed.content, name);
+  const relative =
+    relativeOf(proposed.content, name) ??
+    quotes
+      .map((quote) => relativeOf(quote, name))
+      .find(
+        (found, index) =>
+          found !== null &&
+          said.has(found) &&
+          !relationsIn(quotes[index] ?? '', name, true).has(found),
+      ) ??
+    null;
+  if (!relative || subjectRelative(held.domain_key, name) === relative) return null;
+  const words = [held.current.content ?? '', ...(await earlierWords(tx, held))];
+  if (words.some((text) => relativeOf(text, name) === relative)) return null;
+  // How the person knows the someone whose relative this is, as their own words say it.
+  const related = [...quotes.flatMap((quote) => [...relationsIn(quote, name, true)]), ...said].find(
+    (found) => found !== relative,
+  );
+  const subject = relativeSubject(proposed.domain_key, name, relative, related);
+  return subject !== withoutMember(held.domain_key) ? subject : null;
 }
 
 /** A claim's earlier wordings, latest first. Forgotten ones are gone and never read. */

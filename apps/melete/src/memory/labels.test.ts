@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { relationsIn, twoPeople, whoseDetail } from './labels.ts';
+import {
+  relationsIn,
+  relativeOf,
+  relativeSubject,
+  subjectRelative,
+  twoPeople,
+  whoseDetail,
+} from './labels.ts';
 
 describe('whose detail a subject under "owner" holds', () => {
   test("the person's own business is theirs; the owner of something they use is someone else", () => {
@@ -48,5 +55,49 @@ describe('how a text relates the person to someone it names', () => {
     expect([...relationsIn('Sam, my colleague, lives in Oslo', 'Sam')]).toEqual(['colleague']);
     // A hyphenated name is still the name.
     expect([...relationsIn('My friend Jean-Luc lives in Lyon', 'Jean-Luc')]).toEqual(['friend']);
+  });
+
+  test("a text named someone only as a relative's is about that relative", () => {
+    for (const [text, relative] of [
+      ["Sam's brother moved to Faro", 'brother'],
+      ["My friend Sam's brother moved to Faro", 'brother'],
+      ['My friend Sam’s sister lives in Faro', 'sister'],
+      ["Sam's mom lives in Faro", 'mother'],
+      ["Sam's older brother lives in Faro", 'brother'],
+      ["My brother Sam's wife moved to Faro", 'partner'],
+      ["Sam's brother-in-law lives in Faro", 'brother-in-law'],
+      ["Jean-Luc's sister lives in Lyon", 'sister'],
+    ] as const)
+      expect([text, relativeOf(text, text.includes('Jean') ? 'jean luc' : 'sam')]).toEqual([
+        text,
+        relative,
+      ]);
+    for (const text of [
+      'My brother Sam moved to Faro',
+      'Sam (my brother) moved to Faro',
+      'Sam moved to Faro',
+      "Sams' brother moved to Faro",
+      "Sam's flat is in Faro",
+      "Sam's moving to Faro",
+      "Sam's brother says Sam moved to Faro",
+      'His brother moved to Faro',
+    ])
+      expect([text, relativeOf(text, 'sam')]).toEqual([text, null]);
+  });
+
+  test("a relative of someone's is kept under their name", () => {
+    expect(relativeSubject('person.sam.city', 'sam', 'brother')).toBe('person.sam.brother.city');
+    expect(relativeSubject('person.brother.sam.city', 'sam', 'brother', 'friend')).toBe(
+      'person.friend.sam.brother.city',
+    );
+    expect(relativeSubject('person.sam.mother.city', 'sam', 'father')).toBe(
+      'person.sam.father.city',
+    );
+    expect(relativeSubject('person.jean_luc.city', 'jean luc', 'sister')).toBe(
+      'person.jean_luc.sister.city',
+    );
+    expect(subjectRelative('person.sam.brother.city', 'sam')).toBe('brother');
+    expect(subjectRelative('person.sam.mom.city', 'sam')).toBe('mother');
+    expect(subjectRelative('person.brother.sam.city', 'sam')).toBeNull();
   });
 });

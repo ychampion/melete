@@ -517,6 +517,18 @@ const DESCRIBING = new Set(
     ' ',
   ),
 );
+const kinOf = (word: string) => word.split('-').some((part) => RELATIONS.has(part));
+const isRelationWord = (word: string) => RELATIONS.has(word) || (word.includes('-') && kinOf(word));
+/** A text's words, lowercased, as relations and names are read from them. */
+const relationWords = (text: string) =>
+  text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}'’-]+/u)
+    // A hyphenated relation stays one word; any other ("Jean-Luc") is read word by word.
+    .flatMap((word) => (word.includes('-') && kinOf(word) ? [word] : word.split('-')))
+    .filter(Boolean);
+/** A word without its "'s": "sam's" is "sam". */
+const bareWord = (word: string) => word.replace(/['’]s?$/u, '');
 /**
  * How a text relates the person to someone it names: "Brother Sam", "my
  * friend Sam", "Sam, my colleague". A relation of theirs ("Sam's sister")
@@ -529,34 +541,26 @@ const DESCRIBING = new Set(
  */
 export function relationsIn(text: string, name: string, beside = false): Set<string> {
   const found = new Set<string>();
-  const kinOf = (word: string) => word.split('-').some((part) => RELATIONS.has(part));
-  const words = text
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}'’-]+/u)
-    // A hyphenated relation stays one word; any other ("Jean-Luc") is read word by word.
-    .flatMap((word) => (word.includes('-') && kinOf(word) ? [word] : word.split('-')))
-    .filter(Boolean);
-  const isRelation = (word: string) => RELATIONS.has(word) || (word.includes('-') && kinOf(word));
+  const words = relationWords(text);
   const possessive = (word: string) =>
     /['’]s$/u.test(word) && !CONTRACTED.has(word.replace('’', "'"));
   const who = textWords(name);
   const last = who.at(-1);
   if (!last) return found;
-  const plain = (word: string) => word.replace(/['’]s?$/u, '');
   const own = new Set(['my', 'your', 'a', 'an', 'the', 'our']);
   words.forEach((word, index) => {
-    if (plain(word) !== last) return;
+    if (bareWord(word) !== last) return;
     for (let back = index - who.length; back >= Math.max(0, index - who.length - 3); back--) {
       const before = words[back] ?? '';
       if (possessive(before)) break;
       // "My friend's brother Sam" is the friend's brother.
-      if (isRelation(before) && !possessive(words[back - 1] ?? '')) found.add(relation(before));
+      if (isRelationWord(before) && !possessive(words[back - 1] ?? '')) found.add(relation(before));
       else if (beside && !DESCRIBING.has(before)) break;
     }
     // "Sam's sister" is Sam's relation, not the person's.
     if (possessive(word)) return;
     const after = words.slice(index + 1, index + 4);
-    const at = after.findIndex(isRelation);
+    const at = after.findIndex(isRelationWord);
     if (at >= 0 && after.slice(0, at).every((item) => own.has(item)) && at <= 1)
       found.add(relation(after[at] ?? ''));
   });
@@ -602,6 +606,61 @@ export function relatedSubject(domainKey: string, whose: Whose, text: string): s
   const [head = '', subject = ''] = parts;
   const rest = RELATIONS.has(subject) ? parts.slice(2) : parts.slice(1);
   return [head, found, ...rest].join('.');
+}
+
+/**
+ * The relative of someone's a text is about, when it names them only as that
+ * relative's: "Sam's brother moved to Faro" and "My friend Sam's older
+ * brother moved to Faro" are about Sam's brother, "Sam's mom lives in Faro"
+ * about his mother. Null when it names them any other way: "My brother Sam
+ * moved to Faro", "Sam (my brother) moved", "Sam's flat is in Faro"; and
+ * "Sams' brother" is not Sam's.
+ */
+export function relativeOf(text: string, name: string): string | null {
+  const words = relationWords(text);
+  const last = textWords(name).at(-1);
+  let found: string | null = null;
+  for (const [index, word] of words.entries()) {
+    if (!last || bareWord(word) !== last) continue;
+    if (!/['’]s$/u.test(word)) return null;
+    let next = index + 1;
+    while (DESCRIBING.has(words[next] ?? '')) next++;
+    // "Sam's brother's flat" is still his brother's.
+    const kin = (words[next] ?? '').replace(/['’]s$/u, '');
+    if (!isRelationWord(kin)) return null;
+    found ??= relation(kin);
+  }
+  return found;
+}
+/** The relative a subject names after someone's name: "person.sam.brother.city" is Sam's brother's. */
+export function subjectRelative(domainKey: string, name: string): string | null {
+  const parts = withoutMember(domainKey).split('.');
+  const at = parts.findIndex((part, index) => index > 0 && part.replace(/[_-]+/g, ' ') === name);
+  const next = at > 0 ? (parts[at + 1] ?? '') : '';
+  return isRelationWord(next) ? relation(next) : null;
+}
+/**
+ * The subject a detail about someone's relative is kept under: "person.sam.city"
+ * for Sam's brother is "person.sam.brother.city", and
+ * "person.friend.sam.brother.city" when the person's words say Sam is a friend.
+ */
+export function relativeSubject(
+  domainKey: string,
+  name: string,
+  relative: string,
+  related?: string,
+): string {
+  const parts = withoutMember(domainKey).split('.');
+  const at = parts.findIndex((part, index) => index > 0 && part.replace(/[_-]+/g, ' ') === name);
+  let rest = at > 0 ? parts.slice(at + 1) : parts.slice(1);
+  if (isRelationWord(rest[0] ?? '')) rest = rest.slice(1);
+  return [
+    parts[0],
+    ...(related ? [related] : []),
+    name.replace(/\s+/g, '_'),
+    relative,
+    ...rest,
+  ].join('.');
 }
 
 /**
