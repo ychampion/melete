@@ -53,6 +53,17 @@ What it proposes is held to that bar before it is kept:
   rewritten ("Lena, the user's sister" reads "Lena, your sister"; "The user is
   vegetarian" reads "Vegetarian"). The memory page shows such a sentence as the
   belief's own line, and a bare value under its subject's name.
+- A detail is kept with the someone it is about. One whose words start with
+  someone ("Maya is allergic to peanuts") is theirs, whatever topic it was
+  proposed under. Two people who share a first name stay two when the person
+  says how each is related to them ("my brother Sam", then "my friend Sam").
+  How a held detail relates someone is read from the latest of its wordings
+  that says it, and how a change relates them from its own words or, when they
+  leave it out, from the word beside the name in the person's sentence: "My
+  sister says Sam lives in Faro" is about the Sam memory already holds. A
+  detail of the person's own that names no topic is kept as a detail of its
+  own, shown as "About you" (`whoseDetail`, `relationsIn` and `twoPeople` in
+  [labels.ts](../apps/melete/src/memory/labels.ts)).
 
 `mergeIntoHeld` and `readExtractionReply` in
 [extract.ts](../apps/melete/src/memory/extract.ts) hold these rules
@@ -62,6 +73,20 @@ measured with the same model answers once with the rules off and once with
 them on ([memory-noise.test.ts](../apps/melete/test/integration/memory-noise.test.ts));
 the test prints the counts of beliefs, one-off beliefs, duplicates, lasting
 facts kept, third-person wording and key-like labels.
+
+Memory refuses a change it cannot make and records why at
+`GET /memory/rejections`. A change aimed at a detail it may not change
+(another room member's, someone else's, or one the model was not shown), a
+retraction of the person's own correction, or a change whose dates end before
+they start is refused alone: the message's other details are kept, and only
+they are put to the person when memory asks before keeping anything. A message
+with nothing else to keep is refused as a whole. Words cited that the message
+does not hold, a statement that does not rest on the person's own words, a
+check the model claims, or two changes to one detail still refuse the whole
+message, because its reading cannot be trusted (`one change memory cannot make
+is refused alone; the message's other details are kept` and `a change refused
+alone is not put to the person for review` in
+[memory-whose-detail.test.ts](../apps/melete/test/integration/memory-whose-detail.test.ts)).
 
 Messages are kept from personal spaces, and in a shared space only from its
 owner. A member's messages in a shared space are not kept in any memory, theirs

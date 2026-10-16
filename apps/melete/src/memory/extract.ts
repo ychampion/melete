@@ -421,18 +421,47 @@ const OWN_ABOUT = new Set([
  * subject naming someone, however written ("maya", "Sam"), a relation
  * ("landlord"), the owner of something ("The owner of my flat lives
  * upstairs"), or a detail the model said is about someone they know is never
- * moved.
+ * moved. A detail under a subject naming only a topic whose words start with
+ * someone ("Maya is allergic to peanuts" as person.allergy) is filed under
+ * them, person.maya.allergy, whatever the model said it is about. One under
+ * the person alone ("person.user") gets a subject from its own words,
+ * self.about.works_nurse, so two such details are never taken for one.
  */
 export function ownSubject(domainKey: string, about: string | null, content?: string): string {
   const parts = domainKey.split('.');
   const [head = '', subject = ''] = parts;
-  if (!PERSON_HEADS.has(head) || about === 'someone_they_know') return domainKey;
+  if (!PERSON_HEADS.has(head)) return domainKey;
   const whose = whoseDetail(domainKey, content);
+  if (whose.kind === 'other' && whoseDetail(domainKey).kind === 'unknown') {
+    const someone = [whose.relation, whose.name ?? (whose.relation ? undefined : whose.who)]
+      .filter((part): part is string => Boolean(part))
+      .map(subjectWord);
+    return [head, ...someone, ...parts.slice(1)].filter(Boolean).join('.');
+  }
+  if (about === 'someone_they_know') return domainKey;
   const own =
     whose.kind === 'self' || (whose.kind === 'unknown' && about !== null && OWN_ABOUT.has(about));
   if (!own) return domainKey;
   const rest = parts.slice(SELF.has(subject) ? 2 : 1).filter(Boolean);
+  if (!rest.length) return ['self', 'about', ...aboutWords(content ?? '')].join('.');
   return ['self', ...rest].join('.');
+}
+
+/** A word as a subject writes it: lowercase, with anything but letters and digits as "_". */
+const subjectWord = (word: string) =>
+  word
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '_')
+    .replace(/^_+|_+$/g, '');
+
+/** The first meaningful words of a detail, for a subject of its own: "Works as a nurse" is works_nurse. */
+function aboutWords(content: string): string[] {
+  const words = content
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word && !PLAIN_WORDS.has(word))
+    .slice(0, 3);
+  return words.length ? [words.join('_')] : [];
 }
 
 /**

@@ -29,7 +29,7 @@ import {
   stableId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
-import { detailWords, listKey, sameWording } from './extract.ts';
+import { detailWords, listKey, ownSubject, sameWording } from './extract.ts';
 import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import {
   GENERIC_HEADS,
@@ -38,10 +38,14 @@ import {
   olderOwnSubjects,
   PERSON_HEADS,
   relatedSubject,
+  relationsIn,
   SELF,
   sameWhose,
+  saysRelation,
   twoPeople,
+  type Whose,
   whoseDetail,
+  withoutMember,
 } from './labels.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
 import { memorySeams } from './seams.ts';
@@ -104,19 +108,31 @@ async function saidBy(tx: MemoryTx, head: ClaimHead, author: Author): Promise<bo
  * proposed is about someone else: another person of the same name ("Brother
  * Sam" where "Friend Sam" is held) or the owner of something ("The owner of
  * my flat lives in Porto", where the person's own city was proposed). Null
- * when it is about the same someone, or memory cannot tell.
+ * when it is about the same someone, or memory cannot tell. How the person
+ * relates someone is read from the claim's latest words that say it, so a
+ * change that left the relation out ("Brother Sam lives in Madrid", then
+ * "Sam lives in Porto") still holds the brother; and for the change, from
+ * the person's words it cites when its own leave the relation out ("Sam
+ * lives in Faro", citing "My friend Sam just moved to Faro").
  */
-function apartFrom(
+async function apartFrom(
+  tx: MemoryTx,
   held: ClaimHead,
-  proposed: { domain_key: string; content: string },
-): string | null {
+  proposed: { domain_key: string; content: string; sources?: readonly { quote: string }[] },
+): Promise<string | null> {
   const content = held.current.content;
   if (!content || held.domain_key.includes(':exception:')) return null;
   const before = whoseDetail(held.domain_key, content);
   const now = whoseDetail(proposed.domain_key, proposed.content);
   if (before.kind === 'other' && now.kind === 'other') {
-    if (!twoPeople(before, content, now, proposed.content)) return null;
-    const subject = relatedSubject(proposed.domain_key, now, proposed.content);
+    const related = saysRelation(before, content)
+      ? content
+      : ((await earlierWords(tx, held)).find((words) => saysRelation(before, words)) ?? content);
+    const relating = saysRelation(now, proposed.content)
+      ? proposed.content
+      : (relatedInQuotes(now, proposed.sources ?? []) ?? proposed.content);
+    if (!twoPeople(before, related, now, relating)) return null;
+    const subject = relatedSubject(proposed.domain_key, now, relating);
     return subject && subject !== held.domain_key ? subject : null;
   }
   // The person's own detail, where the owner of something is held.
@@ -126,6 +142,47 @@ function apartFrom(
     return ['self', ...parts.slice(2)].join('.');
   }
   return null;
+}
+
+/**
+ * How the person's words a change cites relate the someone it is about, read
+ * only beside their name (see `relationsIn`), as "friend sam": "My friend Sam
+ * just moved to Faro" says a friend; "My friend told me Sam moved to Faro" and
+ * "My sister says Sam lives in Faro" say nothing of who Sam is.
+ */
+function relatedInQuotes(whose: Whose, sources: readonly { quote: string }[]): string | null {
+  if (whose.kind !== 'other') return null;
+  const name = whose.name ?? whose.who;
+  for (const { quote } of sources) {
+    const [found] = relationsIn(quote, name, true);
+    if (found) return `${found} ${name}`;
+  }
+  return null;
+}
+
+/** A claim's earlier wordings, latest first. Forgotten ones are gone and never read. */
+async function earlierWords(tx: MemoryTx, held: ClaimHead): Promise<string[]> {
+  const rows = await tx`select b.content from memory_revisions r
+    join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
+    where r.claim_id = ${held.id} and r.revision < ${held.head_revision}
+    order by r.revision desc limit 16`;
+  return rows.map((row) => String(row.content ?? '')).filter(Boolean);
+}
+
+/**
+ * The person's own detail, proposed as a change to a detail about the owner
+ * of something: "I moved to Braga" as a change to "The owner of my flat lives
+ * in Porto". It is kept as the person's own, and the owner's detail as it was.
+ */
+function ownBesideOwnerOf(held: ClaimHead, proposed: { domain_key: string; content: string }) {
+  if (held.domain_key.includes(':exception:') || proposed.domain_key.includes(':exception:'))
+    return false;
+  const before = whoseDetail(held.domain_key, held.current.content);
+  return (
+    before.kind === 'other' &&
+    before.who === 'owner' &&
+    whoseDetail(proposed.domain_key, proposed.content).kind === 'self'
+  );
 }
 
 /**
@@ -293,14 +350,30 @@ async function validateProposal(
     // One room member never changes or takes back another's detail.
     if (!(await saidBy(tx, head, author))) throw new MemoryError('target_mismatch');
     if (proposal.op === 'supersede' && head.domain_key !== proposal.domain_key) {
-      if (!ownDetailRenamed(head.domain_key, proposal.domain_key, head.current.content))
+      if (ownBesideOwnerOf(head, proposal)) {
+        const { claim_id: _claim, expected_revision: _revision, ...change } = proposal;
+        return validateProposal(tx, scope, batch, author, {
+          ...change,
+          op: 'add',
+          expected_revision: null,
+          domain_key: ownSubject(proposal.domain_key, 'the_person', proposal.content),
+        });
+      }
+      // This author's own detail (see `saidBy`), proposed without the part
+      // that keeps it apart from another room member's, or the person's own
+      // detail changed under the topic it is filed under now: the change
+      // lands on the claim, under the subject it is held as.
+      if (
+        withoutMember(head.domain_key) !== withoutMember(proposal.domain_key) &&
+        !ownDetailRenamed(head.domain_key, proposal.domain_key, head.current.content)
+      )
         throw new MemoryError('target_mismatch');
-      // The person's own detail, changed under the topic it is filed under
-      // now: the change lands on the claim, under the subject it is held as.
       filed = { ...proposal, domain_key: head.domain_key };
-    } else if (proposal.op === 'supersede') {
-      // Brother Sam is not Friend Sam: the change is a detail of his own.
-      const apart = apartFrom(head, proposal);
+    }
+    if (proposal.op === 'supersede') {
+      // Brother Sam is not Friend Sam, under whichever subject the change was
+      // proposed: the change is a detail of his own.
+      const apart = await apartFrom(tx, head, proposal);
       if (apart) await keepApart(proposal, apart);
     }
     if (proposal.op === 'retract' && head.current.protected)
@@ -342,7 +415,7 @@ async function validateProposal(
             filed = { ...proposal, domain_key: head.domain_key };
           // Someone of the same name the person relates differently, or the
           // owner of something, is held there: this is a detail of another one.
-          const apart = apartFrom(head, proposal);
+          const apart = await apartFrom(tx, head, proposal);
           if (apart)
             await keepApart(
               proposal,
@@ -618,6 +691,24 @@ async function publishKeyed(
   return head.id;
 }
 
+/**
+ * Refusals of one change that say nothing about the rest of its message: it
+ * is aimed at a detail it may not change, or at one it was not shown, or its
+ * dates end before they start. That change is refused with its reason, and
+ * the message's other details are kept. A refusal that says the reading of
+ * the message cannot be trusted (words cited that the message does not hold,
+ * a statement resting on words that are not the person's, a check claimed,
+ * a change outside memory's domain, or words the person asked memory to
+ * forget) still refuses the whole message; a stale snapshot is retried as a
+ * whole; and two changes to one detail are refused together.
+ */
+const REFUSED_ALONE = new Set([
+  'target_mismatch',
+  'target_not_in_snapshot',
+  'protected_correction',
+  'invalid_validity',
+]);
+
 /** Internal failure-schedule seam; no request, model, or queue payload can install a hook. */
 export type PublicationHooks = {
   beforeLock?: () => Promise<void>;
@@ -699,10 +790,31 @@ export async function commitExtraction(
       const targets = new Set<string>();
       /** Details said again in a held detail's words, filed under it (see `heldInTheseWords`). */
       const restated: number[] = [];
+      /** Changes refused on their own (see `REFUSED_ALONE`), and the first one's error. */
+      const refusedAlone: Tier1Rejection[] = [];
+      /** The changes left once those are refused: what review puts to the person. */
+      const reviewable: ExtractionProposal[] = [];
+      let firstRefusal: { error: MemoryError; index: number; key: string | null } | null = null;
+      /** Whether anything but a no-op is kept from this message. */
+      let keeps = false;
       for (const proposal of proposals) {
         failedIndex = Math.max(0, parsed.proposals.indexOf(proposal));
         failedKey = 'key' in proposal && typeof proposal.key === 'string' ? proposal.key : null;
-        const item = await validateProposal(tx, scope, batch, author, proposal);
+        let item: Validated;
+        try {
+          item = await validateProposal(tx, scope, batch, author, proposal);
+        } catch (error) {
+          if (!(error instanceof MemoryError) || !REFUSED_ALONE.has(error.code)) throw error;
+          firstRefusal ??= { error, index: failedIndex, key: failedKey };
+          refusedAlone.push({
+            index: failedIndex,
+            key: failedKey,
+            ...changeSetRejection(error.code),
+          });
+          continue;
+        }
+        reviewable.push(proposal);
+        if (proposal.op !== 'no-op') keeps = true;
         if (item.proposal !== proposal && item.proposal.op === 'add')
           restated.push(validated.length);
         else if (proposal.op !== 'no-op') {
@@ -712,6 +824,16 @@ export async function commitExtraction(
           targets.add(target);
         }
         validated.push(item);
+      }
+      if (firstRefusal) {
+        // Nothing else to keep: the message is refused as a whole, as before,
+        // so its reason stays on the message.
+        if (!keeps) {
+          failedIndex = firstRefusal.index;
+          failedKey = firstRefusal.key;
+          throw firstRefusal.error;
+        }
+        await recordRejections(tx, scope, batch, refusedAlone);
       }
       // A detail said again beside a change to that same detail, or twice in
       // one message, adds nothing; it never refuses the rest of the message.
@@ -729,7 +851,7 @@ export async function commitExtraction(
       failedIndex = 0;
       failedKey = null;
       if (space.require_review && !reviewed && validated.some((v) => v.proposal.op !== 'no-op')) {
-        await tx`insert into memory_proposals (id, space_id, work_id, fence, payload) values (${batch.work.id}, ${scope.spaceId}, ${batch.work.id}, ${batch.work.fence}, ${JSON.stringify({ batch, proposals })}::text::jsonb)
+        await tx`insert into memory_proposals (id, space_id, work_id, fence, payload) values (${batch.work.id}, ${scope.spaceId}, ${batch.work.id}, ${batch.work.fence}, ${JSON.stringify({ batch, proposals: reviewable })}::text::jsonb)
           on conflict (id) do update set fence = excluded.fence, payload = excluded.payload, status = 'pending'`;
         await tx`update memory_work set status = 'review', lease_until = null where id = ${batch.work.id}`;
         await enqueue(tx, scope.spaceId, 'proposal', batch.work.id);

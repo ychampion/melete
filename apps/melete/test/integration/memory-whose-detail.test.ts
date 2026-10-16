@@ -353,6 +353,389 @@ withDb('a detail is kept with the someone it is about', () => {
     ]);
   });
 
+  test("in a room, a member's change that leaves out which member it is lands on their own detail", async () => {
+    const scope = await room();
+    const alice = 'prn_alice';
+    const bob = 'prn_bob';
+    const hers = await memberSaid(scope, alice, 'I live in Lisbon.');
+    await commitExtraction(store.sql, scope, hers, {
+      proposals: [add(hers, 'home.city', 'I live in Lisbon', 'Lives in Lisbon')],
+    });
+    const his = await memberSaid(scope, bob, 'I live in Porto.');
+    await commitExtraction(store.sql, scope, his, {
+      proposals: [add(his, 'home.city', 'I live in Porto', 'Lives in Porto')],
+    });
+    /** A change to the detail held under `subject`, proposed under `proposed`. */
+    const change = (
+      batch: Batch,
+      subject: RegExp,
+      proposed: string,
+      quote: string,
+      content: string,
+    ) => {
+      const claim = batch.claims.find((item) => subject.test(item.domain_key));
+      if (!claim) throw new Error(`${subject} was not shown`);
+      return {
+        ...add(batch, proposed, quote, content),
+        op: 'supersede',
+        claim_id: claim.id,
+        expected_revision: claim.head_revision,
+      } as ExtractionProposal;
+    };
+    // Bob's move, proposed under the subject without his part, beside a new detail.
+    const moved = await memberSaid(scope, bob, 'I moved to Braga. I am vegan.');
+    expect(
+      await commitExtraction(store.sql, scope, moved, {
+        proposals: [
+          change(moved, /^home\.city\.member_/, 'home.city', 'I moved to Braga', 'Lives in Braga'),
+          add(moved, 'food.diet', 'I am vegan', 'Vegan'),
+        ],
+      }),
+    ).toMatchObject({ status: 'committed' });
+    // Alice's change, proposed with a member's part her detail is not held under.
+    const back = await memberSaid(scope, alice, 'I moved to Faro.');
+    expect(
+      await commitExtraction(store.sql, scope, back, {
+        proposals: [
+          change(
+            back,
+            /^home\.city$/,
+            'home.city.member_0123456789ab',
+            'I moved to Faro',
+            'Lives in Faro',
+          ),
+        ],
+      }),
+    ).toMatchObject({ status: 'committed' });
+    expect(await heldNow(scope)).toEqual([
+      ['food.diet', 'Vegan', bob, 1, 1],
+      ['home.city', 'Lives in Faro', alice, 1, 2],
+      ['home.city.member', 'Lives in Braga', bob, 1, 2],
+    ]);
+  });
+
+  test("one change memory cannot make is refused alone; the message's other details are kept", async () => {
+    const scope = await createScope(store);
+    const first = await said(
+      scope,
+      'I live in Porto. The owner of my flat lives in Porto too. My sister Maya lives in Lisbon.',
+    );
+    await commitExtraction(store.sql, scope, first, {
+      proposals: [
+        add(first, 'home.city', 'I live in Porto', 'Lives in Porto'),
+        add(
+          first,
+          'person.owner.city',
+          'The owner of my flat lives in Porto',
+          'The owner of my flat lives in Porto',
+        ),
+        add(
+          first,
+          'person.maya.city',
+          'My sister Maya lives in Lisbon',
+          'Sister Maya lives in Lisbon',
+        ),
+      ],
+    });
+    /** A change to the claim held as `held`, proposed under `proposed`. */
+    const change = (batch: Batch, held: string, proposed: string, quote: string, content: string) =>
+      ({
+        ...supersede(batch, held, quote, content),
+        domain_key: proposed,
+      }) as ExtractionProposal;
+    // The person's own move, proposed as a change to the flat owner's city.
+    const moved = await said(scope, 'I moved to Braga. I am vegetarian.');
+    expect(
+      await commitExtraction(store.sql, scope, moved, {
+        proposals: [
+          change(moved, 'person.owner.city', 'home.city', 'I moved to Braga', 'Lives in Braga'),
+          add(moved, 'food.diet', 'I am vegetarian', 'Vegetarian'),
+        ],
+      }),
+    ).toMatchObject({ status: 'committed' });
+    // The person's own detail proposed as a change to Maya's city: that change
+    // is refused, with its reason, and the rest of the message is kept.
+    const berlin = await said(scope, 'It is Berlin for work now. I am allergic to peanuts.');
+    expect(
+      await commitExtraction(store.sql, scope, berlin, {
+        proposals: [
+          change(
+            berlin,
+            'person.maya.city',
+            'work.city',
+            'It is Berlin for work now',
+            'Works in Berlin',
+          ),
+          add(berlin, 'health.allergy', 'I am allergic to peanuts', 'Allergic to peanuts'),
+        ],
+      }),
+    ).toMatchObject({ status: 'committed' });
+    const refused = await store.sql`select proposal_index, reason, detail from memory_rejections
+      where space_id = ${scope.spaceId} and work_id = ${berlin.work.id}`;
+    expect(refused.map((row) => [row.proposal_index, row.reason, row.detail])).toEqual([
+      [0, 'change_set_refused', 'The proposed change could not be kept (target_mismatch).'],
+    ]);
+    expect(await heldNow(scope)).toEqual([
+      ['food.diet', 'Vegetarian', 'owner', 1, 1],
+      ['health.allergy', 'Allergic to peanuts', 'owner', 1, 1],
+      ['home.city', 'Lives in Braga', 'owner', 1, 2],
+      ['person.maya.city', 'Sister Maya lives in Lisbon', 'owner', 1, 1],
+      ['person.owner.city', 'The owner of my flat lives in Porto', 'owner', 1, 1],
+    ]);
+    // A message whose only change is refused is still refused, as before.
+    const alone = await said(scope, 'It is Berlin now.');
+    expect(
+      await commitExtraction(store.sql, scope, alone, {
+        proposals: [
+          change(alone, 'person.maya.city', 'home.city', 'It is Berlin now', 'Lives in Berlin'),
+        ],
+      }),
+    ).toMatchObject({ status: 'rejected', reason: 'target_mismatch' });
+  });
+
+  test('a relation said once is kept when a later change leaves it out of the words', async () => {
+    const scope = await createScope(store);
+    const madrid = await said(scope, 'My brother Sam lives in Madrid.');
+    await commitExtraction(store.sql, scope, madrid, {
+      proposals: [
+        add(
+          madrid,
+          'person.sam.city',
+          'My brother Sam lives in Madrid',
+          'Brother Sam lives in Madrid',
+        ),
+      ],
+    });
+    const porto = await said(scope, 'Sam lives in Porto now.');
+    await commitExtraction(store.sql, scope, porto, {
+      proposals: [supersede(porto, 'person.sam.city', 'Sam lives in Porto', 'Sam lives in Porto')],
+    });
+    // A friend of the same name, as a change to that claim and as a new detail on its subject.
+    const faro = await said(scope, 'My friend Sam lives in Faro.');
+    expect(
+      await commitExtraction(store.sql, scope, faro, {
+        proposals: [
+          supersede(
+            faro,
+            'person.sam.city',
+            'My friend Sam lives in Faro',
+            'Friend Sam lives in Faro',
+          ),
+        ],
+      }),
+    ).toMatchObject({ status: 'committed' });
+    const other = await createScope(store);
+    const first = await said(other, 'My brother Sam lives in Madrid.');
+    await commitExtraction(store.sql, other, first, {
+      proposals: [
+        add(
+          first,
+          'person.sam.city',
+          'My brother Sam lives in Madrid',
+          'Brother Sam lives in Madrid',
+        ),
+      ],
+    });
+    const second = await said(other, 'Sam lives in Porto now.');
+    await commitExtraction(store.sql, other, second, {
+      proposals: [supersede(second, 'person.sam.city', 'Sam lives in Porto', 'Sam lives in Porto')],
+    });
+    const third = await said(other, 'My friend Sam lives in Faro.');
+    await commitExtraction(store.sql, other, third, {
+      proposals: [
+        add(third, 'person.sam.city', 'My friend Sam lives in Faro', 'Friend Sam lives in Faro'),
+      ],
+    });
+    for (const space of [scope, other])
+      expect(await heldNow(space)).toEqual([
+        ['person.friend.sam.city', 'Friend Sam lives in Faro', 'owner', 1, 1],
+        ['person.sam.city', 'Sam lives in Porto', 'owner', 1, 2],
+      ]);
+    // As a real model wrote it: the change's words leave the friend out, the person's do not.
+    const quoted = await createScope(store);
+    const brother = await said(quoted, 'My brother Sam lives in Madrid.');
+    await commitExtraction(store.sql, quoted, brother, {
+      proposals: [
+        add(
+          brother,
+          'person.sam.city',
+          'My brother Sam lives in Madrid',
+          'Brother Sam lives in Madrid',
+        ),
+      ],
+    });
+    const moved = await said(quoted, 'Sam lives in Porto now.');
+    await commitExtraction(store.sql, quoted, moved, {
+      proposals: [supersede(moved, 'person.sam.city', 'Sam lives in Porto', 'Sam lives in Porto')],
+    });
+    const friend = await said(quoted, 'My friend Sam just moved to Faro.');
+    await commitExtraction(store.sql, quoted, friend, {
+      proposals: [
+        supersede(
+          friend,
+          'person.sam.city',
+          'My friend Sam just moved to Faro',
+          'Sam lives in Faro',
+        ),
+      ],
+    });
+    // Words that do not say how the person knows him still change the one held.
+    const plain = await said(quoted, 'Sam moved to Braga.');
+    await commitExtraction(store.sql, quoted, plain, {
+      proposals: [supersede(plain, 'person.sam.city', 'Sam moved to Braga', 'Sam lives in Braga')],
+    });
+    expect(await heldNow(quoted)).toEqual([
+      ['person.friend.sam.city', 'Sam lives in Faro', 'owner', 1, 1],
+      ['person.sam.city', 'Sam lives in Braga', 'owner', 1, 3],
+    ]);
+  });
+
+  test("the person's words relate someone only by the word beside their name", async () => {
+    const scope = await createScope(store);
+    const madrid = await said(scope, 'My brother Sam lives in Madrid.');
+    await commitExtraction(store.sql, scope, madrid, {
+      proposals: [
+        add(
+          madrid,
+          'person.sam.city',
+          'My brother Sam lives in Madrid',
+          'Brother Sam lives in Madrid',
+        ),
+      ],
+    });
+    // Someone else in the sentence says how the person heard it, not who Sam is.
+    for (const [message, city] of [
+      ['My friend told me Sam moved to Faro.', 'Faro'],
+      ['My sister says Sam lives in Braga now.', 'Braga'],
+      ['Mom called: Sam has moved to Lagos.', 'Lagos'],
+    ] as const) {
+      const batch = await said(scope, message);
+      await commitExtraction(store.sql, scope, batch, {
+        proposals: [
+          supersede(batch, 'person.sam.city', message.slice(0, -1), `Sam lives in ${city}`),
+        ],
+      });
+    }
+    // A describing word between them still relates him.
+    const friend = await said(scope, 'My good friend Sam just moved to Faro.');
+    await commitExtraction(store.sql, scope, friend, {
+      proposals: [
+        supersede(
+          friend,
+          'person.sam.city',
+          'My good friend Sam just moved to Faro',
+          'Sam lives in Faro',
+        ),
+      ],
+    });
+    expect(await heldNow(scope)).toEqual([
+      ['person.friend.sam.city', 'Sam lives in Faro', 'owner', 1, 1],
+      ['person.sam.city', 'Sam lives in Lagos', 'owner', 1, 4],
+    ]);
+  });
+
+  test("in a room, a member's change left without their part is kept apart from another of that name", async () => {
+    const scope = await room();
+    const alice = 'prn_alice';
+    const bob = 'prn_bob';
+    const hers = await memberSaid(scope, alice, 'My friend Sam lives in Lisbon.');
+    await commitExtraction(store.sql, scope, hers, {
+      proposals: [
+        add(hers, 'person.sam.city', 'My friend Sam lives in Lisbon', 'Friend Sam lives in Lisbon'),
+      ],
+    });
+    const his = await memberSaid(scope, bob, 'My brother Sam lives in Madrid.');
+    await commitExtraction(store.sql, scope, his, {
+      proposals: [
+        add(
+          his,
+          'person.sam.city',
+          'My brother Sam lives in Madrid',
+          'Brother Sam lives in Madrid',
+        ),
+      ],
+    });
+    // Bob's friend, proposed as a change to his brother's city without his part.
+    const friend = await memberSaid(scope, bob, 'My friend Sam just moved to Faro.');
+    const brother = friend.claims.find((claim) =>
+      /^person\.sam\.city\.member_/.test(claim.domain_key),
+    );
+    if (!brother) throw new Error("Bob's brother was not shown");
+    expect(
+      await commitExtraction(store.sql, scope, friend, {
+        proposals: [
+          {
+            ...add(
+              friend,
+              'person.sam.city',
+              'My friend Sam just moved to Faro',
+              'Friend Sam lives in Faro',
+            ),
+            op: 'supersede',
+            claim_id: brother.id,
+            expected_revision: brother.head_revision,
+          } as ExtractionProposal,
+        ],
+      }),
+    ).toMatchObject({ status: 'committed' });
+    expect(await heldNow(scope)).toEqual([
+      ['person.friend.sam.city', 'Friend Sam lives in Faro', bob, 1, 1],
+      ['person.sam.city', 'Friend Sam lives in Lisbon', alice, 1, 1],
+      ['person.sam.city.member', 'Brother Sam lives in Madrid', bob, 1, 1],
+    ]);
+  });
+
+  test('a change refused alone is not put to the person for review', async () => {
+    const scope = await createScope(store);
+    await store.sql`update memory_spaces set require_review = true where space_id = ${scope.spaceId}`;
+    const first = await said(scope, 'My sister Maya lives in Lisbon.');
+    await commitExtraction(
+      store.sql,
+      scope,
+      first,
+      {
+        proposals: [
+          add(
+            first,
+            'person.maya.city',
+            'My sister Maya lives in Lisbon',
+            'Sister Maya lives in Lisbon',
+          ),
+        ],
+      },
+      true,
+    );
+    const berlin = await said(scope, 'It is Berlin for work now. I am allergic to peanuts.');
+    expect(
+      await commitExtraction(store.sql, scope, berlin, {
+        proposals: [
+          {
+            ...supersede(
+              berlin,
+              'person.maya.city',
+              'It is Berlin for work now',
+              'Works in Berlin',
+            ),
+            domain_key: 'work.city',
+          } as ExtractionProposal,
+          add(berlin, 'health.allergy', 'I am allergic to peanuts', 'Allergic to peanuts'),
+        ],
+      }),
+    ).toMatchObject({ status: 'review' });
+    const [pending] =
+      await store.sql`select payload from memory_proposals where work_id = ${berlin.work.id}`;
+    if (!pending) throw new Error('nothing was put to the person');
+    const proposed = (pending.payload as { proposals: ExtractionProposal[] }).proposals;
+    expect(
+      proposed.map((proposal) => [proposal.op, 'domain_key' in proposal && proposal.domain_key]),
+    ).toEqual([['add', 'health.allergy']]);
+    const refused = await store.sql`select proposal_index, reason from memory_rejections
+      where space_id = ${scope.spaceId} and work_id = ${berlin.work.id}`;
+    expect(refused.map((row) => [row.proposal_index, row.reason])).toEqual([
+      [0, 'change_set_refused'],
+    ]);
+  });
+
   test('a person of the same name the person relates differently is someone else, either way round', async () => {
     const scope = await createScope(store);
     const friend = await said(scope, 'my friend sam lives in Lisbon. he is vegetarian.');
@@ -504,7 +887,8 @@ withDb('a detail is kept with the someone it is about', () => {
     await commitExtraction(store.sql, scope, moved, {
       proposals: [add(moved, 'person.owner.city', 'I moved to Lisbon', 'Lives in Lisbon')],
     });
-    // The person's own move proposed as a change to the flat owner's city never lands on it.
+    // The person's own move proposed as a change to the flat owner's city never
+    // lands on it: it is kept as the person's own, under the subject proposed.
     const faro = await said(scope, 'I moved to Faro.');
     await commitExtraction(store.sql, scope, faro, {
       proposals: [supersede(faro, 'person.owner.city', 'I moved to Faro', 'Lives in Faro')].map(
@@ -513,6 +897,7 @@ withDb('a detail is kept with the someone it is about', () => {
     });
     expect(await heldNow(scope)).toEqual([
       ['contact.owner.availability', 'Can be home Thursday afternoon if that works', 'owner', 2, 1],
+      ['home.city', 'Lives in Faro', 'owner', 1, 1],
       ['person.owner.city', 'The owner of my flat lives in Porto', 'owner', 1, 1],
       ['self.city', 'Lives in Lisbon', 'owner', 1, 2],
     ]);
