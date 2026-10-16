@@ -61,8 +61,13 @@ What it proposes is held to that bar before it is kept:
   that says it, and how a change relates them from its own words or, when they
   leave it out, from the word beside the name in the person's sentence: "My
   sister says Sam lives in Faro" is about the Sam memory already holds. A
-  word that only starts a sentence ("Coffee is a must", "Monday is gym day")
-  is not someone, but a name that goes on to say who someone is ("Sam is the
+  relative of someone is not them: "My friend Sam's brother moved to Faro" is
+  kept as Sam's brother's ("Sam's brother's city"), never on "Brother Sam",
+  and a later word about Sam himself never lands on his brother's detail. A
+  change is proposed under the subject of the detail it changes, so a
+  relation that subject names is the held detail's, not the change's. A word
+  that only starts a sentence ("Coffee is a must", "Monday is gym day") is not
+  someone, but a name that goes on to say who someone is ("Sam is the
   best cook I know", "Maya is my favourite cousin") is. A detail of the
   person's own that names no topic is filed under what it says and shown as
   "About you": said again in other words ("Works nights", then "Usually works
@@ -71,7 +76,7 @@ What it proposes is held to that bar before it is kept:
   English" and "Translates English into Portuguese"). The city the person
   lives in is one detail whether it was filed as home.city or self.city; where
   they work, a city they used to live in, and someone else's city are others
-  (`whoseDetail`, `ownDetailNow`, `relationsIn` and `twoPeople` in
+  (`whoseDetail`, `ownDetailNow`, `relationsIn`, `relativeOf` and `twoPeople` in
   [labels.ts](../apps/melete/src/memory/labels.ts), `aboutSubject` in
   [extract.ts](../apps/melete/src/memory/extract.ts)).
 
