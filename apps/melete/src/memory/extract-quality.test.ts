@@ -436,6 +436,15 @@ describe("the person's own details are filed under them, never as someone in the
     expect(own("Doesn't eat meat")).not.toBe(own('Eats meat'));
     expect(own('Has two dogs')).not.toBe(own('Has two cats'));
     expect(own('Has 2 cats')).toBe(own('Has two cats'));
+    // The same words the other way round are another detail.
+    expect(own('Teaches Spanish to English speakers')).not.toBe(
+      own('Teaches English to Spanish speakers'),
+    );
+    expect(own('Translates English into Portuguese')).not.toBe(
+      own('Translates Portuguese into English'),
+    );
+    expect(own('Translates Portuguese to English')).toBe(own('Translates Portuguese into English'));
+    expect(own('Speaks English and Portuguese')).toBe(own('Speaks Portuguese and English'));
     // A long detail still gets a subject of its own that memory can hold.
     const long = (end: string) =>
       own(`Volunteers at the animal shelter near the old harbour every second Saturday ${end}`);
@@ -482,6 +491,43 @@ describe("the person's own details are filed under them, never as someone in the
     expect(someoneFirst("Sam's diet is vegan")).toEqual({ name: 'sam' });
     expect(someoneFirst("Sam's birthday is the same day as mine")).toEqual({ name: 'sam' });
     expect(someoneFirst("Sam's dog is a labrador")).toEqual({ name: 'sam' });
+  });
+
+  test('a detail that starts with a name and says what someone is to the person, or where they are, is theirs', () => {
+    for (const [text, name] of [
+      ['Sam is the best cook I know', 'sam'],
+      ["Sam's the best cook I know", 'sam'],
+      ['Maya is my favourite cousin', 'maya'],
+      ['Maya is our favourite babysitter', 'maya'],
+      ['Sam is my main contact at the bank', 'sam'],
+      ['Max is our dog', 'max'],
+      ['Max is my main running partner', 'max'],
+      ['Will is the best', 'will'],
+      ['Sam is the best at fixing bikes', 'sam'],
+      ['Maya is the best person to ask about taxes', 'maya'],
+      ['Jo is home for the holidays', 'jo'],
+      ['Sam is home sick today', 'sam'],
+      ['Sam is everything to me', 'sam'],
+      ['Maya is essential to the team', 'maya'],
+      ['Sam has been my friend since school', 'sam'],
+    ])
+      expect([text, someoneFirst(text)]).toEqual([text, { name }]);
+    // Days, meals, everyday things and what the person does are no one.
+    for (const text of [
+      'Monday is gym day',
+      "Monday's standup is at 9",
+      'Sunday is family day',
+      'Dinner is usually at 7',
+      'Sleep is a priority',
+      'Gardening is how I relax',
+      'Cycling is how I get to work',
+      "Coffee's too bitter for me without milk",
+      'Chess has been my hobby since school',
+      'Pizza is the best food',
+      'Tea is the best way to start the day',
+      'Coffee is essential',
+    ])
+      expect([text, someoneFirst(text)]).toEqual([text, null]);
   });
 
   test('a subject memory already holds, and a registry key, are never moved', () => {

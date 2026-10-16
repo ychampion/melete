@@ -979,6 +979,32 @@ withDb('a detail is kept with the someone it is about', () => {
     expect(new Set(held.map(([subject]) => subject)).size).toBe(4);
   });
 
+  test("the person's own details with the same words the other way round stay apart", async () => {
+    const scope = await createScope(store);
+    await aboutThem(scope, 'I translate Portuguese into English.', [
+      'Translates Portuguese into English',
+    ]);
+    await aboutThem(scope, 'I also translate English into Portuguese.', [
+      'Translates English into Portuguese',
+    ]);
+    await aboutThem(scope, 'I translate English into Portuguese for clients.', [
+      'Translates English into Portuguese for clients',
+    ]);
+    await aboutThem(scope, 'I teach English to Spanish speakers.', [
+      'Teaches English to Spanish speakers',
+    ]);
+    await aboutThem(scope, 'I teach Spanish to English speakers too.', [
+      'Teaches Spanish to English speakers',
+    ]);
+    const held = await heldNow(scope);
+    expect(held.map(([, content, , , revision]) => [content, revision]).sort()).toEqual([
+      ['Teaches English to Spanish speakers', 1],
+      ['Teaches Spanish to English speakers', 1],
+      ['Translates English into Portuguese for clients', 2],
+      ['Translates Portuguese into English', 1],
+    ]);
+  });
+
   test('a block on a detail filed under the person alone holds for it said again in other words', async () => {
     const before = process.env.MELETE_MASTER_KEY;
     try {
@@ -1122,6 +1148,46 @@ withDb('a detail is kept with the someone it is about', () => {
         ['self.city', 'Bob lives in Porto', 'prn_bob'],
       ],
     );
+  });
+
+  test("someone else's city and a city the person used to live in never land on the city they live in", async () => {
+    // Proposed under home.city by a model not shown the city held.
+    for (const [text, quote, content, kind] of [
+      ['My mom lives in Porto.', 'My mom lives in Porto', 'Mom lives in Porto', 'user_statement'],
+      ['Sam lives in Braga.', 'Sam lives in Braga', 'Sam lives in Braga', 'user_statement'],
+      [
+        'I used to live in Lisbon.',
+        'I used to live in Lisbon',
+        'Used to live in Lisbon',
+        'user_statement',
+      ],
+      ['I grew up in Coimbra.', 'I grew up in Coimbra', 'Grew up in Coimbra', 'user_statement'],
+      [
+        'I lived in Berlin before Faro.',
+        'I lived in Berlin before Faro',
+        'Lived in Berlin',
+        'historical',
+      ],
+    ] as const) {
+      const scope = await createScope(store);
+      const first = await said(scope, 'I live in Faro.');
+      await commitExtraction(store.sql, scope, first, {
+        proposals: [add(first, 'self.city', 'I live in Faro', 'Lives in Faro')],
+      });
+      const batch = await said(scope, text);
+      expect(
+        await commitExtraction(
+          store.sql,
+          scope,
+          { ...batch, claims: [] },
+          { proposals: [add(batch, 'home.city', quote, content, { kind })] },
+        ),
+      ).toMatchObject({ status: 'committed' });
+      expect(await heldNow(scope)).toEqual([
+        ['home.city', content, 'owner', 1, 1],
+        ['self.city', 'Lives in Faro', 'owner', 1, 1],
+      ]);
+    }
   });
 
   test('a block saved under an older subject with words the new one leaves out still holds', async () => {

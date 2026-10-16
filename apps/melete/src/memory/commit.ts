@@ -35,6 +35,7 @@ import {
   listKey,
   ownSubject,
   sameDetail,
+  sameWayRound,
   sameWording,
   saysNoMore,
 } from './extract.ts';
@@ -45,6 +46,7 @@ import {
   memberSubject,
   olderOwnSubject,
   olderOwnSubjects,
+  ownDetailNow,
   PERSON_HEADS,
   relatedSubject,
   relationsIn,
@@ -275,16 +277,19 @@ function ownDetailRenamed(held: string, proposed: string, heldContent: string | 
  * The claim that holds the person's own detail under an older subject (see
  * `olderOwnSubjects`) or another name for it (see `sameOwnDetail`), said by
  * this author. A detail about the owner of something, saved under "owner",
- * is not theirs.
+ * is not theirs. Only a detail of how things are now is held under another
+ * name: a city the person used to live in, or someone's city filed as
+ * home.city, never lands on the city they live in.
  */
 async function heldUnderOlderSubject(
   tx: MemoryTx,
   scope: MemoryScope,
   batch: ExtractionBatch,
   author: Author,
-  domainKey: string,
+  proposal: Extract<ExtractionProposal, { op: 'add' }>,
 ): Promise<ClaimHead | null> {
-  const names = sameOwnDetail(domainKey);
+  const domainKey = proposal.domain_key;
+  const names = ownDetailNow(proposal) ? sameOwnDetail(domainKey) : [];
   const older = [
     ...olderOwnSubjects(domainKey),
     ...names.flatMap((name) => [name, memberSubject(name, author.part), ...olderOwnSubjects(name)]),
@@ -344,7 +349,11 @@ async function heldAboutThem(
   for (const row of rows) {
     const content = String(row.content ?? '');
     if (!content || !aboutThem(String(row.domain_key))) continue;
-    if (aboutSubject(content) !== subject && !sameDetail(content, proposal.content)) continue;
+    if (
+      aboutSubject(content) !== subject &&
+      !(sameDetail(content, proposal.content) && sameWayRound(content, proposal.content))
+    )
+      continue;
     const head = await getHead(tx, scope, String(row.id));
     if (head?.current.content) return head;
   }
@@ -493,7 +502,7 @@ async function validateProposal(
         } else {
           // The person's own detail, held under the subject an older
           // extraction gave it: said again or changed, it lands on that claim.
-          const older = await heldUnderOlderSubject(tx, scope, batch, author, proposal.domain_key);
+          const older = await heldUnderOlderSubject(tx, scope, batch, author, proposal);
           const again = older ? null : await heldAboutThem(tx, scope, batch, author, proposal);
           if (older) {
             head = older;

@@ -465,22 +465,65 @@ const NUMBER_WORDS = new Map(
 );
 /** The longest run of words a subject of its own is written with in full. */
 const ABOUT_RUN = 80;
+/** Words that say which way a detail goes: "Translates Portuguese into English". */
+const DIRECTION = /\b(?:to|into|onto|from|than|over|towards?|versus|vs)\b/giu;
 
 /**
- * The subject of a detail of the person's own that names no topic: what it
- * says, as its meaningful words in one form each, in alphabetical order. The
- * same detail said again in other words is the same subject ("Works nights"
- * and "Usually works at night" are self.about.night_work; "Works as a nurse"
- * and "Is a nurse" are self.about.nurse), and two details are two however
- * many words they start with alike ("Works night shifts at the hospital" and
- * "Works night shifts on weekends"). A long run is cut short, with a digest of
- * all of it, so it stays its own.
+ * A detail's meaningful words in one form each, in the parts its words of
+ * direction make, each part's words in alphabetical order: "Translates
+ * Portuguese into English" is [portuguese translat] [english].
  */
-export function aboutSubject(content: string): string {
+function aboutParts(content: string): string[][] {
   const said = content
     .replace(WORKS_AS, ' ')
     .replace(/\p{L}+/gu, (word) => NUMBER_WORDS.get(word.toLowerCase()) ?? word);
-  const words = [...detailWords(said)].filter((word) => !HEDGES.has(word)).sort();
+  const seen = new Set<string>();
+  const parts: string[][] = [];
+  for (const piece of said.split(DIRECTION)) {
+    const part: string[] = [];
+    for (const word of detailWords(piece)) {
+      if (HEDGES.has(word) || seen.has(word)) continue;
+      seen.add(word);
+      part.push(word);
+    }
+    if (part.length) parts.push(part.sort());
+  }
+  return parts;
+}
+
+/**
+ * Whether the words two details share go the same way round: "Translates
+ * English into Portuguese" says them the other way round from "Translates
+ * Portuguese into English", so it is another detail however many words they
+ * share. Words with no word of direction between them may come in any order.
+ */
+export function sameWayRound(a: string, b: string): boolean {
+  const partOf = (content: string) =>
+    new Map(aboutParts(content).flatMap((part, index) => part.map((word) => [word, index])));
+  const left = partOf(a);
+  const right = partOf(b);
+  const shared = [...left.keys()].filter((word) => right.has(word));
+  return !shared.some((x) =>
+    shared.some(
+      (y) => (left.get(x) ?? 0) < (left.get(y) ?? 0) && (right.get(x) ?? 0) > (right.get(y) ?? 0),
+    ),
+  );
+}
+
+/**
+ * The subject of a detail of the person's own that names no topic: what it
+ * says, as its meaningful words in one form each, in alphabetical order
+ * between its words of direction. The same detail said again in other words
+ * is the same subject ("Works nights" and "Usually works at night" are
+ * self.about.night_work; "Works as a nurse" and "Is a nurse" are
+ * self.about.nurse), and two details are two however many words they start
+ * with alike ("Works night shifts at the hospital" and "Works night shifts on
+ * weekends") or share the other way round ("Teaches English to Spanish
+ * speakers" and "Teaches Spanish to English speakers"). A long run is cut
+ * short, with a digest of all of it, so it stays its own.
+ */
+export function aboutSubject(content: string): string {
+  const words = aboutParts(content).flat();
   if (!words.length) return 'self.about';
   const run = words.join('_');
   if (run.length <= ABOUT_RUN) return `self.about.${run}`;
