@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   claimKind,
   type ExtractionProposal,
@@ -424,8 +425,8 @@ const OWN_ABOUT = new Set([
  * moved. A detail under a subject naming only a topic whose words start with
  * someone ("Maya is allergic to peanuts" as person.allergy) is filed under
  * them, person.maya.allergy, whatever the model said it is about. One under
- * the person alone ("person.user") gets a subject from its own words,
- * self.about.works_nurse, so two such details are never taken for one.
+ * the person alone ("person.user") names no topic, so it gets a subject from
+ * what it says (see `aboutSubject`).
  */
 export function ownSubject(domainKey: string, about: string | null, content?: string): string {
   const parts = domainKey.split('.');
@@ -443,7 +444,7 @@ export function ownSubject(domainKey: string, about: string | null, content?: st
     whose.kind === 'self' || (whose.kind === 'unknown' && about !== null && OWN_ABOUT.has(about));
   if (!own) return domainKey;
   const rest = parts.slice(SELF.has(subject) ? 2 : 1).filter(Boolean);
-  if (!rest.length) return ['self', 'about', ...aboutWords(content ?? '')].join('.');
+  if (!rest.length) return aboutSubject(content ?? '');
   return ['self', ...rest].join('.');
 }
 
@@ -454,14 +455,85 @@ const subjectWord = (word: string) =>
     .replace(/[^\p{L}\p{N}]+/gu, '_')
     .replace(/^_+|_+$/g, '');
 
-/** The first meaningful words of a detail, for a subject of its own: "Works as a nurse" is works_nurse. */
-function aboutWords(content: string): string[] {
-  const words = content
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((word) => word && !PLAIN_WORDS.has(word))
-    .slice(0, 3);
-  return words.length ? [words.join('_')] : [];
+/** Words that say how often or how surely, never which detail: "Usually works at night" is "Works nights". */
+const HEDGES = detailWords(
+  'usually always often normally generally mostly typically regularly sometimes currently now ' +
+    'still nowadays lately actually',
+);
+/** "Works as a nurse" says what "Is a nurse" does. */
+const WORKS_AS = /\b(?:works?|working|worked|employed|job)\s+as\b/giu;
+/** Numbers written as words, as digits: "Has two cats" is "Has 2 cats". */
+const NUMBER_WORDS = new Map(
+  'one two three four five six seven eight nine ten eleven twelve'
+    .split(' ')
+    .map((word, index) => [word, String(index + 1)]),
+);
+/** The longest run of words a subject of its own is written with in full. */
+const ABOUT_RUN = 80;
+/** Words that say which way a detail goes: "Translates Portuguese into English". */
+const DIRECTION = /\b(?:to|into|onto|from|than|over|towards?|versus|vs)\b/giu;
+
+/**
+ * A detail's meaningful words in one form each, in the parts its words of
+ * direction make, each part's words in alphabetical order: "Translates
+ * Portuguese into English" is [portuguese translat] [english].
+ */
+function aboutParts(content: string): string[][] {
+  const said = content
+    .replace(WORKS_AS, ' ')
+    .replace(/\p{L}+/gu, (word) => NUMBER_WORDS.get(word.toLowerCase()) ?? word);
+  const seen = new Set<string>();
+  const parts: string[][] = [];
+  for (const piece of said.split(DIRECTION)) {
+    const part: string[] = [];
+    for (const word of detailWords(piece)) {
+      if (HEDGES.has(word) || seen.has(word)) continue;
+      seen.add(word);
+      part.push(word);
+    }
+    if (part.length) parts.push(part.sort());
+  }
+  return parts;
+}
+
+/**
+ * Whether the words two details share go the same way round: "Translates
+ * English into Portuguese" says them the other way round from "Translates
+ * Portuguese into English", so it is another detail however many words they
+ * share. Words with no word of direction between them may come in any order.
+ */
+export function sameWayRound(a: string, b: string): boolean {
+  const partOf = (content: string) =>
+    new Map(aboutParts(content).flatMap((part, index) => part.map((word) => [word, index])));
+  const left = partOf(a);
+  const right = partOf(b);
+  const shared = [...left.keys()].filter((word) => right.has(word));
+  return !shared.some((x) =>
+    shared.some(
+      (y) => (left.get(x) ?? 0) < (left.get(y) ?? 0) && (right.get(x) ?? 0) > (right.get(y) ?? 0),
+    ),
+  );
+}
+
+/**
+ * The subject of a detail of the person's own that names no topic: what it
+ * says, as its meaningful words in one form each, in alphabetical order
+ * between its words of direction. The same detail said again in other words
+ * is the same subject ("Works nights" and "Usually works at night" are
+ * self.about.night_work; "Works as a nurse" and "Is a nurse" are
+ * self.about.nurse), and two details are two however many words they start
+ * with alike ("Works night shifts at the hospital" and "Works night shifts on
+ * weekends") or share the other way round ("Teaches English to Spanish
+ * speakers" and "Teaches Spanish to English speakers"). A long run is cut
+ * short, with a digest of all of it, so it stays its own.
+ */
+export function aboutSubject(content: string): string {
+  const words = aboutParts(content).flat();
+  if (!words.length) return 'self.about';
+  const run = words.join('_');
+  if (run.length <= ABOUT_RUN) return `self.about.${run}`;
+  const digest = createHash('sha256').update(run).digest('hex').slice(0, 12);
+  return `self.about.${words.slice(0, 4).join('_').slice(0, ABOUT_RUN)}_${digest}`;
 }
 
 /**
@@ -616,7 +688,7 @@ export function mergeIntoHeld(
 }
 
 /** Whether every meaningful word of `said` is already in `held`. */
-function saysNoMore(said: string, held: string): boolean {
+export function saysNoMore(said: string, held: string): boolean {
   const kept = detailWords(held);
   return [...detailWords(said)].every((word) => kept.has(word));
 }

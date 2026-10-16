@@ -23,6 +23,7 @@
 import { createHmac, hkdfSync } from 'node:crypto';
 import { detailWords } from './extract.ts';
 import {
+  aboutThem,
   GENERIC_HEADS,
   memberSubject,
   olderOwnSubject,
@@ -376,6 +377,11 @@ function untaggedOwnBlock(
     ![...proposalSays].every((word) => blockSays.has(word))
   )
     return false;
+  // A detail filed under the person alone is filed under what it said (see
+  // `aboutSubject`), so its subject holds the words forgotten: one that says
+  // nothing else is it said again ("Is a nurse" for self.about.works_nurse).
+  if (aboutThem(subject) && distinct.length && distinct.every((word) => blockSays.has(word)))
+    return true;
   const missing = [...blockSays].filter((word) => !words.has(word));
   if (!missing.length) return true;
   const [only = ''] = missing;

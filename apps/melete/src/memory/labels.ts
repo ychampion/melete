@@ -275,13 +275,106 @@ const SAID_OF = new Set(
     'drinks isn wasn hasn doesn'
   ).split(' '),
 );
+/** Words after "is" that say what a thing is to the person, never what someone is: "Coffee is a must". */
+const THING_IS = new Set('must staple necessity nonnegotiable priority'.split(' '));
+/**
+ * Words after "is" that say it of a thing or a place when nothing more is
+ * said of it: "Lisbon is home now", "Coffee is essential", but "Jo is home
+ * for the holidays" and "Maya is essential to the team".
+ */
+const THING_IS_ALONE = new Set('home essential'.split(' '));
+/** What may follow such a word and still say nothing more: "is home now", "is essential for me". */
+const ALONE_AFTER = new Set('now for to me us these days here again'.split(' '));
+/**
+ * Words after "is" that say it of a thing when a thing follows: "Pizza is the
+ * best food", but "Will is the best" and "Sam is the best at fixing bikes".
+ */
+const THING_IS_BEFORE = new Set('best favourite favorite'.split(' '));
+/** Words after such a word that say what someone does, not which thing: "the best at", "the best to ask". */
+const NO_THING_AFTER = new Set('at to of in for with on by i'.split(' '));
+/**
+ * Words for someone, which say a detail is about them however it starts:
+ * "Sam is the best cook I know", "Maya is our favourite babysitter", "Max is
+ * our dog".
+ */
+const SOMEONE_IS = new Set([
+  ...RELATIONS,
+  ...(
+    'cook chef baker teacher babysitter nanny contact person guy girl boy man woman lady baby ' +
+    'dog cat pet puppy mentor coach player driver nurse singer dancer writer student tutor ' +
+    'therapist lawyer plumber mechanic accountant hairdresser barber teammate classmate buddy ' +
+    'mate pal companion assistant client customer employee intern host'
+  ).split(' '),
+]);
+/**
+ * Words that start a detail of the person's own and are never a name: days,
+ * parts of the day, meals, and everyday things ("Monday is gym day", "Dinner
+ * is usually at 7", "Coffee's too bitter for me").
+ */
+const NEVER_SOMEONE = new Set(
+  (
+    'monday tuesday wednesday thursday friday saturday sunday weekend weekends weekday weekdays ' +
+    'morning mornings evening evenings night nights today tonight tomorrow breakfast brunch ' +
+    'lunch dinner supper coffee tea wine beer water milk juice sugar gluten dairy meat fish ' +
+    'chocolate pizza sushi pasta rice bread cheese rent sleep gym yoga pilates football soccer ' +
+    'tennis golf chess jazz school college university weather'
+  ).split(' '),
+);
+/** Words between a verb and what it says that say nothing themselves: "is a must", "has been my hobby". */
+const LEAD_IN = new Set(
+  'a an the now still really so very always definitely also just been usually'.split(' '),
+);
+/** Words after a detail's first word that a thing says as often as someone does: "Coffee is". */
+const EITHER = new Set('is was has had'.split(' '));
+/** Words that put the person after what a detail starts with: "makes me sneeze", "is my main language". */
+const THE_PERSON = new Set('me my us our'.split(' '));
+/**
+ * Whether a detail that starts with a capitalized word and "is", "has" or
+ * "'s" is about a thing, a place or a pastime of the person's, not someone:
+ * "Coffee is a must", "Monday is gym day", "Gardening is how I relax",
+ * "Lisbon is home now", "Python is my main language", "Maya's cat makes me
+ * sneeze". The capital may only start the sentence, so what is said decides,
+ * and when it could be said of someone it is someone's: one that says who
+ * they are to the person ("Maya is my favourite cousin"), what they are ("Sam
+ * is the best cook I know"), where they are ("Jo is home for the holidays"),
+ * or that names a detail of theirs ("Sam's diet is vegan").
+ */
+function thingFirst(words: readonly string[], at: number): boolean {
+  const plain = (index: number) => (words[index] ?? '').replace(/['’]s$/u, '').toLowerCase();
+  const first = plain(at);
+  const neverSomeone = NEVER_SOMEONE.has(first) || /^\p{L}{3,}ing$/u.test(first);
+  let verb = at + 1;
+  if (/['’]s$/u.test(words[at] ?? '')) {
+    if (TOPICS.has(plain(verb))) return false;
+    if (neverSomeone) return true;
+    verb++;
+    // What is theirs does something to the person.
+    if (THE_PERSON.has(plain(verb + 1)) && !SOMEONE_IS.has(plain(verb + 2))) return true;
+  }
+  if (neverSomeone) return true;
+  if (!EITHER.has(plain(verb))) return false;
+  let said = verb + 1;
+  while (LEAD_IN.has(plain(said))) said++;
+  for (let index = said; index < said + 6; index++) if (SOMEONE_IS.has(plain(index))) return false;
+  const word = plain(said);
+  if (THING_IS.has(word)) return true;
+  if (THING_IS_ALONE.has(word))
+    return words.slice(said + 1).every((_, index) => ALONE_AFTER.has(plain(said + 1 + index)));
+  if (THING_IS_BEFORE.has(word)) {
+    const next = plain(said + 1);
+    return Boolean(next) && !NO_THING_AFTER.has(next);
+  }
+  return THE_PERSON.has(word);
+}
 /**
  * Who a detail's words are about, when they start with someone: "Maya is
  * allergic to peanuts", "Sam's diet is vegan", "My sister lives in Lisbon",
  * "Sister Maya is vegetarian", "my friend sam is vegetarian". Null when they
  * start with the detail itself ("Allergic to peanuts", "Will be away until
- * Friday") or with the person ("User lives in Lisbon"). A name on its own is
- * read only when written with a capital; after a relation, however written.
+ * Friday"), with the person ("User lives in Lisbon"), or with a thing or a
+ * place of theirs ("Coffee is a must", see `thingFirst`). A name on its own
+ * is read only when written with a capital; after a relation, however
+ * written.
  */
 export function someoneFirst(text: string): { name?: string; relation?: string } | null {
   const words = text
@@ -307,8 +400,10 @@ export function someoneFirst(text: string): { name?: string; relation?: string }
     !SAID_OF.has(name) &&
     (relation || /^\p{Lu}/u.test(word)) &&
     (possessive(word) || SAID_OF.has(plain(words[at + 1])))
-  )
+  ) {
+    if (!relation && thingFirst(words, at)) return null;
     return { name, ...(relation ? { relation } : {}) };
+  }
   if (relation && SAID_OF.has(plain(words[at]))) return { relation };
   return null;
 }
@@ -535,6 +630,47 @@ export function sameWhose(a: Whose, aText: string, b: Whose, bText: string): boo
     names(aText, nameOf(b) ?? b.who)
   );
 }
+
+/**
+ * Subjects that name one detail of the person's own: the city they live in is
+ * home.city, or self.city and self.home.city when it was filed under the
+ * person (person.user.city). Where they work, or anything else that also says
+ * "city", is another detail.
+ */
+const ONE_OWN_DETAIL: readonly (readonly string[])[] = [
+  ['home.city', 'self.city', 'self.home.city'],
+];
+/** The other subjects that name the same detail of the person's own (see `ONE_OWN_DETAIL`). */
+export function sameOwnDetail(domainKey: string): string[] {
+  const names = ONE_OWN_DETAIL.find((group) => group.includes(domainKey));
+  return names ? names.filter((name) => name !== domainKey) : [];
+}
+
+/** Words that say a detail is over, not how things are now: "Used to live in Lisbon", "Grew up in Porto". */
+const OVER =
+  /\b(?:used to|grew up|formerly|previously|no longer|anymore|lived|was born|born in)\b/iu;
+/**
+ * Whether a detail says how things are for the person now, so another name
+ * for it may hold it (see `sameOwnDetail`): not a detail of the past, nor one
+ * that starts with someone ("Mom lives in Porto").
+ */
+export function ownDetailNow(proposal: { kind: string; content: string }): boolean {
+  return (
+    proposal.kind !== 'historical' &&
+    !OVER.test(proposal.content) &&
+    someoneFirst(proposal.content) === null
+  );
+}
+
+/**
+ * Whether a subject holds a detail of the person's own filed under them
+ * alone, with no topic: self.about.night_work, or "self" as an older
+ * extraction filed it.
+ */
+export const aboutThem = (domainKey: string) => {
+  const subject = withoutMember(domainKey);
+  return subject === 'self' || subject === 'self.about' || subject.startsWith('self.about.');
+};
 
 /** A subject an older extraction gave a detail of the person's own: a person heading naming no one. */
 export const olderOwnSubject = (domainKey: string) =>
