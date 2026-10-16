@@ -45,6 +45,7 @@ import {
   GENERIC_HEADS,
   memberSubject,
   nameOf,
+  namesIn,
   olderOwnSubject,
   olderOwnSubjects,
   ownDetailNow,
@@ -58,6 +59,7 @@ import {
   sameWhose,
   saysRelation,
   subjectRelative,
+  themselfSubject,
   twoPeople,
   type Whose,
   whoseDetail,
@@ -146,7 +148,7 @@ async function apartFrom(
   const whose = whoseDetail(proposed.domain_key, proposed.content);
   if (before.kind === 'other' && whose.kind === 'other') {
     const relative = await relativeApart(tx, held, nameOf(before), proposed);
-    if (relative) return relative;
+    if (relative) return relative.apart;
     // Who the change is about, by name, without the relation its subject names.
     const now: Whose = whose.name ? { kind: 'other', who: whose.who, name: whose.name } : whose;
     const related = saysRelation(before, content)
@@ -190,16 +192,47 @@ function relatedInQuotes(whose: Whose, sources: readonly { quote: string }[]): s
  * to Brother Sam. The relative is read from the change's words, or from the
  * person's words it cites when its own took the relative's relation for the
  * person's: "Brother Sam lives in Faro", citing "My friend Sam's brother
- * moved to Faro". Null when the held detail is about that relative too.
+ * moved to Faro". The other way round, the held detail is a relative's
+ * ("Sam's brother lives in Faro" under "person.sam.brother.city") and the
+ * change is about the someone themself ("My brother Sam moved to Lagos"): it
+ * is kept as theirs. Null when relatives do not decide it; `apart` is null
+ * when the change is about the relative the held detail is about.
  */
 async function relativeApart(
   tx: MemoryTx,
   held: ClaimHead,
   name: string | null,
   proposed: { domain_key: string; content: string; sources?: readonly { quote: string }[] },
-): Promise<string | null> {
+): Promise<{ apart: string | null } | null> {
   if (!name) return null;
   const quotes = (proposed.sources ?? []).map(({ quote }) => quote);
+  const words = [held.current.content ?? '', ...(await earlierWords(tx, held))];
+  // The held detail is a relative's, by its subject and its own words.
+  const heldRelative = subjectRelative(held.domain_key, name);
+  if (heldRelative && words.some((text) => relativeOf(text, name) === heldRelative)) {
+    const texts = [proposed.content, ...quotes];
+    if (texts.some((text) => relativeOf(text, name) === heldRelative)) {
+      // The same relative, unless the person's words say whose relative it is
+      // and that someone is not the one held: "My cousin Sam's brother".
+      const [knows] = quotes.flatMap((quote) => [...relationsIn(quote, name, true)]);
+      const content = held.current.content ?? '';
+      const them: Whose = { kind: 'other', who: name, name };
+      if (
+        !knows ||
+        !twoPeople(whoseDetail(held.domain_key, content), content, them, `${knows} ${name}`)
+      )
+        return { apart: null };
+      return { apart: relativeSubject(held.domain_key, name, heldRelative, knows) };
+    }
+    if (relativeOf(proposed.content, name) === null && texts.some((text) => namesIn(text, name))) {
+      const [related] = [
+        ...relationsIn(proposed.content, name),
+        ...quotes.flatMap((quote) => [...relationsIn(quote, name, true)]),
+      ];
+      const subject = themselfSubject(held.domain_key, name, related);
+      return { apart: subject !== withoutMember(held.domain_key) ? subject : null };
+    }
+  }
   const said = relationsIn(proposed.content, name);
   const relative =
     relativeOf(proposed.content, name) ??
@@ -212,15 +245,14 @@ async function relativeApart(
           !relationsIn(quotes[index] ?? '', name, true).has(found),
       ) ??
     null;
-  if (!relative || subjectRelative(held.domain_key, name) === relative) return null;
-  const words = [held.current.content ?? '', ...(await earlierWords(tx, held))];
+  if (!relative || heldRelative === relative) return null;
   if (words.some((text) => relativeOf(text, name) === relative)) return null;
   // How the person knows the someone whose relative this is, as their own words say it.
   const related = [...quotes.flatMap((quote) => [...relationsIn(quote, name, true)]), ...said].find(
     (found) => found !== relative,
   );
   const subject = relativeSubject(proposed.domain_key, name, relative, related);
-  return subject !== withoutMember(held.domain_key) ? subject : null;
+  return subject !== withoutMember(held.domain_key) ? { apart: subject } : null;
 }
 
 /** A claim's earlier wordings, latest first. Forgotten ones are gone and never read. */

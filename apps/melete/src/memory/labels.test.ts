@@ -67,11 +67,17 @@ describe('how a text relates the person to someone it names', () => {
       ["My brother Sam's wife moved to Faro", 'partner'],
       ["Sam's brother-in-law lives in Faro", 'brother-in-law'],
       ["Jean-Luc's sister lives in Lyon", 'sister'],
+      // A name ending in "s" may take only the apostrophe.
+      ["James' brother moved to Faro", 'brother'],
+      ['James’ sister lives in Faro', 'sister'],
     ] as const)
-      expect([text, relativeOf(text, text.includes('Jean') ? 'jean luc' : 'sam')]).toEqual([
+      expect([
         text,
-        relative,
-      ]);
+        relativeOf(
+          text,
+          text.includes('Jean') ? 'jean luc' : text.includes('James') ? 'james' : 'sam',
+        ),
+      ]).toEqual([text, relative]);
     for (const text of [
       'My brother Sam moved to Faro',
       'Sam (my brother) moved to Faro',

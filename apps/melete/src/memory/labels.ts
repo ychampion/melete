@@ -93,6 +93,10 @@ export function subjectLabel(plainKey: string | null, plainDomain: string): stri
     const related = RELATIONS.has(first.toLowerCase()) && !FIELDS.has(second.toLowerCase());
     const who = related ? `${capitalize(first)} ${capitalize(second)}` : capitalize(first);
     const what = related ? field : [second, ...field];
+    // "person.sam.brother.city" is Sam's brother's city.
+    const [whose = '', ...theirs] = what;
+    if (theirs.length && RELATIONS.has(whose.toLowerCase().split(' ')[0] ?? ''))
+      return `${who}'s ${whose}'s ${theirs.join(' ')}`.slice(0, 200);
     return (what.length ? `${who}'s ${what.join(' ')}` : who).slice(0, 200);
   }
   // A detail filed under the person alone, with no topic, is about them.
@@ -614,7 +618,7 @@ export function relatedSubject(domainKey: string, whose: Whose, text: string): s
  * brother moved to Faro" are about Sam's brother, "Sam's mom lives in Faro"
  * about his mother. Null when it names them any other way: "My brother Sam
  * moved to Faro", "Sam (my brother) moved", "Sam's flat is in Faro"; and
- * "Sams' brother" is not Sam's.
+ * "Sams' brother" is not Sam's, though "James' brother" is James's.
  */
 export function relativeOf(text: string, name: string): string | null {
   const words = relationWords(text);
@@ -622,7 +626,7 @@ export function relativeOf(text: string, name: string): string | null {
   let found: string | null = null;
   for (const [index, word] of words.entries()) {
     if (!last || bareWord(word) !== last) continue;
-    if (!/['’]s$/u.test(word)) return null;
+    if (!/['’]s$/u.test(word) && !(last.endsWith('s') && /['’]$/u.test(word))) return null;
     let next = index + 1;
     while (DESCRIBING.has(words[next] ?? '')) next++;
     // "Sam's brother's flat" is still his brother's.
@@ -631,6 +635,23 @@ export function relativeOf(text: string, name: string): string | null {
     found ??= relation(kin);
   }
   return found;
+}
+/** Whether a text names someone at all, as themself or as whose something is: "Sam", "Sam's". */
+export function namesIn(text: string, name: string): boolean {
+  const last = textWords(name).at(-1);
+  return Boolean(last) && relationWords(text).some((word) => bareWord(word) === last);
+}
+/**
+ * The subject of someone's own detail, for one held as their relative's:
+ * "person.sam.brother.city" is "person.sam.city" for Sam himself, and
+ * "person.brother.sam.city" when the person's words say Sam is their brother.
+ */
+export function themselfSubject(domainKey: string, name: string, related?: string): string {
+  const parts = withoutMember(domainKey).split('.');
+  const at = parts.findIndex((part, index) => index > 0 && part.replace(/[_-]+/g, ' ') === name);
+  if (at < 0) return withoutMember(domainKey);
+  const lead = related ? [related] : parts.slice(1, at);
+  return [parts[0], ...lead, parts[at], ...parts.slice(at + 2)].join('.');
 }
 /** The relative a subject names after someone's name: "person.sam.brother.city" is Sam's brother's. */
 export function subjectRelative(domainKey: string, name: string): string | null {

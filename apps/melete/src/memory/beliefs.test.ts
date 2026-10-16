@@ -223,6 +223,12 @@ describe('labels', () => {
     expect(subjectLabel(null, 'person.landlord.patel')).toBe('Landlord Patel');
     expect(subjectLabel(null, 'person.sister.city')).toBe("Sister's city");
     expect(subjectLabel(null, 'pref.diet.shellfish_allergy')).toBe('Diet shellfish allergy');
+    // Someone's relative's detail is the relative's: "Sam's brother's city".
+    expect(subjectLabel(null, 'person.sam.brother.city')).toBe("Sam's brother's city");
+    expect(subjectLabel(null, 'person.friend.sam.brother.city')).toBe(
+      "Friend Sam's brother's city",
+    );
+    expect(subjectLabel(null, 'person.sam.mother')).toBe("Sam's mother");
   });
   test('a detail about the person themself reads as theirs, never as "the owner"', () => {
     expect(subjectLabel('contact.owner.availability', 'contact.owner.availability')).toBe(

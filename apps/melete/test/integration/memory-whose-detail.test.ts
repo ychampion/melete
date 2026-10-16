@@ -851,6 +851,166 @@ withDb('a detail is kept with the someone it is about', () => {
     ]);
   });
 
+  test("Sam himself, proposed as a change to his brother's detail, never changes the brother's", async () => {
+    const got: unknown[] = [];
+    const want: unknown[] = [];
+    for (const held of ['person.sam.city', 'person.brother.sam.city'])
+      for (const relative of ['person.sam.brother.city', 'person.friend.sam.brother.city'])
+        for (const [message, quote, content, about] of [
+          [
+            'My brother Sam moved to Lagos.',
+            'My brother Sam moved to Lagos',
+            'Brother Sam lives in Lagos',
+            'him',
+          ],
+          [
+            'My brother Sam moved to Lagos.',
+            'My brother Sam moved to Lagos',
+            'Sam lives in Lagos',
+            'him',
+          ],
+          ['Sam moved to Lagos.', 'Sam moved to Lagos', 'Sam lives in Lagos', 'him'],
+          // Words about the brother, or citing them, still change the brother's detail.
+          [
+            "Sam's brother moved to Lagos.",
+            "Sam's brother moved to Lagos",
+            "Sam's brother lives in Lagos",
+            'relative',
+          ],
+          [
+            "Sam's brother moved to Lagos.",
+            "Sam's brother moved to Lagos",
+            'Sam lives in Lagos',
+            'relative',
+          ],
+          [
+            "Sam's brother moved to Lagos.",
+            "Sam's brother moved to Lagos",
+            'Brother Sam lives in Lagos',
+            'relative',
+          ],
+        ] as const) {
+          const scope = await createScope(store);
+          const first = await said(scope, 'My brother Sam lives in Madrid.');
+          await commitExtraction(store.sql, scope, first, {
+            proposals: [
+              add(first, held, 'My brother Sam lives in Madrid', 'Brother Sam lives in Madrid'),
+            ],
+          });
+          const theirs = await said(scope, "My friend Sam's brother lives in Faro.");
+          await commitExtraction(store.sql, scope, theirs, {
+            proposals: [
+              add(
+                theirs,
+                relative,
+                "My friend Sam's brother lives in Faro",
+                "Sam's brother lives in Faro",
+              ),
+            ],
+          });
+          const batch = await said(scope, message);
+          await commitExtraction(store.sql, scope, batch, {
+            proposals: [supersede(batch, relative, quote, content)],
+          });
+          const rows = await heldNow(scope);
+          const kept = rows.find((row) => row[0] === relative);
+          const brother = rows.find((row) => row[0] === held);
+          got.push([
+            held,
+            relative,
+            content,
+            about === 'him'
+              ? {
+                  relative: kept && [kept[1], kept[4]],
+                  brother: brother && [brother[1], brother[4]],
+                  // Lagos is on a detail of Sam's own, never one more relative's.
+                  lagos: rows.some(
+                    (row) =>
+                      row[0] !== relative &&
+                      /Lagos/.test(String(row[1])) &&
+                      !/\.sam\.brother\./.test(String(row[0])),
+                  ),
+                }
+              : {
+                  relative: kept && [kept[1], kept[4]],
+                  brother: brother && [brother[1], brother[4]],
+                },
+          ]);
+          want.push([
+            held,
+            relative,
+            content,
+            about === 'him'
+              ? {
+                  relative: ["Sam's brother lives in Faro", 1],
+                  brother: brother && [brother[1], brother[4]],
+                  lagos: true,
+                }
+              : { relative: [content, 2], brother: ['Brother Sam lives in Madrid', 1] },
+          ]);
+        }
+    expect(got).toEqual(want);
+  });
+
+  test("another Sam's brother is not the friend's brother held", async () => {
+    const scope = await createScope(store);
+    const first = await said(scope, "My friend Sam's brother lives in Faro.");
+    await commitExtraction(store.sql, scope, first, {
+      proposals: [
+        add(
+          first,
+          'person.friend.sam.brother.city',
+          "My friend Sam's brother lives in Faro",
+          "Sam's brother lives in Faro",
+        ),
+      ],
+    });
+    const moved = await said(scope, "My cousin Sam's brother moved to Lagos.");
+    await commitExtraction(store.sql, scope, moved, {
+      proposals: [
+        supersede(
+          moved,
+          'person.friend.sam.brother.city',
+          "My cousin Sam's brother moved to Lagos",
+          "Sam's brother lives in Lagos",
+        ),
+      ],
+    });
+    expect(await heldNow(scope)).toEqual([
+      ['person.cousin.sam.brother.city', "Sam's brother lives in Lagos", 'owner', 1, 1],
+      ['person.friend.sam.brother.city', "Sam's brother lives in Faro", 'owner', 1, 1],
+    ]);
+  });
+
+  test("a detail filed as person.sam.brother that is Brother Sam's own still takes his move", async () => {
+    const scope = await createScope(store);
+    const first = await said(scope, 'My brother Sam lives in Madrid.');
+    await commitExtraction(store.sql, scope, first, {
+      proposals: [
+        add(
+          first,
+          'person.sam.brother.city',
+          'My brother Sam lives in Madrid',
+          'Brother Sam lives in Madrid',
+        ),
+      ],
+    });
+    const moved = await said(scope, 'My brother Sam moved to Lagos.');
+    await commitExtraction(store.sql, scope, moved, {
+      proposals: [
+        supersede(
+          moved,
+          'person.sam.brother.city',
+          'My brother Sam moved to Lagos',
+          'Brother Sam lives in Lagos',
+        ),
+      ],
+    });
+    expect(await heldNow(scope)).toEqual([
+      ['person.sam.brother.city', 'Brother Sam lives in Lagos', 'owner', 1, 2],
+    ]);
+  });
+
   test("in a room, a member's change left without their part is kept apart from another of that name", async () => {
     const scope = await room();
     const alice = 'prn_alice';
