@@ -34,11 +34,49 @@ export const FILES_TURN_LOCK = 31003104;
  */
 export const FILES_TURN_LOCK_TIMEOUT = '30s';
 
-/** Take the space's Files turn in a postgres.js transaction, with its wait limit in force first. */
+/**
+ * How long a turn's transaction may sit idle while its file work runs, in
+ * place of the minute the service gives its other transactions
+ * (`IDLE_IN_TRANSACTION_TIMEOUT_MS`). A turn sends nothing to the database
+ * while it works on the disk, and the biggest one, a delete of a folder of
+ * `DELETE_ENTRIES` files, reads each file twice: it can take minutes, and
+ * the space must stay held until it is done.
+ */
+export const FILES_TURN_IDLE_LIMIT = '15min';
+
+/** Take the space's Files turn in a postgres.js transaction, with its limits in force first. */
 export async function lockFilesTurnIn(tx: TransactionSql, spaceId: string): Promise<void> {
   await tx`select pg_advisory_xact_lock(${FILES_TURN_LOCK}, hashtext(${spaceId}))
-    from (select set_config('lock_timeout', ${FILES_TURN_LOCK_TIMEOUT}, true) as timeout) limits
-    where limits.timeout is not null`;
+    from (select set_config('lock_timeout', ${FILES_TURN_LOCK_TIMEOUT}, true) as timeout,
+        set_config('idle_in_transaction_session_timeout', ${FILES_TURN_IDLE_LIMIT}, true) as idle) limits
+    where limits.timeout is not null and limits.idle is not null`;
+}
+
+/**
+ * Run a turn's work in the transaction `begin` opens, once `lock` has taken
+ * the space there. The transaction only holds the lock and the work's reads,
+ * so once the work has started, its outcome is the turn's: a transaction that
+ * ends early (its connection lost, which postgres.js reports at once) or fails
+ * to commit still waits for the work: a change made on the disk is never
+ * reported as not made, nor this process's next turn let in while it is
+ * being made. (Other instances wait only while the connection holds the lock.)
+ */
+export async function heldThrough<Tx, T>(
+  begin: (body: (tx: Tx) => Promise<T>) => Promise<T>,
+  lock: (tx: Tx) => Promise<unknown>,
+  work: (tx: Tx) => Promise<T>,
+): Promise<T> {
+  let working: Promise<T> | undefined;
+  try {
+    return await begin(async (tx) => {
+      await lock(tx);
+      working = work(tx);
+      return working;
+    });
+  } catch (error) {
+    if (!working) throw error;
+    return working;
+  }
 }
 
 /**
@@ -60,18 +98,20 @@ const inThisProcess: FilesHold = (_spaceId, work) => work(null);
  * The turn held through `sql` as well: one short transaction per turn that
  * takes the space's lock and does the turn's work in it. Nothing but the
  * file work and its own reads runs in it, and never under the event order
- * lock. Slow work stays outside the turn (asking the agent's computer to drop
- * a moved file's copy among it): Postgres ends a transaction left idle for a
- * minute (`IDLE_IN_TRANSACTION_TIMEOUT_MS`). Without a database, the turn is
+ * lock. Slow work that is not the change itself stays outside the turn
+ * (asking the agent's computer to drop a moved file's copy among it); the
+ * change itself keeps the space held for as long as it takes, up to
+ * `FILES_TURN_IDLE_LIMIT` with nothing sent. Without a database, the turn is
  * this process's alone.
  */
 export function filesHold(sql: Sql | null | undefined): FilesHold {
   if (!sql) return inThisProcess;
   return <T>(spaceId: string, work: (query: Query | null) => Promise<T>) =>
-    sql.begin(async (tx) => {
-      await lockFilesTurnIn(tx, spaceId);
-      return work(tx);
-    }) as Promise<T>;
+    heldThrough<TransactionSql, T>(
+      (body) => sql.begin(body) as Promise<T>,
+      (tx) => lockFilesTurnIn(tx, spaceId),
+      work,
+    );
 }
 
 const turns = new Map<string, Promise<unknown>>();

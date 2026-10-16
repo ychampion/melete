@@ -34,9 +34,11 @@ import {
   type TrashPlace,
 } from '../connectors/files-trash.ts';
 import {
+  FILES_TURN_IDLE_LIMIT,
   FILES_TURN_LOCK,
   FILES_TURN_LOCK_TIMEOUT,
   type FilesHold,
+  heldThrough,
   inFilesTurn,
   managesSharedFiles,
 } from '../connectors/shared-files.ts';
@@ -420,13 +422,16 @@ export function mountFiles(
    * one turn with steps on every instance (`inFilesTurn`): the same lock as
    * `lockFilesTurnIn`, in Drizzle form.
    */
-  const filesTurnHold: FilesHold = (spaceId, work) =>
-    db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(${FILES_TURN_LOCK}, hashtext(${spaceId}))
-        from (select set_config('lock_timeout', ${FILES_TURN_LOCK_TIMEOUT}, true) as timeout) limits
-        where limits.timeout is not null`);
-      return work(null);
-    });
+  const filesTurnHold: FilesHold = <T>(spaceId: string, work: (query: null) => Promise<T>) =>
+    heldThrough<Parameters<Parameters<Database['transaction']>[0]>[0], T>(
+      (body) => db.transaction(body),
+      (tx) =>
+        tx.execute(sql`select pg_advisory_xact_lock(${FILES_TURN_LOCK}, hashtext(${spaceId}))
+          from (select set_config('lock_timeout', ${FILES_TURN_LOCK_TIMEOUT}, true) as timeout,
+              set_config('idle_in_transaction_session_timeout', ${FILES_TURN_IDLE_LIMIT}, true) as idle) limits
+          where limits.timeout is not null and limits.idle is not null`),
+      () => work(null),
+    );
 
   app.delete('/files/:id', async (c) => {
     const scope = await scopeOf(c, resolveSpace);

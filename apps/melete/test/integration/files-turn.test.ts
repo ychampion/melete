@@ -5,7 +5,7 @@
  */
 import { afterAll, expect, test } from 'bun:test';
 import { recordId } from '../../src/broker/records.ts';
-import { filesHold, inFilesTurn } from '../../src/connectors/shared-files.ts';
+import { filesHold, heldThrough, inFilesTurn } from '../../src/connectors/shared-files.ts';
 import { openDatabase } from '../../src/db/client.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -19,9 +19,9 @@ afterAll(async () => {
 }, 30_000);
 
 /** A pool of its own, as another instance of the service has. */
-const instance = (max: number) => {
+const instance = (max: number, idleInTransactionMs?: number) => {
   if (!fixture) throw new Error('Postgres fixture unavailable');
-  const pool = openDatabase(fixture.url, max);
+  const pool = openDatabase(fixture.url, max, idleInTransactionMs);
   pools.push(pool);
   return pool;
 };
@@ -135,4 +135,98 @@ databaseTest('a turn that fails lets the next one in, on this instance and the o
   ).rejects.toThrow('the file step failed');
   expect(await inFilesTurn(spaceId, async () => 'next here', here)).toBe('next here');
   expect(await inFilesTurn(spaceId, async () => 'next there', there)).toBe('next there');
+});
+
+databaseTest(
+  'a turn whose file work outlasts the idle limit keeps the space held to its end',
+  async () => {
+    const spaceId = recordId('sp');
+    // This pool's sessions are ended after 200 ms idle in a transaction, as the
+    // service's are after a minute; a big folder's delete can take longer.
+    const slow = instance(1, 200);
+    const here = filesHold(slow.sql);
+    const there = filesHold(instance(2).sql);
+    let finished = 0;
+    let entered = 0;
+    const turn = here(spaceId, async (query) => {
+      if (!query) throw new Error('the turn was not held in the database');
+      await query`select 1`;
+      // File work: nothing is sent to the database meanwhile.
+      await Bun.sleep(900);
+      finished = performance.now();
+      return 'moved';
+    });
+    await Bun.sleep(100);
+    const other = there(spaceId, async () => {
+      entered = performance.now();
+    });
+    expect(await turn).toBe('moved');
+    await other;
+    expect(entered).toBeGreaterThanOrEqual(finished);
+    // The turn's limits end with it: the pooled connection is as it was.
+    const [after] = await slow.sql`select current_setting('lock_timeout') as lock,
+      current_setting('idle_in_transaction_session_timeout') as idle`;
+    expect({ ...after }).toEqual({ lock: '0', idle: '200ms' });
+  },
+  15_000,
+);
+
+/**
+ * A transaction as postgres.js runs one whose connection is lost while its
+ * body runs: it fails at once, and the body carries on.
+ */
+const losesItsConnection =
+  (afterMs: number) =>
+  <T>(body: (tx: string) => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      body('tx').then(resolve, reject);
+      setTimeout(
+        () =>
+          reject(
+            Object.assign(new Error('write CONNECTION_CLOSED'), { code: 'CONNECTION_CLOSED' }),
+          ),
+        afterMs,
+      );
+    });
+
+test("a turn whose transaction ends early is still the work's until the work is done", async () => {
+  let done = false;
+  // The change on disk is made after the connection is lost: the turn ends
+  // when it is made, and says it was.
+  const saved = await heldThrough(
+    losesItsConnection(10),
+    async () => {},
+    async () => {
+      await Bun.sleep(100);
+      done = true;
+      return 'saved';
+    },
+  );
+  expect(saved).toBe('saved');
+  expect(done).toBe(true);
+  // Work that fails still fails with its own error.
+  await expect(
+    heldThrough(
+      losesItsConnection(10),
+      async () => {},
+      async () => {
+        await Bun.sleep(50);
+        throw new Error('the file step failed');
+      },
+    ),
+  ).rejects.toThrow('the file step failed');
+  // A turn never taken never runs its work, and fails with the reason.
+  let ran = false;
+  await expect(
+    heldThrough(
+      losesItsConnection(10),
+      async () => {
+        throw new Error('canceling statement due to lock timeout');
+      },
+      async () => {
+        ran = true;
+      },
+    ),
+  ).rejects.toThrow('lock timeout');
+  expect(ran).toBe(false);
 });

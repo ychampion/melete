@@ -33,6 +33,7 @@ import {
   oneAtATime,
   sweepTrash,
 } from '../../src/connectors/files-trash.ts';
+import { filesHold } from '../../src/connectors/shared-files.ts';
 import {
   connectorAction as filesTestAction,
   connectorContext as filesTestContext,
@@ -687,6 +688,25 @@ databaseTest(
         await sql()`update session set space_id = ${row.space_id},
           membership_generation = ${row.membership_generation} where token_hash = ${row.token_hash}`;
     }
+  },
+);
+
+databaseTest(
+  "a delete on the Files page waits while another instance holds the space's Files turn",
+  async () => {
+    const id = await savedInFiles('held/turn.md', 'kept while held\n');
+    let removing: Promise<Response> | undefined;
+    let during = false;
+    // Another instance's turn in the same space's Files, held in the database
+    // only: past this process's own queue.
+    await filesHold(sql())(spaceId, async () => {
+      removing = Promise.resolve(remove(id));
+      await Bun.sleep(500);
+      during = await exists(inFiles('held', 'turn.md'));
+    });
+    expect(during).toBe(true);
+    expect((await removing)?.status).toBe(200);
+    expect(await exists(inFiles('held', 'turn.md'))).toBe(false);
   },
 );
 
