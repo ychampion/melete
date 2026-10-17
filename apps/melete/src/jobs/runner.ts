@@ -38,6 +38,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { personQuestionKey } from '../broker/ask-person.ts';
+import { redactSecrets } from '../connectors/faults.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -80,6 +81,7 @@ import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import { personWords } from './history-summary.ts';
 import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { PROVIDER_FAILURE_NOTES } from './provider-notes.ts';
 import { persistQuestions, resolveQuestions } from './questions.ts';
@@ -251,8 +253,14 @@ async function namedFailure(
 /** What a turn that stopped without a question asks, when no step failed. */
 export const STOPPED_QUESTION = 'I stopped before finishing. What should I do next?';
 
-/** The words a failed step gave for failing, as the person may read them. */
-function failureWords(result: JsonObject): string {
+/**
+ * The words a failed step gave for failing, as the person may read them: the
+ * first line, cut where a raw body (JSON or a page) begins, with address
+ * query strings and anything shaped like a credential taken out. A provider's
+ * error often quotes the request, its key included; that never reaches the
+ * question.
+ */
+export function failureWords(result: JsonObject): string {
   const error = result.error;
   const said =
     typeof error === 'string'
@@ -260,7 +268,13 @@ function failureWords(result: JsonObject): string {
       : error && typeof error === 'object' && !Array.isArray(error)
         ? (error as JsonObject).message
         : (result.message ?? result.reason);
-  const text = plainText(said, '', 400).replace(/\s+/g, ' ').trim();
+  const line = (plainText(said, '', 400).split(/\r?\n/, 1)[0] ?? '')
+    .split(/[{[<]/, 1)[0]
+    ?.replace(/(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/gi, '$1');
+  const text = redactSecrets(line ?? '', 400)
+    .replace(/\s+/g, ' ')
+    .replace(/[\s:;,-]+$/, '')
+    .trim();
   if (!text) return '';
   if (text.length <= 160) return text.replace(/[.!?]+$/, '');
   return `${text.slice(0, 159).trimEnd()}…`;
@@ -2191,27 +2205,65 @@ export class AttemptRunner {
       .find((entry) => entry.role === 'user');
     if (!options || options.afterMs <= 0 || !message?.content.trim()) return null;
     const stop = new AbortController();
+    // Anything the person already heard in this turn, from any of its attempts:
+    // the agent's words, a line it said, or an earlier acknowledgement.
+    const spokeInTurn = async (tx: Transaction) => {
+      const [spoken] = await tx
+        .select({ seq: event.seq })
+        .from(event)
+        .innerJoin(attempt, eq(attempt.id, event.attemptId))
+        .where(
+          and(
+            eq(event.jobId, claims.job_id),
+            eq(attempt.turnId, turn.turnId),
+            sql`((${event.type} = 'text_delta' and btrim(${event.payload}->>'text') <> '')
+              or (${event.type} = 'notice' and ${event.payload}->>'kind' = 'experience_say'))`,
+          ),
+        )
+        .limit(1);
+      return Boolean(spoken);
+    };
     const timer = setTimeout(() => {
       void (async () => {
+        // Only what the person wrote themselves: an attached file's text or a
+        // pasted email is someone else's words, and a line written from them
+        // would put those words in the agent's voice.
+        const own = await this.jobs.transaction(async (tx) => {
+          if (await spokeInTurn(tx)) return '';
+          const [sent] = await tx
+            .select({ payload: event.payload })
+            .from(event)
+            .where(
+              and(
+                eq(event.jobId, claims.job_id),
+                eq(event.type, 'notice'),
+                sql`${event.payload}->>'kind' = 'user_message'`,
+              ),
+            )
+            .orderBy(desc(event.seq))
+            .limit(1);
+          const payload = (sent?.payload ?? {}) as JsonObject;
+          return typeof payload.text === 'string'
+            ? personWords({ text: payload.text, pasted: payload.pasted, chosen: payload.chosen })
+            : '';
+        });
+        if (!own.trim() || stop.signal.aborted) return;
         const said = await options.writer.write({
           spaceId: turn.spaceId,
           conversationId: claims.job_id,
           ...(turn.principalId ? { principalId: turn.principalId } : {}),
-          message: message.content,
+          message: own.trim(),
           signal: stop.signal,
         });
         if (!said || stop.signal.aborted) return;
         const shown = await this.jobs.transaction(async (tx) => {
           const row = await this.jobs.lock(tx, claims.job_id);
           if (!row || row.currentTurnId !== turn.turnId) return false;
-          await requireCurrentAttempt(tx, claims, { settling: true });
+          // Only while the attempt is working: once it waits on an approval or
+          // a check, the person has a card in front of them already.
+          await requireCurrentAttempt(tx, claims);
           // Words that reached the record while the line was written win.
-          const [spoken] = await tx
-            .select({ seq: event.seq })
-            .from(event)
-            .where(and(eq(event.attemptId, claims.attempt_id), eq(event.type, 'text_delta')))
-            .limit(1);
-          if (spoken || stop.signal.aborted) return false;
+          if ((await spokeInTurn(tx)) || stop.signal.aborted) return false;
           const added = await appendEvent(tx, {
             jobId: row.id,
             attemptId: claims.attempt_id,

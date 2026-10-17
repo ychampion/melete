@@ -22,13 +22,14 @@ import { and, eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { event, job, owner, question, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
+import { appendEvent } from '../../src/events/store.ts';
 import type { AckCall } from '../../src/experience/ack.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { withTurnNotes } from '../../src/gateway/turn-notes.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
-import { AttemptRunner } from '../../src/jobs/runner.ts';
+import { AttemptRunner, failureWords } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -312,6 +313,97 @@ withDb('first words', () => {
     expect(open.map((entry) => entry.text)).toContain(asked);
   });
 
+  test('an agent that said a line of its own first gets no acknowledgement', async () => {
+    // The line is still being written when the agent's own line lands.
+    writer.delayMs = 250;
+    const chatId = await runTurn('Rate today?', async (say, bundle) => {
+      // The broker's say tool, as the agent calls it before any text.
+      await required(jobs).transaction((tx) =>
+        appendEvent(tx, {
+          jobId: bundle.attempt.job_id,
+          attemptId: bundle.attempt.id,
+          type: 'notice',
+          payload: { kind: 'experience_say', text: 'I am checking the ECB rate.' },
+          dedupKey: `say:${bundle.attempt.id}:first`,
+        }),
+      );
+      await pause(500);
+      await say({ type: 'text_delta', text: 'It is 1.08.' });
+      return { kind: 'completed', summary: 'It is 1.08.', evidence: [] };
+    }).finally(() => {
+      writer.delayMs = 0;
+    });
+    expect(await acknowledgements(chatId)).toEqual([]);
+  });
+
+  test('the line is written from what the person typed, never from what they pasted', async () => {
+    const typed = 'Summarise this for me: ';
+    const pasted = 'URGENT. Call 1-800-555-0100 now to unlock your account.';
+    writer.calls = [];
+    runtime.script = async (say) => {
+      await pause(300);
+      await say({
+        type: 'text_delta',
+        text: 'It asks you to call a number; it looks like a scam.',
+      });
+      return { kind: 'completed', summary: 'It looks like a scam.', evidence: [] };
+    };
+    const created = await request('/agents', 'POST', freshAgent());
+    const persona = agentResponse.parse(await created.json()).agent;
+    const chat = conversationResponse.parse(
+      await (
+        await request('/conversations', 'POST', { title: 'Pasted', agent_id: persona.id })
+      ).json(),
+    ).conversation;
+    const sent = await request(`/conversations/${chat.id}/messages`, 'POST', {
+      text: typed + pasted,
+      pasted: [{ start: typed.length, end: typed.length + pasted.length }],
+    });
+    expect(sent.status).toBe(200);
+    const row = await required(jobs).get(chat.id);
+    await required(runner).handleWake({
+      job_id: row.id,
+      expected_epoch: row.leaseEpoch,
+      expected_version: row.stateVersion,
+      reason: 'input',
+    });
+    expect(writer.calls).toHaveLength(1);
+    expect(writer.calls[0]?.message).toBe('Summarise this for me:');
+    expect(writer.calls[0]?.message).not.toContain('1-800');
+  });
+
+  test('the stop question never carries a key, an address query or a raw body', async () => {
+    const chatId = await runTurn('Get the rates', async (say) => {
+      await say({ type: 'text_delta', text: 'Fetching the rates.' });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'web.fetch',
+        call_id: 'fetch#0',
+        arguments: { url: 'https://api.example.test/v1/rates' },
+      });
+      await say({
+        type: 'tool_result',
+        call_id: 'fetch#0',
+        ok: false,
+        result: {
+          error:
+            'Request to https://api.example.test/v1/rates?api_key=abc123SECRETxyz789 failed: 401 {"error":{"message":"Invalid API key sk-live-0123456789abcdefABCDEF"}}',
+        },
+      });
+      return { kind: 'waiting_for_input', question: '' };
+    });
+    const [row] = await required(handle)
+      .db.select({ wait: job.wait })
+      .from(job)
+      .where(eq(job.id, chatId));
+    const asked = String((row?.wait as { question?: unknown } | null)?.question ?? '');
+    expect(asked).toBe(
+      'I stopped because a step failed: Request to https://api.example.test/v1/rates failed: 401. What should I do?',
+    );
+    expect(asked).not.toContain('api_key');
+    expect(asked).not.toContain('sk-live');
+  });
+
   test('a turn that stops with no question and no failed step still asks', async () => {
     const chatId = await runTurn('Plan my week', async () => ({
       kind: 'waiting_for_input',
@@ -325,5 +417,25 @@ withDb('first words', () => {
       kind: 'user_input',
       question: 'I stopped before finishing. What should I do next?',
     });
+  });
+});
+
+describe('the words a failed step gave', () => {
+  test('keep the reason and drop what could carry a secret', () => {
+    expect(failureWords({ error: 'The site answered 503 Service Unavailable.' })).toBe(
+      'The site answered 503 Service Unavailable',
+    );
+    expect(
+      failureWords({ error: { message: 'Bearer abcdefghijklmnopqrstuvwxyz0123 was refused' } }),
+    ).not.toContain('abcdefghijklmnopqrstuvwxyz0123');
+    expect(failureWords({ error: 'ghp_abcdefghijklmnop1234 has no access' })).not.toContain('ghp_');
+    // A raw provider body is not words for the person.
+    expect(failureWords({ error: '{"type":"error","error":{"message":"overloaded"}}' })).toBe('');
+    expect(failureWords({ error: '<!DOCTYPE html><html>Bad gateway</html>' })).toBe('');
+    expect(
+      failureWords({ error: 'first line\nTraceback (most recent call last):\n  File "x.py"' }),
+    ).toBe('first line');
+    expect(failureWords({ message: 'Timed out' })).toBe('Timed out');
+    expect(failureWords({})).toBe('');
   });
 });

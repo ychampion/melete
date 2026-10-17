@@ -697,7 +697,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   );
   const now = useNow(Boolean(last && WORKING.includes(last.status)) || holding);
   // Where the work stands, for the header, from the conversation and its stream.
-  const head = headState(conversation, state.lastEventAt, now);
+  const head = headState(conversation, state.lastEventAt, now, state.live);
 
   useEffect(() => {
     setAgentId(conversation?.agent_id ?? fallback?.id ?? null);

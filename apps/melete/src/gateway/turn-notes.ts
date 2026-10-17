@@ -42,7 +42,9 @@ const turns = new Map<string, Turn>();
 
 /** The note that keeps an acknowledgement from being said twice. */
 export const acknowledgedNote = (said: string): string =>
-  `Melete already told the person, in your voice: "${said}" Do not say that again or open with a line about what you are doing; carry on with the work and give the answer.`;
+  // The line is quoted as data: a quote mark in it cannot close the quotation
+  // and leave the rest reading as Melete's own instruction.
+  `Melete already told the person, in your voice: "${said.replace(/["“”\r\n]+/g, "'")}" Do not say that again or open with a line about what you are doing; carry on with the work and give the answer.`;
 
 /** The note that asks for a line after a quiet stretch. */
 export const progressNote = (quietMs: number): string =>
@@ -189,7 +191,11 @@ export function withTurnNotes(
     return { ...body, messages };
   }
   const key = protocol === 'responses' ? 'input' : 'messages';
+  // The Responses protocol carries the service's own words in the middle of a
+  // conversation as a developer message: the ChatGPT plan refuses a system
+  // message there, and OpenAI ranks the two the same.
+  const role = protocol === 'responses' ? 'developer' : 'system';
   const list = [...(body[key] as unknown[])];
-  for (const { index, note } of placed) list.splice(index, 0, { role: 'system', content: note });
+  for (const { index, note } of placed) list.splice(index, 0, { role, content: note });
   return { ...body, [key]: list };
 }

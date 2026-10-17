@@ -35,6 +35,8 @@ export function headState(
   conversation: Pick<Conversation, 'status' | 'waiting_until'> | null,
   lastEventAt: number | null,
   now: number,
+  /** Whether the page is following the work's stream right now. */
+  live = true,
 ): HeadState | null {
   if (!conversation) return null;
   const { status } = conversation;
@@ -42,6 +44,9 @@ export function headState(
     return { tone: 'waiting', words: waitingUntilWords(conversation.waiting_until, now) };
   if (UNDER_WAY.includes(status)) {
     const quiet = lastEventAt === null ? 0 : now - lastEventAt;
+    // While the stream is down the page cannot see progress, so it does not
+    // claim there is none: the work may be moving where it cannot look.
+    if (!live && quiet >= QUIET_AFTER_MS) return { tone: 'quiet', words: 'Reconnecting' };
     if (status === 'stalled' || quiet >= QUIET_AFTER_MS)
       return {
         tone: 'quiet',

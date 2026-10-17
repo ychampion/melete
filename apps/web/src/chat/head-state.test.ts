@@ -19,6 +19,19 @@ describe('the chat header state', () => {
     );
   });
 
+  test('a lost stream reads as reconnecting, not as work that stopped moving', () => {
+    const quiet = NOW - QUIET_AFTER_MS - 30_000;
+    expect(headState({ status: 'working' }, quiet, NOW, false)).toEqual({
+      tone: 'quiet',
+      words: 'Reconnecting',
+    });
+    expect(headState({ status: 'working' }, quiet, NOW, true)?.words).toBe('No progress for 50 s');
+    // A short drop, before anything would read as quiet, changes nothing.
+    expect(headState({ status: 'working' }, NOW - 2_000, NOW, false)?.words).toBe('Working');
+    // Waiting on the person is known without the stream.
+    expect(headState({ status: 'needs_you' }, quiet, NOW, false)?.words).toBe('Waiting for you');
+  });
+
   test('a stalled turn says so even before the header has counted', () => {
     expect(headState({ status: 'stalled' }, null, NOW)).toEqual({
       tone: 'quiet',
