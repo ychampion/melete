@@ -680,6 +680,26 @@ Each image carries these tags:
 - the commit's first seven characters, such as `023df46`: one build, kept.
 - a release's version, such as `v0.3.0`, when that tag is pushed.
 
+A tag belongs to the Docker engine, not to one installation: a pull of `main`
+by any installation on the same engine, or by hand, moves it for all of them.
+The `melete` service looks up the runtime image's ID once, when it starts, and
+starts every attempt's engine from that exact image. `melete-cells` records
+the image the service was given and keeps accepting it after the tag moves,
+also when `melete-cells` restarts on its own, so a moved tag never stops a
+running installation's engines. A newer runtime image is used from the next
+start of the `melete` service, which `melete deploy` does once the matching
+service image is in place: the service image expects the Hermes commit its
+own release's runtime carries, so the two change together, never when the tag
+happens to move. `melete deploy` also pins each installation to its commit's
+own tag, which keeps installations on one engine from moving each other's.
+
+If the image the service started with is removed from the engine, such as by
+`docker image prune` after the tag moved away from it, a new message ends
+with “I couldn’t start the engine that does the work … Restart Melete”, and the
+service log names the image. Restart the `melete` service to use the image the
+tag names now, or run `melete deploy` when that is a newer release than the
+service's.
+
 The images are built for `linux/amd64`. On another architecture, build from
 source as [Install on a Linux Docker host](#install-on-a-linux-docker-host)
 shows. They hold no keys or configuration: `deploy/.env` and everything under
@@ -2424,7 +2444,7 @@ read-only, and `melete-cells` starts only these fixed profiles:
 
 | Profile | Image | Network | Storage |
 | --- | --- | --- | --- |
-| An attempt's engine | the runtime image the stack names | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
+| An attempt's engine | the runtime image the stack names, as it stood when the service started ([prebuilt images](#using-prebuilt-images)) | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
 | An agent's computer | `MELETE_SANDBOX_DOCKER_IMAGE` | none, or its own internal network | its two volumes |
 | A stdio MCP server | one pulled by digest from any registry that does not point back at the host ([CONNECTORS.md](CONNECTORS.md)), or the runner images below | none, or its own internal network | its own volumes |
 

@@ -3,8 +3,10 @@
  * Docker socket; it asks `melete-cells`, which holds it, and every request is
  * judged here first. Three container profiles are fixed in code:
  *
- * - `runtime`: an attempt's engine, from the runtime image the operator named,
- *   on its own internal network, with its job's workspace and its own home;
+ * - `runtime`: an attempt's engine, from the runtime image the operator named
+ *   (an image that name stood for when the service looked it up here, so a
+ *   name moved by a later pull does not refuse it: `runtime-images.ts`), on
+ *   its own internal network, with its job's workspace and its own home;
  * - `sandbox`: an agent's computer, from the sandbox image the operator named,
  *   with no network or its own internal one, and its two volumes;
  * - `mcp`: a stdio MCP server (or its package preparation), from an image
@@ -25,6 +27,7 @@
 
 import { type HostResolver, imagePullAllowed } from '../connectors/image-registry.ts';
 import { type NetworkPool, networkPool, subnetOfPool } from '../runtime/network-pool.ts';
+import type { SeenImages } from './runtime-images.ts';
 
 export type Profile = 'runtime' | 'sandbox' | 'mcp';
 
@@ -35,6 +38,11 @@ export type CellsPolicyConfig = {
   sandboxProject?: string;
   /** The engine image attempt cells run (MELETE_RUNTIME_IMAGE). */
   runtimeImage: string;
+  /**
+   * The images `runtimeImage` has stood for when the service looked it up
+   * here. An attempt cell runs any of them, or what the name stands for now.
+   */
+  runtimeImages?: SeenImages;
   /** The computer image agents get (MELETE_SANDBOX_DOCKER_IMAGE). */
   sandboxImage?: string;
   /** The images stdio MCP runners pull by name, beside any image pinned by digest. */
@@ -74,7 +82,12 @@ export type CellsRequest = {
 };
 
 export type Verdict =
-  | { allow: true; redact?: 'container' | 'foreign' }
+  | {
+      allow: true;
+      redact?: 'container' | 'foreign';
+      /** The answer says which image the configured runtime name stands for: record it. */
+      runtimeImage?: true;
+    }
   | { allow: false; status: number; reason: string };
 
 const OWNERS: Record<Profile, { owner: string; project: 'compose' | 'sandbox'; label: string }> = {
@@ -108,6 +121,9 @@ const OWNER_LABELS = new Set(Object.values(OWNERS).map(({ owner }) => owner));
 const reservedLabel = (key: string) =>
   key.startsWith('com.docker.') || key.startsWith('org.opencontainers.');
 const refuse = (reason: string, status = 403): Verdict => ({ allow: false, status, reason });
+/** Why a container of `profile` is refused its image; the service tells the person plainly. */
+export const imageRefusal = (profile: 'runtime' | 'sandbox') =>
+  `the ${profile} profile runs only the image the operator configured`;
 const allow: Verdict = { allow: true };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -377,10 +393,13 @@ async function judgeCreate(
   const image = await lookup.image(reference);
   if (!image) return refuse('the image is not on this engine', 404);
   if (profile === 'runtime' || profile === 'sandbox') {
+    // An attempt cell runs the image the service resolved the runtime name to
+    // when it started, though the name may stand for a newer one since. A
+    // computer follows its name: it is made from what the name stands for now.
+    if (profile === 'runtime' && config.runtimeImages?.has(image.Id)) return allow;
     const named = profile === 'runtime' ? config.runtimeImage : config.sandboxImage;
     const expected = named ? await lookup.image(named) : null;
-    if (!expected || expected.Id !== image.Id)
-      return refuse(`the ${profile} profile runs only the image the operator configured`);
+    if (!expected || expected.Id !== image.Id) return refuse(imageRefusal(profile));
   } else if (!(image.RepoDigests ?? []).length)
     return refuse('an MCP server runs an image pulled from a registry, never one built here');
   return allow;
@@ -414,6 +433,15 @@ function ownedFilter(query: URLSearchParams): boolean {
     return Object.values(OWNERS).some(({ owner }) => labels.includes(`${owner}=v1`));
   } catch {
     return false;
+  }
+}
+
+/** One encoded path part, or null when it does not decode. */
+function decoded(part: string): string | null {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return null;
   }
 }
 
@@ -655,7 +683,8 @@ export async function judge(
   }
 
   if (kind === 'images') {
-    if (method === 'GET' && action === 'json' && id) return allow;
+    if (method === 'GET' && action === 'json' && id)
+      return decoded(id) === config.runtimeImage ? { allow: true, runtimeImage: true } : allow;
     if (method === 'POST' && id === 'create' && action === undefined) {
       const reference = query.get('fromImage') ?? '';
       return onlyKeys(query, ['fromImage']) && (await pullable(reference, config))

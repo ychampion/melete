@@ -168,6 +168,17 @@ export function startCellsServer(options: CellsServerOptions) {
         ...(forwardBody !== undefined ? { body: forwardBody } : {}),
         signal: request.signal,
       });
+      if (verdict.runtimeImage && answer.ok) {
+        // The service pins the image it is answered with; it is recorded before
+        // the service hears it, so its engines are accepted after the name moves.
+        const value = (await answer.json().catch(() => null)) as { Id?: unknown } | null;
+        if (!value) return json(502, 'the engine did not answer');
+        if (typeof value.Id === 'string') await options.runtimeImages?.add(value.Id);
+        return new Response(JSON.stringify(value), {
+          status: answer.status,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
       if (verdict.redact && answer.ok) {
         const value = redactContainer(await answer.json(), verdict.redact);
         return new Response(JSON.stringify(value), {
