@@ -14,11 +14,16 @@
  */
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
+import type { ServerWebSocket } from 'bun';
 import {
   plainAddress,
   type TrustedPeer,
   trustedPeer,
 } from '../../apps/melete/src/api/trusted-peer.ts';
+import {
+  CALL_UPSTREAM_PATH,
+  SPEECH_ENGINE_AUTH_HEADER,
+} from '../../apps/melete/src/call/upstream-path.ts';
 import { PREVIEW_PREFIX } from '../../apps/melete/src/sandbox/preview-path.ts';
 import { isIsolated, VIEW_PREFIX } from '../../apps/melete/src/viewer/headers.ts';
 
@@ -369,6 +374,86 @@ const isFile = async (path: string): Promise<boolean> => {
   }
 };
 
+/** One call's upstream WebSocket, passed through to the API: what is waiting, and the API's side. */
+type CallBridge = {
+  authorization: string;
+  upstream?: WebSocket;
+  waiting: (string | Uint8Array)[];
+  /** Bytes held in `waiting` while the API side opens. */
+  held: number;
+  closed?: boolean;
+};
+
+/**
+ * The largest message carried, the same limit the API sets. Until the API has
+ * accepted the connection (and so checked that it is from ElevenLabs), no more
+ * than this is held in all: the provider sends only its opening message first.
+ */
+export const CALL_BRIDGE_MESSAGE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The one WebSocket this server passes through: ElevenLabs connecting for a
+ * call. The API checks the connection's own proof that it is from ElevenLabs,
+ * so that header goes along and nothing else of the request does. Messages are
+ * carried both ways as they come; either side closing closes the other.
+ */
+function callBridge(apiOrigin: string) {
+  const target = new URL(apiOrigin);
+  target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
+  target.pathname = CALL_UPSTREAM_PATH;
+  return {
+    open(socket: ServerWebSocket<CallBridge>) {
+      const upstream = new WebSocket(target.toString(), {
+        headers: { [SPEECH_ENGINE_AUTH_HEADER]: socket.data.authorization },
+      } as unknown as string[]);
+      upstream.binaryType = 'arraybuffer';
+      socket.data.upstream = upstream;
+      upstream.onopen = () => {
+        for (const message of socket.data.waiting.splice(0)) upstream.send(message);
+      };
+      upstream.onmessage = (event) => {
+        socket.send(
+          typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer),
+        );
+      };
+      upstream.onclose = (event) => {
+        if (socket.data.closed) return;
+        // 1005 and 1006 only describe a close; they are never sent in one.
+        if (event.code === 1005) socket.close(1000, event.reason);
+        else if (event.code === 1006 || event.code === 1015)
+          socket.close(1011, 'call service unavailable');
+        else socket.close(event.code, event.reason);
+      };
+      upstream.onerror = () => {
+        if (socket.data.closed) return;
+        process.stderr.write('web: a call could not reach the API\n');
+        socket.close(1011, 'call service unavailable');
+      };
+    },
+    message(socket: ServerWebSocket<CallBridge>, message: string | Buffer) {
+      const data = typeof message === 'string' ? message : new Uint8Array(message);
+      const upstream = socket.data.upstream;
+      if (upstream?.readyState === WebSocket.OPEN) {
+        upstream.send(data);
+        return;
+      }
+      socket.data.held += typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+      if (socket.data.held > CALL_BRIDGE_MESSAGE_BYTES) {
+        socket.data.waiting.length = 0;
+        socket.close(1009, 'too much before the call connected');
+        return;
+      }
+      socket.data.waiting.push(data);
+    },
+    close(socket: ServerWebSocket<CallBridge>) {
+      socket.data.closed = true;
+      socket.data.waiting.length = 0;
+      socket.data.upstream?.close();
+    },
+    maxPayloadLength: CALL_BRIDGE_MESSAGE_BYTES,
+  };
+}
+
 export function createStaticServer(options: StaticServerOptions) {
   const root = resolve(options.root);
   const indexPath = resolve(root, 'index.html');
@@ -390,12 +475,23 @@ export function createStaticServer(options: StaticServerOptions) {
       headers: { 'content-type': 'text/html; charset=utf-8', ...CLIENT_FRAME_HEADERS },
     });
 
-  return Bun.serve({
+  return Bun.serve<CallBridge>({
     port: options.port ?? Number(process.env.PORT ?? 3000),
     ...(options.hostname ? { hostname: options.hostname } : {}),
     idleTimeout: 60,
+    websocket: callBridge(apiOrigin),
     async fetch(request, server) {
       const url = new URL(request.url);
+      if (
+        url.pathname === `/api${CALL_UPSTREAM_PATH}` &&
+        request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+      ) {
+        const authorization = request.headers.get(SPEECH_ENGINE_AUTH_HEADER);
+        if (!authorization) return new Response('Not a call.\n', { status: 401 });
+        return server.upgrade(request, { data: { authorization, waiting: [], held: 0 } })
+          ? undefined
+          : new Response('The call could not connect.\n', { status: 400 });
+      }
       if (
         url.pathname === '/api' ||
         url.pathname.startsWith('/api/') ||

@@ -308,6 +308,8 @@ export type FeedbackForwarding = Ok<paths['/feedback/forwarding'], 'get'>;
 export type VoiceStatus = Ok<paths['/voice'], 'get'>;
 export type VoiceTranscription = Ok<paths['/voice/transcriptions'], 'post'>;
 export type VoiceSession = Ok<paths['/conversations/{id}/voice/session'], 'post'>;
+/** A call's short-lived token, for the speech service's browser client. */
+export type CallSession = Ok<paths['/conversations/{id}/call'], 'post'>;
 export type VoiceAside = Ok<paths['/conversations/{id}/voice/aside'], 'post'>;
 export type VoiceAsideRequest = Body<paths['/conversations/{id}/voice/aside'], 'post'>;
 export type VoiceActivity = VoiceAsideRequest['activity'];

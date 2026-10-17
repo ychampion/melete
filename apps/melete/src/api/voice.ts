@@ -20,6 +20,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
+  callSession,
   VOICE_LIMITS,
   voiceAside,
   voiceAsideRequest,
@@ -33,6 +34,7 @@ import {
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
+import type { CallService } from '../call/service.ts';
 import {
   type LiveVoice,
   REALTIME_SAMPLE_RATE,
@@ -164,10 +166,14 @@ export function voiceProvidersFromEnv(env: Env): VoiceProviders {
   return { transcription: configured.transcription, live: configured.live };
 }
 
+/**
+ * The operator's daily caps. One left unset is no cap: use is still counted,
+ * so a cap set later holds from the first day.
+ */
 export const voiceLimitsFromEnv = (env: Env): VoiceLimits => ({
-  seconds: env.MELETE_VOICE_DAILY_SECONDS,
-  characters: env.MELETE_VOICE_DAILY_CHARACTERS,
-  sessions: env.MELETE_VOICE_DAILY_SESSIONS,
+  seconds: env.MELETE_VOICE_DAILY_SECONDS ?? Number.POSITIVE_INFINITY,
+  characters: env.MELETE_VOICE_DAILY_CHARACTERS ?? Number.POSITIVE_INFINITY,
+  sessions: env.MELETE_VOICE_DAILY_SESSIONS ?? Number.POSITIVE_INFINITY,
   asides: DAILY_ASIDES,
 });
 
@@ -318,6 +324,8 @@ export function mountVoice(
     now?: () => number;
     /** Whether the speech connections are working. Left out, read from the database. */
     speechHealth?: SpeechHealth;
+    /** Calls through ElevenLabs Speech Engine. Left out, calls are not offered. */
+    call?: CallService | null;
   },
 ): void {
   const { db, allowance, providers, limits, privacy } = deps;
@@ -430,20 +438,54 @@ export function mountVoice(
     // Offered only while it works: a speech service that refused its last check
     // would fail as soon as it was pressed.
     const healthy =
-      pushToTalk || voiceMode
+      pushToTalk || voiceMode || deps.call
         ? await speechHealth(spaceId).catch(() => ({ speech: true, transcription: true }))
         : { speech: false, transcription: false };
     const talk = pushToTalk && healthy.transcription;
     const mode = voiceMode && healthy.speech;
+    const calls = Boolean(deps.call) && healthy.speech;
     return c.json(
       voiceStatus.parse({
         push_to_talk: talk,
         voice_mode: mode,
+        call: calls,
         max_recording_seconds: VOICE_LIMITS.recording_seconds,
         max_recording_bytes: VOICE_LIMITS.recording_bytes,
-        off_reason: talk || mode ? await offReason({ spaceId, ...at }) : null,
+        off_reason: talk || mode || calls ? await offReason({ spaceId, ...at }) : null,
       }),
     );
+  });
+
+  app.post('/conversations/:id/call', async (c) => {
+    const calls = deps.call;
+    if (!calls)
+      throw new ServiceError(
+        'voice_unavailable',
+        'Calls are not set up on this installation.',
+        404,
+      );
+    const { principalId, ...scope } = await conversation(c);
+    await refuseWhenPrivate(scope);
+    try {
+      const started = await calls.start(
+        {
+          spaceId: scope.spaceId,
+          principalId,
+          conversationId: scope.conversationId,
+          agentId: scope.agentId,
+        },
+        c.req.raw.signal,
+      );
+      await markSpeechWorking(db, 'speech');
+      return c.json(callSession.parse(started), 201);
+    } catch (error) {
+      if (!(error instanceof VoiceProviderError)) throw error;
+      // The operator reads why; the person is told only that it failed.
+      process.stderr.write(`voice: call failed to start: ${error.message}\n`);
+      if (error.keyRefused) await markSpeechFailing(db);
+      if (providerBusy(error)) throw busy();
+      throw providerFailed('start a call');
+    }
   });
 
   app.post('/voice/transcriptions', async (c) => {
@@ -600,7 +642,7 @@ const ASIDE_WINDOW_MS = 60_000;
  * What the companion is shown: the agent's name and the conversation's latest
  * turns, as the chat shows them. The last is the turn that is running.
  */
-async function conversationContext(
+export async function conversationContext(
   db: Database,
   conversationId: string,
   agentId: string | null,

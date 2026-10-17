@@ -604,14 +604,28 @@ const variables = z.object({
   ELEVENLABS_SPEECH_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
   ELEVENLABS_STREAMING_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
   ELEVENLABS_TRANSCRIPTION_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
-  /** Seconds of push-to-talk recording one person may have transcribed in a day. */
-  MELETE_VOICE_DAILY_SECONDS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(1800)),
-  /** Characters of replies one person may have read aloud in a day. */
-  MELETE_VOICE_DAILY_CHARACTERS: unsetWhenBlank(
-    z.coerce.number().int().nonnegative().default(20_000),
+  /** Seconds of push-to-talk recording one person may have transcribed in a day. Unset, no cap. */
+  MELETE_VOICE_DAILY_SECONDS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /** Characters of replies one person may have read aloud in a day. Unset, no cap. */
+  MELETE_VOICE_DAILY_CHARACTERS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /** Voice mode sessions one person may start in a day. Unset, no cap. */
+  MELETE_VOICE_DAILY_SESSIONS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /**
+   * Minutes of calls one person may have in a month (the last 30 days). Unset,
+   * calls are not capped.
+   */
+  MELETE_CALL_MONTHLY_MINUTES: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /**
+   * The ElevenLabs Speech Engine calls use. Unset, the service makes one for
+   * itself at the first call, pointed at MELETE_PUBLIC_URL, and keeps it in
+   * step. Set, that engine is used exactly as it is configured in ElevenLabs.
+   */
+  ELEVENLABS_SPEECH_ENGINE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^seng_[A-Za-z0-9]{1,64}$/, 'use a speech engine id, seng_…')
+      .optional(),
   ),
-  /** Voice mode sessions one person may start in a day. */
-  MELETE_VOICE_DAILY_SESSIONS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(30)),
   /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`
