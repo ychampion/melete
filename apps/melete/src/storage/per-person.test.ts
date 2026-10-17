@@ -172,6 +172,17 @@ describe('what a receipt keeps', () => {
     ).toEqual([]);
   });
 
+  test("a file copied into a room is kept in the room's Files", () => {
+    expect(
+      storedChanges({
+        kind: 'room.add_file',
+        jobId: job,
+        payload: { room_id: 'sp_room', path: 'deck.pdf', name: 'deck.pdf' },
+        detail: { room_id: 'sp_room', name: 'deck.pdf', content_hash: 'h', bytes: 5 },
+      }),
+    ).toEqual([{ op: 'set', place: 'files:deck.pdf', jobId: null, bytes: 5, spaceId: 'sp_room' }]);
+  });
+
   test('steps that keep nothing change nothing', () => {
     expect(
       storedChanges({ kind: 'files.read', jobId: job, payload: { path: 'a' }, detail: {} }),

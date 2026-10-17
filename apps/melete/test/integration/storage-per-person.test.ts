@@ -5,14 +5,18 @@
  * save or an upload is refused with what they use and how to free space.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { JsonValue } from '@melete/contracts';
+import type { JsonObject, JsonValue } from '@melete/contracts';
 import { ServiceError } from '../../src/api/errors.ts';
 import { DEFAULT_ATTACHMENT_SETTINGS } from '../../src/attachments/limits.ts';
 import { AttachmentService } from '../../src/attachments/store.ts';
 import { recordGeneratedArtifact } from '../../src/broker/artifacts.ts';
+import { recordId } from '../../src/broker/records.ts';
+import { BrokerService } from '../../src/broker/service.ts';
+import { createFilesConnector } from '../../src/connectors/files.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { newId } from '../../src/ids.ts';
 import { LocalBlobStore } from '../../src/storage/local.ts';
 import {
@@ -23,6 +27,7 @@ import {
   storageUsed,
   trashStoredFile,
 } from '../../src/storage/per-person.ts';
+import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -295,5 +300,128 @@ describe.skipIf(!handle)('storage per person', () => {
       bytes: new TextEncoder().encode('b'.repeat(400)),
     });
     expect(await storageUsed(handle.sql, me)).toBe(1100);
+  });
+
+  test('through the broker, a save lands its bytes, and past the limit a new one is refused but a repeat is not', async () => {
+    if (!handle) return;
+    const { sql } = handle;
+    const me = await person();
+    const seed = await seedJob(sql, {
+      scopes: ['files.write', 'files.read', 'files.move'],
+      provider: 'files',
+    });
+    await sql`update space set owner_principal_id = ${me} where id = ${seed.claims.space_id}`;
+    const roots = await mkdtemp(join(tmpdir(), 'melete-storage-broker-'));
+    try {
+      const workRoot = join(roots, 'work');
+      const spacesRoot = join(roots, 'spaces');
+      await Bun.write(join(workRoot, seed.claims.job_id, '.keep'), '');
+      await Bun.write(join(spacesRoot, seed.claims.space_id, 'artifacts', '.keep'), '');
+      const registry = new ConnectorRegistry().register(
+        seed.connectionId,
+        createFilesConnector({ workRoot, spacesRoot, sql }),
+      );
+      const agent = recordId('agent');
+      await sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+        values (${agent}, ${seed.claims.space_id}, 'Agent', 'helper', 'blue', 'plain', 'black', 'calm', 'help')`;
+      await sql`update job set kind = 'chat', agent_id = ${agent} where id = ${seed.claims.job_id}`;
+      const broker = new BrokerService({
+        sql,
+        connectors: registry,
+        autoReview: { reviewer: null },
+        storagePerPerson: 1000,
+      });
+      const propose = (kind: string, payload: JsonObject) =>
+        broker.propose(seed.claims, { kind, connection_id: seed.connectionId, payload });
+
+      // A write in the chat's folder lands its bytes with its receipt.
+      const written = await propose('files.write', { path: 'notes.md', content: 'x'.repeat(600) });
+      expect(written.status).toBe('succeeded');
+      expect(await storageUsed(sql, me)).toBe(600);
+
+      // A new write past the limit is refused before anyone is asked.
+      const refused = await rejectionOf(
+        propose('files.write', { path: 'more.md', content: 'y'.repeat(500) }),
+      );
+      expect((refused as Error).message).toContain("the person's storage is full");
+      expect((refused as Error).message).toContain('this would add 500 bytes');
+
+      // A file the agent's computer made has no record, so its move goes ahead
+      // while there is room, and counts once it lands.
+      await writeFile(join(workRoot, seed.claims.job_id, 'made.csv'), 'z'.repeat(500));
+      const move = { from: 'made.csv', to: 'made.csv', to_area: 'artifacts' };
+      const moved = await propose('files.move', move);
+      expect(moved.status).toBe('succeeded');
+      expect(await storageUsed(sql, me)).toBe(1100);
+      // Proposed again, as a runtime that died before it heard back does, it
+      // is handed the action it already made, not refused for being full.
+      const again = await propose('files.move', move);
+      expect(again.action_id).toBe(moved.action_id);
+      expect(again.status).toBe('succeeded');
+    } finally {
+      await rm(roots, { recursive: true, force: true });
+    }
+  });
+
+  test('a file a member copies into a room counts against the member until they leave it', async () => {
+    if (!handle) return;
+    const owner = await person();
+    const member = await person();
+    const room = await spaceOf(owner, 'room');
+    const home = await spaceOf(member);
+    const jobId = await jobIn(home, member);
+    const artifactId = newId('art');
+    const hash = 'b'.repeat(64);
+    await handle.sql`insert into artifact (id, space_id, job_id, area, path, content_hash, mime, size)
+      values (${artifactId}, ${home}, ${jobId}, 'work', 'deck.pdf', ${hash},
+        'application/pdf', ${3 * MB})`;
+    const add = {
+      room_id: room,
+      path: 'deck.pdf',
+      area: 'work',
+      name: 'deck.pdf',
+      artifact_id: artifactId,
+      content_hash: hash,
+    };
+    // Past the limit, the copy is refused when it is proposed.
+    const refused = await storageRefusal(handle.sql, 2 * MB, {
+      kind: 'room.add_file',
+      jobId,
+      spaceId: home,
+      payload: add,
+    });
+    expect(refused).toContain('this would add 3 MB');
+    await landed({ id: jobId, space_id: home }, 'room.add_file', add, {
+      room_id: room,
+      name: 'deck.pdf',
+      content_hash: hash,
+      bytes: 3 * MB,
+    });
+    const [row] = await handle.sql`select principal_id, bytes::int as bytes from stored_file
+      where space_id = ${room} and place = 'files:deck.pdf'`;
+    expect({ ...row }).toEqual({ principal_id: member, bytes: 3 * MB });
+    expect(await storageUsed(handle.sql, member)).toBe(3 * MB);
+    expect(await storageUsed(handle.sql, owner)).toBe(0);
+    // Deleted in the room it stops counting, and put back it counts again.
+    await landed(
+      { id: await jobIn(room, owner), space_id: room },
+      'files.delete',
+      { path: 'deck.pdf', area: 'artifacts' },
+      { path: 'deck.pdf', area: 'artifacts', deleted: 'file', trash_id: 'del_room' },
+    );
+    expect(await storageUsed(handle.sql, member)).toBe(0);
+    await restoreStoredFiles(handle.sql, room, 'del_room');
+    expect(await storageUsed(handle.sql, member)).toBe(3 * MB);
+    // Once they have left the room they can no longer delete it there, so it
+    // no longer counts against them; what they keep in their own space does.
+    await landed(
+      { id: jobId, space_id: home },
+      'files.write',
+      { path: 'mine.md', area: 'artifacts', content: 'x' },
+      { path: 'mine.md', area: 'artifacts', bytes: 10 },
+    );
+    await handle.sql`insert into space_membership (principal_id, space_id, role, revoked_at)
+      values (${member}, ${room}, 'member', now())`;
+    expect(await storageUsed(handle.sql, member)).toBe(10);
   });
 });
