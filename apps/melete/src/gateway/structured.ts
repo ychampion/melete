@@ -248,14 +248,26 @@ export function replyOf(
   return { text: content ?? '', end };
 }
 
-/** A property that may also be null, for fields only some answers use. */
+/**
+ * A property that may also be null, for fields only some answers use.
+ *
+ * A plain field widens its type (`["string", "null"]`). A field with an enum
+ * becomes a choice between the enum and null instead: Anthropic checks every
+ * enum value against every declared type and refuses a `["string", "null"]`
+ * enum, while `anyOf` of the two branches is accepted by Anthropic and by
+ * OpenAI strict mode alike. The description stays on the outer schema.
+ */
 export const nullable = (schema: Record<string, unknown>): Record<string, unknown> => {
+  if (Array.isArray(schema.enum)) {
+    const { description, ...choice } = schema;
+    return {
+      ...(description === undefined ? {} : { description }),
+      anyOf: [choice, { type: 'null' }],
+    };
+  }
   const type = schema.type;
-  return {
-    ...schema,
-    type: Array.isArray(type) ? [...type, 'null'] : [type, 'null'],
-    ...(Array.isArray(schema.enum) ? { enum: [...schema.enum, null] } : {}),
-  };
+  const types = Array.isArray(type) ? type : [type];
+  return { ...schema, type: types.includes('null') ? types : [...types, 'null'] };
 };
 
 /** An object whose every listed property is required and nothing else is allowed. */
