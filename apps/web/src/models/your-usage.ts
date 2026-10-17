@@ -31,11 +31,6 @@ export function money(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
-/** A month and day in the reader's words, from a UTC moment: "November 1". */
-export function monthDay(iso: string, timeZone = 'UTC'): string {
-  return new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone });
-}
-
 /**
  * One period against its limit: the share used, from dollars or tokens,
  * whichever is further along, or null when the period has no limit.
@@ -88,7 +83,7 @@ export function capRows(data: MyUsage, now = new Date(), timeZone?: string): Cap
       'This month',
       data.spent.month,
       caps?.month ?? null,
-      `Starts again on ${monthDay(data.month_resets_at, timeZone)}`,
+      `Starts again ${dayResetLine(data.month_resets_at, now, timeZone)}`,
     ],
     [
       'Today',
@@ -240,9 +235,8 @@ export function capBanner(
 ): CapBanner | null {
   if (!notice) return null;
   if (notice.level === 'reached') return { level: 'reached', text: notice.message };
-  const resets =
-    notice.period === 'day'
-      ? `It starts again ${dayResetLine(notice.resets_at, now, timeZone)}.`
-      : `It starts again on ${monthDay(notice.resets_at, timeZone)}.`;
+  // The month starts again at midnight UTC as well, which may still be the
+  // last day of the month where the reader is.
+  const resets = `It starts again ${dayResetLine(notice.resets_at, now, timeZone)}.`;
   return { level: 'warning', text: `${notice.message} ${resets}` };
 }

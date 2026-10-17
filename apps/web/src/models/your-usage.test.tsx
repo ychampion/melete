@@ -36,7 +36,7 @@ test('with limits, each period shows its share, its tone and when it starts agai
     spent: '$16.40',
     limit: 'of $20.00',
     tone: 'near',
-    resets: 'Starts again on November 1',
+    resets: 'Starts again on November 1 at 12:00 AM',
   });
   expect(month?.share).toBeCloseTo(0.82, 9);
   expect(day).toMatchObject({
@@ -52,6 +52,31 @@ test('with limits, each period shows its share, its tone and when it starts agai
   );
   expect(reached[0]?.tone).toBe('reached');
   expect(backgroundCapLine(usageFixture())).toBe('$1.20 of $5.00 this month');
+});
+
+test('the month starts again at midnight UTC, read in the reader’s own time', () => {
+  const pacific = 'America/Los_Angeles';
+  // In California the month's limit starts again on the afternoon of the 31st.
+  expect(capRows(usageFixture(), now, pacific)[0]?.resets).toBe(
+    'Starts again on October 31 at 5:00 PM',
+  );
+  const lastAfternoon = new Date('2026-10-31T22:00:00Z');
+  expect(capRows(usageFixture(), lastAfternoon, pacific)[0]?.resets).toBe(
+    'Starts again today at 5:00 PM',
+  );
+  expect(
+    capBanner(
+      {
+        level: 'warning',
+        period: 'month',
+        scope: 'person',
+        message: "You have used 84% of this month's model allowance.",
+        resets_at: '2026-11-01T00:00:00.000Z',
+      },
+      lastAfternoon,
+      pacific,
+    )?.text,
+  ).toBe("You have used 84% of this month's model allowance. It starts again today at 5:00 PM.");
 });
 
 test('a limit in tokens alone is read against the tokens spent, in the same units', () => {
@@ -156,7 +181,7 @@ test('the chat banner: nothing below 80%, a calm line with the reset time, then 
     ),
   ).toEqual({
     level: 'warning',
-    text: "You have used 84% of this month's model allowance. It starts again on November 1.",
+    text: "You have used 84% of this month's model allowance. It starts again on November 1 at 12:00 AM.",
   });
   expect(
     capBanner(
