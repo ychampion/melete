@@ -483,6 +483,7 @@ const variables = z.object({
   /** Provider keys. The gateway injects these; the runtime never sees them. */
   FIREWORKS_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_BASE_URL: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   OPENAI_COMPAT_BASE_URL: z.string().optional(),

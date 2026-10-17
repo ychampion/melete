@@ -1716,15 +1716,23 @@ model a job was started with, so a shortened name is refused by the provider,
 not corrected.
 
 `OPENAI_COMPAT_BASE_URL` is the endpoint's version prefix, for example
-`https://models.example.net/v1`. It is the only provider address that may be
-plain `http://`, for a model server on your own machine or network; every
-built-in provider stays HTTPS. Over `http://` the key and every prompt travel
+`https://models.example.net/v1`. It and `ANTHROPIC_BASE_URL` are the only
+provider addresses that may be plain `http://`, for a model server or gateway on
+your own machine or network; every built-in provider stays HTTPS. Over `http://` the key and every prompt travel
 unencrypted, so keep it to a network you trust. Inside Compose, `localhost` is
 the Melete container itself, so give an address that container can reach. The
 gateway refuses a provider whose key is empty: for a server that checks no key,
 set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, an `https://`
 endpoint falls back to `OPENAI_API_KEY`; a plain `http://` endpoint never
 receives `OPENAI_API_KEY`.
+
+`ANTHROPIC_BASE_URL` sends the `anthropic` provider's calls through a gateway or
+proxy you run, for example one that logs usage or enforces a spend limit. Write
+it as the Anthropic SDKs read it, the address without `/v1`, for example
+`https://gateway.example.net`; the gateway calls `<address>/v1/messages` with
+`ANTHROPIC_API_KEY`. Left empty, Melete calls `https://api.anthropic.com`
+directly. Over `http://` the key and every prompt travel unencrypted, so keep it
+to a network you trust.
 
 With `OPENAI_API_KEY` or `OPENAI_COMPAT_BASE_URL` set, the agent can also turn
 text into speech. `MELETE_SPEECH_MODEL` names the text-to-speech model it uses;
