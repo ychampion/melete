@@ -573,6 +573,17 @@ jobs:
             "oven/bun:$(cat .bun-version)" \
             sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null \
               && bun test apps/melete/src/sandbox/adapters/docker-command-line.live.test.ts --timeout=400000"
+      # Two people's computers on one installation, from a container as the service runs: neither
+      # reaches the other over the network, through the service, with the other's token or
+      # account, or on disk, even with every private range opened to the computers.
+      - name: Keep two people's computers apart
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/repo -w /repo \
+            -e MELETE_SANDBOX_LIVE=docker \
+            "oven/bun:$(cat .bun-version)" \
+            bun test apps/melete/src/sandbox/adapters/docker-isolation.live.test.ts --timeout=300000 --max-concurrency=1
       # What the sandbox desktop showed: the test page after the agent's input, and a public
       # page reached through the service.
       - name: Keep the desktop screenshots
