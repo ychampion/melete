@@ -504,6 +504,11 @@ bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOK
 bun run melete check
 ```
 
+A self-hosted installation limits nobody's storage. One that hosts other
+people should cap how much each person keeps, so one account cannot fill the
+disk or the bucket for everyone: `MELETE_STORAGE_PER_PERSON_MB=2048` is a
+reasonable start. See [How much each person keeps](#how-much-each-person-keeps).
+
 ## On a cloud VM
 
 Any Linux virtual machine you reach over SSH can run Melete, and the melete
@@ -1935,6 +1940,33 @@ Each file records what uses it. Once a day the service deletes any file that
 nothing uses and that was stored more than seven days ago. Removing a space deletes at once every file
 only that space used, and the removal finishes only when the store confirms
 they are gone.
+
+### How much each person keeps
+
+By default nobody is limited. To cap how much one person may keep, set
+`MELETE_STORAGE_PER_PERSON_MB` in `deploy/.env` and recreate the service.
+
+What counts, across all of a person's spaces: the files they sent in chat, and
+every file their work saved, in their Files or in a chat's own folder,
+generated recordings and published files among them. A file a member's request
+saved in a shared space counts against that member, not the space's owner;
+work in a shared space that nobody asked for counts against its owner. A file
+deleted into the trash stops counting, and counts again if it is put back.
+Deleting a chat frees what its folder held and the files sent in it. Files the
+agent's computer made in its own `/work` are not counted until they are moved
+or saved into Files.
+
+The amounts are read from what the service recorded as each file was saved,
+moved and deleted, never by walking the disk. Files saved before this setting
+existed are not counted.
+
+Once a person reaches the limit, an upload is refused with a sentence that says
+how much they use and that deleting files in Files, or chats with files sent in
+them, frees space. A step that would save a file past the limit is refused the
+same way, and the agent passes it on. A step whose size is known only once it
+runs, such as a generated recording, goes ahead until the limit is reached.
+The Files page shows how much the person uses against the limit, only when one
+is set.
 
 ## Company map
 

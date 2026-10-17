@@ -76,6 +76,7 @@ import {
   toolDenied,
   toolRefusal,
 } from '../spaces/policy.ts';
+import { storageRefusal } from '../storage/per-person.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -182,6 +183,12 @@ export type BrokerOptions = {
     tx: Query,
     input: { job: LockedJob; action: Action; receipt: Receipt },
   ) => Promise<void>;
+  /**
+   * The most one person may keep, in bytes (`MELETE_STORAGE_PER_PERSON_MB`).
+   * Left out or null, no step is refused for it; what each step keeps is
+   * recorded either way.
+   */
+  storagePerPerson?: number | null;
   /**
    * Where the values in a payload came from. Start-up passes the memory core's
    * resolver; without one the broker asks nobody and warns about nothing.
@@ -1781,6 +1788,15 @@ export class BrokerService implements BrokerOperations {
           );
           this.validatePayload(tool, canonical.canonical);
         }
+        // A step that would save past what its person may keep is refused
+        // before anyone is asked, with what they use and how to free space.
+        const full = await storageRefusal(tx, this.options.storagePerPerson, {
+          kind: request.kind,
+          jobId: job.id,
+          spaceId: job.space_id,
+          payload: canonical.canonical,
+        });
+        if (full) throw new BrokerFault('payload_invalid', full);
         // The identity of the effect itself, independent of which attempt is
         // alive. A runtime that died between proposing and hearing back proposes
         // the same key and is handed the action it already made.

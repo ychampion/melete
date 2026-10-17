@@ -115,6 +115,8 @@ export type SkillProhibition = Ok<
 >['prohibitions'][number];
 /** One file Melete holds for the person, and what a delete of one gives back. */
 export type PersonFile = Ok<paths['/files'], 'get'>['files'][number];
+/** How much the person keeps against their limit; only where the installation sets one. */
+export type PersonStorage = NonNullable<Ok<paths['/files'], 'get'>['storage']>;
 export type PersonFileDeleted = Ok<paths['/files/{id}'], 'delete'>;
 /** One of the person's own skills, read whole, with the version a change must name. */
 export type OwnSkill = Ok<paths['/own-skills'], 'get'>['skills'][number];

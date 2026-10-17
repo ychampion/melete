@@ -12,7 +12,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Button, Dialog, IconButton, Segmented, Skeleton } from '../design/primitives.tsx';
 import { adapter, type SavedFilePreview } from '../experience/adapter.ts';
 import { useLoad, useNow } from '../experience/hooks.ts';
-import type { PersonFile } from '../experience/types.ts';
+import type { PersonFile, PersonStorage } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import './files.css';
@@ -205,6 +205,35 @@ export function deletedNote(restorableUntil: string, evicted: number): string {
   return `${until} The trash was full, so ${evicted === 1 ? 'an earlier delete was' : `${evicted} earlier deletes were`} taken out of it to make room and can no longer be put back.`;
 }
 
+/** An amount of storage as a person reads it, up to gigabytes. */
+export function storageAmount(bytes: number): string {
+  if (bytes < 1024 * 1024 * 1024) return attachmentSize(bytes);
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, '')} GB`;
+}
+
+/** How much of their storage the person uses, said plainly. */
+export function storageLine(storage: PersonStorage): string {
+  const line = `Using ${storageAmount(storage.used_bytes)} of ${storageAmount(storage.quota_bytes)}`;
+  return storage.used_bytes >= storage.quota_bytes
+    ? `${line}. Your storage is full: delete files you no longer need, or chats with files you sent in them, to save more.`
+    : line;
+}
+
+/** Use against the limit, shown only where the installation sets one. */
+export function StorageUse({ storage }: { storage: PersonStorage }) {
+  const share = Math.min(1, storage.used_bytes / storage.quota_bytes);
+  const full = storage.used_bytes >= storage.quota_bytes;
+  return (
+    <div className="files-storage" data-full={full ? 'true' : undefined}>
+      <span className="files-storage-line">{storageLine(storage)}</span>
+      {/* The line above says it in words; the bar only draws it. */}
+      <div className="files-storage-bar" aria-hidden="true">
+        <span style={{ width: `${(share * 100).toFixed(1)}%` }} />
+      </div>
+    </div>
+  );
+}
+
 export function FilesScreen() {
   const loaded = useLoad(() => adapter.files(), []);
   const [filter, setFilter] = useState<Filter>('all');
@@ -226,7 +255,10 @@ export function FilesScreen() {
       return;
     }
     const trash = result.data.trash_id;
-    loaded.set({ files: files.filter((item) => item.id !== file.id) });
+    loaded.set({
+      files: files.filter((item) => item.id !== file.id),
+      storage: loaded.data?.storage ?? null,
+    });
     // An Undo may have put another file back while this delete was on its way.
     loaded.reload();
     toast({
@@ -263,6 +295,7 @@ export function FilesScreen() {
             <RailToggle />
           </div>
         </div>
+        {loaded.data?.storage ? <StorageUse storage={loaded.data.storage} /> : null}
         {files.length > 0 ? (
           <div className="files-filter">
             <Segmented label="Show" value={filter} onChange={setFilter} options={FILTERS} />
