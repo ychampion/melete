@@ -10,8 +10,9 @@
  *
  * A hosted installation also needs its cost guards, because its model key pays
  * for everyone: spending caps per person, for their background work and for
- * the whole installation, upload limits, a per-person computer limit and a
- * spending alert. These are judged only when it is hosted. A self-hosted
+ * the whole installation, upload and storage limits, a per-person computer
+ * limit and a spending alert, and its computers keep to their own network
+ * pool. These are judged only when it is hosted. A self-hosted
  * installation has no limits unless its operator sets them, and is never told
  * it should.
  */
@@ -96,8 +97,30 @@ export function judgeHosted(config: DeployConfig, env: Record<string, string>): 
           fix: 'Export a random value of 24 or more characters as MELETE_OPERATOR_TOKEN, then run bun run melete set --from-env MELETE_OPERATOR_TOKEN.',
         },
   );
-  if (hosted) results.push(...judgeCostGuards(env));
+  if (hosted) results.push(judgeNetworkPool(env), ...judgeCostGuards(env));
   return results;
+}
+
+/**
+ * A hosted installation keeps each person's computer on a network of its own
+ * in MELETE_NETWORK_POOL. Turned off, computers take the engine's own ranges,
+ * where a MELETE_PRIVATE_HOSTS range that covers them would let one person's
+ * agent reach another person's computer.
+ */
+export function judgeNetworkPool(env: Record<string, string>): Result {
+  const pool = env.MELETE_NETWORK_POOL?.trim() ?? '';
+  return pool.toLowerCase() === 'off'
+    ? {
+        id: 'hosted.network_pool',
+        level: 'fail',
+        detail: `MELETE_NETWORK_POOL is off, so people's computers share the container engine's own networks. ${HOSTED_HINT}`,
+        fix: 'Clear MELETE_NETWORK_POOL in deploy/.env for the default range, or run bun run melete set MELETE_NETWORK_POOL=<range> with a private range nothing on your network uses.',
+      }
+    : {
+        id: 'hosted.network_pool',
+        level: 'ok',
+        detail: `Each computer has a network of its own in ${pool || 'the default pool'}.`,
+      };
 }
 
 type Guard = {
@@ -136,8 +159,14 @@ export const COST_GUARDS: Guard[] = [
   {
     id: 'hosted.uploads',
     names: ['MELETE_ATTACHMENT_UPLOADS_AT_ONCE', 'MELETE_ATTACHMENT_UPLOADS_PER_WINDOW'],
-    risk: 'one person can upload without limit and fill the disk',
+    risk: 'one person can send uploads without pause',
     ok: 'Each person has an upload limit.',
+  },
+  {
+    id: 'hosted.storage',
+    names: ['MELETE_STORAGE_PER_PERSON_MB'],
+    risk: "one person's saved and sent files can fill the disk for everyone",
+    ok: 'Each person has a storage limit.',
   },
   {
     id: 'hosted.computers',

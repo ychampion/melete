@@ -29,6 +29,7 @@ describe('what an installation for other people needs', () => {
       'hosted.web_origin': 'ok',
       'hosted.alerts': 'ok',
       'hosted.operator_token': 'ok',
+      'hosted.network_pool': 'ok',
       ...Object.fromEntries(GUARD_IDS.map((id) => [id, 'ok'])),
     });
   });
@@ -38,6 +39,8 @@ describe('what an installation for other people needs', () => {
       'hosted.public_url': 'fail',
       'hosted.alerts': 'fail',
       'hosted.operator_token': 'fail',
+      // Unset, the pool is the default range, which is what it asks for.
+      'hosted.network_pool': 'ok',
       ...Object.fromEntries(GUARD_IDS.map((id) => [id, 'fail'])),
     });
     const plainHttp = judgeHosted(config(true), {
@@ -69,6 +72,23 @@ describe('what an installation for other people needs', () => {
     expect(judgeHosted(config(false), READY).map((result) => result.id)).not.toContain(
       'hosted.spend_person',
     );
+  });
+
+  test("a hosted installation keeps people's computers on their own network pool", () => {
+    const pool = (value: string) =>
+      judgeHosted(config(true), { ...READY, MELETE_NETWORK_POOL: value }).find(
+        (result) => result.id === 'hosted.network_pool',
+      );
+    expect(pool('')?.level).toBe('ok');
+    expect(pool('10.40.0.0/16')?.level).toBe('ok');
+    for (const off of ['off', ' OFF ']) {
+      expect(pool(off)?.level).toBe('fail');
+      expect(pool(off)?.fix).toContain('MELETE_NETWORK_POOL');
+    }
+    // A self-hosted installation may turn it off.
+    expect(
+      judgeHosted(config(), { MELETE_NETWORK_POOL: 'off' }).map((result) => result.id),
+    ).not.toContain('hosted.network_pool');
   });
 
   test('the key is optional: a file without it reads, and one with it keeps it', () => {
@@ -127,6 +147,16 @@ describe('the cost guards a hosted installation needs', () => {
       ).toBe('ok');
   });
 
+  test("each person's storage is capped, starting at 2 GB", () => {
+    const env: Record<string, string> = { ...HOSTED_STARTING_VALUES };
+    expect(levelOf(env, 'hosted.storage')).toBe('ok');
+    expect(HOSTED_STARTING_VALUES.MELETE_STORAGE_PER_PERSON_MB).toBe('2048');
+    delete env.MELETE_STORAGE_PER_PERSON_MB;
+    const storage = judgeCostGuards(env).find((result) => result.id === 'hosted.storage');
+    expect(storage?.level).toBe('fail');
+    expect(storage?.fix).toContain('MELETE_STORAGE_PER_PERSON_MB=2048');
+  });
+
   test('a per-person computer limit of one passes', () => {
     expect(
       levelOf(
@@ -164,7 +194,7 @@ describe('check and status judge it', () => {
     const hostedLevels = ready
       .filter((result) => result.id.startsWith('hosted.'))
       .map((result) => result.level);
-    expect(hostedLevels).toHaveLength(4 + GUARD_IDS.length);
+    expect(hostedLevels).toHaveLength(5 + GUARD_IDS.length);
     expect(hostedLevels.every((level) => level === 'ok')).toBe(true);
     // Without its caps a hosted installation fails check, every other piece set.
     const uncapped = { ...READY } as Record<string, string>;

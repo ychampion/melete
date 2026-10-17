@@ -20,6 +20,8 @@ export const HOSTED_STARTING_VALUES = {
   /** Uploads one person may have under way at once, and may start in ten minutes. */
   MELETE_ATTACHMENT_UPLOADS_AT_ONCE: '3',
   MELETE_ATTACHMENT_UPLOADS_PER_WINDOW: '30',
+  /** What one person may keep, saved and sent files together, in MB. */
+  MELETE_STORAGE_PER_PERSON_MB: '2048',
   /** Computers one person may have running at once. */
   MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: '1',
   /** Attempts one person may run at once; not required, slots are shared in turn either way. */

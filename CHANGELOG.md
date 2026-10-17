@@ -71,8 +71,9 @@ What each version ships.
 - **A hosted installation needs its cost guards.** With `"hosted": true`,
   `melete check` and `melete status` fail until each person has daily and
   monthly spending caps and background caps, the installation has a monthly
-  cap, uploads and computers are limited per person, and a spending alert is
-  set. `melete init --hosted` writes starting values to tune. A self-hosted
+  cap, uploads, storage and computers are limited per person, and a spending
+  alert is set; they also fail while `MELETE_NETWORK_POOL` is `off`. `melete
+  init --hosted` writes starting values to tune. A self-hosted
   installation still has no limits unless you set them.
 - **Claude 5.5 models are priced and sized correctly.** Spending estimates use
   the current list prices for Opus 5.5 ($4 in, $20 out per million tokens),

@@ -501,8 +501,10 @@ a positive number:
 | `hosted.spend_background` | `MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD`, `MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD` | $0.50 a day, $5 a month |
 | `hosted.spend_installation` | `MELETE_SPEND_MONTHLY_USD` | $200 a month |
 | `hosted.uploads` | `MELETE_ATTACHMENT_UPLOADS_AT_ONCE`, `MELETE_ATTACHMENT_UPLOADS_PER_WINDOW` | 3 at once, 30 in ten minutes |
+| `hosted.storage` | `MELETE_STORAGE_PER_PERSON_MB` | 2048 MB per person |
 | `hosted.computers` | `MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION` | 1 computer per person |
 | `hosted.spend_alert` | `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` or `MELETE_ALERT_SPEND_PERSON_PERCENT` | an alert at 4 times the usual hour |
+| `hosted.network_pool` | `MELETE_NETWORK_POOL` | the default range; it fails only when set to `off` |
 
 These are starting points: tune them to your price and your people (see
 [Spending caps](#spending-caps), [Attachments](#attachments) and
@@ -539,8 +541,8 @@ bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOK
 bun run melete set MELETE_SPEND_PERSON_DAILY_USD=2 MELETE_SPEND_PERSON_MONTHLY_USD=20 \
   MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD=0.5 MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD=5 \
   MELETE_SPEND_MONTHLY_USD=200 MELETE_ATTACHMENT_UPLOADS_AT_ONCE=3 \
-  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW=30 MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION=1 \
-  MELETE_ALERT_SPEND_HOURLY_MULTIPLE=4
+  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW=30 MELETE_STORAGE_PER_PERSON_MB=2048 \
+  MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION=1 MELETE_ALERT_SPEND_HOURLY_MULTIPLE=4
 bun run melete check
 ```
 
@@ -561,13 +563,15 @@ Terms and privacy take an `https://` page; support takes an `https://` page or
 a `mailto:` address.
 
 A self-hosted installation limits nobody's storage. One that hosts other
-people should cap how much each person keeps, so one account cannot fill the
-disk or the bucket for everyone: `MELETE_STORAGE_PER_PERSON_MB=2048` is a
-reasonable start. See [How much each person keeps](#how-much-each-person-keeps).
+people caps how much each person keeps (`hosted.storage` above), so one
+account cannot fill the disk or the bucket for everyone:
+`MELETE_STORAGE_PER_PERSON_MB=2048` is a reasonable start. See
+[How much each person keeps](#how-much-each-person-keeps).
 
 Each person's agent computer has a network of its own in `MELETE_NETWORK_POOL`.
 Leave that setting at its default (`10.215.0.0/16`) or another range, not
-`off`: requests the agents make through Melete never enter the pool, whatever
+`off`; a hosted installation fails `hosted.network_pool` while it is `off`.
+Requests the agents make through Melete never enter the pool, whatever
 `MELETE_PRIVATE_HOSTS` lists, so one person's agent can't reach another
 person's computer. With the pool `off`, computers take the engine's own ranges
 instead, and a range listed in `MELETE_PRIVATE_HOSTS` that covers them would
