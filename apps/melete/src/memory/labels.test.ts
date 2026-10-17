@@ -164,6 +164,9 @@ describe('how a text relates the person to someone it names', () => {
       // Sam is also named on his own, or the text is about his own relative.
       "Alex's brother Sam says Sam moved to Faro",
       "Alex's brother Sam's wife moved to Faro",
+      // Anyone's, not someone's to keep him under.
+      "Everyone's friend Sam moved to Faro",
+      "Somebody's brother Sam moved to Faro",
     ])
       expect([text, relativeNamed(text, 'sam')]).toEqual([text, null]);
     // The name such a relative is given.
@@ -202,5 +205,18 @@ describe('how a text relates the person to someone it names', () => {
     expect([...relationsIn('My friend Jo D Smith lives in Oslo', 'jo d smith')]).toEqual([
       'friend',
     ]);
+    // A name that starts with an initial is still read word by word.
+    for (const name of ['d smith', 'l smith', 'o smith']) {
+      const written = name.replace(/^./, (letter) => letter.toUpperCase()).replace(' s', ' S');
+      expect([name, [...relationsIn(`My friend ${written} lives in Oslo`, name)]]).toEqual([
+        name,
+        ['friend'],
+      ]);
+      expect([name, relativeOf(`${written}'s sister moved to Faro`, name)]).toEqual([
+        name,
+        'sister',
+      ]);
+      expect([name, relativeOf(`${written} moved to Faro`, name)]).toEqual([name, null]);
+    }
   });
 });

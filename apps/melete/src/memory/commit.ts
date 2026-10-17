@@ -201,8 +201,10 @@ function relatedInQuotes(whose: Whose, sources: readonly { quote: string }[]): s
  * another's relative ("Alex's brother Sam moved to Faro", where Brother Sam
  * is held) is kept under whose relative they are ("person.alex.brother.city"),
  * and a change that relates that name to the person, proposed to that
- * detail ("My brother Sam moved to Lagos"), is kept as theirs. Null when relatives do not decide it; `apart` is null when the change is
- * about the relative the held detail is about.
+ * detail ("My brother Sam moved to Lagos"), is kept as theirs, or as their
+ * relative's ("My brother Sam's wife"). Null when relatives do not decide it;
+ * `apart` is null when the change is about the relative the held detail is
+ * about.
  */
 async function relativeApart(
   tx: MemoryTx,
@@ -226,7 +228,12 @@ async function relativeApart(
         ...quotes.flatMap((quote) => [...relationsIn(quote, named, true)]),
         ...relationsIn(proposed.content, named),
       ];
-      if (related) return { apart: themselfSubject(held.domain_key, name, related, named) };
+      if (related) {
+        const own = themselfSubject(held.domain_key, name, related, named);
+        // "My brother Sam's wife moved to Lagos" is about his wife.
+        const theirs = relativeOf(proposed.content, named);
+        return { apart: theirs ? relativeSubject(own, named, theirs, related) : own };
+      }
     }
     if (texts.some((text) => relativeOf(text, name) === heldRelative)) {
       // The same relative, unless the person's words say whose relative it is

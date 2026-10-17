@@ -546,10 +546,17 @@ const nameWord = (word: string) => bareWord(word).replace(/['’]/gu, '');
 /**
  * A name's words as a text's words are matched to them. A name with an
  * apostrophe is one word however a subject wrote it: "O'Brien", "o_brien"
- * and "obrien" are all "obrien".
+ * and "obrien" are all "obrien". One that starts with an initial is also
+ * read word by word, so "d_smith" is still "D Smith".
  */
-const nameWords = (name: string) =>
-  textWords(name.replace(/['’]/gu, '').replace(/^([dlo])[\s_-]+(?=\p{L})/iu, '$1'));
+const nameForms = (name: string): string[][] => {
+  const apart = textWords(name.replace(/['’]/gu, ''));
+  const joined = textWords(name.replace(/['’]/gu, '').replace(/^([dlo])[\s_-]+(?=\p{L})/iu, '$1'));
+  return joined.length === apart.length ? [apart] : [joined, apart];
+};
+/** The form of a name a text's word ends, if it ends one: "o'brien's" ends "obrien". */
+const nameEnding = (forms: readonly string[][], word: string) =>
+  forms.find((form) => form.length > 0 && form.at(-1) === nameWord(word));
 /**
  * How a text relates the person to someone it names: "Brother Sam", "my
  * friend Sam", "Sam, my colleague". A relation of theirs ("Sam's sister")
@@ -565,9 +572,7 @@ export function relationsIn(text: string, name: string, beside = false): Set<str
   const words = relationWords(text);
   const possessive = (word: string) =>
     /['’]s$/u.test(word) && !CONTRACTED.has(word.replace('’', "'"));
-  const who = nameWords(name);
-  const last = who.at(-1);
-  if (!last) return found;
+  const forms = nameForms(name);
   const own = new Set(['my', 'your', 'a', 'an', 'the', 'our']);
   // "My little bro Sam", not "Thanks bro, Sam moved".
   const owned = (at: number) => {
@@ -576,7 +581,8 @@ export function relationsIn(text: string, name: string, beside = false): Set<str
     return own.has(words[back] ?? '');
   };
   words.forEach((word, index) => {
-    if (nameWord(word) !== last) return;
+    const who = nameEnding(forms, word);
+    if (!who) return;
     for (let back = index - who.length; back >= Math.max(0, index - who.length - 3); back--) {
       const before = words[back] ?? '';
       if (possessive(before)) break;
@@ -655,11 +661,12 @@ export function relatedSubject(domainKey: string, whose: Whose, text: string): s
  */
 export function relativeOf(text: string, name: string): string | null {
   const words = relationWords(text);
-  const last = nameWords(name).at(-1);
+  const forms = nameForms(name);
   let found: string | null = null;
   for (const [index, word] of words.entries()) {
-    if (!last || nameWord(word) !== last) continue;
-    if (!/['’]s$/u.test(word) && !(last.endsWith('s') && /['’]$/u.test(word))) return null;
+    if (!nameEnding(forms, word)) continue;
+    if (!/['’]s$/u.test(word) && !(nameWord(word).endsWith('s') && /['’]$/u.test(word)))
+      return null;
     let next = index + 1;
     while (DESCRIBING.has(words[next] ?? '')) next++;
     // "Sam's brother's flat" is still his brother's.
@@ -669,6 +676,8 @@ export function relativeOf(text: string, name: string): string | null {
   }
   return found;
 }
+/** Words for anyone at all: "Everyone's friend Sam" is no one's in particular. */
+const ANYONE = new Set('everyone everybody someone somebody anyone anybody nobody'.split(' '));
 /**
  * Whose relative a text names someone as, when it names them only so: "Alex's
  * brother Sam moved to Faro" and "My friend Alex's older brother Sam moved to
@@ -679,11 +688,11 @@ export function relativeOf(text: string, name: string): string | null {
  */
 export function relativeNamed(text: string, name: string): { of: string; relative: string } | null {
   const words = relationWords(text);
-  const who = nameWords(name);
-  const last = who.at(-1);
+  const forms = nameForms(name);
   let found: { of: string; relative: string } | null = null;
   for (const [index, word] of words.entries()) {
-    if (!last || nameWord(word) !== last) continue;
+    const who = nameEnding(forms, word);
+    if (!who) continue;
     // "Alex's brother Sam's wife" is about Sam's wife.
     let next = index + 1;
     while (DESCRIBING.has(words[next] ?? '')) next++;
@@ -699,7 +708,15 @@ export function relativeNamed(text: string, name: string): { of: string; relativ
     const theirs =
       (/['’]s$/u.test(owner) && !CONTRACTED.has(owner.replace('’', "'"))) ||
       (of.endsWith('s') && /['’]$/u.test(owner));
-    if (!theirs || !of || of === last || isRelationWord(of) || NO_ONE.has(of)) return null;
+    if (
+      !theirs ||
+      !of ||
+      of === who.at(-1) ||
+      isRelationWord(of) ||
+      NO_ONE.has(of) ||
+      ANYONE.has(of)
+    )
+      return null;
     if (found && found.of !== of) return null;
     found ??= { of, relative: relation(kin) };
   }
@@ -707,8 +724,8 @@ export function relativeNamed(text: string, name: string): { of: string; relativ
 }
 /** Whether a text names someone at all, as themself or as whose something is: "Sam", "Sam's". */
 export function namesIn(text: string, name: string): boolean {
-  const last = nameWords(name).at(-1);
-  return Boolean(last) && relationWords(text).some((word) => nameWord(word) === last);
+  const forms = nameForms(name);
+  return relationWords(text).some((word) => nameEnding(forms, word));
 }
 /**
  * The name a text gives someone's relative, written as a name is: "Alex's
@@ -717,10 +734,10 @@ export function namesIn(text: string, name: string): boolean {
  */
 export function relativeName(text: string, of: string): string | null {
   const words = relationWords(text);
-  const last = nameWords(of).at(-1);
+  const forms = nameForms(of);
   const written = capitalized(text);
   for (const [index, word] of words.entries()) {
-    if (!last || nameWord(word) !== last || !/['’]s?$/u.test(word)) continue;
+    if (!nameEnding(forms, word) || !/['’]s?$/u.test(word)) continue;
     let next = index + 1;
     while (DESCRIBING.has(words[next] ?? '')) next++;
     if (!isRelationWord(words[next] ?? '')) continue;
