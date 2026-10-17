@@ -154,8 +154,13 @@ describe('illegal transitions are refused, not tolerated', () => {
 });
 
 describe('a conversation goes on after a turn that did not finish cleanly', () => {
-  test('a failed, finished or unreconciled conversation takes its next message as a new turn', () => {
-    for (const state of ['failed', 'completed', 'needs_reconciliation'] as const) {
+  test('a failed, finished, unreconciled or reminder-waiting conversation takes its next message as a new turn', () => {
+    for (const state of [
+      'failed',
+      'completed',
+      'needs_reconciliation',
+      'waiting_for_event_or_time',
+    ] as const) {
       expect(unwrap(transition(state, { kind: 'conversation_continued' }))).toBe('queued');
     }
   });

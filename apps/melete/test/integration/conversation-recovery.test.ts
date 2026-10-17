@@ -19,7 +19,7 @@ import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { openDatabase } from '../../src/db/client.ts';
 import { holdingEventOrder } from '../../src/db/lock-guard.ts';
-import { action, connection, job, owner, space } from '../../src/db/schema.ts';
+import { action, connection, event, job, owner, space } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
@@ -27,8 +27,9 @@ import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../../src/jobs/limits.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
-import { AttemptRunner, LOST_NOTE } from '../../src/jobs/runner.ts';
+import { AttemptRunner, DISCONNECTED_NOTE, LOST_NOTE } from '../../src/jobs/runner.ts';
 import { CONVERSATION_BUDGET, DEFAULT_BUDGET, JobService } from '../../src/jobs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { freshAgent } from '../helpers/agents.ts';
@@ -162,6 +163,95 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     const [ended] = await sql`select payload from event
       where attempt_id = ${claimed.claims.attempt_id} and type = 'attempt_ended'`;
     expect(ended?.payload).toMatchObject({ kind: 'lost', turn_status: 'failed' });
+  });
+
+  /** A conversation's last allowed attempt, running, that has read the school's mailbox. */
+  async function readingTheMailbox() {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'Answer the latest mail from the school.')).status).toBe(200);
+    const sql = required(handle).sql;
+    await sql`update job set budget = jsonb_set(budget, '{max_attempts}', '1'::jsonb)
+      where id = ${chat.id}`;
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const mailbox = newId('conn');
+    await required(handle)
+      .db.insert(connection)
+      .values({ id: mailbox, spaceId, provider: 'imap', label: 'School mail' });
+    const read = newId('act');
+    await required(handle)
+      .db.insert(action)
+      .values({
+        id: read,
+        jobId: chat.id,
+        attemptId: claimed.claims.attempt_id,
+        connectionId: mailbox,
+        kind: 'email.search',
+        effectClass: 'read',
+        canonicalPayload: {},
+        payloadHash: 'd'.repeat(64),
+        idempotencyKey: read,
+        status: 'succeeded',
+      });
+    return { chat, claims: claimed.claims, mailbox };
+  }
+
+  async function lastTurnSays(chatId: string, attemptId: string, note: string) {
+    const turns = turnList.parse(await (await request(`/conversations/${chatId}/messages`)).json());
+    expect(turns.turns.at(-1)?.status).toBe('failed');
+    expect(turns.turns.at(-1)?.answer).toBe(note);
+    const view = conversationResponse.parse(
+      await (await request(`/conversations/${chatId}`)).json(),
+    ).conversation;
+    expect(view.status).toBe('failed');
+    expect(view.composer).toBe('send');
+    const [ended] = await required(handle).sql`select payload from event
+      where attempt_id = ${attemptId} and type = 'attempt_ended'`;
+    expect(ended?.payload).toMatchObject({
+      outcome: { kind: 'failed', reason: note },
+      turn_status: 'failed',
+    });
+  }
+
+  test('a turn stopped because an app it used was disconnected says so', async () => {
+    const { chat, claims, mailbox } = await readingTheMailbox();
+    await new PolicyService(required(jobs), required(runner)).changeConnection(mailbox, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect((await required(jobs).get(chat.id)).state).toBe('failed');
+    await lastTurnSays(chat.id, claims.attempt_id, DISCONNECTED_NOTE);
+  });
+
+  test('an attempt lost after a disconnection fenced it is told the same way', async () => {
+    const { chat, claims, mailbox } = await readingTheMailbox();
+    // The fence recorded against an attempt that was left open, as it is for
+    // one that was not running when the app was disconnected.
+    await required(handle)
+      .db.insert(event)
+      .values({
+        jobId: chat.id,
+        attemptId: claims.attempt_id,
+        type: 'context_invalidated',
+        payload: {
+          type: 'context_invalidated',
+          job_id: chat.id,
+          attempt_id: claims.attempt_id,
+          policy_generation: 1,
+          connection_id: mailbox,
+          reason: 'connection_revoked',
+        },
+        dedupKey: `${chat.id}:context:test`,
+      });
+    expect(await required(runner).loseAttempt(claims.attempt_id, 'context_invalidated')).toBe(true);
+    await lastTurnSays(chat.id, claims.attempt_id, DISCONNECTED_NOTE);
   });
 
   test('a turn run again after a lost attempt shows one answer, not two glued together', async () => {

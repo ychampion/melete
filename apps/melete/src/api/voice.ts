@@ -46,6 +46,7 @@ import type { Env } from '../env.ts';
 import { answerStream, answerText } from '../experience/answer-filter.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { ownJob } from '../principals/authority.ts';
+import { requireSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { ServiceError } from './errors.ts';
 import {
@@ -202,10 +203,23 @@ const providerFailed = (what: string) =>
     502,
   );
 
+const busy = () =>
+  new ServiceError(
+    'voice_busy',
+    'The speech service is busy just now. Try again in a moment.',
+    429,
+  );
+
+/** The provider turned the call away for having too many at once, rather than refusing it. */
+const providerBusy = (error: VoiceProviderError) =>
+  error.code === 'too_many_concurrent_requests' ||
+  (error.status === 429 && error.code !== 'quota_exceeded');
+
 /**
  * A refused key stops Speech and Transcription as surely as voice: the default
  * rows for both read the same key, so they are shown failing at once rather
- * than Connected until someone presses Test. A passing Test sets them back.
+ * than Connected until someone presses Test. A passing Test, or a call that
+ * works, sets them back.
  * Each refusal records its time again, so voice can tell that the key it runs
  * with now is the one refused.
  */
@@ -223,6 +237,32 @@ async function markSpeechFailing(db: Database) {
       );
   } catch {
     process.stderr.write('voice: speech connections could not be marked failing\n');
+  }
+}
+
+/**
+ * A call that worked shows the key is good again, as after it was replaced and
+ * the service restarted: the default rows for what it served, left failing by
+ * an earlier refusal, are set back without anyone pressing Test. Only rows
+ * still failing are written.
+ */
+async function markSpeechWorking(db: Database, kind: VoiceUsageKind) {
+  const builtin = kind === 'transcribe' ? 'transcription' : kind === 'speech' ? 'generation' : null;
+  if (!builtin) return;
+  try {
+    await db
+      .update(connection)
+      .set({ health: 'ok', lastCheckedAt: new Date() })
+      .where(
+        and(
+          eq(connection.provider, 'generation'),
+          eq(connection.status, 'active'),
+          eq(connection.health, 'failing'),
+          sql`${connection.configuration}->>'builtin' = ${builtin}`,
+        ),
+      );
+  } catch {
+    process.stderr.write('voice: speech connections could not be marked working\n');
   }
 }
 
@@ -295,6 +335,7 @@ export function mountVoice(
     const principalId = c.get('owner')?.id;
     if (!spaceId || !principalId)
       throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+    requireSessionSpace(c, spaceId);
     return { spaceId, principalId };
   };
 
@@ -361,7 +402,9 @@ export function mountVoice(
     const reservation = await allowance.take(principalId, kind, amount, limit);
     if (!reservation) throw new ServiceError('voice_daily_limit', DAILY[kind], 429);
     try {
-      return await call();
+      const result = await call();
+      await markSpeechWorking(db, kind);
+      return result;
     } catch (error) {
       // An answered refusal did no work, so it costs nothing. A call that never
       // came back may have been served, and stays counted.
@@ -371,6 +414,8 @@ export function mountVoice(
         // The operator reads why; the person is told only that it failed.
         process.stderr.write(`voice: ${kind} failed: ${error.message}\n`);
         if (error.keyRefused) await markSpeechFailing(db);
+        // Too many calls at once is a moment's wait, not a failure: the caller may try again.
+        if (providerBusy(error)) throw busy();
         throw providerFailed(what);
       }
       throw error;

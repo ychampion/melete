@@ -31,7 +31,7 @@
 import { closeSync, openSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   type CommandOutput,
   HOST_DOCKER_COMMANDS,
@@ -65,7 +65,7 @@ const CLIENT_TLS = UPGRADE_CLIENT_TLS;
  * packages/cli/src/database.ts's EXTERNAL_LOAD, repeated for the same reason: it
  * loads a dump only into an empty database, in one transaction.
  */
-export const UPGRADE_EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')") || exit 1; if [ "$n" != 0 ]; then echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
+export const UPGRADE_EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')") || exit 1; if [ "$n" != 0 ]; then s=$(psql --dbname="$DATABASE_URL" -X -At -c "select string_agg(schemaname, ', ' order by schemaname) || case when max(total) > 5 then ' and ' || (max(total) - 5) || ' more' else '' end from (select schemaname, count(*) over () as total from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema') group by schemaname order by schemaname limit 5) as held" 2>/dev/null); echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; [ -z "$s" ] || echo "The schemas that hold them: $s. A provider's default database can hold tables of its own; load into a new, empty database." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
 
 export const USAGE =
   'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile name] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
@@ -84,6 +84,14 @@ export type UpgradeOptions = {
   tag: string;
   /** The directory this run creates; its parent must exist. */
   backupDir: string;
+  /**
+   * No --backup-dir was given: `backupDir` is in ~/melete-backups, and moves
+   * into the project's own folder there once deploy/.env names the project,
+   * the folder `melete backup` uses by default (packages/cli's
+   * defaultBackupDir; a test keeps them equal). The project `melete` keeps
+   * ~/melete-backups itself.
+   */
+  backupDirByProject?: boolean;
   repositoryRoot: string;
   /** Include deploy/docker-compose.browser.yml in every Compose command. */
   browser: boolean;
@@ -143,7 +151,7 @@ export function parseArguments(
     throw new Error(USAGE);
   };
   let tag: string | undefined;
-  let parent = join(home, 'melete-backups');
+  let parent: string | undefined;
   let dryRun = false;
   let browser = false;
   let tailscale = false;
@@ -202,7 +210,11 @@ export function parseArguments(
     profiles,
     waitTimeoutSeconds,
     repositoryRoot: repository,
-    backupDir: join(parent, `upgrade-${tag}-${stamp}`).replaceAll('\\', '/'),
+    backupDir: join(parent ?? join(home, 'melete-backups'), `upgrade-${tag}-${stamp}`).replaceAll(
+      '\\',
+      '/',
+    ),
+    ...(parent === undefined ? { backupDirByProject: true } : {}),
   };
 }
 
@@ -317,8 +329,34 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
     },
     {
       phase: 'backup',
-      title: 'Archive spaces, artifacts and the current restriction journal',
-      command: [...compose, 'cp', '-a', 'melete:/data', '-'],
+      title:
+        "Archive spaces, artifacts and the current restriction journal, without each space's search index and staged writes",
+      // As packages/cli's backup leaves them out (files.ts LEFT_OUT; a test keeps them equal):
+      // the service rebuilds an index from the space's files, and an old index can hold the
+      // words of a record removed since. A one-off container of the stopped service reads
+      // its volumes, as `cp` did, with the same names in the archive (data/...).
+      command: [
+        ...compose,
+        'run',
+        '--rm',
+        '--no-deps',
+        '-T',
+        '--user',
+        '0:0',
+        '--entrypoint',
+        'tar',
+        'melete',
+        '-C',
+        '/',
+        '--numeric-owner',
+        '--anchored',
+        '--no-wildcards-match-slash',
+        '--exclude=data/spaces/*/.index',
+        '--exclude=data/spaces/*/.proposed',
+        '-cf',
+        '-',
+        'data',
+      ],
       stdoutFile: backup('data.tar'),
     },
     {
@@ -492,6 +530,8 @@ export type PreflightFacts = {
   serviceContainer: boolean;
   dockerRootFreeBytes: number | null;
   backupFreeBytes: number | null;
+  /** The folder the backup directory is made in. */
+  backupParent?: string;
   /** Database plus /data plus /work; null when the stopped stack could not be measured. */
   backupEstimateBytes: number | null;
   /**
@@ -576,7 +616,9 @@ export function judgePreflight(facts: PreflightFacts): string[] {
   );
   if (facts.backupFreeBytes === null)
     problems.push(
-      'The free space for the backup directory could not be measured; its parent must exist.',
+      facts.backupParent
+        ? `The free space for the backup directory could not be measured; its parent, ${facts.backupParent}, must exist (mkdir -p -m 700 ${facts.backupParent}).`
+        : 'The free space for the backup directory could not be measured; its parent must exist.',
     );
   else if (facts.backupEstimateBytes === null)
     // Sizing an unknown backup at the floor could fill the filesystem Postgres writes to.
@@ -662,6 +704,13 @@ export async function gatherPreflight(
     (await run(['git', 'diff', '--quiet', 'HEAD', target, '--', OPERATOR_CONFIGURATION])).code !==
       0;
   const values = await environment();
+  const project = /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
+    ? (values?.COMPOSE_PROJECT_NAME as string)
+    : 'melete';
+  const backupDir =
+    options.backupDirByProject && project !== 'melete'
+      ? join(dirname(options.backupDir), project, basename(options.backupDir)).replaceAll('\\', '/')
+      : options.backupDir;
   const docker: HostDockerOutputs = {
     engine: await run(HOST_DOCKER_COMMANDS.engine),
     compose: await run(HOST_DOCKER_COMMANDS.compose),
@@ -701,7 +750,7 @@ export async function gatherPreflight(
     : host.info?.dockerRootDir
       ? availableBytes(await run(['df', '-Pk', host.info.dockerRootDir]))
       : null;
-  const backupFreeBytes = availableBytes(await run(['df', '-Pk', dirname(options.backupDir)]));
+  const backupFreeBytes = availableBytes(await run(['df', '-Pk', dirname(backupDir)]));
   const postgresRunning = options.externalDatabase
     ? false
     : Boolean(await text([...compose, 'ps', '-q', 'postgres']));
@@ -725,9 +774,6 @@ export async function gatherPreflight(
   const fromVersion = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(described ?? '')
     ? (described as string)
     : `g${headCommit.slice(0, 12)}`;
-  const project = /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
-    ? (values?.COMPOSE_PROJECT_NAME as string)
-    : 'melete';
   // The image the backup phase tags for a rollback; a missing one is named now.
   const browserImageName = options.browser
     ? stackImages({ browser: true, project, profiles: [] }).at(-1)?.running
@@ -760,11 +806,13 @@ export async function gatherPreflight(
       serviceContainer,
       dockerRootFreeBytes,
       backupFreeBytes,
+      backupParent: dirname(backupDir),
       backupEstimateBytes,
       ...(browserImage ? { browserImage } : {}),
     },
     context: {
       ...options,
+      backupDir,
       project,
       fromCommit: headCommit,
       fromBranch,
@@ -983,8 +1031,9 @@ if (import.meta.main) {
     // Only to name a directory that does not exist; git decides whether it is a checkout's top.
     options.repositoryRoot = realpathSync(options.repositoryRoot).replaceAll('\\', '/');
   } catch {
-    process.stderr.write(`${options.repositoryRoot} does not exist. ${USAGE}\n`);
-    process.exit(2);
+    // Not 2: `melete upgrade` reads 2 as options an older release does not know.
+    process.stderr.write(`repository not found: ${options.repositoryRoot}\n`);
+    process.exit(3);
   }
   const result = await runUpgrade(options, {
     ...installationDependencies(options.repositoryRoot),

@@ -37,6 +37,7 @@ import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import type { BlobStore } from '../storage/blob.ts';
@@ -152,6 +153,12 @@ export type RemovalDeps = {
   /** Left out, nothing is serving connectors in this process and none is released. */
   connectors?: ConnectorReleases;
   /**
+   * Withdraws at each provider the access the space's connections hold,
+   * before their sealed tokens are deleted. Best effort: it never stops the
+   * removal. Left out, the tokens are only deleted.
+   */
+  withdrawAccess?: (spaceId: string) => Promise<void>;
+  /**
    * The space a running browser worker mounts as its own, which cannot be
    * taken out from under it. Set from the deployment's browser configuration.
    */
@@ -219,6 +226,11 @@ export class SpaceRemovalService {
   private timer?: ReturnType<typeof setInterval>;
   private resuming?: Promise<unknown>;
   private readonly inFlight = new Map<string, Promise<SpaceRemovalRow>>();
+  /** Removals whose resumed run failed, each tried again later on its own. */
+  private readonly failures = new ItemFailures('space removal', {
+    firstMs: 60_000,
+    maxMs: 30 * 60_000,
+  });
 
   constructor(readonly deps: RemovalDeps) {
     this.leaseMs = deps.leaseMs ?? LEASE_MS;
@@ -304,6 +316,14 @@ export class SpaceRemovalService {
       const access = await spaceAuthority(tx, spaceId, actor, true);
       if (access.role !== 'owner')
         throw new ServiceError('scope_denied', 'Space administration requires its owner.', 403);
+      // A room goes for everyone in it, so only the person who made it removes
+      // it; the owners they added manage it but do not end it.
+      if (access.space.kind === 'shared' && access.ownerId !== actor)
+        throw new ServiceError(
+          'scope_denied',
+          'Only the person who made this room can remove it.',
+          403,
+        );
 
       // The browser worker mounts this space's directory and keeps its profile
       // there; removing it would take the directory out from under a running
@@ -564,6 +584,14 @@ export class SpaceRemovalService {
         // halfway gone. Recreating one is refused separately, by the removal
         // stamp the default-connection query reads.
         await this.releaseConnectors(row.connectionIds);
+        // While the sealed tokens are still here to name what is withdrawn.
+        await this.deps
+          .withdrawAccess?.(row.spaceId)
+          .catch((error: unknown) =>
+            process.stderr.write(
+              `space removal: provider access was not withdrawn (${error instanceof Error ? error.message : 'error'})\n`,
+            ),
+          );
         await sweepPrincipals(raw, row.spaceId, hold);
         return counts;
       case 'memory':
@@ -918,7 +946,7 @@ export class SpaceRemovalService {
    */
   async resume(signal?: AbortSignal): Promise<SpaceRemovalRow[]> {
     const ready = await this.deps.db
-      .select({ id: spaceRemoval.id })
+      .select({ id: spaceRemoval.id, spaceId: spaceRemoval.spaceId })
       .from(spaceRemoval)
       .where(
         and(
@@ -932,7 +960,14 @@ export class SpaceRemovalService {
       if (signal?.aborted) break;
       // One this process is already running is left to that run.
       if (this.inFlight.has(entry.id)) continue;
-      finished.push(await this.run(entry.id, signal));
+      // One removal whose run fails never holds up the removals after it.
+      if (!this.failures.due(entry.id)) continue;
+      try {
+        finished.push(await this.run(entry.id, signal));
+        this.failures.succeeded(entry.id);
+      } catch (error) {
+        this.failures.failed(entry.id, error, `${entry.id} of ${entry.spaceId}`);
+      }
     }
     return finished;
   }

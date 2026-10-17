@@ -16,6 +16,7 @@ import {
   NO_DECISIONS,
   useLoad,
 } from './experience/hooks.ts';
+import { latestOnly } from './experience/latest.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
 import { useFocusBeat } from './push-focus.ts';
@@ -34,6 +35,7 @@ import { PasswordResetScreen } from './screens/PasswordReset.tsx';
 import { PlansScreen } from './screens/Plans.tsx';
 import { SettingsScreen } from './screens/Settings.tsx';
 import { WorkScreen } from './screens/Work.tsx';
+import { opensAgents } from './shell/member-guards.ts';
 import { toast } from './shell/Shell.tsx';
 import { TimeZonePrompt } from './shell/TimeZonePrompt.tsx';
 import { useTheme } from './theme.ts';
@@ -166,9 +168,12 @@ export function App() {
   // One read for a burst of reasons (sign-in, a view change, focus).
   const refreshAgentsSoon = useMemo(() => throttled(refreshAgents, 2000), [refreshAgents]);
   // One refresh reads the conversations and what waits on the person, so the
-  // sidebar's dots, Home's count and the queue always agree.
+  // sidebar's dots, Home's count and the queue always agree. When refreshes
+  // overlap, an older answer never replaces a newer one.
+  const latestRefresh = useMemo(() => latestOnly(), []);
   const refreshConversations = useCallback(() => {
-    void Promise.all([adapter.conversations(), adapter.permissions(), adapter.questions()]).then(
+    latestRefresh(
+      Promise.all([adapter.conversations(), adapter.permissions(), adapter.questions()]),
       ([listed, permissions, questions]) => {
         if (listed.data) setConversations(listed.data.conversations);
         setConversationsError(listed.data ? null : (listed.error ?? listed.unavailable));
@@ -193,10 +198,11 @@ export function App() {
         }));
       },
     );
-  }, []);
+  }, [latestRefresh]);
 
   // A guest is signed in to rooms alone; every personal surface stays closed to them.
   const signedIn = profile.data !== null && !signedOut && !guest;
+  const member = signedIn && profile.data?.profile.role === 'member';
   const refreshProfile = useCallback(() => {
     profile.reload();
   }, [profile.reload]);
@@ -347,11 +353,13 @@ export function App() {
       signOut,
       accountSwitched,
       guest: guest && !signedOut,
+      member,
     }),
     [
       signOut,
       accountSwitched,
       guest,
+      member,
       signedOut,
       signedIn,
       refreshProfile,
@@ -418,7 +426,7 @@ export function App() {
     screen = <ChatsScreen />;
   } else if (head === 'chat') {
     screen = <ChatScreen key={second ?? 'new'} id={second ?? null} />;
-  } else if (head === 'agents') {
+  } else if (head === 'agents' && opensAgents(member)) {
     screen = <AgentsScreen selected={second ?? null} />;
   } else if (head === 'plans') {
     screen = <PlansScreen selected={second ?? null} />;

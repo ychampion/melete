@@ -160,6 +160,14 @@ export interface GatewaySettlement {
   latencyMs: number;
   status: 'succeeded' | 'failed' | 'unknown';
   httpStatus: number | null;
+  /** Why the provider refused the call, as the contract's `providerFailure` names it. */
+  failure?:
+    | 'key_refused'
+    | 'quota'
+    | 'rate_limited'
+    | 'model_not_found'
+    | 'context_too_long'
+    | 'provider_down';
   /** Where the request went and what was swapped out of it, never the values. */
   privacy?: GatewayPrivacyReceipt;
   /** The call was cut off because its attempt was stopped or cancelled. */

@@ -23,6 +23,7 @@ import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { RequestSource } from '../api/listener.ts';
 import { FailureWindow, type LimitStore, MemoryLimitStore } from '../ops/limiter.ts';
+import { requireSessionSpace } from '../principals/session-space.ts';
 import type { DeviceService } from './service.ts';
 
 const tooLarge = (c: Context) =>
@@ -78,6 +79,7 @@ export function mountDevices(
   const spaceOf = (c: Context) => {
     const spaceId = c.get('experienceSpaceId') as string | undefined;
     if (!spaceId) throw new Error('No session space');
+    requireSessionSpace(c, spaceId);
     return spaceId;
   };
 

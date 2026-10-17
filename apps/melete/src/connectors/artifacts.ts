@@ -37,6 +37,7 @@ import type { Query } from '../broker/records.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { noLinks, openBeneath, segmentsFor } from './files.ts';
 import type { MailAttachment } from './mail-transport.ts';
+import { alreadyInFiles, filesHold, inFilesTurn, onlyNewFiles } from './shared-files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 /** What the email destination needs, and nothing more. */
@@ -153,6 +154,8 @@ type ArtifactRow = {
 
 export function createArtifactsConnector(options: ArtifactsOptions): Connector {
   const limit = options.maxBytes ?? 8 * 1024 * 1024;
+  /** A publish into the space's Files takes its turn there on every instance (`inFilesTurn`). */
+  const hold = filesHold(options.sql);
   const mailers =
     options.mailers ??
     new Map(options.mailer ? [[options.mailer.connectionId, options.mailer]] : []);
@@ -281,37 +284,44 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
     late: false,
   });
 
+  /** Where a publish to the space's Files goes, or null for one that goes elsewhere. */
+  const filesTarget = (payload: JsonObject): string | null => {
+    const destination = payload.destination;
+    if (
+      typeof destination !== 'object' ||
+      destination === null ||
+      Array.isArray(destination) ||
+      destination.kind !== 'space_artifacts'
+    )
+      return null;
+    const source = payload.path;
+    return typeof destination.path === 'string'
+      ? destination.path
+      : typeof source === 'string'
+        ? path.posix.basename(source)
+        : '';
+  };
+  /** Whether nothing, not even a link, is at `target` in the space's Files. */
+  const unused = (spaceId: string, target: string) => {
+    try {
+      // A link counts as something already there, wherever it points.
+      return (
+        lstatSync(path.join(options.spacesRoot, spaceId, 'artifacts', ...segmentsFor(target)), {
+          throwIfNoEntry: false,
+        }) === undefined
+      );
+    } catch {
+      return false;
+    }
+  };
+
   return {
     manifest: artifactsManifest,
     // Saved to the space as a new file, the person can open and delete it.
     // Emailed it is gone, and saved over a file they have it replaces theirs.
     staysInSpace(action, spaceId) {
-      const destination = action.canonical_payload.destination;
-      if (
-        action.kind !== 'artifact.publish' ||
-        typeof destination !== 'object' ||
-        destination === null ||
-        Array.isArray(destination) ||
-        destination.kind !== 'space_artifacts'
-      )
-        return false;
-      const source = action.canonical_payload.path;
-      const target =
-        typeof destination.path === 'string'
-          ? destination.path
-          : typeof source === 'string'
-            ? path.posix.basename(source)
-            : '';
-      try {
-        // A link counts as something already there, wherever it points.
-        return (
-          lstatSync(path.join(options.spacesRoot, spaceId, 'artifacts', ...segmentsFor(target)), {
-            throwIfNoEntry: false,
-          }) === undefined
-        );
-      } catch {
-        return false;
-      }
+      const target = filesTarget(action.canonical_payload);
+      return action.kind === 'artifact.publish' && target !== null && unused(spaceId, target);
     },
     async prepare(payload, ctx, tx) {
       const relative = typeof payload.path === 'string' ? payload.path : '';
@@ -332,6 +342,15 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
         );
       const bound = { ...payload, artifact_id: record.id, content_hash: record.content_hash };
       const destination = publishDestination.parse(payload.destination);
+      // In a shared space, anyone but its owner publishes to its Files only
+      // under a new name: refused before anyone is asked, checked again when it runs.
+      const target = filesTarget(payload);
+      if (
+        target !== null &&
+        !unused(ctx.space_id, target) &&
+        (await onlyNewFiles(tx, ctx.job_id, ctx.space_id))
+      )
+        throw new BrokerFault('payload_invalid', alreadyInFiles(target));
       if (destination.kind !== 'email') return bound;
       const selected = await mailbox(payload, ctx, tx, false);
       return {
@@ -362,34 +381,47 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
         const resolved = await noLinks(base, segments, true);
         // Nobody was asked because the file was new, so it must still be new:
         // one that appeared since is someone's, and is not replaced unasked.
-        const unasked = !action.authorization_ref;
-        const file = await open(
-          resolved,
-          constants.O_WRONLY |
-            constants.O_CREAT |
-            constants.O_NOFOLLOW |
-            constants.O_NONBLOCK |
-            (unasked ? constants.O_EXCL : 0),
-          0o600,
-        ).catch(async (error: unknown) => {
-          if (!unasked || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-          // A retry of this same save finds its own bytes there and is done.
-          const there = await read(resolved).catch(() => null);
-          if (there && digest(there) === hash) return null;
-          throw new Error(
-            'the space already has a file with that name; saving over it needs the person to approve',
-          );
-        });
-        if (file)
-          try {
-            const stat = await file.stat();
-            if (!stat.isFile()) throw new Error('the publish target is not a regular file');
-            await file.truncate(0);
-            await file.writeFile(bytes);
-            await file.sync();
-          } finally {
-            await file.close();
-          }
+        // In a shared space, anyone but its owner makes only a new file, asked or not.
+        // Saved in its turn in the space's Files, so it never lands between
+        // another step's check of a file there and its change to it.
+        await inFilesTurn(
+          ctx.space_id,
+          async (query) => {
+            const unasked = !action.authorization_ref;
+            const limited = await onlyNewFiles(query ?? options.sql, ctx.job_id, ctx.space_id);
+            const exclusive = unasked || limited;
+            const file = await open(
+              resolved,
+              constants.O_WRONLY |
+                constants.O_CREAT |
+                constants.O_NOFOLLOW |
+                constants.O_NONBLOCK |
+                (exclusive ? constants.O_EXCL : 0),
+              0o600,
+            ).catch(async (error: unknown) => {
+              if (!exclusive || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+              // A retry of this same save finds its own bytes there and is done.
+              const there = await read(resolved).catch(() => null);
+              if (there && digest(there) === hash) return null;
+              throw new Error(
+                limited
+                  ? alreadyInFiles(target)
+                  : 'the space already has a file with that name; saving over it needs the person to approve',
+              );
+            });
+            if (file)
+              try {
+                const stat = await file.stat();
+                if (!stat.isFile()) throw new Error('the publish target is not a regular file');
+                await file.truncate(0);
+                await file.writeFile(bytes);
+                await file.sync();
+              } finally {
+                await file.close();
+              }
+          },
+          hold,
+        );
         externalRef = target;
         detail = { destination: 'space_artifacts', path: target, bytes: bytes.byteLength };
       } else {

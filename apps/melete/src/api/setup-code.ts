@@ -7,15 +7,22 @@
  * with a link that carries it, and keeps only its digest, as
  * `MELETE_SETUP_CODE_HASH` in deploy/.env. `melete account setup-code` issues a
  * new one into the database, for an operator who lost the first or provisions
- * installs without `init`. An installation with neither is open to its first
+ * installs without `init`. Both follow the same rules: the service records the
+ * configured digest in the database the first time it starts with it, so that
+ * code too works once, expires SETUP_CODE_HOURS later, and stops working when
+ * `account setup-code` issues another. An installation with neither is open to its first
  * visitor only while every address it is configured with is on this machine,
  * as a local install on 127.0.0.1 always has been, or when its operator sets
  * MELETE_SETUP_OPEN=true on purpose.
  */
-import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 
-/** How long a code from `melete account setup-code` lasts. */
+/**
+ * How long a setup code lasts: one from `melete account setup-code` from when
+ * it is issued, the one `melete init` printed from when the service first
+ * starts with it.
+ */
 export const SETUP_CODE_HOURS = 72;
 
 /** Letters and digits nobody misreads: no 0/O, 1/I/L, or U. */
@@ -40,9 +47,6 @@ export function setupLink(webUrl: string, code: string): string {
   url.hash = `/welcome?${new URLSearchParams({ code })}`;
   return url.href;
 }
-
-const sameDigest = (a: string, b: string) =>
-  a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /** The settings that say who can reach the sign-in page, as the service or deploy/.env has them. */
 export type ClaimSettings = {
@@ -123,9 +127,29 @@ export async function setupCodeRequired(
 }
 
 /**
- * Checks a code inside the setup transaction and spends a database code that
- * matched. True when the code is the configured one or an unused, unexpired
- * issued one.
+ * Records the code `melete init` configured (MELETE_SETUP_CODE_HASH) as a
+ * database code, so it follows an issued code's rules: it lasts
+ * SETUP_CODE_HOURS from now, works once, and a newer `account setup-code`
+ * cancels it. Only the first call for a digest records it; later ones, at
+ * every start, change nothing, so neither a restart nor a cancelled code
+ * brings it back. Nothing is recorded once an owner exists.
+ */
+export async function recordConfiguredCode(
+  sql: Sql | TransactionSql,
+  configuredHash: string | undefined,
+): Promise<void> {
+  const hash = configuredHash?.trim().toLowerCase();
+  if (!hash) return;
+  await sql`insert into setup_code (code_hash, expires_at)
+    select ${hash}, now() + make_interval(hours => ${SETUP_CODE_HOURS})
+    where not exists (select 1 from owner)
+    on conflict (code_hash) do nothing`;
+}
+
+/**
+ * Checks a code inside the setup transaction and spends it when it matched.
+ * True when the code is an unused, unexpired one: the configured code, under
+ * the same rules as an issued one (recordConfiguredCode), or an issued one.
  */
 export async function spendSetupCode(
   tx: TransactionSql,
@@ -133,26 +157,35 @@ export async function spendSetupCode(
   code: string,
 ): Promise<boolean> {
   const hash = setupCodeHash(code);
-  if (configuredHash && sameDigest(hash, configuredHash.toLowerCase())) return true;
+  await recordConfiguredCode(tx, configuredHash);
   const spent = await tx`update setup_code set used_at = now()
     where code_hash = ${hash} and used_at is null and expires_at > now() returning code_hash`;
   return spent.length > 0;
 }
 
 /**
- * Issues a new code for an installation that has no owner yet. Earlier issued
- * codes stop working. Null once an owner exists.
+ * Issues a new code for an installation that has no owner yet. Earlier codes
+ * stop working, the configured one included. Null once an owner exists.
  */
-export async function issueSetupCode(sql: Sql): Promise<{ code: string; expiresAt: Date } | null> {
+export async function issueSetupCode(
+  sql: Sql,
+  configuredHash?: string,
+): Promise<{ code: string; expiresAt: Date } | null> {
   const code = newSetupCode();
-  const expiresAt = new Date(Date.now() + SETUP_CODE_HOURS * 3_600_000);
-  const issued = await sql.begin(async (tx) => {
+  const expiresAt = await sql.begin(async (tx) => {
     const [installed] = await tx`select id from owner limit 1`;
-    if (installed) return false;
+    if (installed) return null;
+    // Recorded first, so the cancellation below reaches the configured code
+    // even when the service has not started with it yet.
+    await recordConfiguredCode(tx, configuredHash);
     await tx`update setup_code set used_at = now() where used_at is null`;
-    await tx`insert into setup_code (code_hash, expires_at)
-      values (${setupCodeHash(code)}, ${expiresAt.toISOString()})`;
-    return true;
+    // Timed by the database's clock, which is the one spending it checks.
+    const [row] = await tx<
+      { expires_at: Date | string }[]
+    >`insert into setup_code (code_hash, expires_at)
+      values (${setupCodeHash(code)}, now() + make_interval(hours => ${SETUP_CODE_HOURS}))
+      returning expires_at`;
+    return row ? new Date(row.expires_at) : null;
   });
-  return issued ? { code, expiresAt } : null;
+  return expiresAt ? { code, expiresAt } : null;
 }

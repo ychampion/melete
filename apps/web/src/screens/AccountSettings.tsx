@@ -13,15 +13,23 @@ import { useApp } from '../experience/hooks.ts';
 import { zoneName } from '../experience/plain.ts';
 import { givenName, UNNAMED } from '../experience/profile.ts';
 import { browserTimeZone, timeZoneChoices } from '../experience/timezone.ts';
+import { roomsApi } from '../rooms/api.ts';
 import { InstallLinks } from '../shell/InstallLinks.tsx';
 import { toast } from '../shell/Shell.tsx';
 import { AccountData } from './AccountData.tsx';
 import { SignedIn } from './SignedIn.tsx';
 
 function TimeZoneField() {
-  const { profile, refreshProfile } = useApp();
+  const { profile, refreshProfile, member } = useApp();
   const [busy, setBusy] = useState(false);
   if (!profile) return null;
+  // The space keeps one clock, and its owner sets it.
+  if (member)
+    return (
+      <Field label="Time zone" hint="The space’s owner sets it. Times here are on this clock.">
+        <span style={{ fontSize: 14 }}>{zoneName(profile.time_zone)}</span>
+      </Field>
+    );
   const here = browserTimeZone();
   const save = async (zone: string) => {
     setBusy(true);
@@ -76,7 +84,7 @@ function TimeZoneField() {
 }
 
 function NameField() {
-  const { profile, refreshProfile } = useApp();
+  const { profile, refreshProfile, member } = useApp();
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   if (!profile) return null;
@@ -90,26 +98,29 @@ function NameField() {
         event.preventDefault();
         if (!changed || busy) return;
         setBusy(true);
-        void adapter
-          .saveProfile({
-            name: value.trim() || UNNAMED,
-            time_zone: profile.time_zone,
-            day_hours: profile.day_hours,
-          })
-          .then((saved) => {
-            setBusy(false);
-            if (!saved.data) {
-              toast({
-                kind: 'err',
-                title: 'Couldn’t save your name',
-                sub: saved.error ?? saved.unavailable ?? '',
-              });
-              return;
-            }
-            setDraft(null);
-            refreshProfile();
-            toast({ kind: 'ok', title: 'Name saved' });
-          });
+        // A member's name is their account's own; the space's profile is its owner's.
+        void (
+          member
+            ? roomsApi.rename(value.trim() || null)
+            : adapter.saveProfile({
+                name: value.trim() || UNNAMED,
+                time_zone: profile.time_zone,
+                day_hours: profile.day_hours,
+              })
+        ).then((saved) => {
+          setBusy(false);
+          if (!saved.data) {
+            toast({
+              kind: 'err',
+              title: 'Couldn’t save your name',
+              sub: saved.error ?? saved.unavailable ?? '',
+            });
+            return;
+          }
+          setDraft(null);
+          refreshProfile();
+          toast({ kind: 'ok', title: 'Name saved' });
+        });
       }}
     >
       <Field label="Your name" hint="Melete greets you by it.">

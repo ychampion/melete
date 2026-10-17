@@ -13,6 +13,10 @@ sending mail, still asks you first.
 
 ## Turn it on
 
+The [one-line installer](DEPLOYMENT.md#one-line-install) turns it on for a new
+installation; `MELETE_COMPUTER=0` leaves it out, and running the installer again
+with `MELETE_COMPUTER=1` turns it on later.
+
 With the Compose deployment from [DEPLOYMENT.md](DEPLOYMENT.md), add one line to
 `deploy/.env` (`configure.ts` has already written `MELETE_SANDBOX_PROJECT`):
 
@@ -126,6 +130,18 @@ instead.
 
 An allow-list of address ranges is not offered by this provider; asking for one
 is refused rather than widened.
+
+Internal hosts are the operator's call, made once for the installation with
+`MELETE_PRIVATE_HOSTS` (see [Internal hosts](CONNECTORS.md#internal-hosts)).
+The guard then accepts an answer inside a listed range as it accepts a public
+one, in both `open` and `connected_hosts_only`: a listed name or address is
+still tunnelled only on port 443, every answer must be public or in a listed
+range, and the tunnel goes to the address that was checked. A name that answers
+with a private address outside the listed ranges is refused as before, and cloud
+metadata stays refused. In `connected_hosts_only`, an internal host must also be
+named in `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS`, as any other host is; that list
+may now name hosts that resolve into a listed range. The browser worker keeps
+to public addresses.
 
 `open` and `connected_hosts_only` need the service to run in a container on the
 same engine, as it does in the Compose deployment, so that it can be the one way

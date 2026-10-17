@@ -114,6 +114,18 @@ describe('the model defaults', () => {
       expect(readEnv({ MELETE_DEFAULT_MAX_OUTPUT_TOKENS: value }).ok).toBe(false);
   });
 
+  test('automatic memory has no daily read limit unless the operator sets one', () => {
+    expect(loadEnv({}).MELETE_MEMORY_DAILY_CALLS).toBeUndefined();
+    expect(loadEnv({ MELETE_MEMORY_DAILY_CALLS: '' }).MELETE_MEMORY_DAILY_CALLS).toBeUndefined();
+    expect(loadEnv({ MELETE_MEMORY_DAILY_CALLS: '500' }).MELETE_MEMORY_DAILY_CALLS).toBe(500);
+    for (const value of ['-1', '1.5', 'many'])
+      expect(readEnv({ MELETE_MEMORY_DAILY_CALLS: value }).ok).toBe(false);
+    // Compose and the example leave it empty too, so an install made from them is not capped.
+    expect(composeServiceEnvironment().MELETE_MEMORY_DAILY_CALLS ?? '').toBe('');
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    expect(example).toContain('\nMELETE_MEMORY_DAILY_CALLS=\n');
+  });
+
   test('Compose falls back to the same provider and model as the service and the example', () => {
     // Only a deploy/.env without these lines meets the fallback; it must not
     // select a provider the service then refuses to start with.
@@ -456,6 +468,45 @@ describe('model roles and spending caps are checked at start-up', () => {
     // The installation's own caps have no such bound.
     expect(loadEnv({ MELETE_SPEND_MONTHLY_USD: '5000000' }).MELETE_SPEND_MONTHLY_USD).toBe(
       5_000_000,
+    );
+  });
+});
+
+describe('internal hosts everyone may reach', () => {
+  test('off by default, and Compose and the example leave it empty', () => {
+    expect(loadEnv({}).MELETE_PRIVATE_HOSTS).toBe('');
+    expect(composeServiceEnvironment().MELETE_PRIVATE_HOSTS).toBe('');
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    expect(example).toContain('\nMELETE_PRIVATE_HOSTS=\n');
+  });
+
+  test('names, wildcards and ranges start the service; anything else stops it and says which', () => {
+    expect(
+      readEnv({
+        MELETE_PRIVATE_HOSTS: 'mcp.corp.internal, *.corp.internal, 10.20.0.0/16, fd00::/8',
+      }).ok,
+    ).toBe(true);
+    for (const value of ['*.internal', '10.20.0.1/16', '0.0.0.0/0', 'https://mcp.corp.internal']) {
+      const result = readEnv({ MELETE_PRIVATE_HOSTS: value });
+      expect([value, result.ok]).toEqual([value, false]);
+      if (!result.ok) expect(result.issues.join('\n')).toContain('MELETE_PRIVATE_HOSTS');
+    }
+  });
+
+  test('a range over Melete’s own networks is refused, wherever the pool is', () => {
+    const overlapping = readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8' });
+    expect(overlapping.ok).toBe(false);
+    if (!overlapping.ok) expect(overlapping.issues.join('\n')).toContain('MELETE_NETWORK_POOL');
+    const inside = readEnv({ MELETE_PRIVATE_HOSTS: '10.215.3.0/24' });
+    expect(inside.ok).toBe(false);
+    if (!inside.ok) expect(inside.issues.join('\n')).toContain('list a range outside it');
+    expect(readEnv({ MELETE_PRIVATE_HOSTS: '::ffff:10.215.3.0/120' }).ok).toBe(false);
+    expect(readEnv({ MELETE_PRIVATE_HOSTS: '10.20.0.0/16' }).ok).toBe(true);
+    expect(
+      readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8', MELETE_NETWORK_POOL: '172.30.0.0/16' }).ok,
+    ).toBe(true);
+    expect(readEnv({ MELETE_PRIVATE_HOSTS: '10.0.0.0/8', MELETE_NETWORK_POOL: 'off' }).ok).toBe(
+      true,
     );
   });
 });

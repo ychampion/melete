@@ -17,6 +17,7 @@ import {
   type EventSink,
   hookCaptureErrorCode,
   hookObservation,
+  type ProviderFailure,
   type RuntimeAdapter,
   type RuntimeCapabilities,
   type RuntimeEvent,
@@ -48,6 +49,20 @@ import { steerContinuation, steerInput } from './steer.ts';
 import { RUNTIME_VERSION } from './version.ts';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * The class of a provider refusal, when the engine's failure carries the code
+ * the gateway answered with (`provider_key_refused`, `provider_down`, ...).
+ * The engine quotes the gateway's error, and the gateway sends only the code.
+ */
+export function providerFailureIn(error: string): ProviderFailure | null {
+  const match =
+    /\bprovider_(key_refused|quota|rate_limited|model_not_found|context_too_long|down)\b/.exec(
+      error,
+    );
+  if (!match?.[1]) return null;
+  return match[1] === 'down' ? 'provider_down' : (match[1] as ProviderFailure);
+}
 
 /**
  * The action ids this attempt left parked on the ledger.
@@ -768,17 +783,22 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       if (name === 'run.completed') {
         return {
           kind: 'completed',
-          summary: String(event.output ?? '').trim(),
+          summary: plainEngineNotice(String(event.output ?? '').trim()),
           // Evidence is the broker's to name. The engine knows nothing about
           // action ids, so claiming any here would be fabrication.
           evidence: [],
         };
       }
       if (name === 'run.failed') {
+        const reason = String(event.error ?? 'the runtime reported a failure');
+        const failure = providerFailureIn(reason);
         return {
           kind: 'failed',
-          reason: String(event.error ?? 'the runtime reported a failure'),
-          retryable: true,
+          reason,
+          // A refused key, a spent account or a missing model fails the same
+          // way next time; a busy or failing provider may answer later.
+          retryable: !failure || failure === 'rate_limited' || failure === 'provider_down',
+          ...(failure ? { failure } : {}),
         };
       }
       // interrupted and cancelled: the owner process died or the attempt was
@@ -1024,6 +1044,51 @@ const beforeDeadline = <T>(promise: Promise<T>, deadline: number): Promise<T> =>
 
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const MODELS_HINT = 'choose another model in Settings › Models';
+const LIMIT_HINT =
+  'Whoever runs this Melete server can raise the reply limit with MELETE_DEFAULT_MAX_OUTPUT_TOKENS';
+
+/**
+ * The engine's own notices for a reply that hit the model's output limit, each
+ * matched by how it starts, and what is said in their place. The engine's
+ * wording points at its own slash commands (`/reasoning`, `/model`), which do
+ * not exist here, so a person would be sent looking for something that is not
+ * there.
+ */
+const ENGINE_NOTICES: { starts: string[]; say: string }[] = [
+  {
+    starts: ['⚠️ **Thinking Budget Exhausted**', '⚠️ **No visible answer was produced.**'],
+    say:
+      'The model spent its whole reply allowance thinking and had nothing left for an answer. ' +
+      `Try asking for a smaller piece at a time, or ${MODELS_HINT}. ` +
+      `${LIMIT_HINT}, or lower the thinking effort with MELETE_REASONING_EFFORT_AGENT.`,
+  },
+  {
+    starts: [
+      'Response truncated due to output length limit',
+      'First response truncated due to output length limit',
+    ],
+    say:
+      'The model reached its reply length limit before it finished, so this reply was stopped. ' +
+      `Try asking for a shorter answer or one part at a time, or ${MODELS_HINT}. ` +
+      `${LIMIT_HINT}.`,
+  },
+  {
+    starts: ['⚠️ **Response Stopped — Repetition Detected**'],
+    say:
+      'The model started repeating itself, so its reply was stopped before it ran on. ' +
+      `Send your message again, or ${MODELS_HINT}.`,
+  },
+];
+
+/** An answer as the person should read it, with the engine's limit notices put in Melete's terms. */
+export function plainEngineNotice(output: string): string {
+  const notice = ENGINE_NOTICES.find((entry) =>
+    entry.starts.some((start) => output.startsWith(start)),
+  );
+  return notice ? notice.say : output;
+}
 
 /**
  * The default ledger lookup: the service's own read route, filtered down to the

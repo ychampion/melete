@@ -2,7 +2,8 @@
  * Settings › Account, the part about your data: download all of it, erase
  * everything in your space, and delete your account. The person who set
  * Melete up can't delete their own account (it runs this Melete), so they
- * see the accounts they made instead, and can delete those.
+ * see the accounts they made instead, and can make one an admin or delete
+ * it. An admin sees the accounts too.
  *
  * Every deletion shows what it takes before it happens, and asks for a name
  * or an email typed out, so nothing goes by a stray click.
@@ -287,14 +288,39 @@ function EraseSpace() {
   );
 }
 
-/** The accounts the person who set Melete up made, each of which they can delete. */
-function OtherAccounts() {
+/**
+ * The accounts on this Melete. The person who set it up can make one an admin,
+ * who can then add accounts and choose the model too, and can delete one. An
+ * admin sees the same list, without those choices.
+ */
+function OtherAccounts({ manage }: { manage: boolean }) {
   const list = useLoad(() => adapter.accounts(), []);
   const [target, setTarget] = useState<{
     account: AccountSummary;
     preview: AccountRemovalPreview;
   } | null>(null);
+  const [granting, setGranting] = useState<string | null>(null);
   const others = (list.data?.accounts ?? []).filter((account) => !account.setup_owner);
+  const setAdmin = async (account: AccountSummary, admin: boolean) => {
+    setGranting(account.id);
+    const done = await adapter.setAccountAdmin(account.id, admin);
+    setGranting(null);
+    const who = account.display_name ?? account.email ?? 'That account';
+    if (done.data === null) {
+      toast({
+        kind: 'err',
+        title: admin ? `Couldn’t make ${who} an admin` : `Couldn’t change ${who}`,
+        sub: done.error ?? done.unavailable ?? '',
+      });
+      return;
+    }
+    toast({
+      kind: 'ok',
+      title: admin ? `${who} is now an admin` : `${who} is no longer an admin`,
+      sub: admin ? 'They can add accounts and choose the model.' : '',
+    });
+    list.reload();
+  };
   const ask = async (account: AccountSummary) => {
     const read = await adapter.otherAccountPreview(account.id);
     if (read.data === null) {
@@ -310,7 +336,11 @@ function OtherAccounts() {
   return (
     <Section
       title="Accounts on this Melete"
-      sub="The accounts you made for other people. Deleting one signs them out and deletes their space and everything in it."
+      sub={
+        manage
+          ? 'The accounts you made for other people. An admin can add accounts and choose the model, as you can. Deleting an account signs them out and deletes their space and everything in it.'
+          : 'You are an admin here: you can add accounts and choose the model. Only the person who set Melete up makes admins or deletes accounts.'
+      }
     >
       {list.error ? (
         <LoadError what="the accounts" error={list.error} onRetry={list.reload} />
@@ -335,14 +365,32 @@ function OtherAccounts() {
                 {account.display_name ? `${account.display_name}, ` : ''}
                 {account.email ?? 'Being deleted'}
                 {account.kind === 'guest' ? ' (room guest)' : ''}
+                {account.admin ? ' · Admin' : ''}
               </span>
-              {account.state === 'active' ? (
-                <Button variant="ghost" size="sm" onClick={() => void ask(account)}>
-                  Delete…
-                </Button>
-              ) : (
+              {account.state !== 'active' ? (
                 <span style={{ fontSize: 12, color: 'var(--muted)' }}>Being deleted</span>
-              )}
+              ) : manage ? (
+                <span className="row" style={{ gap: 4, flexWrap: 'wrap', justifyContent: 'end' }}>
+                  {account.kind === 'person' ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      loading={granting === account.id}
+                      aria-label={
+                        account.admin
+                          ? `Stop ${account.email ?? 'this account'} being an admin`
+                          : `Make ${account.email ?? 'this account'} an admin`
+                      }
+                      onClick={() => void setAdmin(account, !account.admin)}
+                    >
+                      {account.admin ? 'Remove admin' : 'Make admin'}
+                    </Button>
+                  ) : null}
+                  <Button variant="ghost" size="sm" onClick={() => void ask(account)}>
+                    Delete…
+                  </Button>
+                </span>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -392,43 +440,46 @@ export function AccountData() {
       <EraseSpace />
       {own?.account.setup_owner ? (
         <>
-          <OtherAccounts />
+          <OtherAccounts manage />
           <Section title="Delete your account" sub={own.blocked_reason ?? ''}>
             {null}
           </Section>
         </>
       ) : own ? (
-        <Section
-          title="Delete your account"
-          sub="Deletes your account, your space and everything in it, and signs you out everywhere."
-        >
-          <Button
-            variant="outline"
-            disabled={Boolean(own.blocked_reason)}
-            onClick={() => setDeleting(true)}
+        <>
+          {own.account.admin ? <OtherAccounts manage={false} /> : null}
+          <Section
+            title="Delete your account"
+            sub="Deletes your account, your space and everything in it, and signs you out everywhere."
           >
-            Delete account…
-          </Button>
-          {own.blocked_reason ? (
-            <span style={{ fontSize: 13, color: 'var(--muted)' }}>{own.blocked_reason}</span>
-          ) : null}
-          {deleting ? (
-            <DeleteAccountDialog
-              open
-              own
-              preview={own}
-              onClose={() => setDeleting(false)}
-              onDelete={async (email) => {
-                const done = await adapter.deleteAccount(email);
-                if (done.data === null)
-                  return done.error ?? done.unavailable ?? 'Couldn’t delete it.';
-                // Signed out with it: back to the start.
-                window.location.assign('/');
-                return null;
-              }}
-            />
-          ) : null}
-        </Section>
+            <Button
+              variant="outline"
+              disabled={Boolean(own.blocked_reason)}
+              onClick={() => setDeleting(true)}
+            >
+              Delete account…
+            </Button>
+            {own.blocked_reason ? (
+              <span style={{ fontSize: 13, color: 'var(--muted)' }}>{own.blocked_reason}</span>
+            ) : null}
+            {deleting ? (
+              <DeleteAccountDialog
+                open
+                own
+                preview={own}
+                onClose={() => setDeleting(false)}
+                onDelete={async (email) => {
+                  const done = await adapter.deleteAccount(email);
+                  if (done.data === null)
+                    return done.error ?? done.unavailable ?? 'Couldn’t delete it.';
+                  // Signed out with it: back to the start.
+                  window.location.assign('/');
+                  return null;
+                }}
+              />
+            ) : null}
+          </Section>
+        </>
       ) : null}
     </div>
   );

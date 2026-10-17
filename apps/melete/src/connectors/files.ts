@@ -44,6 +44,16 @@ import {
   restoreFromTrash,
   type TrashPlace,
 } from './files-trash.ts';
+import {
+  ANY_FILE,
+  filesHold,
+  filesPath,
+  inFilesTurn,
+  mayChange,
+  notTheirs,
+  type SharedFilesRule,
+  sharedFilesRule,
+} from './shared-files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import type { PrivateContext } from './web.ts';
 
@@ -963,6 +973,75 @@ export function createFilesConnector(options: FilesOptions): Connector {
   /** A file in a held directory, which the open does not follow if it is a link. */
   const readOpened = async (directory: HeldDirectory, name: string): Promise<Buffer> =>
     readHandle(await openIn(directory, name, READ_FLAGS));
+  /**
+   * The content hash of an open file, read at its offsets so the handle still
+   * writes from the start; null for one over the read limit.
+   */
+  const hashOf = async (file: FileHandle): Promise<string | null> => {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > limit) return null;
+    const bytes = Buffer.alloc(stat.size);
+    let done = 0;
+    while (done < stat.size) {
+      const { bytesRead } = await file.read(bytes, done, stat.size - done, done);
+      if (!bytesRead) break;
+      done += bytesRead;
+    }
+    return digest(bytes.subarray(0, done));
+  };
+  /**
+   * What this job may change in its space's Files (`shared-files.ts`), read
+   * through `query`. With no database to ask, as in a bare connector, anything.
+   */
+  const sharedRule = (
+    ctx: ConnectorContext,
+    query: Query | Sql | null | undefined,
+  ): Promise<SharedFilesRule> =>
+    query ? sharedFilesRule(query, ctx.job_id, ctx.space_id) : Promise.resolve(ANY_FILE);
+  /** Where a turn in a space's Files is held beyond this process: the database, when there is one. */
+  const hold = filesHold(options.sql);
+  /**
+   * A change that reaches the space's Files runs its check and its change in
+   * one turn there (`inFilesTurn`), on every instance at once, so the file it
+   * checked is the one it changes; one only in the job's workspace runs at
+   * once. The work reads the database through the `query` it is given.
+   */
+  const changing = <T>(
+    inFiles: boolean,
+    ctx: ConnectorContext,
+    work: (query: Query | null) => Promise<T>,
+  ) => (inFiles ? inFilesTurn(ctx.space_id, work, hold) : work(options.sql ?? null));
+  /**
+   * Refuse a save over, or a move of, a file in a shared space's Files that
+   * this job may not change. A name with nothing at it is a new file, or a
+   * move the step itself refuses.
+   */
+  const checkShared = async (
+    ctx: ConnectorContext,
+    query: Query | Sql | null | undefined,
+    kind: 'files.write' | 'files.move',
+    payload: Record<string, JsonValue>,
+  ): Promise<void> => {
+    if (areaFor(payload.area) !== 'artifacts') return;
+    const relative = requiredString(payload, kind === 'files.write' ? 'path' : 'from');
+    const rule = await sharedRule(ctx, query);
+    if (!rule.limited) return;
+    const located = await resolveFile(ctx, 'artifacts', relative);
+    let file: FileHandle;
+    try {
+      file = await openBeneath(located.base, located.segments, READ_FLAGS);
+    } catch (error) {
+      if (missing(error)) return;
+      throw new Error(notTheirs(kind, relative));
+    }
+    let hash: string | null;
+    try {
+      hash = await hashOf(file);
+    } finally {
+      await file.close();
+    }
+    if (!mayChange(rule, relative, hash)) throw new Error(notTheirs(kind, relative));
+  };
   /** One folder's entries, listed through the folder the walk holds open. */
   const listFolder = async (located: Located) => {
     const folder = await holdBeneath(located.base, located.segments);
@@ -1429,6 +1508,23 @@ export function createFilesConnector(options: FilesOptions): Connector {
       owner = given ? 'person' : 'agent';
       reason = given ? `${given}.` : "It is in this conversation's own workspace.";
     } else {
+      // In a shared space, only what this job's person put there and nobody changed since.
+      // Nothing records who made a folder, so a folder is theirs only while
+      // every folder in it, itself included, holds a file of theirs: an empty
+      // one, or one with an empty folder inside, is the owner's to delete.
+      const rule = await sharedRule(ctx, tx ?? options.sql);
+      const holdsFiles = (folder: string) =>
+        target.items.some((item) => folder === '' || item.path.startsWith(`${folder}/`));
+      if (
+        rule.limited &&
+        !(
+          target.items.every((item) =>
+            mayChange(rule, item.path ? `${joined}/${item.path}` : joined, item.hash),
+          ) &&
+          (target.what === 'file' || ['', ...target.folders].every(holdsFiles))
+        )
+      )
+        throw new Error(notTheirs('files.delete', relative, target.what === 'folder'));
       const made =
         target.what === 'file' &&
         target.content_hash !== null &&
@@ -1534,6 +1630,13 @@ export function createFilesConnector(options: FilesOptions): Connector {
         if (!declaration.success)
           throw new BrokerFault('payload_invalid', declaration.error.message);
       }
+      // Refused before anyone is asked; checked again when it runs.
+      if (kind === 'files.write' || kind === 'files.move')
+        try {
+          await checkShared(ctx, tx, kind, given);
+        } catch (error) {
+          throw new BrokerFault('payload_invalid', (error as Error).message);
+        }
       return given;
     },
     async execute(action, ctx) {
@@ -1601,34 +1704,37 @@ export function createFilesConnector(options: FilesOptions): Connector {
             throw new Error(`there is no file or folder ${JSON.stringify(relative)} in ${area}`);
           throw error;
         };
-        const directory = await holdBeneath(located.base, located.segments.slice(0, -1)).catch(
-          absent,
-        );
-        let gone: DeleteTarget;
-        try {
-          gone = await inspectEntry(directory, name).catch(absent);
-        } finally {
-          await directory.close();
-        }
-        // What the person agreed to, or what was found to be Melete's own, is
-        // what goes; anything else there now is asked about again.
-        if (gone.state !== checked.state)
-          throw new Error(
-            `${JSON.stringify(relative)} changed after this delete was decided, so nothing was deleted; ask again to delete it as it is now`,
-          );
-        // Only the entries listed in that check go, each checked again in the
-        // trash; one added since stays, with its folder.
         const top = segmentsFor(relative).join('/');
         const under = (inner: string) => (inner ? `${top}/${inner}` : top);
-        const trashed = await moveToTrash(
-          await trashPlace(area, ctx),
-          gone.items.map((item) => ({ path: under(item.path), hash: item.hash })),
-          {
-            days: trashDays,
-            ...(options.trashMaxBytes ? { maxBytes: options.trashMaxBytes } : {}),
-            folders: gone.what === 'folder' ? [top, ...gone.folders.map(under)] : [],
-          },
-        );
+        const { gone, trashed } = await changing(area === 'artifacts', ctx, async () => {
+          const directory = await holdBeneath(located.base, located.segments.slice(0, -1)).catch(
+            absent,
+          );
+          let gone: DeleteTarget;
+          try {
+            gone = await inspectEntry(directory, name).catch(absent);
+          } finally {
+            await directory.close();
+          }
+          // What the person agreed to, or what was found to be Melete's own, is
+          // what goes; anything else there now is asked about again.
+          if (gone.state !== checked.state)
+            throw new Error(
+              `${JSON.stringify(relative)} changed after this delete was decided, so nothing was deleted; ask again to delete it as it is now`,
+            );
+          // Only the entries listed in that check go, each checked again in the
+          // trash; one added since stays, with its folder.
+          const trashed = await moveToTrash(
+            await trashPlace(area, ctx),
+            gone.items.map((item) => ({ path: under(item.path), hash: item.hash })),
+            {
+              days: trashDays,
+              ...(options.trashMaxBytes ? { maxBytes: options.trashMaxBytes } : {}),
+              folders: gone.what === 'folder' ? [top, ...gone.folders.map(under)] : [],
+            },
+          );
+          return { gone, trashed };
+        });
         hash = trashed.trash_id ?? gone.state;
         detail = {
           path: relative,
@@ -1679,63 +1785,82 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const source = await resolveFile(ctx, area, from);
         if (area === 'work') await notLeftOnComputer(ctx, source);
         const target = await resolveFile(ctx, toArea, to);
-        // Both directories are walked and held from here to the move, so
-        // neither can be swapped for a link anywhere else meanwhile.
-        const fromDirectory = await holdBeneath(source.base, source.segments.slice(0, -1)).catch(
-          (error: unknown) => {
-            throw notInWorkspace(error, area, from);
-          },
-        );
-        try {
-          const toDirectory = await holdBeneath(target.base, target.segments.slice(0, -1), true);
-          try {
-            const sourceName = path.basename(source.target);
-            const targetName = path.basename(target.target);
-            const sourceAt = fromDirectory.at(sourceName);
-            const targetAt = toDirectory.at(targetName);
-            const content = await readOpened(fromDirectory, sourceName).catch((error: unknown) => {
+        // The file checked is the file moved: in or out of the space's Files,
+        // nothing else saves over or replaces it from the check to the move.
+        hash = await changing(
+          area === 'artifacts' || toArea === 'artifacts',
+          ctx,
+          async (query) => {
+            // Out of a shared space's Files, only a file this job's person put there, as they left it.
+            const rule = area === 'artifacts' ? await sharedRule(ctx, query) : ANY_FILE;
+            // Both directories are walked and held from here to the move, so
+            // neither can be swapped for a link anywhere else meanwhile.
+            const fromDirectory = await holdBeneath(
+              source.base,
+              source.segments.slice(0, -1),
+            ).catch((error: unknown) => {
               throw notInWorkspace(error, area, from);
             });
-            hash = digest(content);
-            if (payload.content_hash !== undefined && payload.content_hash !== hash) {
-              // Nothing was moved. The file on disk is not the content this action
-              // recorded, which is a question for a person, not a retry.
-              throw new ConnectorFaultError({
-                kind: 'bad_output',
-                detail: 'the file to move is not the content the action recorded',
-              });
+            try {
+              const toDirectory = await holdBeneath(
+                target.base,
+                target.segments.slice(0, -1),
+                true,
+              );
+              try {
+                const sourceName = path.basename(source.target);
+                const targetName = path.basename(target.target);
+                const sourceAt = fromDirectory.at(sourceName);
+                const targetAt = toDirectory.at(targetName);
+                const content = await readOpened(fromDirectory, sourceName).catch(
+                  (error: unknown) => {
+                    throw notInWorkspace(error, area, from);
+                  },
+                );
+                const moved = digest(content);
+                if (!mayChange(rule, from, moved)) throw new Error(notTheirs('files.move', from));
+                if (payload.content_hash !== undefined && payload.content_hash !== moved) {
+                  // Nothing was moved. The file on disk is not the content this action
+                  // recorded, which is a question for a person, not a retry.
+                  throw new ConnectorFaultError({
+                    kind: 'bad_output',
+                    detail: 'the file to move is not the content the action recorded',
+                  });
+                }
+                if (area === 'work' && toArea === 'artifacts') {
+                  // Into the person's Files, the bytes checked here go into a new
+                  // file, never the workspace's own: a second name for it, or a
+                  // handle a command still holds open, would let the agent's
+                  // computer change the person's file after they agreed to it.
+                  await createWith(targetAt, target.target, content);
+                  await unlink(sourceAt).catch(async (error: unknown) => {
+                    if (missing(error)) return;
+                    await unlink(targetAt).catch(() => {});
+                    throw error;
+                  });
+                } else {
+                  await moveWithoutReplacing(sourceAt, targetAt);
+                  // Out of the person's Files, the file is the agent's again: one
+                  // the service kept to itself (0600) is made readable to the
+                  // agent's computer, as a synchronised file would be.
+                  if (area === 'artifacts' && toArea === 'work')
+                    await readableToAgent(toDirectory, targetName);
+                }
+                // Done only when the file is at its new place with the bytes that were moved.
+                if (digest(await readOpened(toDirectory, targetName)) !== moved)
+                  throw new ConnectorFaultError({
+                    kind: 'bad_output',
+                    detail: 'the file at the new place does not match the file that was moved',
+                  });
+                return moved;
+              } finally {
+                await toDirectory.close();
+              }
+            } finally {
+              await fromDirectory.close();
             }
-            if (area === 'work' && toArea === 'artifacts') {
-              // Into the person's Files, the bytes checked here go into a new
-              // file, never the workspace's own: a second name for it, or a
-              // handle a command still holds open, would let the agent's
-              // computer change the person's file after they agreed to it.
-              await createWith(targetAt, target.target, content);
-              await unlink(sourceAt).catch(async (error: unknown) => {
-                if (missing(error)) return;
-                await unlink(targetAt).catch(() => {});
-                throw error;
-              });
-            } else {
-              await moveWithoutReplacing(sourceAt, targetAt);
-              // Out of the person's Files, the file is the agent's again: one
-              // the service kept to itself (0600) is made readable to the
-              // agent's computer, as a synchronised file would be.
-              if (area === 'artifacts' && toArea === 'work')
-                await readableToAgent(toDirectory, targetName);
-            }
-            // Done only when the file is at its new place with the bytes that were moved.
-            if (digest(await readOpened(toDirectory, targetName)) !== hash)
-              throw new ConnectorFaultError({
-                kind: 'bad_output',
-                detail: 'the file at the new place does not match the file that was moved',
-              });
-          } finally {
-            await toDirectory.close();
-          }
-        } finally {
-          await fromDirectory.close();
-        }
+          },
+        );
         detail = { from, to, area, to_area: toArea, content_hash: hash };
         if (area === 'work' && toArea === 'artifacts')
           detail = { ...detail, ...(await removeFromComputer(action, ctx, source, target, hash)) };
@@ -1819,52 +1944,89 @@ export function createFilesConnector(options: FilesOptions): Connector {
           // was unused (`staysInSpace`, `only_new`) must still create it: one
           // that appeared since is theirs, and is not replaced unasked. An
           // approval or a standing permission to save files covers replacing.
-          const onlyNew = area === 'artifacts' && ctx.only_new === true;
-          let madeNow = false;
-          const directory = await holdBeneath(base, segments.slice(0, -1), true);
-          try {
-            const name = path.basename(target);
-            const at = directory.at(name);
-            const file = await open(
-              at,
-              constants.O_WRONLY |
-                constants.O_CREAT |
-                constants.O_NOFOLLOW |
-                constants.O_NONBLOCK |
-                (onlyNew ? constants.O_EXCL : 0),
-              0o600,
-            ).catch(async (error: unknown) => {
-              if (!onlyNew || codeOf(error) !== 'EEXIST') throw error;
-              // A retry of this same write finds its own bytes there and is done.
-              const there = await readOpened(directory, name).catch(() => null);
-              if (there && digest(there) === hash) return null;
-              throw new Error(
-                "the person's Files already have a file with that name; saving over it needs the person to approve",
-              );
-            });
-            madeNow = file !== null && onlyNew;
-            if (file)
-              try {
-                await openedAt(file, target);
-                await file.truncate(0);
-                await file.writeFile(content, 'utf8');
-                await file.sync();
-              } finally {
-                await file.close();
-              }
-          } finally {
-            await directory.close();
-          }
-          // A file existing is not a delivery. Read back what was written and
-          // compare it, so a short write or a racing writer is a bad output
-          // rather than a receipt for content nobody has.
-          const written = digest(await read(located as Located));
-          if (written !== hash) {
-            throw new ConnectorFaultError({
-              kind: 'bad_output',
-              detail: 'the file on disk does not match the content that was written',
-            });
-          }
+          // In a shared space, a job of someone other than its owner makes a
+          // new file, or saves over one its person's work put there, while it
+          // is still as they left it (shared-files.ts). What it checks there is
+          // what it writes over: the check, the write and the read-back are one
+          // turn in the space's Files.
+          const { madeNow, replaced } = await changing(area === 'artifacts', ctx, async (query) => {
+            const rule = area === 'artifacts' ? await sharedRule(ctx, query) : ANY_FILE;
+            const theirs = rule.limited ? rule.theirs.get(filesPath(relative) ?? '') : undefined;
+            let onlyNew =
+              area === 'artifacts' && (ctx.only_new === true || (rule.limited && !theirs));
+            let madeNow = false;
+            let replaced: string | null = null;
+            const directory = await holdBeneath(base, segments.slice(0, -1), true);
+            try {
+              const name = path.basename(target);
+              const at = directory.at(name);
+              const create = (exclusive: boolean) =>
+                open(
+                  at,
+                  constants.O_WRONLY |
+                    constants.O_CREAT |
+                    constants.O_NOFOLLOW |
+                    constants.O_NONBLOCK |
+                    (exclusive ? constants.O_EXCL : 0),
+                  0o600,
+                ).catch(async (error: unknown) => {
+                  if (!exclusive || codeOf(error) !== 'EEXIST') throw error;
+                  // A retry of this same write finds its own bytes there and is done.
+                  const there = await readOpened(directory, name).catch(() => null);
+                  if (there && digest(there) === hash) return null;
+                  throw new Error(
+                    rule.limited
+                      ? notTheirs('files.write', relative)
+                      : "the person's Files already have a file with that name; saving over it needs the person to approve",
+                  );
+                });
+              let file: FileHandle | null;
+              if (theirs) {
+                // Their own file is opened as it is, never made: one gone since is made new.
+                file = await open(
+                  at,
+                  constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+                ).catch((error: unknown) => {
+                  if (missing(error)) return null;
+                  throw error;
+                });
+                if (!file) {
+                  onlyNew = true;
+                  file = await create(true);
+                }
+              } else file = await create(onlyNew);
+              madeNow = file !== null && onlyNew;
+              if (file)
+                try {
+                  await openedAt(file, target);
+                  if (theirs && !onlyNew) {
+                    const now = await hashOf(file);
+                    if (!now || !theirs.has(now))
+                      throw new Error(notTheirs('files.write', relative));
+                    // What it replaced, which keeps the file theirs (shared-files.ts).
+                    replaced = now;
+                  }
+                  await file.truncate(0);
+                  await file.writeFile(content, 'utf8');
+                  await file.sync();
+                } finally {
+                  await file.close();
+                }
+            } finally {
+              await directory.close();
+            }
+            // A file existing is not a delivery. Read back what was written and
+            // compare it, so a short write or a racing writer is a bad output
+            // rather than a receipt for content nobody has.
+            const written = digest(await read(located as Located));
+            if (written !== hash) {
+              throw new ConnectorFaultError({
+                kind: 'bad_output',
+                detail: 'the file on disk does not match the content that was written',
+              });
+            }
+            return { madeNow, replaced };
+          });
           detail = {
             path: relative,
             area,
@@ -1872,6 +2034,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
             bytes: Buffer.byteLength(content),
             // Made new in the person's Files: Melete's own until it changes (files-ownership.ts).
             ...(madeNow ? { created: true } : {}),
+            ...(replaced ? { replaced } : {}),
           };
           // A declared write is an artifact, and an artifact is checked here,
           // by trusted service code over the bytes that were actually written,

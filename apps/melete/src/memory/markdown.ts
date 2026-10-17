@@ -20,6 +20,7 @@ import {
 } from '@melete/contracts';
 import {
   discardProposal,
+  discardProposalsFor,
   eraseFromHistory,
   listProposals,
   type MediationContext,
@@ -497,6 +498,8 @@ export class MarkdownViews {
         index.close();
       }
     }
+    // Any write staged for a forgotten view holds its text: it goes too.
+    discardProposalsFor(paths, { ids: claimIds, paths: claimIds.map(pathFor) });
     await this.removeProposalFiles(spaceId);
   }
 }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,8 @@ import {
   type MachineAccess,
   parseDockerInfo,
 } from '../../apps/melete/src/runtime/docker-host.ts';
+import { expandHome } from '../../packages/cli/src/commands/backup.ts';
+import { defaultBackupDir } from '../../packages/cli/src/deploy-config.ts';
 import {
   type CommandRunner,
   installationDependencies,
@@ -52,7 +55,7 @@ describe('the upgrade plan', () => {
     const dump = indexOf(rendered, 'pg_dump');
     const verifyDump = indexOf(rendered, 'pg_restore --list');
     const env = indexOf(rendered, 'cp -p deploy/.env');
-    const data = indexOf(rendered, 'cp -a melete:/data -');
+    const data = indexOf(rendered, '--entrypoint tar melete');
     const work = indexOf(rendered, 'cp -a melete:/work -');
     const journal = indexOf(rendered, 'cp -a melete:/data/restrictions -');
     const checkout = indexOf(rendered, 'checkout --detach refs/tags/v0.2.0');
@@ -71,7 +74,7 @@ describe('the upgrade plan', () => {
     const journal = plan[indexOf(rendered, 'melete:/data/restrictions -')];
     expect(journal?.stdoutFile).toBe('/srv/backups/melete-upgrade-v0.2.0/restrictions.tar');
     expect(rendered).toContain(
-      'docker compose -f deploy/docker-compose.yml cp -a melete:/data - > /srv/backups/melete-upgrade-v0.2.0/data.tar',
+      "docker compose -f deploy/docker-compose.yml run --rm --no-deps -T --user 0:0 --entrypoint tar melete -C / --numeric-owner --anchored --no-wildcards-match-slash '--exclude=data/spaces/*/.index' '--exclude=data/spaces/*/.proposed' -cf - data > /srv/backups/melete-upgrade-v0.2.0/data.tar",
     );
     expect(indexOf(rendered, 'chmod 600')).toBeLessThan(indexOf(rendered, 'checkout --detach'));
     expect(indexOf(rendered, 'sha256sum')).toBeLessThan(indexOf(rendered, 'checkout --detach'));
@@ -102,6 +105,18 @@ describe('the upgrade plan', () => {
     expect(migrations).toBeGreaterThan(up);
     expect(rendered[migrations]).toContain('select count(*) from drizzle.__drizzle_migrations');
     expect(migrations).toBe(plan.length - 1);
+  });
+
+  test("the data archive leaves out each space's search index and staged writes", () => {
+    const data = plan.find((step) => step.stdoutFile?.endsWith('/data.tar'));
+    expect(data?.command).toEqual(
+      expect.arrayContaining([
+        '--anchored',
+        '--no-wildcards-match-slash',
+        '--exclude=data/spaces/*/.index',
+        '--exclude=data/spaces/*/.proposed',
+      ]),
+    );
   });
 
   test('never removes a volume, prunes, or restores over a live schema', () => {
@@ -249,6 +264,7 @@ describe('arguments', () => {
       waitTimeoutSeconds: 300,
       repositoryRoot: '/srv/melete',
       backupDir: '/home/owner/melete-backups/upgrade-v0.2.0-20300102T030405Z',
+      backupDirByProject: true,
     });
     expect(
       parseArguments(
@@ -265,6 +281,9 @@ describe('arguments', () => {
       waitTimeoutSeconds: 600,
       backupDir: '/mnt/b/upgrade-v1.2.3-rc.1-20300102T030405Z',
     });
+    expect(
+      parseArguments(['v0.2.0', '--backup-dir', '/mnt/b'], now, '/h', '/r').backupDirByProject,
+    ).toBeUndefined();
   });
 
   test('each overlay the installation runs with is named on its own', () => {
@@ -348,6 +367,18 @@ describe('the installation a copy of the script acts on', () => {
       'Usage',
     );
     expect(() => parseArguments(['v0.2.0', '--repository'], now, '/h', '/r')).toThrow('Usage');
+  });
+
+  test('one that does not exist is named, with an exit code of its own', () => {
+    const missing = join(tmpdir(), 'melete-no-such-installation');
+    const result = spawnSync(
+      process.execPath,
+      [join(import.meta.dir, 'upgrade.ts'), 'v0.2.0', '--dry-run', '--repository', missing],
+      { encoding: 'utf8', timeout: 60_000 },
+    );
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain(`repository not found: ${missing}`);
+    expect(result.stderr).not.toContain('Usage');
   });
 
   test('one that is not the top of a git checkout is refused by name', () => {
@@ -569,6 +600,45 @@ describe('running the upgrade with an injected command runner', () => {
     const plain: string[] = [];
     await runUpgrade({ ...options, dryRun: true }, dependencies(host().run, plain));
     expect(plain.join('\n')).not.toContain('This copy was taken from');
+  });
+
+  test("with no --backup-dir the backup goes in the project's own folder, the one melete backup uses", async () => {
+    const now = new Date('2030-01-02T03:04:05Z');
+    const parsed = parseArguments(['v0.2.0', '--dry-run'], now, '/home/owner', '/srv/melete');
+    for (const project of ['melete', 'assistant']) {
+      const { run, commands } = host();
+      const output: string[] = [];
+      const result = await runUpgrade(parsed, {
+        ...dependencies(run, output),
+        environment: async () => ({ COMPOSE_PROJECT_NAME: project }),
+      });
+      const folder = expandHome(defaultBackupDir(project), '/home/owner').replaceAll('\\', '/');
+      expect(result.context.backupDir).toBe(`${folder}/upgrade-v0.2.0-20300102T030405Z`);
+      expect(commands).toContain(`df -Pk ${folder}`);
+      expect(output).toContain(`Backup directory: ${folder}/upgrade-v0.2.0-20300102T030405Z`);
+    }
+    // A folder that is named stays where it was named, whatever the project.
+    const named = parseArguments(
+      ['v0.2.0', '--dry-run', '--backup-dir', '/mnt/b'],
+      now,
+      '/h',
+      '/r',
+    );
+    const result = await runUpgrade(named, {
+      ...dependencies(host().run, []),
+      environment: async () => ({ COMPOSE_PROJECT_NAME: 'assistant' }),
+    });
+    expect(result.context.backupDir).toBe('/mnt/b/upgrade-v0.2.0-20300102T030405Z');
+  });
+
+  test('a backup folder that does not exist yet is named, with the command that makes it', async () => {
+    const { run } = host({ 'df -Pk /srv/backups': { code: 1, stdout: '' } });
+    const output: string[] = [];
+    const result = await runUpgrade({ ...options, dryRun: true }, dependencies(run, output));
+    expect(result.status).toBe('refused');
+    expect(output.join('\n')).toContain(
+      'its parent, /srv/backups, must exist (mkdir -p -m 700 /srv/backups)',
+    );
   });
 
   test('a dry run still prints the plan when the preflight finds problems', async () => {

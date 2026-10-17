@@ -54,6 +54,22 @@ group('the settings set-env writes', () => {
     );
   });
 
+  test('MELETE_NETWORK_POOL is refused with the service rule, and what it takes is written', () => {
+    for (const bad of ['10.214.0.0/25', '127.0.0.0/16', '10.214.0.1/16', 'none', 'fd00::/48']) {
+      expect(() => requestedSettings([`MELETE_NETWORK_POOL=${bad}`], {})).toThrow(
+        `MELETE_NETWORK_POOL is "${bad}"`,
+      );
+      expect(() =>
+        requestedSettings(['--from-env', 'MELETE_NETWORK_POOL'], { MELETE_NETWORK_POOL: bad }),
+      ).toThrow('nothing was changed');
+    }
+    for (const good of ['10.214.0.0/16', '10.0.0.0/8', '10.214.0.0/24', 'off', 'OFF', ''])
+      expect(requestedSettings([`MELETE_NETWORK_POOL=${good}`], {})).toEqual([
+        { name: 'MELETE_NETWORK_POOL', value: good, secret: false },
+      ]);
+    expect(requestedSettings(['--clear', 'MELETE_NETWORK_POOL'], {})[0]?.value).toBe('');
+  });
+
   test('a secret is described by name only', () => {
     expect(describe({ name: 'ELEVENLABS_API_KEY', value: 'el-1', secret: true })).toBe(
       'Set ELEVENLABS_API_KEY.',

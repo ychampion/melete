@@ -12,6 +12,9 @@ work/
 .omx/
 .agents/*.log
 deploy/config/gateway-tls/
+# An installation's own files: its deploy contract, and the melete command's lock and history.
+deploy/melete.deploy.json
+deploy/.melete/
 .hermes-src/
 .hermes-venv/
 __pycache__/

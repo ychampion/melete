@@ -3,6 +3,7 @@ import {
   type ActionReview,
   APPROVAL_OUTDATED_NOTE,
   PERMISSION_FILE_PREVIEW_CHARS,
+  trailStep,
 } from '@melete/contracts';
 import { estimateTokens } from '@melete/skills';
 import { browserManifest } from '../connectors/browser.ts';
@@ -12,6 +13,7 @@ import { AGENT_TEMPLATES, agentIdentity } from './agents.ts';
 import { forLine } from './permissions.ts';
 import {
   type ActionRow,
+  actionLabel,
   answerText,
   BACKEND_VOCABULARY,
   calendarReasons,
@@ -23,6 +25,7 @@ import {
   projectPermission,
   projectPermissionDecision,
   projectQuestionDecision,
+  projectReceipt,
   STOPPED_NOTE,
   SUPERSEDED_NOTE,
   safeUrl,
@@ -985,4 +988,58 @@ test('a browser step’s own captures are not cards under the answer; files made
     'reports/browser/art_01M4GN2WMH5D4EM5701D8NJ7B4.png',
   ])
     expect(meantForPerson({ path })).toBe(true);
+});
+
+test('a change made through an installed server names the tool and what it acted on', () => {
+  const github = { id: 'gh', label: 'GitHub', provider: 'mcp' };
+  const write = (canonicalPayload: Record<string, unknown>): ActionRow => ({
+    ...base,
+    id: 'mcp-write',
+    connectionId: github.id,
+    kind: 'mcp_srv01.create_issue',
+    effectClass: 'write_external',
+    canonicalPayload,
+    receipt: { detail: { tool: 'create_issue', result: { content: [] } } },
+  });
+
+  const receipt = projectReceipt(
+    write({ title: 'Fix the login page', body: 'Steps to reproduce: the long story' }),
+    github,
+  );
+  expect(receipt?.what).toBe('Ran create issue on “Fix the login page”');
+  // The body of the request is never part of the line.
+  expect(receipt?.what).not.toContain('Steps to reproduce');
+  expect(actionLabel(write({ title: 'Fix the login page' }), github)).toBe(
+    'Ran create issue in GitHub on “Fix the login page”',
+  );
+
+  // A link is named by its host; a key-shaped value is passed over; nothing safe leaves the tool alone.
+  expect(actionLabel(write({ url: 'https://docs.example.test/a/b?token=abc' }))).toBe(
+    'Ran create issue on “docs.example.test”',
+  );
+  expect(actionLabel(write({ name: 'sk-abcdefghijklmnopqrstuvwxyz0123' }))).toBe(
+    'Ran create issue',
+  );
+  expect(actionLabel(write({ text: 'only a body' }))).toBe('Ran create issue');
+  expect(actionLabel(write({ title: 'x'.repeat(300) })).length).toBeLessThan(120);
+});
+
+test('a run of changes through an installed server keeps the grouped trail line short', () => {
+  const linear = { id: 'lin', label: 'Linear', provider: 'mcp' };
+  const rows = Array.from({ length: 60 }, (_, index) => ({
+    action: {
+      ...base,
+      id: `issue-${index}`,
+      connectionId: linear.id,
+      kind: 'mcp_srv01.create_issue',
+      effectClass: 'write_external',
+      canonicalPayload: { title: `Follow up on the onboarding feedback, item ${index}` },
+      receipt: { detail: { tool: 'create_issue' } },
+    },
+    connection: linear,
+  }));
+  const group = projectActionGroup(rows);
+  // Each issue's title is on its own receipt; the trail names the step once.
+  expect(group?.label).toBe('Ran create issue in Linear');
+  expect(trailStep.safeParse(group).success).toBe(true);
 });

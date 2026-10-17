@@ -12,6 +12,37 @@ export async function rejectionOf(operation: Promise<unknown>): Promise<unknown>
   throw new Error('Expected the operation to reject');
 }
 
+/**
+ * Make one method of `target` fail the first time it is called for one of
+ * `ids`, as a broken row would, and pass every other call through. `idOf`
+ * names the row a call is for. `restore` puts the method back.
+ */
+export function failOnceFor(
+  target: object,
+  method: string,
+  idOf: (args: unknown[]) => unknown,
+  ids: readonly string[],
+): { failed: () => string | null; restore: () => void } {
+  const holder = target as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const original = holder[method];
+  if (typeof original !== 'function') throw new Error(`${method} is not a method`);
+  let failed: string | null = null;
+  holder[method] = function (this: unknown, ...args: unknown[]) {
+    const id = String(idOf(args));
+    if (failed === null && ids.includes(id)) {
+      failed = id;
+      return Promise.reject(new Error(`${method} failed for ${id}`));
+    }
+    return original.apply(this, args);
+  };
+  return {
+    failed: () => failed,
+    restore: () => {
+      delete holder[method];
+    },
+  };
+}
+
 export const defaultBudget: JobBudget = {
   max_actions: 20,
   max_attempts: 3,

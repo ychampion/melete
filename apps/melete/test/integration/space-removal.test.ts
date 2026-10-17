@@ -100,6 +100,7 @@ type Overrides = {
   stopJobs?: (jobIds: readonly string[]) => Promise<void>;
   /** Null runs the removal with no blob store at all. */
   blobs?: BlobStore | null;
+  withdrawAccess?: (spaceId: string) => Promise<void>;
 };
 
 /** One blob store for every removal here, as an installation has. */
@@ -123,6 +124,7 @@ async function service(overrides: Overrides = {}) {
     ...(overrides.runtimeHomes ? { runtimeHomes: overrides.runtimeHomes } : {}),
     ...(overrides.onPhase ? { onPhase: overrides.onPhase } : {}),
     ...(overrides.connectors ? { connectors: overrides.connectors } : {}),
+    ...(overrides.withdrawAccess ? { withdrawAccess: overrides.withdrawAccess } : {}),
     ...(overrides.blobs === null ? {} : { blobs: overrides.blobs ?? blobs }),
   });
 }
@@ -402,6 +404,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   room_policy: 'operational',
   room_message: 'operational',
   room_thread: 'operational',
+  space_policy: 'operational',
   // After the jobs and actions that `restrict` them.
   agent: 'principals',
   connection: 'principals',
@@ -605,6 +608,27 @@ describe.if(handle !== null)('removing a space', () => {
     expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
     expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(0);
     expect(await countOf(sql, 'space_membership', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+  });
+
+  test('removal_withdraws_provider_access_first — while the sealed tokens are still there, and a failure there stops nothing', async () => {
+    const seeded = await seed('shared');
+    const seen: Array<{ spaceId: string; connections: number; secrets: number }> = [];
+    const { finished } = await removeCompletely(seeded, {
+      withdrawAccess: async (spaceId) => {
+        seen.push({
+          spaceId,
+          connections: await countOf(sql, 'connection', sql`space_id = ${spaceId}`),
+          secrets: await countOf(sql, 'secret', sql`space_id = ${spaceId}`),
+        });
+        throw new Error('the provider did not answer');
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.spaceId).toBe(seeded.spaceId);
+    expect(seen[0]?.connections).toBeGreaterThan(0);
+    expect(seen[0]?.secrets).toBeGreaterThan(0);
+    expect(outcome(finished)).toBe('complete');
+    expect(await countOf(sql, 'secret', sql`space_id = ${seeded.spaceId}`)).toBe(0);
   });
 
   test('removal_deletes_survivor_rows — the four that outlive a job go, content and all', async () => {

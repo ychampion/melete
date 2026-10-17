@@ -35,7 +35,7 @@ import {
   signInSubmitHeld,
   unmarkSignInFields,
 } from './sign-in-page.ts';
-import { isSensitiveControl, type VisibleSchema } from './visible.ts';
+import { attributeWords, isSensitiveControl, type VisibleSchema } from './visible.ts';
 
 // These declarations describe only code evaluated inside Chromium. They do not add DOM globals
 // to the Bun service's type environment (whose streams include Bun-specific methods).
@@ -43,7 +43,13 @@ type BrowserElement = {
   tagName: string;
   type: string;
   name: string;
+  id: string;
   value: string;
+  /** A slider's ends and step, as the page wrote them; empty when it wrote none. */
+  min: string;
+  max: string;
+  step: string;
+  isContentEditable: boolean;
   disabled: boolean;
   readOnly: boolean;
   checked: boolean;
@@ -64,6 +70,8 @@ type BrowserElement = {
   checkVisibility?(): boolean;
   /** An open shadow root; a closed one is null, as for any page script. */
   shadowRoot: BrowserRoot | null;
+  /** The document, or the shadow root the element sits in; only a shadow root has a host. */
+  getRootNode(): { host?: BrowserElement };
   focus(): void;
   select(): void;
   dispatchEvent(event: Event): boolean;
@@ -84,6 +92,8 @@ declare const document: BrowserRoot & {
   querySelector(selector: string): BrowserElement | null;
 };
 declare const location: { href: string };
+/** Where an input field keeps the value setter the page itself reads. */
+declare const HTMLInputElement: { prototype: object };
 declare function getComputedStyle(element: BrowserElement): {
   visibility: string;
   display: string;
@@ -280,8 +290,8 @@ export const CHALLENGE_DRAW_MS = 4_000;
  * field, as on a sign-in or sign-up form; else 'guarded'. Runs in the page.
  */
 function secretFieldState(): 'none' | 'passwords' | 'guarded' {
-  const secret = /password|one-time-code|webauthn|cc-number|cc-csc/i;
-  const other = /one-time-code|webauthn|cc-number|cc-csc/i;
+  const secret = /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i;
+  const other = /one-time-code|webauthn|cc-number|cc-csc|cc-exp/i;
   let state: 'none' | 'passwords' | 'guarded' = 'none';
   const look = (root: BrowserRoot) => {
     for (const element of Array.from(root.querySelectorAll('input, textarea, select')))
@@ -319,8 +329,20 @@ const LISTED_ROLES: Record<string, number> = {
   checkbox: 0,
   radio: 0,
   spinbutton: 0,
+  slider: 0,
   button: 1,
   link: 2,
+};
+/**
+ * The accessibility tree's own roles for a time, date or colour field, listed as the field a
+ * value is filled into. Chromium names the field by its label, and its parts (hours, minutes,
+ * a picker button) separately inside it; the parts are left out of a look.
+ */
+const VALUE_FIELD_ROLES: Record<string, string> = {
+  InputTime: 'textbox',
+  Date: 'textbox',
+  DateTime: 'textbox',
+  ColorWell: 'textbox',
 };
 /** The most controls one look lists; the rest are counted and said to be there. */
 export const MAX_LISTED_CONTROLS = 128;
@@ -350,14 +372,14 @@ function controlLooks(...elements: BrowserElement[]) {
         box.height > 0,
       secret:
         element.getAttribute('type') === 'password' ||
-        /password|one-time-code|webauthn|cc-number|cc-csc/i.test(
+        /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
           element.getAttribute('autocomplete') ?? '',
         ),
       // A password field with nothing in it yet, as a sign-in or sign-up form shows one.
       emptyPassword:
         element.tagName === 'INPUT' &&
         element.getAttribute('type') === 'password' &&
-        !/one-time-code|webauthn|cc-number|cc-csc/i.test(
+        !/one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
           element.getAttribute('autocomplete') ?? '',
         ) &&
         element.value === '',
@@ -371,6 +393,12 @@ function controlLooks(...elements: BrowserElement[]) {
             Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'method')?.get?.call(form),
           )
         ).toLowerCase() === 'post',
+      // A part the browser draws inside a field, such as a time field's hours or its picker
+      // button: the field itself is what is filled.
+      inner: (() => {
+        const host = element.getRootNode().host;
+        return host !== undefined && ['INPUT', 'TEXTAREA', 'SELECT'].includes(host.tagName);
+      })(),
     };
   });
 }
@@ -588,7 +616,8 @@ export class BrowserController {
     const { nodes } = await cdp.send('Accessibility.getFullAXTree');
     const found: Candidate[] = [];
     for (const node of nodes) {
-      const role = String(node.role?.value ?? '');
+      const raw = String(node.role?.value ?? '');
+      const role = VALUE_FIELD_ROLES[raw] ?? raw;
       if (node.ignored || LISTED_ROLES[role] === undefined) continue;
       found.push({
         label: String(node.name?.value ?? ''),
@@ -668,7 +697,7 @@ export class BrowserController {
       const looks = await this.looks(cdp, batch);
       batch.forEach(({ label, role, required }, index) => {
         const look = looks[index];
-        if (!look?.visible) return;
+        if (!look?.visible || look.inner) return;
         const sensitive =
           look.secret || isSensitiveControl({ label, role, sensitive: false, required: false });
         if (sensitive && !look.emptyPassword) guarded = true;
@@ -735,7 +764,7 @@ export class BrowserController {
       const sensitive = controls.some(
         (field) =>
           field.type === 'password' ||
-          /password|one-time-code|webauthn|cc-number|cc-csc/i.test(field.autocomplete) ||
+          /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(field.autocomplete) ||
           /password|passcode|otp|verification.code|security.code|authenticator/i.test(
             `${field.name} ${field.getAttribute('aria-label') ?? ''}`,
           ),
@@ -1508,51 +1537,139 @@ export class BrowserController {
           await this.navigate(command, link);
         } else if (action.kind === 'fill') {
           const handle = await this.unique(page.getByLabel(action.label, { exact: true }));
-          const safe = await handle.evaluate(
-            (element) =>
-              ((element.tagName === 'INPUT' &&
-                ['text', 'email', 'search', 'tel', 'url'].includes(element.type)) ||
-                element.tagName === 'TEXTAREA') &&
-              !element.readOnly &&
-              !element.disabled &&
-              !/password|one-time-code|webauthn|cc-number|cc-csc/i.test(element.autocomplete),
-          );
+          // What the field is: typed into, given a value (a time, a date, a number), not
+          // something fill changes, or where a secret goes, which stays the person's. Its name
+          // and id are read too, since a code field is often known by them alone.
+          const { kind, names } = await handle.evaluate((element) => {
+            const names = [element.getAttribute('name') ?? '', element.id];
+            const is = (kind: string) => ({ kind, names });
+            if (
+              /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(element.autocomplete)
+            )
+              return is('secret');
+            if (element.tagName === 'TEXTAREA')
+              return is(element.readOnly || element.disabled ? 'fixed' : 'typed');
+            if (element.tagName === 'SELECT') return is('dropdown');
+            if (element.tagName !== 'INPUT')
+              return is(element.isContentEditable ? 'editable' : 'other');
+            if (element.type === 'password') return is('secret');
+            if (element.readOnly || element.disabled) return is('fixed');
+            if (['text', 'email', 'search', 'tel', 'url'].includes(element.type))
+              return is('typed');
+            if (
+              [
+                'time',
+                'date',
+                'datetime-local',
+                'month',
+                'week',
+                'number',
+                'range',
+                'color',
+              ].includes(element.type)
+            )
+              return is('valued');
+            return is('other');
+          });
           if (
-            !safe ||
-            isSensitiveControl({
-              label: action.label,
-              role: 'textbox',
-              sensitive: false,
-              required: false,
-            })
+            kind === 'secret' ||
+            [action.label, ...names.filter(Boolean).map(attributeWords)].some((label) =>
+              isSensitiveControl({ label, role: 'textbox', sensitive: false, required: false }),
+            )
           )
             throw new BrowserFault('sensitive_input_require_takeover');
-          await this.network.run('reversible', async () => {
-            await this.input(command, () =>
-              handle.evaluate((element) => {
-                element.focus();
-                element.select();
-              }),
+          if (kind === 'fixed')
+            throw new BrowserFault('not_fillable: that field is read-only or disabled.');
+          if (kind === 'dropdown')
+            throw new BrowserFault(
+              'not_fillable: that field is a dropdown; choose one of its options with select.',
             );
-            if (action.value)
-              await this.input(command, () => cdp.send('Input.insertText', { text: action.value }));
-            else {
+          if (kind === 'editable')
+            throw new BrowserFault(
+              'not_fillable: that is an editable area of the page (contenteditable), not a form field; fill types only into text fields, text areas and fields that take a time, date, number or colour.',
+            );
+          if (kind === 'other')
+            throw new BrowserFault(
+              'not_fillable: that control takes no typed value; a checkbox, radio button or button is clicked, and a file is never chosen by the agent.',
+            );
+          if (kind === 'valued') {
+            // A time, date or number field is drawn in parts that typing does not fill in
+            // reliably, so its value is set the way the page itself would read it, then read
+            // back: the browser empties a value of the wrong form, such as "7:30 pm" in a time
+            // field, and the field is then put back as it was.
+            const taken = await this.network.run('reversible', () =>
+              this.input(command, () =>
+                handle.evaluate((element, value) => {
+                  const input = element;
+                  const before = input.value;
+                  const setter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    'value',
+                  )?.set;
+                  setter?.call(input, value);
+                  // A colour field turns a value it cannot read into black rather than empty,
+                  // and a slider moves a value past its ends or between its steps to the
+                  // nearest one it allows, so both are compared with what was asked for.
+                  const accepted =
+                    value === '' ||
+                    (input.value !== '' &&
+                      (input.type === 'color'
+                        ? input.value === value.toLowerCase()
+                        : input.type !== 'range' ||
+                          (value.trim() !== '' && Number(input.value) === Number(value))));
+                  if (!accepted) setter?.call(input, before);
+                  else {
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                  if (accepted) return null;
+                  return {
+                    type: input.type,
+                    range:
+                      input.type === 'range'
+                        ? [input.min || '0', input.max || '100', input.step || '1']
+                        : null,
+                  };
+                }, action.value),
+              ),
+            );
+            if (taken?.range)
+              throw new BrowserFault(
+                `value_not_accepted: that slider does not take "${action.value}"; it takes a number from ${taken.range[0]} to ${taken.range[1]} in steps of ${taken.range[2]}, and was left as it was.`,
+              );
+            if (taken)
+              throw new BrowserFault(
+                `value_not_accepted: that ${taken.type} field does not take "${action.value}"; give it in the form the field uses, such as 19:30 for a time or 2026-10-15 for a date.`,
+              );
+          } else
+            await this.network.run('reversible', async () => {
               await this.input(command, () =>
-                cdp.send('Input.dispatchKeyEvent', {
-                  type: 'keyDown',
-                  key: 'Backspace',
-                  windowsVirtualKeyCode: 8,
+                handle.evaluate((element) => {
+                  element.focus();
+                  element.select();
                 }),
               );
-              await this.input(command, () =>
-                cdp.send('Input.dispatchKeyEvent', {
-                  type: 'keyUp',
-                  key: 'Backspace',
-                  windowsVirtualKeyCode: 8,
-                }),
-              );
-            }
-          });
+              if (action.value)
+                await this.input(command, () =>
+                  cdp.send('Input.insertText', { text: action.value }),
+                );
+              else {
+                await this.input(command, () =>
+                  cdp.send('Input.dispatchKeyEvent', {
+                    type: 'keyDown',
+                    key: 'Backspace',
+                    windowsVirtualKeyCode: 8,
+                  }),
+                );
+                await this.input(command, () =>
+                  cdp.send('Input.dispatchKeyEvent', {
+                    type: 'keyUp',
+                    key: 'Backspace',
+                    windowsVirtualKeyCode: 8,
+                  }),
+                );
+              }
+            });
         } else if (action.kind === 'select') {
           const handle = await this.dropdown(page, action.label, action.value);
           // The dropdown may be found by an option or nearby text, so its own names are checked
@@ -1570,7 +1687,7 @@ export class BrowserController {
             element.options[0]?.disabled || element.options[0]?.value === ''
               ? element.options[0].label
               : '',
-            /password|one-time-code|webauthn|cc-number|cc-csc/i.test(
+            /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
               element.getAttribute('autocomplete') ?? '',
             )
               ? 'password'

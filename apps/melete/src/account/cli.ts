@@ -20,6 +20,7 @@ import { issuePasswordReset, principalByEmail, RESET_MINUTES, resetUrl } from '.
 import { issueSetupCode, SETUP_CODE_HOURS, setupLink } from '../api/setup-code.ts';
 import { newId } from '../ids.ts';
 import { recordOperatorAction } from '../operator/audit.ts';
+import { isRemovedEmail } from './removal.ts';
 import { describeReset, operatorReset } from './reset-password.ts';
 
 export const ACCOUNT_USAGE = `Usage: bun run melete account <command> [--json]
@@ -198,6 +199,9 @@ export async function setDisabled(
 ): Promise<AccountOutcome> {
   const account = await principalByEmail(sql, email.trim());
   if (!account) return refused(`No account signs in as ${email.trim()}.`);
+  // What is left of a deleted account is no account: turned back on, it could be listed and added.
+  if (isRemovedEmail(account.id, account.email))
+    return refused(`${account.email} is what is left of a deleted account. It cannot sign in.`);
   // Only a real change goes in the record; running the command again changes nothing.
   const [before] = await sql<{ disabled: boolean }[]>`select disabled_at is not null as disabled
     from principal where id = ${account.id}`;
@@ -229,8 +233,9 @@ export async function setDisabled(
 export async function newSetupCodeFor(
   sql: Sql,
   webUrl: string | undefined,
+  configuredHash?: string,
 ): Promise<AccountOutcome> {
-  const issued = await issueSetupCode(sql);
+  const issued = await issueSetupCode(sql, configuredHash);
   if (!issued)
     return refused(
       'This installation already has its owner, so it needs no setup code. To let someone in, use: bun run melete account create <email>',
@@ -262,6 +267,8 @@ export async function runAccount(
   sql: Sql,
   argv: readonly string[],
   publicUrl: string | undefined,
+  /** MELETE_SETUP_CODE_HASH: the code `melete init` printed, which a new setup code cancels too. */
+  configuredHash?: string,
 ): Promise<{ code: number; out: string }> {
   const parsed = parseAccountArgs(argv);
   const webUrl = publicUrl ?? parsed.webUrl;
@@ -286,7 +293,7 @@ export async function runAccount(
       outcome = await setDisabled(sql, parsed.target ?? '', parsed.command === 'disable');
       break;
     case 'setup-code':
-      outcome = await newSetupCodeFor(sql, webUrl);
+      outcome = await newSetupCodeFor(sql, webUrl, configuredHash);
       break;
     default:
       return usage;
@@ -312,6 +319,7 @@ if (import.meta.main) {
       handle.sql,
       process.argv.slice(2),
       process.env.MELETE_PUBLIC_URL?.trim() || undefined,
+      settings.MELETE_SETUP_CODE_HASH?.trim() || undefined,
     );
     (result.code === 0 ? process.stdout : process.stderr).write(result.out);
     process.exitCode = result.code;

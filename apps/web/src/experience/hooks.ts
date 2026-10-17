@@ -121,6 +121,12 @@ export type AppContextValue = {
    * only those rooms and its own account. Every personal surface stays away.
    */
   guest?: boolean;
+  /**
+   * Signed in to a shared space someone else owns. A member chats, plans and
+   * keeps routines of their own there; the space's setup, apps, agents and
+   * rules are its owner's, so their screens stay out of a member's way.
+   */
+  member?: boolean;
 };
 
 export const AppContext = createContext<AppContextValue | null>(null);

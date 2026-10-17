@@ -16,10 +16,24 @@
 #   MELETE_MODEL      the model id to use with ANTHROPIC_API_KEY, OPENAI_API_KEY
 #                     or GOOGLE_API_KEY
 #   MELETE_NO_OPEN    set to 1 to leave the browser closed
+#   MELETE_COMPUTER   1 (the default for a new installation) gives every agent
+#                     a computer of its own, a container on this Docker engine;
+#                     0 leaves it out. Its image is a download of about
+#                     600 MB and takes about 2.3 GB of disk
+#   MELETE_PROJECT    the Compose project name (default melete). A second
+#                     installation on one machine needs its own, and its own
+#                     MELETE_PORT and MELETE_WEB_PORT; it is chosen once, when
+#                     deploy/.env is written
+#   MELETE_PORT       the service's port on 127.0.0.1 (default 3100)
+#   MELETE_WEB_PORT   the web app's port on 127.0.0.1 (default 3101)
 #   MELETE_BROWSER    set to 1, once your account exists, to turn on the browser
 #                     worker: the agent's own browser
 #   MELETE_BROWSER_SPACE  with MELETE_BROWSER=1, the space the worker works for
 #                     (default the first person's own)
+#
+# The options go on the bash side of the pipe, where the installer reads them:
+#
+#   curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash
 #
 # deploy/.env holds the same settings deploy/scripts/configure.ts writes. Once
 # the browser worker's space is named there, by MELETE_BROWSER=1 or by
@@ -43,7 +57,7 @@ SETUP_CODE='' SETUP_CODE_SHOWN=0
 say_unshown_code() {
   if [ -n "$SETUP_CODE" ] && [ "$SETUP_CODE_SHOWN" = 0 ]; then
     SETUP_CODE_SHOWN=1
-    printf 'Melete: your one-time setup code is %s. Keep it; once Melete is running, create your account with it.\n' "$SETUP_CODE" >&2
+    printf 'Melete: your one-time setup code is %s. Keep it; once Melete is running, create your account with it within 72 hours.\n' "$SETUP_CODE" >&2
   fi
 }
 
@@ -295,6 +309,18 @@ MELETE_DEFAULT_PROVIDER=$PROVIDER
 MELETE_DEFAULT_MODEL=$model
 MELETE_ENABLE_FAKE_PROVIDER=$fake
 MELETE_ENABLE_TEST_CONNECTOR=$fake"
+  [ -z "$PROJECT" ] || settings="$settings
+COMPOSE_PROJECT_NAME=$PROJECT"
+  [ -z "$SERVICE_PORT" ] || settings="$settings
+MELETE_PORT=$SERVICE_PORT"
+  [ -z "$WEB_PORT_SETTING" ] || settings="$settings
+WEB_PORT=$WEB_PORT_SETTING"
+  # Every agent gets a computer of its own unless MELETE_COMPUTER=0 said not to.
+  if [ "$COMPUTER" != 0 ]; then
+    settings="$settings
+MELETE_SANDBOX_PROVIDER=docker
+COMPOSE_PROFILES=sandbox"
+  fi
   if [ -n "$PROVIDER_KEY_NAME" ]; then
     settings="$settings
 $PROVIDER_KEY_NAME=@KEY"
@@ -320,14 +346,31 @@ ELEVENLABS_API_KEY=@VOICE"
           values[substr(lines[i], 1, eq - 1)] = v
         }
       }
+      # The template is read twice: first for the settings that have a line of
+      # their own, then to write the file.
+      NR == FNR {
+        if (match($0, /^[A-Z_]+=/)) set[substr($0, 1, RLENGTH - 1)] = 1
+        next
+      }
       match($0, /^[A-Z_]+=/) {
         name = substr($0, 1, RLENGTH - 1)
         if (name in values) { print name "=" values[name]; written[name] = 1; next }
       }
+      # A setting the template has only as an empty commented line, such as
+      # `# MELETE_SETUP_CODE_HASH=`, is written in place of that line, as
+      # fillTemplate() in deploy/scripts/configure.ts does.
+      match($0, /^# ?[A-Z_]+=[ \t]*$/) {
+        name = $0
+        sub(/^# ?/, "", name)
+        sub(/=.*$/, "", name)
+        if ((name in values) && !(name in set) && !(name in written)) {
+          print name "=" values[name]; written[name] = 1; next
+        }
+      }
       { print }
       # A setting an older template has no line for goes at the end.
       END { for (name in values) if (!(name in written)) print name "=" values[name] }
-    ' "$template" >"$partial"
+    ' "$template" "$template" >"$partial"
   )
   unset MELETE_INSTALL_PROVIDER_KEY MELETE_INSTALL_VOICE_KEY
   # Written once: a second run, or a race, keeps the file already there.
@@ -377,11 +420,97 @@ set_env() {
   mv -f "$partial" "$DEPLOY/.env"
 }
 
+# Adds the sandbox profile to COMPOSE_PROFILES in deploy/.env (with 1) or
+# takes it out (with 0), keeping any other profile listed there.
+set_sandbox_profile() {
+  local current kept='' profile list=()
+  current="$(env_value COMPOSE_PROFILES)"
+  IFS=',' read -r -a list <<<"$current"
+  for profile in "${list[@]}"; do
+    profile="${profile//[[:space:]]/}"
+    [ -z "$profile" ] || [ "$profile" = sandbox ] || kept="${kept:+$kept,}$profile"
+  done
+  [ "$1" = 0 ] || kept="${kept:+$kept,}sandbox"
+  [ "$kept" = "$current" ] || set_env COMPOSE_PROFILES "$kept"
+}
+
+# The service reads deploy/config as a user of its own (/etc/melete in the
+# container). Under a umask such as 077 every file the installer downloads
+# would be its owner's alone, and the service would stop at start-up with
+# EACCES on /etc/melete/connections.json, so the folder and its files are
+# made readable on every run. deploy/.env stays the owner's alone.
+share_config() {
+  chmod 0755 "$DEPLOY/config"
+  find "$DEPLOY/config" -maxdepth 1 -type f -name '*.json' -exec chmod a+r {} +
+}
+
+# A value quoted for a shell, so a printed command can be pasted as it is.
+shell_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+# Compose finds a project by its name alone. A second installation with the
+# first one's name would take over the first one's containers and volumes and
+# start them with its own secrets, so that is refused before anything is
+# downloaded or written. A container that does not say which folder started it
+# could be anyone's, so it counts as another installation's. Containers started
+# from a folder this installation was moved or renamed from are its own: its
+# deploy/.env names the project, and that folder holds no installation now.
+# A new installation ($2 is 1) is refused any container or volume of the
+# project at all: a stopped or removed installation leaves its data in volumes,
+# which a new one would start on with new secrets, and its database would not open.
+check_project_free() {
+  local project="$1" new="$2" here physical listed line name dir others=() reason count
+  local label="label=com.docker.compose.project=$project"
+  if [ -d "$DEPLOY" ]; then
+    here="$(cd "$DEPLOY" && pwd)"
+    physical="$(cd "$DEPLOY" && pwd -P)"
+  else
+    # Not made yet: where it will be.
+    case "$DEPLOY" in
+      /*) here="$DEPLOY" ;;
+      *) here="$PWD/$DEPLOY" ;;
+    esac
+    physical="$here"
+  fi
+  if ! listed="$(docker ps -a --filter "$label" \
+    --format '{{.Names}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null)"; then
+    reason="$(docker ps -a 2>&1 >/dev/null | tail -n 1 || true)"
+    fail "Could not ask Docker which containers run as the Compose project $project${reason:+ (Docker said: $reason)}, so this installation cannot tell whether it would take over another one. Check that Docker is running and that this user may use it, then run this again. Nothing was changed."
+  fi
+  local choose
+  choose="Give this one a name and ports of its own, for example: curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=$(shell_quote "$DIR") MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash (on Windows, set \$env:MELETE_PROJECT, \$env:MELETE_PORT and \$env:MELETE_WEB_PORT before install.ps1)."
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    name="${line%%|*}" dir="${line#*|}"
+    [ -n "$dir" ] ||
+      fail "The container $name runs as the Compose project $project and does not say which folder started it, so it may be another installation's, and this one would take it over. Remove it if it is left over. $choose"
+    [ "$dir" = "$here" ] || [ "$dir" = "$physical" ] || others+=("$dir")
+  done <<<"$listed"
+  if [ "${#others[@]}" -gt 0 ]; then
+    if [ -f "$DEPLOY/.env" ]; then
+      local named moved=1
+      named="$(env_value COMPOSE_PROJECT_NAME)"
+      [ "${named:-melete}" = "$project" ] || moved=0
+      for dir in "${others[@]}"; do [ ! -e "$dir/.env" ] || moved=0; done
+      if [ "$moved" = 1 ]; then
+        say "This installation's containers were started from ${others[0]}, where it was before it moved; they are taken over from here."
+        return 0
+      fi
+    fi
+    fail "Another installation, in ${others[0]}, already runs as the Compose project $project, and this one would take over its containers. $choose"
+  fi
+  [ "$new" = 1 ] || return 0
+  [ -z "$listed" ] ||
+    fail "Compose project $project already has containers on this engine, and this installation would take them over with new secrets. $choose If they are left from an installation you removed, remove them first (docker compose -p $project down)."
+  count="$(docker volume ls -q --filter "$label" 2>/dev/null | grep -c . || true)"
+  [ "${count:-0}" = 0 ] ||
+    fail "Compose project $project already has $count volume(s) on this engine: the data of an installation that is stopped or was removed. This one would start on that data with new secrets, and its database would not open. $choose If that data is no longer wanted, remove it first (docker volume rm \$(docker volume ls -q --filter $label))."
+}
+
 # A setting's value in deploy/.env, or nothing.
 env_value() { sed -n "s/^$1=//p" "$DEPLOY/.env" | tail -n 1 | tr -d '\r'; }
 
 # Whether deploy/.env holds a setup code hash: `set`, or `missing` with no line
-# for it or an empty one, which deploy/.env.example itself ships. A line counts
+# for it or an empty one, which older templates shipped. A line counts
 # as set_env would rewrite it, indented or after `export`, so a hash already
 # there is never replaced; quotes are not a value, and the last line wins, as
 # Compose reads the file.
@@ -605,8 +734,56 @@ main() {
     [[ "$requested" =~ ^sp_[A-Za-z0-9_-]+$ ]] || fail "MELETE_BROWSER_SPACE takes a space id such as sp_..., not $requested."
   fi
 
+  # The computer, the project name and the ports, read once. deploy/.env keeps
+  # them, and Compose would read these names from the environment before it.
+  COMPUTER=''
+  case "${MELETE_COMPUTER:-}" in
+    1 | true | yes) COMPUTER=1 ;;
+    0 | false | no) COMPUTER=0 ;;
+    '') ;;
+    *) fail 'MELETE_COMPUTER takes 1 to give every agent a computer of its own on this Docker engine, or 0 to leave it out.' ;;
+  esac
+  PROJECT="${MELETE_PROJECT:-${COMPOSE_PROJECT_NAME:-}}"
+  SERVICE_PORT="${MELETE_PORT:-}"
+  WEB_PORT_SETTING="${MELETE_WEB_PORT:-${WEB_PORT:-}}"
+  unset COMPOSE_PROJECT_NAME MELETE_PORT WEB_PORT
+  if [ -n "$PROJECT" ] && ! [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    fail "MELETE_PROJECT takes lower-case letters, digits, - and _, starting with a letter or a digit, not $PROJECT."
+  fi
+  local port_name port_value
+  for port_name in MELETE_PORT MELETE_WEB_PORT; do
+    if [ "$port_name" = MELETE_PORT ]; then port_value="$SERVICE_PORT"; else port_value="$WEB_PORT_SETTING"; fi
+    if [ -n "$port_value" ] && { ! [[ "$port_value" =~ ^[1-9][0-9]{0,4}$ ]] || ((port_value > 65535)); }; then
+      fail "$port_name takes a port number from 1 to 65535, not $port_value."
+    fi
+  done
+
   check_docker
 
+  local project service_port web_port
+  if [ -f "$DEPLOY/.env" ]; then
+    project="$(env_value COMPOSE_PROJECT_NAME)"
+    project="${project:-melete}"
+    if [ -n "$PROJECT" ] && [ "$PROJECT" != "$project" ]; then
+      fail "This installation is the Compose project $project, and its data lives in volumes named after it, so MELETE_PROJECT cannot change it. Nothing was changed."
+    fi
+    service_port="${SERVICE_PORT:-$(env_value MELETE_PORT)}"
+    web_port="${WEB_PORT_SETTING:-$(env_value WEB_PORT)}"
+  else
+    project="${PROJECT:-melete}"
+    service_port="$SERVICE_PORT"
+    web_port="$WEB_PORT_SETTING"
+  fi
+  service_port="${service_port:-3100}"
+  web_port="${web_port:-3101}"
+  [ "$service_port" != "$web_port" ] ||
+    fail "The service and the web app would both take port $web_port. Give MELETE_PORT and MELETE_WEB_PORT a port each. Nothing was changed."
+  # Before anything is downloaded, so a refused installation leaves nothing behind.
+  if [ -f "$DEPLOY/.env" ]; then check_project_free "$project" 0; else check_project_free "$project" 1; fi
+
+  # Files made from here on are readable by the services; deploy/.env is
+  # written under umask 077 on its own.
+  umask 022
   say "Installing Melete into $dir from $ref."
   mkdir -p "$DEPLOY/config" "$dir/packages/runtime-hermes"
   download deploy/docker-compose.yml "$DEPLOY/docker-compose.yml"
@@ -617,6 +794,7 @@ main() {
   for file in connections.json tailscale-serve.json browser-seccomp.json; do
     [ -f "$DEPLOY/config/$file" ] || download "deploy/config/$file" "$DEPLOY/config/$file"
   done
+  share_config
 
   SETUP_OPEN=0
   if [ -f "$DEPLOY/.env" ]; then
@@ -625,8 +803,8 @@ main() {
       set_env MELETE_IMAGE_TAG "$IMAGE_TAG"
     fi
     # An installation with no setup code hash, whether made before setup codes
-    # or with the template's empty line, gets a code now, said once, as a first
-    # install does. A hash already there is kept, and none is made while
+    # or with an older template's empty line, gets a code now, said once, as a
+    # first install does. A hash already there is kept, and none is made while
     # MELETE_SETUP_OPEN=true.
     check_setup_open
     if setup_open; then
@@ -637,6 +815,18 @@ main() {
       SETUP_CODE="$NEW_SETUP_CODE"
       say 'Added a one-time setup code to deploy/.env; it is shown once Melete starts.'
     fi
+    [ -z "$SERVICE_PORT" ] || set_env MELETE_PORT "$SERVICE_PORT"
+    [ -z "$WEB_PORT_SETTING" ] || set_env WEB_PORT "$WEB_PORT_SETTING"
+    case "$COMPUTER" in
+      1)
+        set_env MELETE_SANDBOX_PROVIDER docker
+        set_sandbox_profile 1
+        ;;
+      0)
+        set_env MELETE_SANDBOX_PROVIDER ''
+        set_sandbox_profile 0
+        ;;
+    esac
   else
     write_env
   fi
@@ -673,9 +863,7 @@ main() {
   "${compose[@]}" up -d --no-build --remove-orphans --wait --wait-timeout 600 ||
     fail "Melete did not start. See why with: ${compose[*]} logs --tail=100"
 
-  local port
-  port="$(sed -n 's/^WEB_PORT=//p' "$DEPLOY/.env" | head -n 1)"
-  local url="http://localhost:${port:-3101}"
+  local url="http://localhost:$web_port"
   if [ "$want_browser" = 1 ]; then
     enable_browser "${requested:-$configured}"
     browser=1
@@ -688,25 +876,32 @@ main() {
     # Said once: deploy/.env keeps only its hash.
     say "Open $url/#/welcome?code=$SETUP_CODE to create your account"
     say "Your one-time setup code is $SETUP_CODE. It is shown only now; keep it until your account exists."
+    say "It works once, for 72 hours from when Melete starts with it. Lost it, or too late? $shown exec melete bun run melete account setup-code issues another, and this one stops working."
     SETUP_CODE_SHOWN=1
   else
     say 'Open it and create your account.'
+    say "For a new setup code: $shown exec melete bun run melete account setup-code"
   fi
   if grep -q '^MELETE_DEFAULT_PROVIDER=fake$' "$DEPLOY/.env"; then
     say 'It starts with a practice model; add your own key in Settings → Models.'
   fi
-  say "For a new setup code: $shown exec melete bun run melete account setup-code"
   if [ "$SETUP_OPEN" = 1 ]; then
     say 'Setup is open: with MELETE_SETUP_OPEN=true, the first visitor creates the owner account without a code.'
   elif [ -n "$SETUP_CODE" ]; then
     say 'Set MELETE_SETUP_OPEN=true only if the first visitor should be allowed to create the owner without a code.'
   fi
   say "Run this command again to update. Stop it with: $shown down"
+  local again=''
+  [ -z "${MELETE_DIR:-}" ] || again=" MELETE_DIR=$dir"
+  if [ "$(env_value MELETE_SANDBOX_PROVIDER)" = docker ]; then
+    say 'Every agent has a computer of its own, a container on this Docker engine.'
+  else
+    say 'To give every agent a computer of its own on this Docker engine, run this again with MELETE_COMPUTER=1:'
+    say "  curl -fsSL https://raw.githubusercontent.com/ychampion/melete/$ref/install.sh |$again MELETE_COMPUTER=1 bash"
+  fi
   if [ "$browser" = 0 ]; then
     say 'To give the agent a browser of its own once your account exists, run this again with MELETE_BROWSER=1:'
-    local options='MELETE_BROWSER=1'
-    [ -z "${MELETE_DIR:-}" ] || options="$options MELETE_DIR=$dir"
-    say "  $options curl -fsSL https://raw.githubusercontent.com/ychampion/melete/$ref/install.sh | bash"
+    say "  curl -fsSL https://raw.githubusercontent.com/ychampion/melete/$ref/install.sh |$again MELETE_BROWSER=1 bash"
   fi
   open_browser "$url"
 }

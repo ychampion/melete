@@ -385,12 +385,6 @@ export async function assembleAttemptKnowledge(
   throw new MemoryError('stale_context');
 }
 
-/**
- * Gets an attempt's engine ready ahead of its start; the function it returns
- * gives that engine up when the attempt never starts.
- */
-export type PrepareEngine = (bundle: AttemptBundle, signal: AbortSignal) => () => void;
-
 /** Existing runtime contract stays unchanged; aborted context is discarded rather than resumed. */
 export function withMemoryRuntime(
   runtime: RuntimeAdapter,
@@ -420,33 +414,40 @@ export function withMemoryRuntime(
      * reads a request, and recall stays lexical; a local one always may.
      */
     embedsQuery?: (jobId: string, text: string) => Promise<boolean>;
-    /**
-     * Starts getting the attempt's engine ready while its memory is recalled,
-     * and returns what gives that engine up if the attempt never starts. The
-     * engine is told nothing of what is recalled until the attempt starts.
-     */
-    prepareEngine?: PrepareEngine;
   } = {},
 ): RuntimeAdapter {
   const recalling: RuntimeAdapter = {
     capabilities: () => runtime.capabilities(),
     async start(bundle, sink, signal) {
-      const scope = await scopeForJob(bundle.attempt.job_id);
       let assembled: AttemptBundle | undefined;
-      const privateOrigin =
-        (await options.recallsPrivateMemory?.(
-          bundle.attempt.job_id,
-          bundle.attempt.id,
-          bundle.model,
-        )) ?? false;
-      // An agent the person set not to read memory is given none of it: nothing
-      // is recalled or recorded as used, no correction is briefed, and no handle
-      // to a remembered source is passed on. The turn's own agent decides, the
-      // way it decides which connections are offered.
-      const [persona] = await sql`select a.reads_memory from job j
-        left join experience_turn t on t.id = j.current_turn_id
-        join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
-        where j.id = ${bundle.attempt.job_id}`;
+      // Memory's own answer to a request to forget, so the agent never claims one.
+      // Settled before anything is recalled: the turn that asked to forget a
+      // detail is never handed it, and is not restarted when it goes.
+      const forgetting = forgetOutcomeNote(sql, bundle);
+      // Seen here too, so a failure before it is awaited is not left unhandled.
+      forgetting.catch(() => {});
+      // These answer separate questions, so they are asked together; the
+      // first word reaches the person that much sooner.
+      const [scope, privateOrigin, persona] = await Promise.all([
+        scopeForJob(bundle.attempt.job_id),
+        (async () =>
+          (await options.recallsPrivateMemory?.(
+            bundle.attempt.job_id,
+            bundle.attempt.id,
+            bundle.model,
+          )) ?? false)(),
+        // An agent the person set not to read memory is given none of it: nothing
+        // is recalled or recorded as used, no correction is briefed, and no handle
+        // to a remembered source is passed on. The turn's own agent decides, the
+        // way it decides which connections are offered.
+        (async () => {
+          const [row] = await sql`select a.reads_memory from job j
+            left join experience_turn t on t.id = j.current_turn_id
+            join agent a on a.id = coalesce(t.agent_id, j.agent_id) and a.space_id = j.space_id
+            where j.id = ${bundle.attempt.job_id}`;
+          return row;
+        })(),
+      ]);
       const readsMemory = persona?.reads_memory !== false;
       const withheld = !readsMemory;
       // The request is embedded only where its words may go: on the person's
@@ -467,10 +468,7 @@ export function withMemoryRuntime(
           jobId: bundle.attempt.job_id,
           actor: scope.principalId ?? null,
         });
-      // Memory's own answer to a request to forget, so the agent never claims one.
-      // Settled before anything is recalled: the turn that asked to forget a
-      // detail is never handed it, and is not restarted when it goes.
-      const forgetNote = await forgetOutcomeNote(sql, bundle);
+      const forgetNote = await forgetting;
       const prepare = async () => {
         if (!options.catalog)
           return assembleAttemptKnowledge(
@@ -509,47 +507,46 @@ export function withMemoryRuntime(
         }
         throw new MemoryError('stale_context');
       };
-      const prepared = await prepare();
-      // The agent's own notes from earlier chats, labelled as its own. A note
-      // that cannot be read now is simply not handed over this time.
-      const notes = readsMemory
-        ? await recallNotes(sql, scope, {
-            query: attemptRecallQuery(bundle),
-            jobId: bundle.attempt.job_id,
-            privateOrigin,
-            withheld,
-            embedding,
-          }).catch((error: unknown) => {
-            process.stderr.write(
-              `memory: notes_recall_failed:${error instanceof MemoryError ? error.code : 'unknown'}\n`,
-            );
-            return [];
-          })
-        : [];
-      const [job] =
-        await sql`select constraints, revision from job where id = ${bundle.attempt.job_id} and space_id = ${scope.spaceId}`;
+      // The agent's own notes from earlier chats, labelled as its own, read
+      // beside the rest of its memory. A note that cannot be read now is simply
+      // not handed over this time.
+      const [prepared, notes] = await Promise.all([
+        prepare(),
+        readsMemory
+          ? recallNotes(sql, scope, {
+              query: attemptRecallQuery(bundle),
+              jobId: bundle.attempt.job_id,
+              privateOrigin,
+              withheld,
+              embedding,
+            }).catch((error: unknown) => {
+              process.stderr.write(
+                `memory: notes_recall_failed:${error instanceof MemoryError ? error.code : 'unknown'}\n`,
+              );
+              return [];
+            })
+          : [],
+      ]);
+      const [[job], briefs, unremembered] = await Promise.all([
+        sql`select constraints, revision from job where id = ${bundle.attempt.job_id} and space_id = ${scope.spaceId}`,
+        // E1. What a correction broke since the last attempt, named precisely: the
+        // handle that moved, the value before and after, and the outputs that cited
+        // it. This is the reason the next attempt does not start from zero.
+        // They stay pending for an agent that may read memory.
+        !readsMemory
+          ? []
+          : (assembled?.inputs.repair_briefs ??
+            pendingRepairBriefs(sql, scope, bundle.attempt.job_id)),
+        newMessagesNotRemembered(sql, scope, bundle, options.refusesMemoryRead),
+      ]);
       if (
         !job ||
         job.revision !== bundle.attempt.revision ||
         prepared.context.job_revision !== bundle.attempt.revision
       )
         throw new MemoryError('stale_attempt');
-      // E1. What a correction broke since the last attempt, named precisely: the
-      // handle that moved, the value before and after, and the outputs that cited
-      // it. This is the reason the next attempt does not start from zero.
-      // They stay pending for an agent that may read memory.
-      const briefs = !readsMemory
-        ? []
-        : (assembled?.inputs.repair_briefs ??
-          (await pendingRepairBriefs(sql, scope, bundle.attempt.job_id)));
       // Accepted action constraints come directly from job state, outside optional memory trimming.
       const since = (assembled ?? bundle).since_last;
-      const unremembered = await newMessagesNotRemembered(
-        sql,
-        scope,
-        bundle,
-        options.refusesMemoryRead,
-      );
       const next: AttemptBundle = {
         ...(assembled ?? bundle),
         job: {
@@ -624,18 +621,5 @@ export function withMemoryRuntime(
       }
     },
   };
-  const prepareEngine = options.prepareEngine;
-  if (!prepareEngine) return recalling;
-  return {
-    capabilities: () => recalling.capabilities(),
-    async start(bundle, sink, signal) {
-      const giveUp = prepareEngine(bundle, signal);
-      try {
-        return await recalling.start(bundle, sink, signal);
-      } finally {
-        // Once the attempt took its engine, this does nothing.
-        giveUp();
-      }
-    },
-  };
+  return recalling;
 }

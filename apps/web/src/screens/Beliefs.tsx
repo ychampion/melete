@@ -26,6 +26,8 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import type {
   Belief,
+  BeliefBlock,
+  BeliefBlockScope,
   BeliefCategory,
   BeliefHistory,
   MemoryDay,
@@ -131,6 +133,42 @@ const CHANGE_WORD: Record<MemoryDay['changes'][number]['change'], string> = {
 const failed = (r: { error: string | null; unavailable: string | null }, fallback: string) =>
   toast({ kind: 'err', title: r.error ?? r.unavailable ?? fallback });
 
+/**
+ * The two reaches "don't learn again" offers, in the words the person picks
+ * from. Anything about the subject comes first and is the default.
+ */
+export const blockChoices = (topic: string) =>
+  [
+    {
+      scope: 'topic',
+      title: `Forget this and anything about ${topic}`,
+      hint: `Nothing about ${topic} is learned again.`,
+    },
+    {
+      scope: 'detail',
+      title: 'Forget just this detail',
+      hint: `Other details about ${topic} can still be learned.`,
+    },
+  ] as const satisfies readonly { scope: BeliefBlockScope; title: string; hint: string }[];
+
+/** What the toast after "don't learn again" says, for how far the block reached. */
+export const blockedToast = (label: string, topic: string, scope: BeliefBlockScope) => ({
+  title: `Forgot “${label}”`,
+  sub:
+    scope === 'topic'
+      ? `I won’t learn anything about ${topic} again.`
+      : `I won’t learn this detail again. Other details about ${topic} can still be learned.`,
+});
+
+/** What the toast after "Allow again" says, for how far the block reached. */
+export const allowedToast = (block: Pick<BeliefBlock, 'label' | 'scope'>) => {
+  if (block.scope === 'detail') return 'I can learn that detail again';
+  const topic = block.label.replace(/^Anything about /, '');
+  return topic === block.label
+    ? `I can learn “${block.label}” again`
+    : `I can learn about ${topic} again`;
+};
+
 /** Where a source link goes: the conversation it was said in, or the one its receipt is in. */
 const linkHref = (link: NonNullable<Belief['source']['link']>) => href(`/chat/${link.id}`);
 
@@ -208,9 +246,9 @@ function BeliefRow({
   twins?: readonly string[];
   highlighted: boolean;
   onChanged: () => void;
-  onRemoved: (message: string) => void;
+  onRemoved: (title: string, sub?: string) => void;
 }) {
-  const [mode, setMode] = useState<'view' | 'edit' | 'forget'>('view');
+  const [mode, setMode] = useState<'view' | 'edit' | 'forget' | 'block'>('view');
   const [sharing, setSharing] = useState(false);
   // Sharing to a room is offered only where the server has rooms switched on.
   const multiplayer = useApp().capabilities.multiplayer;
@@ -309,16 +347,7 @@ function BeliefRow({
               >
                 Forget
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  void eachCopy([belief.id, ...twins], adapter.blockBelief).then((r) => {
-                    if (r) return failed(r, 'Couldn’t forget that');
-                    onRemoved(`Forgot “${belief.label}” and won’t learn it again`);
-                  })
-                }
-              >
+              <Button size="sm" variant="outline" onClick={() => setMode('block')}>
                 Forget and don’t learn again
               </Button>
               <Button size="sm" variant="ghost" onClick={closeEdit}>
@@ -326,6 +355,26 @@ function BeliefRow({
               </Button>
             </div>
           </fieldset>
+        ) : null}
+        {mode === 'block' ? (
+          <BlockChoice
+            belief={belief}
+            onBack={() => setMode('forget')}
+            onCancel={closeEdit}
+            onBlock={(scope) => {
+              // The block reaches the whole subject when the detail can't be told apart.
+              let reached = scope;
+              return eachCopy([belief.id, ...twins], async (id) => {
+                const result = await adapter.blockBelief(id, scope);
+                if (result.data?.scope === 'topic') reached = 'topic';
+                return result;
+              }).then((r) => {
+                if (r) return failed(r, 'Couldn’t forget that');
+                const said = blockedToast(belief.label, belief.topic, reached);
+                onRemoved(said.title, said.sub);
+              });
+            }}
+          />
         ) : null}
       </div>
       <div className="belief-actions">
@@ -374,7 +423,7 @@ function BeliefRow({
   );
 }
 
-/** When a note was written, as a short date in the viewer's own time. */
+/** When a note was written or a block made, as a short date in the viewer's own time. */
 const noteDate = (at: string) =>
   new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
@@ -480,8 +529,8 @@ function BeliefsView({ focus }: { focus: string | null }) {
                   twins={twins}
                   highlighted={focus === belief.id || (focus !== null && twins.includes(focus))}
                   onChanged={beliefs.reload}
-                  onRemoved={(message) => {
-                    toast({ kind: 'ok', title: message });
+                  onRemoved={(title, sub) => {
+                    toast({ kind: 'ok', title, sub });
                     beliefs.reload();
                     blocks.reload();
                   }}
@@ -497,36 +546,122 @@ function BeliefsView({ focus }: { focus: string | null }) {
         </div>
       ) : null}
       <AgentNotes />
-      {(blocks.data?.blocks.length ?? 0) > 0 ? (
-        <section className="col" style={{ gap: 8 }} aria-labelledby="bc-blocked">
-          <h3 id="bc-blocked" className="belief-group">
-            Not learning again
-          </h3>
-          <div className="card-12 belief-list">
-            {blocks.data?.blocks.map((block) => (
-              <div key={block.id} className="belief-row">
-                <div className="belief-main">
-                  <span className="belief-value">{block.label}</span>
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    void adapter.unblockBelief(block.id).then((r) => {
-                      if (r.data === null) return failed(r, 'Couldn’t change that');
-                      toast({ kind: 'ok', title: `I can learn “${block.label}” again` });
-                      blocks.reload();
-                    })
-                  }
-                >
-                  Allow again
-                </Button>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <NotLearningAgain blocks={blocks.data?.blocks ?? []} onAllowed={blocks.reload} />
     </div>
+  );
+}
+
+/**
+ * What the person asked Melete not to learn again, each with the day it was
+ * forgotten: two details under one subject read alike, and the day tells
+ * them apart.
+ */
+export function NotLearningAgain({
+  blocks,
+  onAllowed,
+}: {
+  blocks: readonly BeliefBlock[];
+  onAllowed: () => void;
+}) {
+  if (!blocks.length) return null;
+  return (
+    <section className="col" style={{ gap: 8 }} aria-labelledby="bc-blocked">
+      <h3 id="bc-blocked" className="belief-group">
+        Not learning again
+      </h3>
+      <div className="card-12 belief-list">
+        {blocks.map((block) => (
+          <div key={block.id} className="belief-row">
+            <div className="belief-main">
+              <span className="belief-value">{block.label}</span>
+              <span className="belief-note">Forgotten {noteDate(block.created_at)}</span>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                void adapter.unblockBelief(block.id).then((r) => {
+                  if (r.data === null) return failed(r, 'Couldn’t change that');
+                  toast({ kind: 'ok', title: allowedToast(block) });
+                  onAllowed();
+                })
+              }
+            >
+              Allow again
+            </Button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * How far "don't learn again" reaches, picked before anything is forgotten:
+ * anything about the belief's subject (preselected), or just this detail.
+ */
+export function BlockChoice({
+  belief,
+  onBlock,
+  onBack,
+  onCancel,
+}: {
+  belief: Pick<Belief, 'id' | 'topic'>;
+  onBlock: (scope: BeliefBlockScope) => Promise<unknown>;
+  onBack: () => void;
+  onCancel: () => void;
+}) {
+  const [scope, setScope] = useState<BeliefBlockScope>('topic');
+  // One press forgets once: a second click while it is saving does nothing.
+  const sending = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const confirm = () => {
+    if (sending.current) return;
+    sending.current = true;
+    setBusy(true);
+    void onBlock(scope).finally(() => {
+      sending.current = false;
+      setBusy(false);
+    });
+  };
+  return (
+    <fieldset className="belief-confirm">
+      <legend>Forget this and don’t learn it again. What should I stop learning?</legend>
+      {blockChoices(belief.topic).map((choice) => (
+        <label key={choice.scope} className="belief-scope">
+          <input
+            type="radio"
+            className="radio"
+            name={`block-scope-${belief.id}`}
+            value={choice.scope}
+            checked={scope === choice.scope}
+            onChange={() => setScope(choice.scope)}
+          />
+          <span className="col" style={{ gap: 2, minWidth: 0 }}>
+            <span className="belief-scope-title">{choice.title}</span>
+            <span className="belief-scope-hint">{choice.hint}</span>
+          </span>
+        </label>
+      ))}
+      <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        <Button
+          size="sm"
+          variant="destructive"
+          autoFocus
+          loading={busy}
+          disabled={busy}
+          onClick={confirm}
+        >
+          Forget and don’t learn again
+        </Button>
+        <Button size="sm" variant="outline" onClick={onBack}>
+          Back
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>
+          Keep it
+        </Button>
+      </div>
+    </fieldset>
   );
 }
 
@@ -943,7 +1078,26 @@ export function LearningSwitch() {
   );
 }
 
+/**
+ * Memory is kept in a person's own space. A member of someone else's shared
+ * space has none there to show or change, so their page says so plainly.
+ */
 export function MemoryPanel(): ReactNode {
+  const { member } = useApp();
+  if (member)
+    return (
+      <div className="card-12 belief-empty">
+        <span className="belief-empty-title">Memory is kept in your own space</span>
+        <span>
+          This space is shared with you by its owner, so there is nothing of yours to show or change
+          here.
+        </span>
+      </div>
+    );
+  return <OwnMemory />;
+}
+
+function OwnMemory() {
   const route = useRoute();
   const view =
     (['beliefs', 'timeline', 'lessons'] as const).find(

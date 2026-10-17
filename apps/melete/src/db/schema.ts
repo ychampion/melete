@@ -58,6 +58,12 @@ export const principal = pgTable(
      * the account cannot sign in, and nothing it had signed in still works.
      */
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    /**
+     * Granted by the account that set Melete up: an admin provisions accounts
+     * and chooses the installation's model, as the setup owner does. Only a
+     * person holds it, and only the setup owner grants or takes it away.
+     */
+    admin: boolean('admin').notNull().default(false),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );
@@ -500,6 +506,12 @@ export const attempt = pgTable(
       .references(() => job.id, { onDelete: 'cascade' }),
     epoch: integer('epoch').notNull(),
     principalId: text('principal_id').references(() => principal.id),
+    /**
+     * For a request made of a room's agent, the member who asked, copied from
+     * the job when the attempt starts. `principal_id` is the room's own
+     * principal then, so this is what says whose request the work was.
+     */
+    requestedByPrincipalId: text('requested_by_principal_id').references(() => principal.id),
     membershipGeneration: integer('membership_generation'),
     turnId: text('turn_id'),
     runtimeVersion: text('runtime_version').notNull(),

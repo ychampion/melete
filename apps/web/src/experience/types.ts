@@ -41,6 +41,9 @@ export type AgentDeleted = Success<Ok<paths['/agents/{id}'], 'delete'>>;
 export type ActivityList = Success<Ok<paths['/activity'], 'get'>>;
 export type SpaceMembers = Success<Ok<paths['/space/members'], 'get'>>;
 export type SpaceMember = SpaceMembers['members'][number];
+/** What work in a space may use, and whether the person asking may change it. */
+export type SpaceRulesView = Ok<paths['/spaces/{id}/policy'], 'get'>;
+export type SpaceRulesChange = Body<paths['/spaces/{id}/policy'], 'put'>;
 export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
 export type DeliveryState = NonNullable<Turn['delivery']>;
 export type MessageAcceptance = Success<Ok<paths['/conversations/{id}/messages'], 'post'>>;
@@ -130,6 +133,7 @@ export type Belief = Success<Ok<paths['/memory/beliefs'], 'get'>>['beliefs'][num
 export type BeliefCategory = Belief['category'];
 export type BeliefHistory = Success<Ok<paths['/memory/beliefs/{id}/history'], 'get'>>;
 export type BeliefBlock = Success<Ok<paths['/memory/blocks'], 'get'>>['blocks'][number];
+export type BeliefBlockScope = BeliefBlock['scope'];
 export type AgentNote = Success<Ok<paths['/memory/notes'], 'get'>>['notes'][number];
 export type MemoryTimeline = Success<Ok<paths['/memory/timeline'], 'get'>>;
 export type MemoryDay = MemoryTimeline['days'][number];
@@ -311,6 +315,7 @@ export type FeedbackList = Ok<paths['/feedback'], 'get'>;
 export type FeedbackReport = FeedbackList['reports'][number];
 export type FeedbackStatus = FeedbackReport['status'];
 export type FeedbackCreate = Body<paths['/feedback'], 'post'>;
+export type FeedbackForwarding = Ok<paths['/feedback/forwarding'], 'get'>;
 
 /* ---------- voice ---------- */
 

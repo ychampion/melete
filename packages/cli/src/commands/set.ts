@@ -24,6 +24,7 @@ import {
   fileReplacer,
   replaceFile,
 } from '../../../../deploy/scripts/tailscale-origin.ts';
+import { fromThisCheckout, otherCheckouts, readProjectUse } from '../compose-project.ts';
 import type { Context } from '../context.ts';
 import {
   composeCommand,
@@ -32,7 +33,12 @@ import {
   parseDeployConfig,
   renderDeployConfig,
 } from '../deploy-config.ts';
-import { type Installation, imagesFromEnv, readInstallation } from '../installation.ts';
+import {
+  type Installation,
+  imagesFromEnv,
+  readInstallation,
+  sandboxProfile,
+} from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
 
@@ -41,7 +47,11 @@ export const CONTRACT_SETTINGS = [
   'MELETE_IMAGE_TAG',
   'MELETE_IMAGE_REGISTRY',
   'COMPOSE_PROJECT_NAME',
+  'COMPOSE_PROFILES',
 ];
+
+/** Compose's own settings that deploy/.env may hold: Compose reads them, not the services. */
+export const COMPOSE_SETTINGS = ['COMPOSE_PROJECT_NAME', 'COMPOSE_PROFILES'];
 
 /**
  * Every name a setting may have: the template's, the substitutions of every
@@ -51,6 +61,7 @@ export const CONTRACT_SETTINGS = [
  */
 export function knownSettings(installation: Installation, template: string): Set<string> {
   const names = new Set<string>([
+    ...COMPOSE_SETTINGS,
     ...Object.keys(parseEnvFile(template)),
     ...Object.keys(envSchema.in.shape),
     ...Object.keys(installation.env ?? {}),
@@ -124,8 +135,16 @@ export function applyHint(installation: Installation, names: readonly string[]):
   return `Apply it by recreating ${services.join(', ')} (docker compose restart keeps the old values):\n  ${compose} up -d --force-recreate ${services.join(' ')}\n`;
 }
 
-/** The contract's new text after deploy/.env changes, or null when it needs no change. */
-export function contractAfter(contractText: string, envText: string): string | null {
+/**
+ * The contract's new text after deploy/.env changes, or null when it needs no
+ * change. Its profiles follow deploy/.env only when COMPOSE_PROFILES is among
+ * the `changed` settings, so a profile written into the contract by hand stays.
+ */
+export function contractAfter(
+  contractText: string,
+  envText: string,
+  changed: readonly string[] = [],
+): string | null {
   const loaded = parseDeployConfig(contractText);
   if (loaded.kind !== 'found')
     throw new SetEnvRefusal(
@@ -136,6 +155,9 @@ export function contractAfter(contractText: string, envText: string): string | n
     ...loaded.config,
     project: env.COMPOSE_PROJECT_NAME?.trim() || 'melete',
     images: imagesFromEnv(env),
+    ...(changed.includes('COMPOSE_PROFILES')
+      ? { profiles: sandboxProfile(env) ? ['sandbox'] : [] }
+      : {}),
   });
   const text = renderDeployConfig(next);
   return text === renderDeployConfig(loaded.config) ? null : text;
@@ -179,21 +201,33 @@ export async function runSet(
         );
     }
     // A new project name points every Compose command at a new, empty installation.
+    // Only this checkout's containers count: another installation that runs under
+    // the current name (a second checkout still at the default) is not this one.
     const renamed = settings.find((setting) => setting.name === 'COMPOSE_PROJECT_NAME');
     const current =
       parseEnvFile(readFileSync(envPath, 'utf8')).COMPOSE_PROJECT_NAME?.trim() || 'melete';
     if (renamed && renamed.value.trim() !== current && !force) {
-      const listed = context.run([
-        'docker',
-        'ps',
-        '--all',
-        '--quiet',
-        '--filter',
-        `label=com.docker.compose.project=${current}`,
-      ]);
-      if (listed.code !== 0 || listed.stdout.trim() !== '')
+      const use = readProjectUse(context.run, current);
+      const others = use ? otherCheckouts(use, context.deployDir) : [];
+      const ours = (use?.containers ?? []).filter(
+        ({ workingDir }) => workingDir === null || fromThisCheckout(workingDir, context.deployDir),
+      ).length;
+      if (use === null || ours > 0)
         throw new SetEnvRefusal(
-          `Compose project ${current} ${listed.code === 0 ? 'has containers' : 'could not be checked'}; renaming it to ${renamed.value} would leave them running and point every command at a new, empty installation with its own database. Nothing was changed. Stop and remove the old stack first, or pass --force if a new installation is what you want.`,
+          `Compose project ${current} ${use === null ? 'could not be checked' : 'has containers started from this checkout'}; renaming it to ${renamed.value} would leave them running and point every command at a new, empty installation with its own database. Nothing was changed. Stop and remove the old stack first, or pass --force if a new installation is what you want.`,
+        );
+      // Nor may it take the name another checkout's installation runs as: every
+      // command here would then reach that installation's containers and volumes.
+      const target = renamed.value.trim() || 'melete';
+      const taken = readProjectUse(context.run, target);
+      const theirs = taken ? otherCheckouts(taken, context.deployDir) : [];
+      if (theirs.length > 0)
+        throw new SetEnvRefusal(
+          `Compose project ${target} is the installation in ${theirs.join(', ')}; renaming this one to it would point every command here at that installation's containers and volumes. Nothing was changed. Choose a name of this installation's own.`,
+        );
+      if (others.length > 0)
+        context.out(
+          `Compose project ${current}'s containers belong to the installation in ${others.join(', ')}, not to this checkout, so they are left as they are.\n`,
         );
     }
   } catch (error) {
@@ -211,7 +245,11 @@ export async function runSet(
       const touchesContract = settings.some((setting) => CONTRACT_SETTINGS.includes(setting.name));
       const contract =
         touchesContract && existsSync(contractPath)
-          ? contractAfter(readFileSync(contractPath, 'utf8'), text)
+          ? contractAfter(
+              readFileSync(contractPath, 'utf8'),
+              text,
+              settings.map((setting) => setting.name),
+            )
           : null;
       await replaceFile(envPath, text, file, ENV_FILE_MODE);
       for (const setting of settings) context.out(`${describe(setting)}\n`);

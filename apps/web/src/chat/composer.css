@@ -31,11 +31,14 @@
 .attach-tile[data-doc="true"] {
   max-width: 220px;
 }
-.attach-tile[data-state="failed"] {
+.attach-tile[data-state="failed"],
+.attach-tile[data-state="retrying"] {
   border-color: var(--danger);
 }
 .attach-tile[data-state="failed"] .attach-meta,
-.attach-tile[data-state="failed"] > svg {
+.attach-tile[data-state="failed"] > svg,
+.attach-tile[data-state="retrying"] .attach-meta,
+.attach-tile[data-state="retrying"] > svg {
   color: var(--danger);
 }
 .attach-busy {

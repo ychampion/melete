@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, symlink } from 'node:fs/promises';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { APP_LIMITS } from '@melete/contracts';
@@ -14,8 +14,19 @@ import {
 
 const JOB = 'job_BUNDLE';
 
+/** Every folder the tests make, removed when they are done. */
+const made: string[] = [];
+const temporary = async (prefix: string) => {
+  const dir = await mkdtemp(path.join(tmpdir(), prefix));
+  made.push(dir);
+  return dir;
+};
+afterAll(async () => {
+  await Promise.all(made.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
 async function workspace(files: Record<string, string | Uint8Array>) {
-  const root = await mkdtemp(path.join(tmpdir(), 'melete-apps-'));
+  const root = await temporary('melete-apps-');
   for (const [name, content] of Object.entries(files))
     await Bun.write(path.join(root, JOB, 'app', name), content);
   return root;
@@ -100,7 +111,7 @@ describe('a bundle walk', () => {
 
   test('refuses a folder that is a link, and a link given as the folder itself', async () => {
     const root = await workspace({ 'index.html': 'x' });
-    const outside = await mkdtemp(path.join(tmpdir(), 'melete-apps-outside-'));
+    const outside = await temporary('melete-apps-outside-');
     await Bun.write(path.join(outside, 'secret.txt'), 'not yours');
     try {
       await symlink(outside, path.join(root, JOB, 'app', 'linked'), 'dir');

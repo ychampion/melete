@@ -13,6 +13,7 @@ import {
   type GatewayRoutes,
   type GatewaySettlement,
 } from '../gateway/types.ts';
+import { allowedRoutes, modelAllowed, spaceRulesFor } from '../spaces/policy.ts';
 import { dollarsSpentLocked, remainingOutputTokensLocked, reserveLocked } from './budget.ts';
 import { verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
@@ -31,6 +32,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
       /**
        * The operator's alternatives for an attempt on this model: a vision
        * model and fallbacks. None for a model the owner chose in the app.
+       * Called after the admission's transaction commits, so it may read the pool.
        */
       routes?: (
         attempt: ModelChoice & { usageClass: 'interactive' | 'background' },
@@ -52,7 +54,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
       throw new GatewayError(401, 'capability_denied');
     }
     try {
-      const principal = await this.options.sql.begin(async (tx) => {
+      const admitted = await this.options.sql.begin(async (tx) => {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
         const [attempt] = await tx`select a.provider, a.model, a.class, t.text as turn_text
@@ -67,32 +69,47 @@ export class PostgresGatewayBudget implements GatewayBudget {
           attempt.turn_text.length <= BRIEF_TURN_CHARS;
         // One who asks for depth gets a step more, however short the message.
         const deepTurn = typeof attempt.turn_text === 'string' && asksForDepth(attempt.turn_text);
-        const routes = await this.options.routes?.({
-          ...primary,
-          usageClass: attempt.class === 'background' ? 'background' : 'interactive',
-        });
-        const allowedModels = allowedWithRoutes(primary, routes);
+        // The space's rules bound every model a call may reach: one changed
+        // since the attempt started is refused, and a route they leave out is
+        // not offered.
+        const rules = await spaceRulesFor(tx, job.space_id);
+        if (!modelAllowed(rules, primary)) throw new GatewayError(403, 'model_denied');
         return {
-          jobId: job.id,
-          attemptId: claims.attempt_id,
-          privacy: { kind: 'job' as const },
-          epoch: claims.epoch,
-          revision: claims.revision,
-          maxRequests: job.budget.max_turns,
-          maxTokens: Math.min(job.budget.max_output_tokens, claims.budget.max_output_tokens),
-          remainingTokens: await remainingOutputTokensLocked(tx, job, claims),
-          maxInputTokens: Math.min(
-            inputTokenCeiling(attempt.model, job.budget),
-            inputTokenCeiling(attempt.model, claims.budget),
-          ),
-          allowedModels,
-          ...(routes ? { routes } : {}),
-          ...(briefTurn ? { briefTurn } : {}),
-          ...(deepTurn ? { deepTurn } : {}),
-          // Every conversation of one person in one space shares a provider cache.
-          cacheScope: [job.space_id, job.principal_id ?? ''].join('\u0000'),
+          primary,
+          rules,
+          usageClass:
+            attempt.class === 'background' ? ('background' as const) : ('interactive' as const),
+          principal: {
+            jobId: job.id,
+            attemptId: claims.attempt_id,
+            privacy: { kind: 'job' as const },
+            epoch: claims.epoch,
+            revision: claims.revision,
+            maxRequests: job.budget.max_turns,
+            maxTokens: Math.min(job.budget.max_output_tokens, claims.budget.max_output_tokens),
+            remainingTokens: await remainingOutputTokensLocked(tx, job, claims),
+            maxInputTokens: Math.min(
+              inputTokenCeiling(attempt.model, job.budget),
+              inputTokenCeiling(attempt.model, claims.budget),
+            ),
+            ...(briefTurn ? { briefTurn } : {}),
+            ...(deepTurn ? { deepTurn } : {}),
+            // Every conversation of one person in one space shares a provider cache.
+            cacheScope: [job.space_id, job.principal_id ?? ''].join('\u0000'),
+          },
         };
       });
+      // The operator's routes come from the model settings, read on the pool,
+      // so they are read once the lock is released: a pool read while it is
+      // held waits behind every event writer queued on it. The rules read
+      // under the lock still decide which of them are offered.
+      const { primary, rules, usageClass } = admitted;
+      const routes = allowedRoutes(rules, await this.options.routes?.({ ...primary, usageClass }));
+      const principal: GatewayPrincipal = {
+        ...admitted.principal,
+        allowedModels: allowedWithRoutes(primary, routes),
+        ...(routes ? { routes } : {}),
+      };
       this.claims.set(principal, claims);
       return principal;
     } catch (error) {
@@ -268,6 +285,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           latency_ms: result.latencyMs,
           status: result.status,
           http_status: result.httpStatus,
+          ...(result.failure ? { failure: result.failure } : {}),
           usage_uncertain: usage === null || result.usageEstimated === true,
           late,
           ...(result.stopped ? { stopped: true } : {}),

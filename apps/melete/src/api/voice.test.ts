@@ -317,6 +317,46 @@ describe('push-to-talk transcription', () => {
     expect(allowance?.rows.size).toBe(0);
   });
 
+  test('too many calls at once is answered as busy, so the caller can try again', async () => {
+    const spy = spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+    try {
+      for (const error of [
+        new VoiceProviderError(429, 'too_many_concurrent_requests'),
+        new VoiceProviderError(429),
+      ]) {
+        const adapter: TranscriptionAdapter = {
+          model: 'm',
+          async transcribe() {
+            throw error;
+          },
+        };
+        const { built, allowance } = app({ transcription: adapter });
+        const response = await built.request(clip(new Uint8Array(10), 3000, 'audio/webm'));
+        expect(response.status).toBe(429);
+        expect(await response.json()).toEqual({
+          error: {
+            code: 'voice_busy',
+            message: 'The speech service is busy just now. Try again in a moment.',
+          },
+        });
+        expect(allowance?.rows.size).toBe(0);
+      }
+      // An account out of credits is not a wait: it stays a failure.
+      const adapter: TranscriptionAdapter = {
+        model: 'm',
+        async transcribe() {
+          throw new VoiceProviderError(429, 'quota_exceeded');
+        },
+      };
+      const response = await app({ transcription: adapter }).built.request(
+        clip(new Uint8Array(10), 3000, 'audio/webm'),
+      );
+      expect(response.status).toBe(502);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test('a refusal is logged with its reason for the operator, never the key', async () => {
     const adapter: TranscriptionAdapter = {
       model: 'm',

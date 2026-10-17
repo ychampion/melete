@@ -9,6 +9,7 @@ import {
   displayNameText,
   isTerminal,
   type JobState,
+  type RoomMemberRole,
   type RoomPolicy,
   type RoomRole,
   type RoomStreamFrame,
@@ -75,7 +76,9 @@ const roomOwnerOnly = () =>
 /**
  * Whether a name is another account's: its chosen name, or the part before the
  * @ of its email, ignoring case. A name is how a room, and its agent, tell
- * people apart at a glance; the handle after it is what settles it.
+ * people apart at a glance; the handle after it is what settles it. A room's
+ * own account carries the room's name and is no one's, so it never counts:
+ * otherwise anyone could learn the names of rooms they are not in.
  */
 export async function nameTaken(db: Database, name: string, except?: string): Promise<boolean> {
   const [taken] = await db
@@ -84,6 +87,7 @@ export async function nameTaken(db: Database, name: string, except?: string): Pr
     .where(
       and(
         except ? ne(principal.id, except) : undefined,
+        ne(principal.kind, 'room'),
         or(
           sql`lower(${principal.displayName}) = lower(${name})`,
           sql`lower(split_part(${principal.email}, '@', 1)) = lower(${name})`,
@@ -219,26 +223,43 @@ export class RoomService {
           ...(access.role === 'guest' ? {} : { email: person.email }),
           expires_at: membership.expiresAt?.toISOString() ?? null,
           present: present.has(person.id),
+          made_room: person.id === access.space.ownerPrincipalId,
         }),
       ),
       policy: await readRoomPolicy(this.deps.db, spaceId),
     });
   }
 
-  async addMember(spaceId: string, actor: string, memberId: string) {
+  async addMember(spaceId: string, actor: string, memberId: string, role?: RoomMemberRole) {
     const access = await this.access(this.deps.db, spaceId, actor);
     if (access.role !== 'owner') throw roomOwnerOnly();
-    await this.deps.principals.grant(actor, spaceId, memberId);
+    const membership = await this.deps.principals.grant(actor, spaceId, memberId, role);
+    return this.memberView(access.space, memberId, membership.role);
+  }
+
+  /**
+   * Make someone in the room an owner, or an owner a member again. Owners
+   * only; the room keeps at least one owner, and its maker stays one.
+   */
+  async setMemberRole(spaceId: string, actor: string, memberId: string, role: RoomMemberRole) {
+    const access = await this.access(this.deps.db, spaceId, actor);
+    if (access.role !== 'owner') throw roomOwnerOnly();
+    const membership = await this.deps.principals.setRole(actor, spaceId, memberId, role);
+    return this.memberView(access.space, memberId, membership.role);
+  }
+
+  private async memberView(room: typeof space.$inferSelect, memberId: string, role: string) {
     const [person] = await this.deps.db.select().from(principal).where(eq(principal.id, memberId));
     if (!person) throw missing();
     return {
       member: roomMember.parse({
         principal_id: person.id,
-        display_name: personLabel(person, spaceId),
-        role: 'member',
-        handle: roomHandle(spaceId, person.id),
+        display_name: personLabel(person, room.id),
+        role,
+        handle: roomHandle(room.id, person.id),
         email: person.email,
         present: false,
+        made_room: person.id === room.ownerPrincipalId,
       }),
     };
   }
@@ -251,17 +272,41 @@ export class RoomService {
     return { removed: memberId };
   }
 
-  /** Accounts a person can add to a room: people, never a room's own principal or a guest. */
+  /**
+   * Accounts a person can add to a room: people, never a room's own principal,
+   * a guest, or an account that is turned off, which an account being deleted
+   * also is. The person who set this installation up finds everyone. Anyone
+   * else finds themselves and the people they share a space or room with now,
+   * and someone else only by typing that person's whole email address, so
+   * nobody can list the other accounts here.
+   */
   async people(actor: string, query?: string) {
     if ((await this.kindOf(actor)) !== 'person')
       throw new ServiceError('scope_denied', 'Only a person can look up people.', 403);
-    const pattern = query?.trim() ? `%${query.trim().replace(/[\\%_]/g, '\\$&')}%` : undefined;
+    const typed = query?.trim() ?? '';
+    const pattern = typed ? `%${typed.replace(/[\\%_]/g, '\\$&')}%` : undefined;
+    const current = (alias: string) =>
+      sql.raw(
+        `${alias}.revoked_at is null and (${alias}.expires_at is null or ${alias}.expires_at > now())`,
+      );
+    const visible = or(
+      sql`exists (select 1 from owner o where o.id = ${actor})`,
+      eq(principal.id, actor),
+      sql`exists (select 1 from space_membership mine
+        join space_membership theirs on theirs.space_id = mine.space_id
+        join space s on s.id = mine.space_id
+        where mine.principal_id = ${actor} and theirs.principal_id = ${principal.id}
+          and s.removed_at is null and ${current('mine')} and ${current('theirs')})`,
+      typed ? sql`lower(${principal.email}) = lower(${typed})` : undefined,
+    );
     const rows = await this.deps.db
       .select()
       .from(principal)
       .where(
         and(
           eq(principal.kind, 'person'),
+          isNull(principal.disabledAt),
+          visible,
           pattern
             ? or(ilike(principal.email, pattern), ilike(principal.displayName, pattern))
             : undefined,
@@ -761,9 +806,10 @@ export class RoomService {
 
   /** The connections in the room's space, and which of them serve the room's requests. */
   async connections(spaceId: string, actor: string) {
-    const { role } = await this.access(this.deps.db, spaceId, actor);
-    // Owners see every connection in the room's space; everyone else sees only
-    // those that serve the room. One kept for the owner (a mailbox, say) stays theirs.
+    const { space: room } = await this.access(this.deps.db, spaceId, actor);
+    // The person who made the room sees every connection in its space; everyone
+    // else, its other owners too, sees only those that serve the room. One kept
+    // for the maker (a mailbox, say) serves only their work and stays theirs.
     const rows = await this.deps.db
       .select()
       .from(connection)
@@ -771,7 +817,7 @@ export class RoomService {
         and(
           eq(connection.spaceId, spaceId),
           ne(connection.status, 'revoked'),
-          role === 'owner' ? undefined : eq(connection.sharedUse, 'room'),
+          actor === room.ownerPrincipalId ? undefined : eq(connection.sharedUse, 'room'),
         ),
       )
       .orderBy(asc(connection.createdAt), asc(connection.id));
@@ -780,9 +826,10 @@ export class RoomService {
 
   /**
    * Let a connection serve the room's requests, or keep it to the owner's own
-   * work. Owners only. Who a connection serves changes what work may act
-   * through it, so work under way in the room is fenced and starts again, and
-   * permissions waiting on it are withdrawn.
+   * work. The room's maker only: a connection kept back serves only their work,
+   * so it is theirs to share or keep, not another owner's. Who a connection
+   * serves changes what work may act through it, so work under way in the room
+   * is fenced and starts again, and permissions waiting on it are withdrawn.
    */
   async setConnection(
     spaceId: string,
@@ -794,6 +841,12 @@ export class RoomService {
     const result = await jobs.transaction(async (tx) => {
       const access = await this.access(tx, spaceId, actor, true);
       if (access.role !== 'owner') throw roomOwnerOnly();
+      if (actor !== access.space.ownerPrincipalId)
+        throw new ServiceError(
+          'scope_denied',
+          'Only the person who made this room chooses which of its connections serve the room.',
+          403,
+        );
       const [source] = await tx
         .select()
         .from(connection)

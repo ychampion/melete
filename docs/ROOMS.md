@@ -37,8 +37,29 @@ An owner adds people who have accounts on this installation
 remove someone, and anyone can leave (`DELETE /rooms/{id}/members/{person}`).
 Removing someone ends their access at once, including any thread they have
 open. What they said stays in the room; each person can delete their own
-messages first (`DELETE /rooms/{id}/messages/{message}`). The room's owner
-cannot be removed.
+messages first (`DELETE /rooms/{id}/messages/{message}`). The person who made
+the room cannot be removed.
+
+A room can have more than one owner. An owner adds someone as an owner
+(`POST /rooms/{id}/members` with `role: "owner"`), or makes someone already in
+the room an owner, or an owner a member again
+(`PATCH /rooms/{id}/members/{person}` with `role: "owner"` or `"member"`).
+Adding someone already in the room without a role leaves their role as it is. The
+owners an owner adds run the room as its maker does: they add and remove
+people, invite guests, set how the room works and answer what the room leaves
+to its owners. Three things stay with the person who made the room: they
+always stay an owner, only they remove the room for everyone, and a connection
+kept for them serves only their work, so only they see, test or change it,
+read its texts or share it with the room. Texts to a number speak as the
+person who made the room, so only they add a texting number to it, and it is
+kept for them; a number shared with the room no longer answers texts. The room's memory, and the skills and records kept
+private to it, read for the other owners as they do for its members; so does
+the room when one of them works in it from their own session or assistant, so
+the maker's home, tasks and conversations there stay the maker's. Deleting
+another owner's account leaves the room, as any member's does. A
+room always keeps at least one owner. Each change of role moves that person's
+membership generation on, so work of theirs under way checks again with what
+they may now do. A guest stays a guest.
 
 In a room every person is shown as the name they chose followed by the handle
 the room gives them, as in `Alice <k7q2mx3a>`, to the people in the room and
@@ -206,14 +227,23 @@ is waiting for.
 ## Connections in a room
 
 A room's requests act only through the connections marked for the room. Its own
-tools (files, the web, its computer) are marked so from the start. Any other
-connection in the room's space serves only the owner's own work there until an
-owner marks it for the room (`PUT /rooms/{id}/connections/{connection}` with
-`shared_use: "room"`); everyone in the room can see the connections
-that serve the room (`GET /rooms/{id}/connections`); owners also see the ones
-kept for them. Changing what a connection
+tools (files, the web, its computer) are marked so from the start. A connection
+an owner installs into the room's space (`space_id` set to the room's space)
+serves the room from the start too: everyone's requests in the room can use it
+as soon as it is installed, with nothing more to switch on. An owner can keep
+one for their own work there instead, or share it with the room again
+(`PUT /rooms/{id}/connections/{connection}` with `shared_use: "owner"` or
+`"room"`); everyone in the room can see the connections
+that serve the room (`GET /rooms/{id}/connections`); the person who made the
+room also sees the ones kept for them. Only the person who made the room changes what a connection
+serves, since one kept back serves only their work. Changing what a connection
 serves starts work under way in the room again and withdraws the permissions
 waiting in it.
+
+A room's connections are held to public addresses, because its requests come
+from everyone in it. A team that runs its own MCP servers, calendars or mail on
+an internal network can open those to rooms with `MELETE_PRIVATE_HOSTS`; see
+[Internal hosts](CONNECTORS.md#internal-hosts).
 
 ## What the agent reads in a room
 
@@ -237,10 +267,19 @@ only ones its requests use.
 
 Everything anyone says in a room's threads becomes the room's memory, under the
 name of the person who said it. Everyone in the room sees it, with whose words
-each detail rests on (`GET /rooms/{id}/memory`). A room's owner can forget any
-detail, and anyone can forget a detail that came from their own words alone, in
-the room or in plain words ("forget that"). Deleting one's own message takes its
-words out of the thread, the request it asked and the room's memory.
+each detail rests on (`GET /rooms/{id}/memory`).
+
+That includes who is taking on what and by when ("I'm taking the vendor
+contract review, done by Thursday"), which a personal chat would treat as one
+week's work and not keep. Anyone in the room can ask "who's on the vendor
+contract?" later, in any of its threads, and the agent reads the detail with
+the name of the person who said it. It stays in that room: other rooms and
+each person's own memory never see it.
+
+A room's owner can forget any detail, and anyone can forget a detail that came
+from their own words alone, in the room or in plain words ("forget that").
+Deleting one's own message takes its words out of the thread, the request it
+asked and the room's memory.
 
 A person can share a detail from their own memory into a room
 (`POST /rooms/{id}/shares`). The room reads it from the person's memory as it

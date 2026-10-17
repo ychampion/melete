@@ -227,8 +227,11 @@ export function EmptyLedger({
   progress: ScanProgress | null;
   error: string | null;
   onScan: () => void;
-  /** False when no mailbox is connected yet: the way forward is connecting one. */
-  mailbox?: boolean;
+  /**
+   * False when no mailbox is connected yet: the way forward is connecting one.
+   * Null while that is not known, when neither is offered.
+   */
+  mailbox?: boolean | null;
 }) {
   const share =
     progress && progress.messages_seen > 0
@@ -255,7 +258,7 @@ export function EmptyLedger({
               : 'Starting'}
           </span>
         </div>
-      ) : mailbox ? (
+      ) : mailbox === null ? null : mailbox ? (
         <Button icon="search" onClick={onScan}>
           Scan the inbox
         </Button>

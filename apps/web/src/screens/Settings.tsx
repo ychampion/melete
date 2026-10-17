@@ -11,8 +11,8 @@ import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
-import { adapter } from '../experience/adapter.ts';
-import { type Loaded, useLoad } from '../experience/hooks.ts';
+import { adapter, type Result } from '../experience/adapter.ts';
+import { type Loaded, useApp, useLoad } from '../experience/hooks.ts';
 import type { Connection, Rule } from '../experience/types.ts';
 import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { models } from '../models/api.ts';
@@ -31,6 +31,7 @@ import { OperatorTab } from './Operator.tsx';
 import { PeopleTab } from './People.tsx';
 import { PrivacyTab, SignedInSites } from './Privacy.tsx';
 import { SavedSignIns } from './SavedSignIns.tsx';
+import { SpaceRules } from './SpaceRules.tsx';
 import './settings.css';
 
 const dateOf = (iso: string | null) =>
@@ -420,24 +421,54 @@ const TABS = [
   'activity',
   'models',
   'usage',
+  'space-rules',
   'privacy',
   'feedback',
   'installation',
 ] as const;
 type Tab = (typeof TABS)[number] | 'memory';
+/**
+ * The tabs that set up the space itself: its apps, computers, approvals,
+ * rules, models, what its work may use, and privacy. They are its owner's, so a
+ * member does not see them.
+ */
+const OWNER_TABS: ReadonlySet<string> = new Set([
+  'connections',
+  'devices',
+  'approvals',
+  'rules',
+  'models',
+  'space-rules',
+  'privacy',
+]);
+/** Whether Settings lists this tab: every tab for an owner, none of the owner's for a member. */
+export const showsTab = (tab: string, member: boolean): boolean => !(member && OWNER_TABS.has(tab));
+/** The tab an address opens; one of the owner's opens a member's account instead. */
+export function settingsTab(tab: string, member: boolean): Tab {
+  const asked =
+    tab === 'memory'
+      ? 'memory'
+      : (((TABS as readonly string[]).includes(tab) ? tab : 'account') as Tab);
+  return showsTab(asked, member) ? asked : 'account';
+}
+const off = <T,>(): Promise<Result<T>> =>
+  Promise.resolve({ data: null, error: null, unavailable: 'The space’s owner keeps this.' });
 
 export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
-  const connections = useLoad(() => adapter.connections(), []);
-  const rules = useLoad(() => adapter.rules(), []);
+  const { member } = useApp();
+  const connections = useLoad(
+    () => (member ? off<{ connections: Connection[] }>() : adapter.connections()),
+    [member],
+  );
+  const rules = useLoad(() => (member ? off<{ rules: Rule[] }>() : adapter.rules()), [member]);
   const model = useLoad(() => models.settings(), []);
   const people = useLoad(() => adapter.spaceMembers(), []);
   // People is a shared space's page; a personal space has only its owner.
   const shared = people.data?.space.kind === 'shared';
-  const owner = model.data?.can_edit === true;
-  const current: Tab =
-    tab === 'memory'
-      ? 'memory'
-      : (((TABS as readonly string[]).includes(tab) ? tab : 'account') as Tab);
+  // The installation's console is its setup owner's alone; an admin chooses the
+  // model (can_edit) but does not run the installation, and the service refuses them.
+  const owner = model.data?.secondary.can_edit === true;
+  const current = settingsTab(tab, member === true);
   const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
@@ -514,11 +545,12 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 { value: 'activity', label: 'Activity' },
                 { value: 'models', label: 'Models' },
                 { value: 'usage', label: 'Usage' },
+                { value: 'space-rules', label: 'Space rules' },
                 { value: 'privacy', label: 'Privacy' },
                 { value: 'feedback', label: 'Feedback' },
                 // Only the installation's owner runs it; the service refuses everyone else too.
                 ...(owner ? [{ value: 'installation' as const, label: 'Installation' }] : []),
-              ]}
+              ].filter((item) => showsTab(item.value, member === true))}
             />
           </div>
         )}
@@ -530,6 +562,13 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           </div>
         ) : null}
         {current === 'activity' ? <ActivityTab /> : null}
+        {current === 'space-rules' ? (
+          people.error ? (
+            <LoadError what="this space’s rules" error={people.error} onRetry={people.reload} />
+          ) : (
+            <SpaceRules spaceId={people.data?.space.id} />
+          )
+        ) : null}
         {current === 'people' ? (
           <PeopleTab
             people={people.data}
@@ -564,7 +603,10 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           <AccountSettings />
         ) : current === 'connections' ? (
           <ConnectionsTab connections={connections} />
-        ) : current === 'privacy' || current === 'people' || current === 'activity' ? null : (
+        ) : current === 'privacy' ||
+          current === 'people' ||
+          current === 'activity' ||
+          current === 'space-rules' ? null : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke

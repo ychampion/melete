@@ -9,11 +9,13 @@ import { fileURLToPath } from 'node:url';
 import { ATTACHMENT_LIMITS, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
+import { formatRange, parsePrivateHosts, rangesOverlap } from './connectors/private-hosts.ts';
 import { startersFromSetting } from './experience/starters.ts';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
 import { MAX_CAP_USD } from './gateway/person-limits.ts';
 import { parseModelPrices } from './gateway/prices.ts';
 import { parseModelChoice } from './gateway/routing.ts';
+import { DEFAULT_NETWORK_POOL, parseNetworkPool } from './runtime/network-pool.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -453,6 +455,22 @@ const variables = z.object({
   MELETE_RUNTIME_START_TIMEOUT_MS: unsetWhenBlank(
     z.coerce.number().int().positive().default(120_000),
   ),
+  /**
+   * The range the networks of attempts, computers and plugins take a /28 of
+   * each, or `off` for the engine's own address pools.
+   */
+  MELETE_NETWORK_POOL: unsetWhenBlank(
+    z
+      .string()
+      .default(DEFAULT_NETWORK_POOL)
+      .superRefine((value, context) => {
+        try {
+          parseNetworkPool(value);
+        } catch (error) {
+          context.addIssue({ code: 'custom', message: (error as Error).message });
+        }
+      }),
+  ),
   /** Stdio MCP servers run in containers beside the attempts; these are the runners' images. */
   MELETE_MCP_NODE_IMAGE: unsetWhenBlank(
     z
@@ -508,6 +526,24 @@ const variables = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * Internal hosts everyone on the installation may reach, not only its owner:
+   * host names, `*.corp.internal` wildcards and address ranges such as
+   * `10.20.0.0/16`, comma-separated. Empty (the default) keeps everyone but the
+   * owner to public addresses. Read again where it is used; checked here.
+   */
+  MELETE_PRIVATE_HOSTS: unsetWhenBlank(
+    z
+      .string()
+      .default('')
+      .superRefine((value, context) => {
+        try {
+          parsePrivateHosts(value);
+        } catch (error) {
+          context.addIssue({ code: 'custom', message: (error as Error).message });
+        }
+      }),
+  ),
   /**
    * The OAuth client ChatGPT sign-in presents. Left empty, the Codex CLI's
    * public client, the only one OpenAI has registered for this sign-in.
@@ -603,8 +639,8 @@ const variables = z.object({
    */
   MELETE_MEMORY_MODEL: z.string().optional(),
   MELETE_MEMORY_PROVIDER: z.string().optional(),
-  /** Extraction calls one person's memory may make in a day. */
-  MELETE_MEMORY_DAILY_CALLS: z.coerce.number().int().nonnegative().default(200),
+  /** Extraction calls one person's memory may make in a day. Unset or blank: no daily limit. */
+  MELETE_MEMORY_DAILY_CALLS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
   /**
    * Semantic recall embeds memory with this model. Unset, the default
    * provider's embedding model when it has one (Fireworks, OpenAI, Google),
@@ -1199,6 +1235,27 @@ export const envSchema = variables.transform((value, context) => {
         message: (error as Error).message,
       });
     }
+  // Melete's own networks (attempts, computers, plugins) are never anyone's
+  // internal host: a listed range that overlaps them would open one computer
+  // to another.
+  try {
+    const pool = parseNetworkPool(value.MELETE_NETWORK_POOL);
+    const overlap =
+      pool &&
+      rangesOverlap(parsePrivateHosts(value.MELETE_PRIVATE_HOSTS), {
+        family: 4,
+        base: BigInt(pool.start),
+        prefix: pool.prefix,
+      });
+    if (overlap)
+      context.addIssue({
+        code: 'custom',
+        path: ['MELETE_PRIVATE_HOSTS'],
+        message: `${formatRange(overlap)} overlaps MELETE_NETWORK_POOL (${value.MELETE_NETWORK_POOL}), the range Melete's own computers take; list a range outside it, or move the pool`,
+      });
+  } catch {
+    // Either setting is already refused on its own.
+  }
   if (Boolean(value.MELETE_SMTP_URL) !== Boolean(value.MELETE_MAIL_FROM))
     context.addIssue({
       code: 'custom',

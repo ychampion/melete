@@ -37,6 +37,24 @@ export const PROFILES = ['sandbox'] as const;
 /** The default registry, the one deploy/docker-compose.yml names when MELETE_IMAGE_REGISTRY is empty. */
 export const DEFAULT_REGISTRY = 'ghcr.io/ychampion';
 
+/**
+ * How long a backup is kept by default, in days: the period hosted services
+ * commonly give for deleted data to leave their backups.
+ */
+export const DEFAULT_BACKUP_DAYS = 30;
+
+/** A Compose project name, as COMPOSE_PROJECT_NAME takes it. */
+export const PROJECT_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+
+/**
+ * Where backups go when the contract does not say: a folder of the project's
+ * own, so two installations on one machine never prune each other's backups.
+ * The project `melete` keeps the folder it always had; another project's
+ * folder is inside it, where pruning never looks.
+ */
+export const defaultBackupDir = (project: string): string =>
+  project === 'melete' ? '~/melete-backups' : `~/melete-backups/${project}`;
+
 const unique = <T>(values: readonly T[]) => new Set(values).size === values.length;
 
 const images = z.strictObject({
@@ -64,6 +82,7 @@ const disk = z.strictObject({
 
 const backup = z.strictObject({
   dir: z.string().min(1).default('~/melete-backups'),
+  /** How many backups `dir` keeps; each new one removes the oldest beyond this. */
   keep: z.number().int().min(1).default(3),
   /**
    * Whether backups run on a schedule (docs/DEPLOYMENT.md, "Backups on a
@@ -71,6 +90,12 @@ const backup = z.strictObject({
    * than 26 hours old, as they do on a hosted installation.
    */
   scheduled: z.boolean().optional(),
+  /**
+   * The most days a backup in `dir` is kept, whatever `keep` says, so what was
+   * forgotten or deleted leaves the backups within this many days of a backup
+   * made after it. Null keeps them by `keep` alone.
+   */
+  max_age_days: z.number().int().min(1).max(3650).nullable().default(DEFAULT_BACKUP_DAYS),
 });
 
 const blobs = z.discriminatedUnion('store', [
@@ -104,19 +129,35 @@ const remote = z.strictObject({
   cli: z.array(remoteWord).min(1).default(['bun', 'run', 'melete']),
 });
 
-export const deployConfigSchema = z
+/** A contract with no backup folder gets its project's own (defaultBackupDir). */
+function withProjectBackupDir(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  const project = typeof record.project === 'string' ? record.project : 'melete';
+  const backup = record.backup;
+  if (backup === undefined) return { ...record, backup: { dir: defaultBackupDir(project) } };
+  if (backup !== null && typeof backup === 'object' && !Array.isArray(backup) && !('dir' in backup))
+    return { ...record, backup: { ...backup, dir: defaultBackupDir(project) } };
+  return raw;
+}
+
+const contractObject = z
   .strictObject({
     contract: z.literal(CONTRACT),
     /** The Compose project: COMPOSE_PROJECT_NAME. */
     project: z
       .string()
-      .regex(/^[a-z0-9][a-z0-9_-]*$/, 'a Compose project name: lower-case letters, digits, - and _')
+      .regex(PROJECT_NAME, 'a Compose project name: lower-case letters, digits, - and _')
       .default('melete'),
     images: images.default({ registry: DEFAULT_REGISTRY, tag: 'main', channel: 'main' }),
     profiles: z.array(z.enum(PROFILES)).refine(unique, 'each profile once').default([]),
     overlays: z.array(z.enum(OVERLAYS)).refine(unique, 'each overlay once').default([]),
     disk: disk.default({ min_free_mb: 4096, pull_margin_mb: 512 }),
-    backup: backup.default({ dir: '~/melete-backups', keep: 3 }),
+    backup: backup.default({
+      dir: '~/melete-backups',
+      keep: 3,
+      max_age_days: DEFAULT_BACKUP_DAYS,
+    }),
     /** Whether a port may be published on an address other than loopback. */
     public_ports: z.boolean().default(false),
     /**
@@ -150,6 +191,8 @@ export const deployConfigSchema = z
           'images built here have registry null and tag local; published images name a registry and a published tag',
       });
   });
+
+export const deployConfigSchema = z.preprocess(withProjectBackupDir, contractObject);
 
 export type DeployConfig = z.infer<typeof deployConfigSchema>;
 

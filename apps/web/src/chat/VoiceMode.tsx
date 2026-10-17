@@ -40,6 +40,7 @@ import {
   STOPPING,
   stepsDone,
 } from './call.ts';
+import { createSpeechQueue } from './speech-queue.ts';
 import {
   base64,
   elapsed,
@@ -149,73 +150,61 @@ export function VoicePanel({
   workingRef.current = working;
 
   /* ---------- playback: pieces fetched ahead, played in order ---------- */
-  const queue = useRef<Promise<Blob | null>[]>([]);
   const player = useRef<HTMLAudioElement | null>(null);
-  const playing = useRef(false);
-  const speech = useRef<AbortController>(new AbortController());
+  const conversationRef = useRef(conversationId);
+  conversationRef.current = conversationId;
+  const [queue] = useState(() =>
+    createSpeechQueue({
+      fetch: (text, signal) => adapter.speak(conversationRef.current, text, signal),
+      play: (blob, signal) =>
+        new Promise<void>((resolve) => {
+          const url = URL.createObjectURL(blob);
+          if (!player.current) player.current = new Audio();
+          const audio = player.current;
+          let finished = false;
+          const done = () => {
+            if (finished) return;
+            finished = true;
+            signal.removeEventListener('abort', done);
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          signal.addEventListener('abort', done, { once: true });
+          audio.onended = done;
+          audio.onerror = done;
+          audio.src = url;
+          audio.play().catch(done);
+        }),
+      onSpeaking: () => setPhase('speaking'),
+      // Back to the work, or to listening, once the last piece has been read. When every
+      // piece was skipped nothing was spoken, so a finished reply goes back to listening too.
+      onIdle: () =>
+        setPhase((current) =>
+          current === 'speaking'
+            ? workingRef.current
+              ? 'thinking'
+              : 'listening'
+            : current === 'thinking' && !workingRef.current && !replying.current
+              ? 'listening'
+              : current,
+        ),
+      onProblem: setProblem,
+    }),
+  );
+  const speech = useRef(queue);
 
   const hush = useCallback(() => {
-    speech.current.abort();
-    speech.current = new AbortController();
-    queue.current = [];
-    playing.current = false;
+    speech.current.clear();
     if (player.current) {
       player.current.pause();
       player.current.removeAttribute('src');
     }
   }, []);
 
-  const playNext = useCallback(async () => {
-    if (playing.current) return;
-    const next = queue.current.shift();
-    if (!next) return;
-    playing.current = true;
-    const blob = await next;
-    if (!blob || !playing.current) {
-      playing.current = false;
-      if (blob) void playNext();
-      return;
-    }
-    const url = URL.createObjectURL(blob);
-    if (!player.current) player.current = new Audio();
-    const audio = player.current;
-    audio.src = url;
-    setPhase('speaking');
-    const done = () => {
-      URL.revokeObjectURL(url);
-      playing.current = false;
-      if (queue.current.length) void playNext();
-      // Back to the work, or to listening, once the last piece has been read.
-      else
-        setPhase((current) =>
-          current === 'speaking' ? (workingRef.current ? 'thinking' : 'listening') : current,
-        );
-    };
-    audio.onended = done;
-    audio.onerror = done;
-    await audio.play().catch(done);
+  const say = useCallback((text: string) => {
+    setSaid(text);
+    speech.current.push(text);
   }, []);
-
-  const say = useCallback(
-    (text: string) => {
-      setSaid(text);
-      const signal = speech.current.signal;
-      queue.current.push(
-        adapter
-          .speak(conversationId, text, signal)
-          .then((result) => {
-            if (result.data === null) {
-              setProblem(result.error ?? 'The reply could not be read aloud.');
-              return null;
-            }
-            return result.data;
-          })
-          .catch(() => null),
-      );
-      void playNext();
-    },
-    [conversationId, playNext],
-  );
 
   /* ---------- the reply to the latest message ---------- */
   const replying = useRef<{ index: number; spoken: number; told: boolean } | null>(null);
@@ -244,7 +233,7 @@ export function VoicePanel({
     }
     if (finished) {
       replying.current = null;
-      if (!playing.current && queue.current.length === 0) setPhase('listening');
+      if (!speech.current.busy) setPhase('listening');
     }
   }, [transcript, say]);
 
@@ -358,11 +347,7 @@ export function VoicePanel({
       lastAt: state.lastAt,
       steps: stepsDone(activity),
       lastSteps: state.lastSteps,
-      busy:
-        asking.current ||
-        playing.current ||
-        queue.current.length > 0 ||
-        clock - lastHeardAt.current < 3000,
+      busy: asking.current || speech.current.busy || clock - lastHeardAt.current < 3000,
     });
     if (!due) return;
     asking.current = true;
@@ -417,7 +402,7 @@ export function VoicePanel({
         if (message.message_type === 'partial_transcript' && text) {
           lastHeardAt.current = Date.now();
           // The person is talking: stop reading to them. A finished reply is not taken up again.
-          if (playing.current || queue.current.length) {
+          if (speech.current.busy) {
             hush();
             if (!workingRef.current) replying.current = null;
           }

@@ -1,0 +1,1 @@
+ALTER TABLE "principal" ADD COLUMN "admin" boolean DEFAULT false NOT NULL;

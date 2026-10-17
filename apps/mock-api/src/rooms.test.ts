@@ -28,7 +28,10 @@ async function room(mock: Mock) {
   const made = await call(mock, 'POST', '/rooms', { name: 'Design', purpose: 'The new site' });
   expect(made.status).toBe(201);
   const detail = C.roomDetail.parse(made.json);
-  const people = C.peopleList.parse((await call(mock, 'GET', '/people?query=priya')).json).people;
+  // Nobody shares a room with the caller yet, so Priya is found by her whole email.
+  const people = C.peopleList.parse(
+    (await call(mock, 'GET', '/people?query=priya.shah@fastmail.example')).json,
+  ).people;
   const priya = people[0];
   if (!priya) throw new Error('No one to add');
   const added = await call(mock, 'POST', `/rooms/${detail.room.id}/members`, {
@@ -37,6 +40,26 @@ async function room(mock: Mock) {
   expect(added.status).toBe(201);
   return { id: detail.room.id, priya };
 }
+
+test('people lists the caller and those they share a room with, and anyone else only by whole email', async () => {
+  const mock = createMock({ multiplayer: true, speed: 0 });
+  const emails = async (query: string) =>
+    C.peopleList
+      .parse((await call(mock, 'GET', `/people${query ? `?query=${query}` : ''}`)).json)
+      .people.map((p) => p.email);
+  const alone = await emails('');
+  expect(alone).toHaveLength(1);
+  expect(alone).not.toContain('priya.shah@fastmail.example');
+  expect(await emails('priya')).toEqual([]);
+  expect(await emails('PRIYA.SHAH@fastmail.example')).toEqual(['priya.shah@fastmail.example']);
+  await room(mock);
+  // Priya now shares a room with the caller; Sam and Lena still do not.
+  expect(await emails('priya')).toEqual(['priya.shah@fastmail.example']);
+  const shared = await emails('');
+  expect(shared).toContain('priya.shah@fastmail.example');
+  expect(shared).not.toContain('sam.okafor@fastmail.example');
+  expect(await emails('fastmail')).toEqual([...alone, 'priya.shah@fastmail.example'].sort());
+});
 
 test('a room is made, a person is added, and everyone in it is shown by name and handle', async () => {
   const mock = createMock({ multiplayer: true, speed: 0 });

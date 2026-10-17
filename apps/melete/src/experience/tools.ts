@@ -15,6 +15,8 @@ import {
   MEMORY_TOOL_NOTICE,
   type MemoryToolNotice,
   memoryToolNotice,
+  type ProviderFailure,
+  providerFailure,
   TOOL_EXCERPT_LIMIT,
   TOOL_QUOTE_LIMIT,
   TOOL_SUMMARY_LIMIT,
@@ -1128,10 +1130,27 @@ export function runtimeCall(input: {
 // Model calls through the gateway
 // --------------------------------------------------------------------------
 
+/** A model call the provider refused, in a few words for the work log. */
+const MODEL_REFUSALS: Record<ProviderFailure, string> = {
+  key_refused: 'The provider did not accept the API key.',
+  quota: 'The provider account is out of credit.',
+  rate_limited: 'The provider is limiting requests right now.',
+  model_not_found: 'The provider does not have this model.',
+  context_too_long: 'The conversation is too long for this model.',
+  provider_down: 'The provider did not answer.',
+};
+
 export function modelCall(input: {
   reservationId: string;
   requestedAt: Date;
-  receipt?: { status: unknown; latencyMs: unknown; at: Date; stopped?: boolean };
+  receipt?: {
+    status: unknown;
+    latencyMs: unknown;
+    at: Date;
+    stopped?: boolean;
+    /** Why the provider refused the call, as the gateway classed it. */
+    failure?: unknown;
+  };
 }): ToolCall {
   const settled = input.receipt;
   // A call cut off by Stop ended as asked: it is finished, not failed.
@@ -1147,6 +1166,8 @@ export function modelCall(input: {
     typeof settled?.latencyMs === 'number' && Number.isFinite(settled.latencyMs)
       ? Math.max(0.1, Math.round(settled.latencyMs / 100) / 10)
       : null;
+  const refused = providerFailure.safeParse(settled?.failure);
+  const refusal = refused.success ? MODEL_REFUSALS[refused.data] : null;
   return toolCall.parse({
     id: toolId('model', input.reservationId),
     kind: 'model',
@@ -1159,8 +1180,8 @@ export function modelCall(input: {
       ? summary('Stopped when you asked.')
       : status === 'done'
         ? summary(seconds === null ? 'Answered' : `Answered in ${seconds} s`)
-        : status === 'failed'
-          ? summary('No answer came back.')
+        : status === 'failed' || (status === 'unknown' && refusal)
+          ? summary(refusal ?? 'No answer came back.')
           : status === 'unknown'
             ? summary('It is unclear whether an answer came back.')
             : null,

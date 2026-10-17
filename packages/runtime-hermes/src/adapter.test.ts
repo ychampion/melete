@@ -7,6 +7,7 @@ import {
   coalesceDeltas,
   type FetchLike,
   HermesRuntimeAdapter,
+  plainEngineNotice,
 } from './adapter.ts';
 import { MODEL_SILENCE_MS, quietAllowanceMs, STALL_MARGIN_MS, stepDeadlineMs } from './liveness.ts';
 
@@ -554,6 +555,40 @@ describe('nothing becomes a completion that was not one', () => {
       reason: 'provider refused the request',
       retryable: true,
     });
+  });
+
+  test('a run the provider refused carries the class, and only a passing one is retried', async () => {
+    const run = async (error: string) => {
+      const { fetch } = harness({
+        sse: `data: ${JSON.stringify({ event: 'run.failed', error })}\n\n`,
+      });
+      return adapterWith(fetch).start(bundle, new Collector(), new AbortController().signal);
+    };
+    expect(
+      await run(
+        "Error code: 401 - {'error': {'code': 'provider_key_refused', 'message': 'provider_key_refused'}}",
+      ),
+    ).toMatchObject({ kind: 'failed', failure: 'key_refused', retryable: false });
+    expect(await run('HTTP 402: provider_quota')).toMatchObject({
+      failure: 'quota',
+      retryable: false,
+    });
+    expect(await run('HTTP 404: provider_model_not_found')).toMatchObject({
+      failure: 'model_not_found',
+      retryable: false,
+    });
+    expect(await run('Error code: 429 - provider_rate_limited')).toMatchObject({
+      failure: 'rate_limited',
+      retryable: true,
+    });
+    expect(await run('Error code: 502 - provider_down')).toMatchObject({
+      failure: 'provider_down',
+      retryable: true,
+    });
+    // Words that merely look alike name nothing.
+    const plain = await run('the provider_downstream cache missed');
+    expect(plain).toMatchObject({ retryable: true });
+    expect(plain).not.toHaveProperty('failure');
   });
 
   test('a start the engine refused never opens a stream', async () => {
@@ -1116,5 +1151,47 @@ describe('words the person sends while the turn runs', () => {
     const { adapter } = engine([[frame({ event: 'run.completed', output: 'Done.' })]]);
     await adapter.start(bundle, new Collector(), new AbortController().signal);
     expect(await adapter.steer(ATTEMPT, { id: 'str_4', text: 'One more thing.' })).toBe(false);
+  });
+});
+
+describe('a reply that hit the output limit', () => {
+  // The engine's own wording, as the pinned release writes it.
+  const THINKING =
+    '⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning ' +
+    'and had none left for the actual response.\n\nTo fix this:\n' +
+    '→ Lower reasoning effort: `/reasoning low` or `/reasoning minimal`\n' +
+    '→ Or switch to a larger/non-reasoning model with `/model`';
+  const REPEATING =
+    '⚠️ **Response Stopped — Repetition Detected**\n\nThe model fell into a repetition loop.' +
+    '\n\n→ Switch to a different model with `/model`';
+
+  test('names what can be done here, never the engine slash commands', async () => {
+    for (const output of [
+      THINKING,
+      REPEATING,
+      'Response truncated due to output length limit',
+      '⚠️ **No visible answer was produced.** The model hit its output-token limit.\n' +
+        '→ Lower reasoning effort: `/reasoning low` or `/reasoning none`',
+    ]) {
+      const { fetch } = harness({
+        sse: `data: ${JSON.stringify({ event: 'run.completed', output })}\n\n`,
+      });
+      const outcome = await adapterWith(fetch).start(
+        bundle,
+        new Collector(),
+        new AbortController().signal,
+      );
+      expect(outcome.kind).toBe('completed');
+      const said = (outcome as { summary: string }).summary;
+      expect(said).not.toContain('/reasoning');
+      expect(said).not.toContain('/model');
+      expect(said).toContain('Settings › Models');
+    }
+  });
+
+  test('an ordinary answer is left as written', () => {
+    expect(plainEngineNotice('Response times were fine today.')).toBe(
+      'Response times were fine today.',
+    );
   });
 });

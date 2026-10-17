@@ -5,7 +5,9 @@
  *
  * - MELETE_MODEL_FAST: the service's own short calls (reading chat into
  *   memory, voice-mode asides, the auto-review classifier, the companies
- *   scan) use it instead of the default model.
+ *   scan, summaries, learning from corrections) use it instead of the
+ *   default model. Each kind of side call gets its model from
+ *   `sideCallSource` in model-settings.ts.
  * - MELETE_MODEL_VISION: an agent turn's request that carries a picture goes
  *   to it when the model the turn runs on does not read images.
  * - MELETE_MODEL_FALLBACK: tried in order when the provider rate-limits,
@@ -149,10 +151,20 @@ export function agentRoutes(
   return { ...(vision ? { vision } : {}), ...(fallback.length ? { fallback } : {}) };
 }
 
-/** The fallbacks a call to `primary` may take: those that speak its protocol. */
-export function serviceFallback(routing: ModelRouting, primary: ModelChoice): ModelChoice[] {
+/**
+ * The fallbacks a call to `primary` may take: those that speak its protocol,
+ * and, where a space's rules hold the call to a list (`allowed`), only those
+ * on it.
+ */
+export function serviceFallback(
+  routing: ModelRouting,
+  primary: ModelChoice & { allowed?: readonly string[] },
+): ModelChoice[] {
   return routing.fallback.filter(
-    (choice) => !sameModel(choice, primary) && sameProtocol(choice, primary),
+    (choice) =>
+      !sameModel(choice, primary) &&
+      sameProtocol(choice, primary) &&
+      (!primary.allowed || primary.allowed.includes(`${choice.provider}/${choice.model}`)),
   );
 }
 

@@ -1,8 +1,8 @@
-import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { type AddressInfo, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   type DoctorFacts,
   expandPublished,
@@ -217,5 +217,67 @@ describe('melete doctor', () => {
     });
     await runDoctor(context, true, true);
     expect(fetched).toEqual([]);
+  });
+});
+
+describe('the network pool doctor judges', () => {
+  const made: string[] = [];
+  afterAll(() => {
+    for (const dir of made) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Doctor's results with MELETE_NETWORK_POOL as deploy/.env and this shell give it. */
+  async function judged(file: string | undefined, shell: string | undefined) {
+    const deployDir = temporaryDeployDir();
+    made.push(dirname(deployDir));
+    writeEnv(deployDir, file === undefined ? {} : { MELETE_NETWORK_POOL: file });
+    const context = testContext(deployDir, [['docker network ls --quiet', ok('')]], {
+      environment: shell === undefined ? {} : { MELETE_NETWORK_POOL: shell },
+    });
+    await runDoctor(context, true, true);
+    const { results } = reportSchema.parse(JSON.parse(context.printed()));
+    return {
+      pool: results.find((result) => result.id === 'docker.network_pool'),
+      shell: results.find((result) => result.id === 'docker.network_pool_shell'),
+    };
+  }
+
+  test("a value this shell sets is the one judged, because Compose takes it over deploy/.env's", async () => {
+    const { pool, shell } = await judged('nonsense', '10.214.0.0/16');
+    expect(pool).toMatchObject({ level: 'ok' });
+    expect(pool?.detail).toContain("Melete's network pool 10.214.0.0/16 (MELETE_NETWORK_POOL)");
+    expect(shell).toMatchObject({ level: 'warn' });
+    expect(shell?.detail).toContain(
+      'This shell sets MELETE_NETWORK_POOL=10.214.0.0/16, which Compose reads before deploy/.env (MELETE_NETWORK_POOL=nonsense)',
+    );
+    expect(shell?.fix).toContain('unset MELETE_NETWORK_POOL');
+  });
+
+  test('a shell value that matches deploy/.env is said, not warned about', async () => {
+    const { pool, shell } = await judged('10.214.0.0/16', '10.214.0.0/16');
+    expect(pool).toMatchObject({ level: 'ok' });
+    expect(shell).toMatchObject({ level: 'ok' });
+    expect(shell?.detail).toContain('which Compose reads before deploy/.env');
+  });
+
+  test('a shell that sets nothing leaves deploy/.env the one judged, with no note', async () => {
+    const { pool, shell } = await judged('nonsense', undefined);
+    expect(pool).toMatchObject({ level: 'fail' });
+    expect(shell).toBeUndefined();
+  });
+
+  test('a reference in deploy/.env is not judged: Compose fills it in, doctor does not', async () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose references, not templates.
+    for (const reference of ['${OTHER}', '${OTHER:-10.214.0.0/16}', '$OTHER']) {
+      const { pool, shell } = await judged(reference, undefined);
+      expect(pool).toMatchObject({ level: 'warn' });
+      expect(pool?.detail).toContain(`MELETE_NETWORK_POOL in deploy/.env is ${reference}`);
+      expect(pool?.detail).toContain('not judged');
+      expect(shell).toBeUndefined();
+    }
+    // A value this shell sets is used as written, so it is judged.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a Compose reference, not a template.
+    const { pool } = await judged('${OTHER}', '10.214.0.0/16');
+    expect(pool).toMatchObject({ level: 'ok' });
   });
 });

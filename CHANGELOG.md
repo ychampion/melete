@@ -17,13 +17,31 @@ What each version ships.
   against their limits, the newest backup, free disk, health and version, and
   a record of each change with who made it; deleting an account takes its
   email out of that record too. `melete backup` now notes each
-  backup in the database for it. Adds migration `0119_person_spend_limits`.
+  backup in the database for it. Adds migration `0122_person_spend_limits`.
 - **A new installation others can reach is claimed with a code.** An
   installation with no setup code whose `MELETE_PUBLIC_URL` or
   `MELETE_WEB_ORIGIN` names another machine no longer lets its first visitor
   become the owner. It asks for a code from `bun run melete account setup-code`,
   and the service log, `melete check` and `melete status` say so. Installs that
   stay on this machine are claimed as before.
+- **Removed things leave backups on a schedule.** `melete backup` no longer
+  copies each space's search index (`.index/`) or its staged writes
+  (`.proposed/`), and `melete restore` leaves them out of a backup made before
+  this version; the index is rebuilt from the space's files on the first
+  search after a restore. Each new backup also removes backups older than
+  `backup.max_age_days` (30 by default; `null` keeps them by number alone), so
+  what someone forgets or deletes is gone from a scheduled backup set within
+  that period. See
+  [How long backups keep what was removed](docs/DEPLOYMENT.md#how-long-backups-keep-what-was-removed).
+- **Staged writes no longer linger.** A write staged with
+  `POST /knowledge/proposals` is discarded when the record it names is
+  retracted, deleted or forgotten, and after seven days if nothing has applied
+  it.
+- **An erase that could not finish is finished later.** If compacting a space's
+  search index fails after something was removed from it (for example, a full
+  disk), the index remembers that and finishes the job on its next removal, or
+  the next time it is opened once the disk has room for it, so removed text
+  does not stay in its free pages.
 - **Restoring into a managed database can be run again safely.** `melete
   restore` loads the dump in one transaction and only into a database with no
   tables, so a load that fails leaves the database empty and the same restore
@@ -116,15 +134,25 @@ What each version ships.
    been taken in the last 26 hours. Run `bun run melete backup`, then schedule
    it ([Backups on a schedule](docs/DEPLOYMENT.md#backups-on-a-schedule)).
    `melete deploy` runs the same check, so take that backup before deploying.
-5. Four migrations run on start. `0120_sign_in_vault` adds the saved sign-ins
+5. Five migrations run on start. `0122_person_spend_limits` keeps the
+   per-person spending limits the owner sets. `0123_sign_in_vault` adds the saved sign-ins
    and their record of use, and gives every existing browser connection that
    can watch pages (`browser.observe`) the new `browser.sign_in` scope as
    well, so agents with the browser can use a saved sign-in without the
    connection being granted again. Remove that scope from a connection that
-   should not sign in to sites. `0121_starter_dismissal` keeps who put Home's
-   starter tasks away. `0122_operator_action_index` and
-   `0123_chat_principal_index` add indexes for the owner's record of changes
+   should not sign in to sites. `0124_starter_dismissal` keeps who put Home's
+   starter tasks away. `0125_operator_action_index` and
+   `0126_chat_principal_index` add indexes for the owner's record of changes
    and for Home's starter tasks.
+6. Backups made before this version still hold each space's search index, and
+   any forgotten text in it, until they age out; restoring one leaves the
+   index out and rebuilds it. The first backup after upgrading (`melete
+   backup`, or the one `melete deploy` takes) removes backups in `backup.dir`
+   older than 30 days,
+   including the one the last deploy took; set `backup.max_age_days` to a
+   larger number, or to `null`, in `melete.deploy.json` to keep them. Say how
+   long backups are kept in your privacy terms if you host Melete for others.
+   See [How long backups keep what was removed](docs/DEPLOYMENT.md#how-long-backups-keep-what-was-removed).
 
 ## v0.2.1 — 2026-10-05
 

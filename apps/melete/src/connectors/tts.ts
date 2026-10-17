@@ -12,7 +12,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, realpath, rename } from 'node:fs/promises';
+import { link, lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Action,
@@ -30,8 +30,12 @@ import {
   capabilityTool,
   receipt,
 } from '@melete/contracts';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { BrokerFault } from '../broker/errors.ts';
+import type { Query } from '../broker/records.ts';
 import type { ProviderCheck } from './elevenlabs.ts';
+import { alreadyInFiles, filesHold, inFilesTurn, onlyNewFiles } from './shared-files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { silentWav, WAV_MIME } from './wav.ts';
 
@@ -61,6 +65,86 @@ export async function atomicWrite(file: string, bytes: Uint8Array): Promise<void
     await handle.close();
   }
   await rename(temporary, file);
+}
+
+/**
+ * Write a file that must be new: whole or not at all, and never over one
+ * already at its name. A retry finding its own bytes there is done; anything
+ * else there answers false, and is left as it is.
+ */
+export async function writeNew(file: string, bytes: Uint8Array): Promise<boolean> {
+  const temporary = `${file}.${randomUUID()}.part`;
+  const handle = await open(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+    0o600,
+  );
+  try {
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // A second name, which the system refuses to make over one that is there.
+    await link(temporary, file);
+    return true;
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    const there = await readBytes(file);
+    return there !== null && digest(there) === digest(bytes);
+  } finally {
+    await unlink(temporary).catch(() => {});
+  }
+}
+
+/**
+ * Whether a capability's output must be a new file in the space's Files
+ * (`shared-files.ts`). Without a database to ask, as in a bare connector, it need not.
+ */
+export const outputOnlyNew = (query: Query | undefined, ctx: ConnectorContext) =>
+  query ? onlyNewFiles(query, ctx.job_id, ctx.space_id) : Promise.resolve(false);
+
+/**
+ * Save a capability's output at `file` in the space's Files, in its turn
+ * there on every instance (`inFilesTurn`, held through `sql`), so it never
+ * replaces a file between another step's check of it and its change to it.
+ * Only as a new file where `outputOnlyNew` says so: false when that name is
+ * taken.
+ */
+export const saveOutput = (
+  sql: Sql | undefined,
+  ctx: ConnectorContext,
+  file: string,
+  bytes: Uint8Array,
+): Promise<boolean> =>
+  inFilesTurn(
+    ctx.space_id,
+    async (query) => {
+      if (await outputOnlyNew(query ?? sql, ctx)) return writeNew(file, bytes);
+      await atomicWrite(file, bytes);
+      return true;
+    },
+    filesHold(sql),
+  );
+
+/**
+ * Refuse, before anyone is asked, a capability step whose output name is
+ * already taken in the space's Files when only new files are open to it.
+ */
+export async function refuseTakenOutput(
+  query: Query,
+  spacesRoot: string,
+  ctx: ConnectorContext,
+  name: string | null,
+): Promise<void> {
+  if (!name || !/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) return;
+  const taken = await lstat(path.join(spacesRoot, ctx.space_id, 'artifacts', name)).then(
+    () => true,
+    (error: unknown) => !(error instanceof Error && 'code' in error && error.code === 'ENOENT'),
+  );
+  if (taken && (await onlyNewFiles(query, ctx.job_id, ctx.space_id)))
+    throw new BrokerFault('payload_invalid', alreadyInFiles(name));
 }
 
 /**
@@ -208,6 +292,8 @@ function safeName(value: string): string {
 
 export type CapabilityConnectorOptions = {
   spacesRoot: string;
+  /** Where whose job it is is read, for the shared Files rule (`shared-files.ts`). */
+  sql?: Sql;
   adapter: SpeechAdapter | null;
   provider: string;
   unitCostUsd?: number;
@@ -244,6 +330,17 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
   return {
     manifest,
     capability,
+    async prepare(payload, ctx, tx) {
+      // In a shared space, anyone but its owner reads aloud only into a new file.
+      let name: string | null = null;
+      try {
+        name = typeof payload.path === 'string' ? safeName(payload.path) : null;
+      } catch {
+        // A name that cannot be used is refused when the step runs, as before.
+      }
+      await refuseTakenOutput(tx, options.spacesRoot, ctx, name);
+      return payload;
+    },
     async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
       if (!options.adapter)
         return { outcome: 'failed', reason: 'no speech provider is configured', retryable: false };
@@ -255,7 +352,8 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
       const voice = typeof payload.voice === 'string' ? payload.voice : 'alto';
       const bytes = await options.adapter.synthesize({ script, voice });
       const file = await target(ctx, name);
-      await atomicWrite(file, bytes);
+      if (!(await saveOutput(options.sql, ctx, file, bytes)))
+        return { outcome: 'failed', reason: alreadyInFiles(safeName(name)), retryable: false };
       const hash = digest(bytes);
       const proof: Receipt = {
         action_id: action.id,

@@ -94,7 +94,7 @@ On a host without Bun, such as one set up by the
 with `MELETE_BROWSER=1`:
 
 ```sh
-MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash
 ```
 
 It takes the same steps with the shell, Docker and the published images: the

@@ -18,7 +18,8 @@ import {
   beliefFile,
   isMemoryKey,
 } from '@melete/contracts';
-import { beliefHistory, blockedSubjects, isBlocked, listBeliefs } from './beliefs.ts';
+import { beliefHistory, blockedSubjects, listBeliefs } from './beliefs.ts';
+import { blockedDetail } from './blocks.ts';
 import { getHead, publishRevision } from './claims.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { persistEvidence } from './evidence.ts';
@@ -158,7 +159,7 @@ export async function importBeliefFile(sql: MemorySql, scope: MemoryScope, file:
       domain = `imported.${slug(entry.label)}`;
     }
     const key = entry.key && isMemoryKey(entry.key) ? entry.key : null;
-    if (isBlocked(blocked, { domain_key: domain, key })) {
+    if (blockedDetail(blocked, { domain_key: domain, key, content: entry.value }, null)) {
       skipped++;
       if (notes.length < 50) notes.push(`${entry.label}: you asked me not to learn this again.`);
       continue;

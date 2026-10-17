@@ -20,12 +20,12 @@ import type { AddressInfo } from 'node:net';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -141,6 +141,7 @@ export async function openTriageGateway(options: TriageGatewayOptions): Promise<
     timeoutMs: options.timeoutMs ?? TRIAGE_LIMITS.timeout_ms,
     maxRequestBytes: 256 * 1024,
     maxResponseBytes: 128 * 1024,
+    onError: gatewayLog('triage'),
     async authenticate(token) {
       const call = tokens.get(token);
       if (!call) throw new GatewayError(401, 'triage_principal_denied');
@@ -260,20 +261,25 @@ export function triageModelSource(options: {
   const setting = options.env.MELETE_MODEL_TRIAGE?.trim();
   const pinned =
     setting && setting !== 'off' ? parseModelChoice(setting, 'MELETE_MODEL_TRIAGE') : null;
-  const side = serviceModelSource({
-    env: options.env,
-    settings: options.settings,
-    fast: options.routing.fast,
-  });
+  const side = sideCallSource('triage', options);
   return {
     async current(spaceId) {
       if (setting === 'off') return null;
-      if (pinned) return pinned;
+      // A model the space's rules leave out sorts nothing there.
+      const bound = async (choice: ServiceModel) => {
+        if (!options.settings) return choice;
+        const { provider, model, refused, allowed } = await options.settings.allowedModelFor(
+          spaceId,
+          choice,
+        );
+        return refused ? null : { provider, model, ...(allowed ? { allowed } : {}) };
+      };
+      if (pinned) return bound(pinned);
       if (options.settings) {
         const chosen = await options.settings.activeChoice();
         if (!(await side.local(chosen.provider))) {
           const background = await options.settings.backgroundModel(spaceId, options.routing);
-          if (background) return { provider: background.provider, model: background.model };
+          if (background) return bound(background);
         }
       }
       return side.current({ spaceId });

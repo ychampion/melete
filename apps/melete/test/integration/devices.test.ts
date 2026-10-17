@@ -6,7 +6,7 @@
  * temporary folder; nothing listens on the "computer".
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -22,6 +22,7 @@ import {
   ApiError,
   type Capabilities,
   DeviceAgent,
+  logPath,
   pair,
 } from '../../../../packages/device/src/index.ts';
 import { recordId } from '../../src/broker/records.ts';
@@ -807,7 +808,7 @@ withDb('the agent uses the computer through the broker', () => {
 withDb("the person's own browser", () => {
   test('sign-in work goes to their browser, waits for it, and a click names what it clicks', async () => {
     const s = need();
-    const { config } = await s.computer({ grant: { browser: true } });
+    const { config, configDir } = await s.computer({ grant: { browser: true } });
     const [row] =
       await s.sql`select connection_id from paired_device where id = ${config.device_id}`;
     const connectionId = String(row?.connection_id);
@@ -864,6 +865,7 @@ withDb("the person's own browser", () => {
     };
     const bridge: BrowserBridge = new BrowserBridge({
       config: { ...config, capabilities: { ...config.capabilities, browser: true } },
+      configDir,
       resolve: async () => ['93.184.215.14'],
       send: (message) => {
         const value = message as {
@@ -968,6 +970,8 @@ withDb("the person's own browser", () => {
         title: 'Your account',
         element: { role: 'button', name: 'Delete account', tag: 'button' },
       });
+      // What the bridge did is logged in this computer's own folder, never the real one's.
+      expect(await readFile(logPath(configDir), 'utf8')).toContain('[browser] → browser_open');
     } finally {
       bridge.stop();
       await running;

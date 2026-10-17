@@ -147,10 +147,17 @@ export async function startQueue(
   {
     createSchema = true,
     dueScanMs,
+    dueWaker = true,
   }: {
     createSchema?: boolean;
     /** How long the due-job waker waits, at most, between looks (jobs/quiet.ts). */
     dueScanMs?: number;
+    /**
+     * Whether this process wakes quiet queues when their jobs fall due. The
+     * service does; a process sharing its database, such as the effect broker,
+     * leaves it to the service, since a notice reaches every instance.
+     */
+    dueWaker?: boolean;
   } = {},
 ): Promise<QueueHandle> {
   const boss = new PgBoss({
@@ -173,7 +180,7 @@ export async function startQueue(
       await boss.createQueue(queue);
     }
     for (const queue of QUIET_QUEUES) await quietQueue(boss, queue);
-    waker = startDueWaker(boss, dueScanMs === undefined ? {} : { scanMs: dueScanMs });
+    if (dueWaker) waker = startDueWaker(boss, dueScanMs === undefined ? {} : { scanMs: dueScanMs });
   } catch (error) {
     await boss.stop({ graceful: false });
     throw error;

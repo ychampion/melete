@@ -52,6 +52,7 @@ import type {
   Run,
 } from '../experience/types.ts';
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
+import { roomsApi } from '../rooms/api.ts';
 import { RoomHandoffs } from '../rooms/Handoffs.tsx';
 import { href, navigate } from '../router.ts';
 import { InProgress } from '../runs/RunCards.tsx';
@@ -129,7 +130,7 @@ export function greetingWith(greeting: string, name: string): string {
 
 /** Until the person gives a name, the greeting offers to learn it, once, in place. */
 function AskName({ onSaved }: { onSaved: () => void }) {
-  const { profile, refreshProfile } = useApp();
+  const { profile, refreshProfile, member } = useApp();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -148,22 +149,29 @@ function AskName({ onSaved }: { onSaved: () => void }) {
         const name = draft.trim();
         if (!name || busy) return;
         setBusy(true);
-        void adapter
-          .saveProfile({ name, time_zone: profile.time_zone, day_hours: profile.day_hours })
-          .then((result) => {
-            setBusy(false);
-            if (result.data === null) {
-              toast({
-                kind: 'err',
-                title: 'Couldn’t save your name',
-                sub: result.error ?? result.unavailable ?? '',
-              });
-              return;
-            }
-            setOpen(false);
-            refreshProfile();
-            onSaved();
-          });
+        // A member's name is their account's own; the space's profile is its owner's.
+        void (
+          member
+            ? roomsApi.rename(name)
+            : adapter.saveProfile({
+                name,
+                time_zone: profile.time_zone,
+                day_hours: profile.day_hours,
+              })
+        ).then((result) => {
+          setBusy(false);
+          if (result.data === null) {
+            toast({
+              kind: 'err',
+              title: 'Couldn’t save your name',
+              sub: result.error ?? result.unavailable ?? '',
+            });
+            return;
+          }
+          setOpen(false);
+          refreshProfile();
+          onSaved();
+        });
       }}
     >
       <Input
@@ -1054,7 +1062,7 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, profile, refreshConversations, capabilities } = useApp();
+  const { agents, profile, refreshConversations, capabilities, member } = useApp();
   const home = useLoad(() => adapter.home(), []);
   const starters = useLoad(() => adapter.starters(), []);
   const [startersHidden, setStartersHidden] = useState(false);
@@ -1244,7 +1252,8 @@ export function HomeScreen() {
               </nav>
             ) : null}
           </div>
-          <FirstSteps calendar={data ? Array.isArray(data.upcoming) : null} />
+          {/* The space's apps and calendar are its owner's to connect. */}
+          <FirstSteps calendar={member ? null : data ? Array.isArray(data.upcoming) : null} />
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <NeedsYouSection now={now} onStart={(text, attached) => start(text, attached)} />
@@ -1257,7 +1266,7 @@ export function HomeScreen() {
           <InProgress now={now} />
           <InMotion now={now} />
         </div>
-        <DayColumn now={now} />
+        {member ? null : <DayColumn now={now} />}
       </div>
     </Shell>
   );

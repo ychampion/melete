@@ -8,6 +8,7 @@ import {
   jobBudget,
   MAIL_EVENT_NAMES,
   type ProviderAccess,
+  type ProviderRevokeAt,
   policyGeneration,
   waitSpec,
 } from '@melete/contracts';
@@ -20,6 +21,7 @@ import {
   attempt,
   backgroundOperation,
   connection,
+  experienceTurn,
   job,
   secret,
   space,
@@ -27,8 +29,9 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
-import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
-import type { AttemptRunner } from './runner.ts';
+import { managesConnection, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
+import { carryForward, jobsReachedBy } from './connection-use.ts';
+import { type AttemptRunner, DISCONNECTED_NOTE } from './runner.ts';
 import { type JobService, routineRest } from './service.ts';
 
 /** Account changes commit fences before signalling disposable inference processes. */
@@ -66,8 +69,9 @@ export class PolicyService {
       /**
        * Runs once a revocation has committed, with the connection as it was:
        * withdraws the access at the provider where that is possible and
-       * deletes the sealed tokens. Answers what happened at the provider. It
-       * never undoes the revocation.
+       * deletes the sealed tokens. Answers what happened at the provider,
+       * and where the person cancels the credential when Melete could not.
+       * It never undoes the revocation.
        */
       afterRevoke?: (connection: {
         id: string;
@@ -75,7 +79,7 @@ export class PolicyService {
         provider: string;
         configuration: unknown;
         secretRef: string | null;
-      }) => Promise<ProviderAccess | undefined>;
+      }) => Promise<{ provider_access: ProviderAccess; revoke_at?: ProviderRevokeAt } | undefined>;
     } = {},
   ) {}
 
@@ -195,13 +199,6 @@ export class PolicyService {
             leaseStatus: 'context_invalidated',
           })
           .where(eq(attempt.id, running.id));
-        await appendEvent(tx, {
-          jobId: row.id,
-          attemptId: running.id,
-          type: 'attempt_ended',
-          payload: control,
-          dedupKey: `${running.id}:ended`,
-        });
         // A conversation or routine counts the attempts of its current turn only.
         const [count] = await tx
           .select({ n: sql<number>`count(*)::int` })
@@ -220,6 +217,36 @@ export class PolicyService {
         );
         // A routine whose run cannot be retried goes back to its schedule.
         const rest = remaining === 0 ? await routineRest(tx, row) : null;
+        // A turn with no attempt left ends here, and says the app it used was disconnected.
+        const ended = reason === 'connection_revoked' && row.currentTurnId && remaining === 0;
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: running.id,
+          type: 'attempt_ended',
+          payload: ended
+            ? {
+                ...control,
+                outcome: { kind: 'failed', reason: DISCONNECTED_NOTE, retryable: false },
+                turn_status: 'failed',
+              }
+            : control,
+          dedupKey: `${running.id}:ended`,
+        });
+        if (ended && row.currentTurnId)
+          await tx
+            .update(experienceTurn)
+            .set({
+              status: 'failed',
+              answer: sql`case when ${experienceTurn.answer} = '' then ${DISCONNECTED_NOTE}
+                else ${experienceTurn.answer} || ${`\n\n${DISCONNECTED_NOTE}`} end`,
+              finishedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(experienceTurn.id, row.currentTurnId),
+                inArray(experienceTurn.status, ['queued', 'working', 'streaming', 'stalled']),
+              ),
+            );
         await this.jobs.move(
           tx,
           row,
@@ -236,7 +263,11 @@ export class PolicyService {
         );
       } else if (
         row.state === 'waiting_for_approval' &&
-        pending.some((effect) => effect.status === 'needs_approval')
+        pending.some((effect) => effect.status === 'needs_approval') &&
+        // Waiting work with no attempt left cannot wake into one. What it asked
+        // is refused above and it holds nothing, so it stays as it is rather
+        // than stopping the change that fences it.
+        (await this.jobs.attemptsLeft(tx, row))
       ) {
         await this.jobs.move(
           tx,
@@ -253,7 +284,8 @@ export class PolicyService {
             .where(eq(trigger.id, wait.trigger_id));
           if (
             (registration?.spec as { connection_id?: string } | undefined)?.connection_id ===
-            connectionId
+              connectionId &&
+            (await this.jobs.attemptsLeft(tx, row))
           )
             await this.jobs.move(
               tx,
@@ -279,7 +311,10 @@ export class PolicyService {
       if (!source) throw new ServiceError('not_found', 'Connection not found.', 404);
       if (
         requestPrincipal() &&
-        (await spaceAuthority(reader, source.spaceId, requestPrincipal(), lock)).role !== 'owner'
+        !managesConnection(
+          await spaceAuthority(reader, source.spaceId, requestPrincipal(), lock),
+          source.sharedUse,
+        )
       )
         throw new ServiceError('scope_denied', 'Space owner required.', 403);
       if (source.generation !== request.expected_generation)
@@ -358,6 +393,13 @@ export class PolicyService {
           .where(eq(connection.id, id))
           .returning();
         if (!updated) throw new Error('Locked connection disappeared');
+        // The work that used it, read before what it reported is deleted below.
+        // Null when its use cannot be told job by job: then every job is fenced.
+        const reached = await jobsReachedBy(tx, {
+          id,
+          spaceId: source.spaceId,
+          provider: source.provider,
+        });
         // What was read from the old account, and where its feed was read to,
         // say nothing about the next one; a revoked one is read no more.
         await tx.execute(sql`delete from source_cursor where connection_id = ${id}`);
@@ -405,7 +447,18 @@ export class PolicyService {
           parent.policyGeneration,
           id,
           request.kind === 'switch' ? 'credential_switched' : 'connection_revoked',
+          reached ?? undefined,
         );
+        // Work that never used it is not fenced, and keeps acting under the new generations.
+        if (reached)
+          await carryForward(tx, {
+            spaceId: source.spaceId,
+            policyGeneration: parent.policyGeneration,
+            connectionId: id,
+            from: source.generation,
+            to: request.kind === 'revoke' ? null : updated.generation,
+            reached,
+          });
         return {
           response: connectionGeneration.parse({
             connection_id: id,
@@ -458,8 +511,8 @@ export class PolicyService {
     }
     await this.signal(result.controls);
     if (result.released && this.options.afterRevoke) {
-      const access = await this.options.afterRevoke(result.released).catch(() => undefined);
-      if (access) return { ...result.response, provider_access: access };
+      const outcome = await this.options.afterRevoke(result.released).catch(() => undefined);
+      if (outcome) return { ...result.response, ...outcome };
     }
     return result.response;
   }

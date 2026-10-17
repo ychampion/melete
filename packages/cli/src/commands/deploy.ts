@@ -378,37 +378,33 @@ export function gatherDeploy(
           };
         })();
 
-  return {
-    facts: {
-      config,
-      from: { tag: fromTag, revision: fromLocal?.revision ?? null },
-      requested,
-      target,
-      head,
-      mode,
-      dirty,
-      revisionAvailable,
-      images,
-      knownLayers,
-      freeBytes,
-      migrations: {
-        recorded: recordedMigrations(context, compose, config),
-        current: journalWhens(context, head),
-        target: revision !== null && revisionAvailable ? journalWhens(context, revision) : null,
-        ...(options.accepted ? { accepted: options.accepted } : {}),
-      },
-      databaseBytes: databaseBytes(context, compose, config),
-      // Only a backup kept on this machine is sized; one streamed elsewhere takes no room here.
-      filesBytes:
-        backup.kind === 'dir'
-          ? measureFiles(context, config, fileSettings(installation), duBytes)
-          : 0,
-      backup,
+  const facts: DeployFacts = {
+    config,
+    from: { tag: fromTag, revision: fromLocal?.revision ?? null },
+    requested,
+    target,
+    head,
+    mode,
+    dirty,
+    revisionAvailable,
+    images,
+    knownLayers,
+    freeBytes,
+    migrations: {
+      recorded: recordedMigrations(context, compose, config),
+      current: journalWhens(context, head),
+      target: revision !== null && revisionAvailable ? journalWhens(context, revision) : null,
+      ...(options.accepted ? { accepted: options.accepted } : {}),
     },
-    compose,
-    remotes,
-    dockerRoot,
+    databaseBytes: databaseBytes(context, compose, config),
+    filesBytes: 0,
+    backup,
   };
+  // Only a backup the plan takes, kept on this machine, is sized: measuring reads every
+  // volume, and a backup streamed elsewhere takes no room here.
+  if (backup.kind === 'dir' && judgeDeploy(facts).backupNeeded)
+    facts.filesBytes = measureFiles(context, config, fileSettings(installation), duBytes);
+  return { facts, compose, remotes, dockerRoot };
 }
 
 /** Prints each result as it lands, unless the caller wants JSON at the end. */

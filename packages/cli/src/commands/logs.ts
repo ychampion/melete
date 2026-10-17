@@ -10,7 +10,9 @@
  */
 import type { Context } from '../context.ts';
 import { composeCommand } from '../deploy-config.ts';
+import { type ComputerOwner, ownedBy } from '../files.ts';
 import { readInstallation } from '../installation.ts';
+import { INSTALL_PROJECT, labelOf } from '../sandbox-leftovers.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
 
 export const LOGS_USAGE =
@@ -76,8 +78,12 @@ export type CellContainer = { name: string; status: string; label: string };
 
 const FORMAT = (label: string) => `{{.Names}}\t{{.Status}}\t{{.Label "${label}"}}`;
 
-/** The `docker ps` that lists this installation's attempt engines or agents' computers. */
-export function cellListing(cells: Cells, project: string, sandboxProject: string): string[] {
+/**
+ * The `docker ps` that lists this installation's attempt engines, or every
+ * agent computer on the engine with the labels that say whose it is (see
+ * ownComputers).
+ */
+export function cellListing(cells: Cells, project: string): string[] {
   return cells === 'attempts'
     ? [
         'docker',
@@ -96,11 +102,32 @@ export function cellListing(cells: Cells, project: string, sandboxProject: strin
         '--all',
         '--filter',
         'label=com.melete.sandbox',
-        '--filter',
-        `label=melete.project=${sandboxProject}`,
         '--format',
-        FORMAT('com.melete.sandbox.name'),
+        `${FORMAT('com.melete.sandbox.name')}\t{{json (.Label "melete.project")}}\t{{json (.Label "${INSTALL_PROJECT}")}}`,
       ];
+}
+
+/**
+ * This installation's agents' computers in a computers listing, by the rule a
+ * backup takes their volumes by (ownedBy): those that name it, under any
+ * sandbox project, and those made before computers named their installation
+ * under the sandbox project it runs with now. A line whose labels cannot be
+ * read is no one's.
+ */
+export function ownComputers(stdout: string, owner: ComputerOwner): CellContainer[] {
+  return stdout
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .flatMap((line) => {
+      const fields = line.split('\t');
+      const [name = '', status = '', label = ''] = fields;
+      const project = labelOf(fields[3] ?? '');
+      const installation = labelOf(fields[4] ?? '');
+      if (fields.length !== 5 || project === null || installation === null) return [];
+      return ownedBy({ 'melete.project': project, [INSTALL_PROJECT]: installation }, owner)
+        ? [{ name, status, label }]
+        : [];
+    });
 }
 
 export function parseCellListing(stdout: string): CellContainer[] {
@@ -120,19 +147,18 @@ async function runCellLogs(
   named: string | undefined,
 ): Promise<ExitCode> {
   const installation = readInstallation(context.deployDir, context.machine.platform);
-  const sandboxProject = installation.env?.MELETE_SANDBOX_PROJECT?.trim() ?? '';
-  if (cells === 'computers' && !sandboxProject) {
-    context.err(
-      "MELETE_SANDBOX_PROJECT is empty in deploy/.env, so the agents' computers of this installation cannot be told apart from others on this engine.\n",
-    );
-    return EXIT.refused;
-  }
-  const listed = context.run(cellListing(cells, installation.config.project, sandboxProject));
+  const listed = context.run(cellListing(cells, installation.config.project));
   if (listed.code !== 0) {
     context.err(`docker ps did not answer: ${listed.stderr.trim() || `exit ${listed.code}`}\n`);
     return EXIT.failed;
   }
-  const containers = parseCellListing(listed.stdout);
+  const containers =
+    cells === 'attempts'
+      ? parseCellListing(listed.stdout)
+      : ownComputers(listed.stdout, {
+          installProject: installation.config.project,
+          sandboxProject: installation.env?.MELETE_SANDBOX_PROJECT?.trim() || null,
+        });
   const what = cells === 'attempts' ? 'attempt' : 'computer';
   if (named === undefined) {
     if (containers.length === 0) {

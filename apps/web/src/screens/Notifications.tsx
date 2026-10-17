@@ -66,7 +66,7 @@ function Row({ title, sub, children }: { title: string; sub: string; children: R
 }
 
 export function NotificationsTab() {
-  const { profile, refreshProfile } = useApp();
+  const { profile, refreshProfile, member } = useApp();
   const key = useLoad(() => adapter.pushPublicKey(), []);
   const devices = useLoad(() => adapter.pushDevices(), []);
   const settings = useLoad(() => adapter.pushSettings(), []);
@@ -241,32 +241,35 @@ export function NotificationsTab() {
               />
             </Row>
             <Row title="Quiet hours" sub={quietLine(current)}>
-              <form
-                className="row"
-                style={{ gap: 8, flexWrap: 'wrap' }}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveDay();
-                }}
-              >
-                <Input
-                  type="time"
-                  aria-label="Your day starts"
-                  value={dayStart}
-                  onChange={(event) => setDayStart(event.target.value)}
-                  width={120}
-                />
-                <Input
-                  type="time"
-                  aria-label="Your day ends"
-                  value={dayEnd}
-                  onChange={(event) => setDayEnd(event.target.value)}
-                  width={120}
-                />
-                <Button size="sm" variant="outline" type="submit">
-                  Save your day
-                </Button>
-              </form>
+              {/* The day is the space's, and its owner sets it. */}
+              {member ? null : (
+                <form
+                  className="row"
+                  style={{ gap: 8, flexWrap: 'wrap' }}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveDay();
+                  }}
+                >
+                  <Input
+                    type="time"
+                    aria-label="Your day starts"
+                    value={dayStart}
+                    onChange={(event) => setDayStart(event.target.value)}
+                    width={120}
+                  />
+                  <Input
+                    type="time"
+                    aria-label="Your day ends"
+                    value={dayEnd}
+                    onChange={(event) => setDayEnd(event.target.value)}
+                    width={120}
+                  />
+                  <Button size="sm" variant="outline" type="submit">
+                    Save your day
+                  </Button>
+                </form>
+              )}
             </Row>
           </div>
         </>

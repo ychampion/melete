@@ -1784,6 +1784,7 @@ export class ExperienceMock {
       onboarded: this.onboarded || [...this.agents.values()].some((agent) => !agent.is_default),
       time_zone_confirmed: this.timeZoneConfirmed,
       sending_address: this.sendingAddress,
+      role: 'owner' as const,
     };
   }
   fill(text: string) {
@@ -2477,13 +2478,14 @@ export function mountExperienceMock(
     app.on(method, path.replace(/\{([^}]+)\}/g, ':$1'), async (c) => {
       let input: Record<string, unknown> = {};
       if ('request' in operation) {
-        const parsed = operation.request.safeParse(await c.req.json().catch(() => null));
+        // An empty body is none, which only a request that may be left out accepts.
+        const parsed = operation.request.safeParse(await c.req.json().catch(() => undefined));
         if (!parsed.success)
           return c.json(
             { error: { code: 'invalid_request', message: 'Check the information and try again.' } },
             400,
           );
-        input = parsed.data;
+        input = parsed.data ?? {};
       }
       if ('query' in operation && !operation.query.safeParse(c.req.query()).success)
         return c.json(

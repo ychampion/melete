@@ -11,7 +11,7 @@
  * model traffic on its own internal port.
  */
 
-import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
+import type { AttemptBundle, QuestioningRuntimeAdapter, RuntimeAdapter } from '@melete/contracts';
 import { brokerCatalogState } from '@melete/runtime-hermes';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -42,7 +42,7 @@ import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountScreenshots } from './api/screenshots.ts';
-import { claimNotice } from './api/setup-code.ts';
+import { claimNotice, recordConfiguredCode } from './api/setup-code.ts';
 import { mountSignIns } from './api/sign-ins.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { mountHealthDetail, mountUsage } from './api/usage.ts';
@@ -83,7 +83,12 @@ import { startTrashSweep } from './connectors/files-trash.ts';
 import { managedRevocation, startManagedRemovalSweep } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
-import { connectionRevocation, mcpIssuerFetch, startSecretSweep } from './connectors/revocation.ts';
+import {
+  connectionRevocation,
+  mcpIssuerFetch,
+  spaceAccessWithdrawal,
+  startSecretSweep,
+} from './connectors/revocation.ts';
 import {
   PostgresSecretRepository,
   SealedSecretStore,
@@ -149,6 +154,7 @@ import { unsettledSteps } from './jobs/unsettled.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
+import { startStagedWriteSweep } from './knowledge/staged.ts';
 import { attachConversationCorrections } from './learning/conversation.ts';
 import { EngineSkillService } from './learning/engine-skills.ts';
 import { EpisodeService } from './learning/episodes.ts';
@@ -180,9 +186,11 @@ import { OperatorConsole } from './operator/console.ts';
 import { diskReading } from './operator/disk.ts';
 import { mountOperatorConsole } from './operator/routes.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
+import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import {
+  ownsSpace,
   refusedForRemoval,
   requestPrincipal,
   SPACE_BEING_CLEARED,
@@ -191,6 +199,7 @@ import {
 import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
+import { requireSessionSpace } from './principals/session-space.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
@@ -205,6 +214,7 @@ import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
+import { requestFailureText } from './request-failure.ts';
 import { mountMultiplayerGate, multiplayerEnabled } from './rooms/preview.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
@@ -213,6 +223,7 @@ import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi, endpointName } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
 import { type AttemptTiming, SupervisedHermesRuntime } from './runtime/hermes.ts';
+import { withPreparedEngine } from './runtime/prepare.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 import {
   DockerRuntimeSupervisor,
@@ -239,6 +250,8 @@ import { mountSituations } from './situations/routes.ts';
 import { SituationService } from './situations/service.ts';
 import { startSmsReplies } from './sms/inbox.ts';
 import { mountSms } from './sms/routes.ts';
+import { mountSpaceAudit } from './spaces/audit.ts';
+import { mountSpacePolicy } from './spaces/policy.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
@@ -359,7 +372,7 @@ export function createApp(deps: AppDeps) {
         { error: { code: 'invalid_request', message: 'Request data is invalid.' } },
         400,
       );
-    process.stderr.write(`request failed: ${error.message}\n`);
+    process.stderr.write(`request failed: ${requestFailureText(error)}\n`);
     return c.json(
       { error: { code: 'internal_error', message: 'The request could not be completed.' } },
       500,
@@ -374,6 +387,15 @@ export function createApp(deps: AppDeps) {
   // before sign-in, so an invite link and a guest's session meet the same answer.
   const multiplayer = multiplayerEnabled(deps.env);
   mountMultiplayerGate(app, multiplayer);
+  // No name, address, id or search holds a NUL, and the database refuses one in
+  // any text it is given: a query that carries one is refused here, for every
+  // route, as invalid request data, never answered with a server error.
+  app.use('*', async (c, next) => {
+    for (const [name, value] of new URL(c.req.url).searchParams)
+      if (name.includes('\u0000') || value.includes('\u0000'))
+        throw new ServiceError('invalid_request', 'Request data is invalid.', 400);
+    return next();
+  });
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -418,7 +440,9 @@ export function createApp(deps: AppDeps) {
     deps.resolveSpace ??
     (async (c) => {
       const spaceId = c.get('experienceSpaceId');
-      return spaceId ? { spaceId, principalId: c.get('owner')?.id } : null;
+      if (!spaceId) return null;
+      requireSessionSpace(c, spaceId);
+      return { spaceId, principalId: c.get('owner')?.id };
     });
   if (deps.db)
     mountArtifacts(
@@ -456,6 +480,9 @@ export function createApp(deps: AppDeps) {
   // non-GET under /spaces/:id runs before the handler that removes one.
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
+  if (deps.db && deps.sql) mountSpaceAudit(app, { db: deps.db, sql: deps.sql });
+  // What work in a space may use, set by its owner or the setup owner.
+  if (deps.db) mountSpacePolicy(app, { db: deps.db });
   if (connections) mountConnections(app, connections);
   if (devices) mountDevices(app, devices, limits);
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
@@ -778,12 +805,15 @@ export function createApp(deps: AppDeps) {
           const actor = requestPrincipal();
           if (!scope || !actor || !deps.db) return null;
           const access = await spaceAuthority(deps.db, scope.spaceId, actor);
+          // A space's memory is its owner's: the person who made a room, not
+          // the owners they added, who read what the room shares as members do.
+          const owns = ownsSpace(access);
           return {
             ...scope,
             principalId: actor,
             membershipGeneration: access.generation,
-            role: access.role === 'owner' ? 'owner' : 'reader',
-            audience: access.role === 'owner' ? scope.audience : 'space',
+            role: owns ? 'owner' : 'reader',
+            audience: owns ? scope.audience : 'space',
           };
         },
       }),
@@ -845,7 +875,7 @@ export function createApp(deps: AppDeps) {
       ...(db
         ? {
             authorizeSpace: async (id: string) => ({
-              owner: (await spaceAuthority(db, id, requestPrincipal())).role === 'owner',
+              owner: ownsSpace(await spaceAuthority(db, id, requestPrincipal())),
             }),
           }
         : {}),
@@ -956,6 +986,7 @@ export async function bootstrap(
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
+  let stopStagedWriteSweep: (() => void) | undefined;
   let stopAccessSweep: (() => void) | undefined;
   let stopSecretSweep: (() => void) | undefined;
   let stopManagedRemovals: (() => void) | undefined;
@@ -988,6 +1019,7 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let releaseManaged: ReturnType<typeof managedRevocation> | undefined;
   let releaseCredential: ReturnType<typeof connectionRevocation> | undefined;
+  let withdrawSpaceAccess: ReturnType<typeof spaceAccessWithdrawal> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
   let sandboxPreviews: SandboxPreviews | undefined;
@@ -1011,6 +1043,7 @@ export async function bootstrap(
     stopEgressRetention?.();
     stopUsageRollup?.();
     stopTrashSweep?.();
+    stopStagedWriteSweep?.();
     stopAccessSweep?.();
     stopSecretSweep?.();
     stopManagedRemovals?.();
@@ -1087,6 +1120,8 @@ export async function bootstrap(
         await assertMigrated(handle);
         await checkRoles({ api: env.DATABASE_URL, effects: env.MELETE_EFFECTS_DATABASE_URL });
       } else await migrateDatabase(handle);
+      // The code `melete init` printed gets an issued code's rules from its first start.
+      await recordConfiguredCode(handle.sql, env.MELETE_SETUP_CODE_HASH);
       // An installation others can reach, with no account and no code yet, says how it is claimed.
       const claim = await claimNotice(handle.sql, env);
       if (claim) process.stderr.write(`${claim}\n`);
@@ -1139,6 +1174,10 @@ export async function bootstrap(
         { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         env.MELETE_TRASH_DAYS,
         () => leading(leases, 'trash-sweep'),
+      );
+      // Writes staged in a space that nothing applied go after a week.
+      stopStagedWriteSweep = startStagedWriteSweep(env.MELETE_SPACES_DIR, () =>
+        leading(leases, 'staged-write-sweep'),
       );
     }
     if (handle) {
@@ -1214,12 +1253,15 @@ export async function bootstrap(
       const composio = connectors.options.composio;
       releaseManaged = composio ? managedRevocation(handle.sql, composio.client) : undefined;
       // A disconnection deletes the sealed tokens and withdraws them at the provider where it can.
-      releaseCredential = connectionRevocation({
+      const revocation = {
         sql: handle.sql,
         secrets: connectors.secrets,
         ...(connectors.options.google ? { google: connectors.options.google } : {}),
         mcpFetch: mcpIssuerFetch(handle.sql),
-      });
+      };
+      releaseCredential = connectionRevocation(revocation);
+      // Removing a space withdraws its connections' access the same way first.
+      withdrawSpaceAccess = spaceAccessWithdrawal(revocation);
       // Accounts a removed space, a failed disconnection or an unfinished
       // sign-in left at Composio are removed there, tried again until gone.
       stopManagedRemovals = composio
@@ -1506,14 +1548,14 @@ export async function bootstrap(
       const boundaryForCatalog = effectBoundary;
       // How the model an attempt runs on is reached, for the privacy checks before it starts.
       const engineOf = attemptEngine(env, modelSettings);
-      // A container engine is got ready while the attempt's memory is recalled.
+      // A container engine is got ready as soon as an attempt reaches the
+      // runtime: while its privacy is checked, a long conversation summarised,
+      // and its memory recalled.
       const engines = supervisedRuntime;
-      const prepareEngine = engines
-        ? {
-            prepareEngine: (bundle: AttemptBundle, signal: AbortSignal) =>
-              engines.prepare(bundle, signal),
-          }
-        : {};
+      const preparing = <T extends RuntimeAdapter | QuestioningRuntimeAdapter>(runtime: T): T =>
+        engines
+          ? withPreparedEngine(runtime, (bundle, signal) => engines.prepare(bundle, signal))
+          : runtime;
       const contextualRuntime =
         deploymentMemory && handle
           ? withDeploymentContext(observed, {
@@ -1521,12 +1563,10 @@ export async function bootstrap(
               spaces: databaseSpaces(handle.db, env.MELETE_SPACES_DIR),
               scopeForJob: deploymentMemory.scopeForJob,
               ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
-              ...prepareEngine,
             })
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
                 ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
-                ...prepareEngine,
                 // Private memory is recalled only into attempts that stay on the person's own model.
                 // Judged by the model the attempt runs on, which may not be the server's default.
                 recallsPrivateMemory: async (jobId, attemptId, model) =>
@@ -1576,7 +1616,7 @@ export async function bootstrap(
         engineFor: engineOf,
         onError: (error) => process.stderr.write(`privacy gate: ${error.message}\n`),
       });
-      runner = new AttemptRunner(jobs, gatedRuntime, {
+      runner = new AttemptRunner(jobs, preparing(gatedRuntime), {
         key: env.MELETE_CAPABILITY_KEY,
         concurrency: env.MELETE_ATTEMPT_CONCURRENCY,
         ...(env.MELETE_ATTEMPT_CONCURRENCY_PER_PERSON
@@ -1680,7 +1720,7 @@ export async function bootstrap(
         spending,
         events,
       );
-      evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
+      evaluator = new ProcedureEvaluator(jobs, preparing(contextualRuntime), runner.options);
       triggers = new TriggerService(jobs, runner);
       if (runs) runs.triggers = triggers;
       // What Melete notices on its own: the built-in detectors read each
@@ -1775,6 +1815,8 @@ export async function bootstrap(
           // The registry stops answering for a space's connections before
           // their rows go, and the verification counts what it still holds.
           ...(registry ? { connectors: registry } : {}),
+          // Each provider is asked to withdraw the space's access before its tokens go.
+          ...(withdrawSpaceAccess ? { withdrawAccess: withdrawSpaceAccess } : {}),
           // A space's sandboxes and snapshots go through providers built from
           // its connection rows, and the removal finishes only on what those
           // providers say they still hold.
@@ -2015,6 +2057,7 @@ export async function bootstrap(
       ...(sqlForHealth ? { sql: sqlForHealth } : {}),
       ...(spendAlerts ? { spend: spendAlerts } : {}),
       ...(env.MELETE_CELLS_URL ? { cells: cellsProbe(env.MELETE_CELLS_URL) } : {}),
+      stuck: stuckItems,
       ...(env.MELETE_ALERT_DISK_MIN_FREE_MB > 0
         ? {
             disk: {

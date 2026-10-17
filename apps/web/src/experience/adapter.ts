@@ -36,6 +36,7 @@ import type {
   AutomationCreate,
   Belief,
   BeliefBlock,
+  BeliefBlockScope,
   BeliefExport,
   BeliefHistory,
   BeliefImport,
@@ -61,6 +62,7 @@ import type {
   EngineSkill,
   ExperienceEvent,
   FeedbackCreate,
+  FeedbackForwarding,
   FeedbackList,
   FeedbackReport,
   FeedbackStatus,
@@ -139,6 +141,8 @@ import type {
   SpaceRemovalPreview,
   SpaceRemovalReport,
   SpaceRemovalStarted,
+  SpaceRulesChange,
+  SpaceRulesView,
   Starters,
   StreamGap,
   Task,
@@ -310,6 +314,11 @@ export const adapter = {
   otherAccountPreview: (id: string) =>
     guard<{ preview: AccountRemovalPreview }>(() =>
       api.GET('/principals/{id}/removal/preview', path(id)),
+    ),
+  /** The setup owner makes another person's account an admin, or takes that away. */
+  setAccountAdmin: (id: string, admin: boolean) =>
+    guard<{ account: { id: string; admin: boolean } }>(() =>
+      api.PATCH('/principals/{id}', { ...path(id), body: { admin } }),
     ),
   removeOtherAccount: (id: string, confirmEmail: string) =>
     guard<{ removal: AccountRemoval }>(() =>
@@ -792,9 +801,14 @@ export const adapter = {
   beliefs: () => guard<{ beliefs: Belief[]; time_zone: string }>(() => api.GET('/memory/beliefs')),
   beliefHistory: (id: string) =>
     guard<BeliefHistory>(() => api.GET('/memory/beliefs/{id}/history', path(id))),
-  /** Forget a belief and never learn its subject again. */
-  blockBelief: (id: string) =>
-    guard<{ status: 'ok' }>(() => api.POST('/memory/beliefs/{id}/block', path(id))),
+  /**
+   * Forget a belief and don't learn it again: anything about its subject, or
+   * just this detail. The answer says how far the block reached.
+   */
+  blockBelief: (id: string, scope: BeliefBlockScope = 'topic') =>
+    guard<{ status: 'ok'; scope: BeliefBlockScope }>(() =>
+      api.POST('/memory/beliefs/{id}/block', { ...path(id), body: { scope } }),
+    ),
   beliefBlocks: () => guard<{ blocks: BeliefBlock[] }>(() => api.GET('/memory/blocks')),
   unblockBelief: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/memory/blocks/{id}', path(id))),
@@ -867,6 +881,11 @@ export const adapter = {
     ),
   /** Who is in the space this session uses. */
   spaceMembers: () => guard<SpaceMembers>(() => api.GET('/space/members')),
+  /** What work in a space may use: models, and kinds of app and tool kept out. */
+  spaceRules: (spaceId: string) =>
+    guard<SpaceRulesView>(() => api.GET('/spaces/{id}/policy', path(spaceId))),
+  setSpaceRules: (spaceId: string, rules: SpaceRulesChange) =>
+    guard<SpaceRulesView>(() => api.PUT('/spaces/{id}/policy', { ...path(spaceId), body: rules })),
   /** The space's owner removes someone from a shared space. */
   removeMember: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),
@@ -1166,6 +1185,7 @@ export const adapter = {
     guard<FeedbackList>(() =>
       api.GET('/feedback', { params: { query: status ? { status } : {} } }),
     ),
+  feedbackForwarding: () => guard<FeedbackForwarding>(() => api.GET('/feedback/forwarding')),
   feedbackReport: (id: string) =>
     guard<{ report: FeedbackReport }>(() => api.GET('/feedback/{id}', path(id))),
   setFeedbackStatus: (id: string, status: FeedbackStatus, note?: string | null) =>
@@ -1202,13 +1222,17 @@ async function binary<T>(
       headers: { ...client.options.headers, ...(init.headers as Record<string, string>) },
       credentials: client.options.credentials,
     });
-    if (!response.ok)
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
       return {
         data: null,
-        error: errorMessage(await response.json().catch(() => null), OFFLINE),
+        error: errorMessage(body, OFFLINE),
         unavailable: null,
         unauthorized: response.status === 401,
+        ...(typeof code === 'string' ? { code } : {}),
       };
+    }
     return { data: await read(response), error: null, unavailable: null };
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw error;

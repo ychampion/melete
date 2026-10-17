@@ -216,6 +216,7 @@ export function mountPassword(
       const [reset] = await tx`select r.principal_id, r.via, p.email, p.kind, p.disabled_at
         from password_reset r join principal p on p.id = r.principal_id
         where r.token_hash = ${digest(input.token)} and r.used_at is null and r.expires_at > now()
+          and p.disabled_at is null
         for update of r`;
       if (!reset) return null;
       // Checked once the link is known good, so a weak choice does not spend it.

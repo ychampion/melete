@@ -67,6 +67,51 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     expect(fixture.effects.filter((effect) => effect.run === 'controller')).toHaveLength(1);
     expect(fixture.effects[0]?.fields.person_name).toBe('A Person');
   }, 20_000);
+  test('a time, date or number field takes its value, and is not mistaken for a secret', async () => {
+    const opened = await call({ kind: 'open', url: `${fixture.url}/form/typed_fields?run=typed` });
+    // Each field is listed once, by its label, and not by the parts the browser draws in it.
+    expect(opened.observation?.schema.map((control) => [control.label, control.role])).toEqual([
+      ['Name', 'textbox'],
+      ['Email', 'textbox'],
+      ['Delivery time', 'textbox'],
+      ['Day', 'textbox'],
+      ['Guests', 'spinbutton'],
+      ['Colour', 'textbox'],
+      ['Extra cheese', 'checkbox'],
+      ['Save', 'button'],
+    ]);
+    await call({ kind: 'fill', label: 'Name', value: 'A Person' });
+    await call({ kind: 'fill', label: 'Email', value: 'person@example.com' });
+    await call({ kind: 'fill', label: 'Delivery time', value: '19:30' });
+    await call({ kind: 'fill', label: 'Day', value: '2026-10-15' });
+    await call({ kind: 'fill', label: 'Guests', value: '4' });
+    await call({ kind: 'fill', label: 'Colour', value: '#FF8800' });
+    const observed = await call({ kind: 'observe' });
+    const intent = ((observed.result?.submit_intents ?? []) as BrowserSubmitIntent[])[0];
+    expect(intent?.fields).toMatchObject({
+      delivery: '19:30',
+      day: '2026-10-15',
+      guests: '4',
+      shade: '#ff8800',
+    });
+    // A value of the wrong form is refused by name, and the field keeps what it had.
+    await expect(
+      call({ kind: 'fill', label: 'Delivery time', value: 'half past seven' }),
+    ).rejects.toThrow('value_not_accepted');
+    await expect(call({ kind: 'fill', label: 'Colour', value: 'orange' })).rejects.toThrow(
+      'value_not_accepted',
+    );
+    const after = await call({ kind: 'observe' });
+    expect(
+      ((after.result?.submit_intents ?? []) as BrowserSubmitIntent[])[0]?.fields,
+    ).toMatchObject({ delivery: '19:30', shade: '#ff8800' });
+    // A checkbox is clicked, not filled; neither is a reason to hand the page to the person.
+    const refused = await call({ kind: 'fill', label: 'Extra cheese', value: 'yes' }).catch(
+      (error: unknown) => error as Error,
+    );
+    expect(String(refused)).toContain('not_fillable');
+    expect(String(refused)).not.toContain('sensitive_input_require_takeover');
+  }, 20_000);
   test('controller refuses the second fill after takeover, and handback requires fresh observation', async () => {
     await call({ kind: 'open', url: `${fixture.url}/form/takeover?run=takeover` });
     await call({ kind: 'fill', label: 'Name', value: 'Before takeover' });
@@ -247,6 +292,74 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     }
     expect(fixture.effects.filter((effect) => effect.run === 'secret')).toHaveLength(0);
   }, 120_000);
+  test('a number, month or date field for a code or a card expiry is the person’s, by its label, name, id or hint', async () => {
+    const page = (params: Record<string, string>) =>
+      `${fixture.url}/form/valued?${new URLSearchParams({ ...params, run: 'valued-secret' })}`;
+    // Named for a code or an expiry by its label alone: the look already treats the page as one
+    // only the person types into, and a fill is refused.
+    for (const [label, type] of [
+      ['Code', 'number'],
+      ['Enter code', 'number'],
+      ['Enter the 6-digit code', 'number'],
+      ['Expires', 'month'],
+      ['CVV', 'number'],
+      ['PIN', 'number'],
+    ] as const) {
+      await expect(call({ kind: 'open', url: page({ label, type }) })).rejects.toThrow(
+        'sensitive_input_require_takeover',
+      );
+      await expect(call({ kind: 'fill', label, value: '4821' })).rejects.toThrow(
+        'sensitive_input_require_takeover',
+      );
+    }
+    // Labelled plainly, and known for a code or a card by its name, its id or its hint.
+    const named: Record<string, string>[] = [
+      { name: 'otp' },
+      { name: 'verification_code' },
+      { id: 'verificationCode' },
+      { id: 'code' },
+      { type: 'month', name: 'cc-exp' },
+      { type: 'month', autocomplete: 'cc-exp' },
+      { type: 'number', autocomplete: 'cc-exp-year' },
+    ];
+    for (const params of named) {
+      await call({ kind: 'open', url: page({ label: 'Digits', ...params }) }).catch(() => {});
+      await expect(call({ kind: 'fill', label: 'Digits', value: '2027' })).rejects.toThrow(
+        'sensitive_input_require_takeover',
+      );
+    }
+    expect(fixture.effects.filter((effect) => effect.run === 'valued-secret')).toHaveLength(0);
+    // An ordinary number field is still filled.
+    await call({ kind: 'open', url: page({ label: 'Guests', name: 'guests' }) });
+    await call({ kind: 'fill', label: 'Guests', value: '4' });
+  }, 60_000);
+  test('a slider value it would move is refused, and an editable area is named for what it is', async () => {
+    await call({
+      kind: 'open',
+      url: `${fixture.url}/form/valued?label=Volume&type=range&name=volume&run=slider`,
+    });
+    await call({ kind: 'fill', label: 'Name', value: 'A Person' });
+    await call({ kind: 'fill', label: 'Email', value: 'person@example.com' });
+    await call({ kind: 'fill', label: 'Volume', value: '7' });
+    for (const value of ['15', '-3', '2.5', 'loud']) {
+      const refused = await call({ kind: 'fill', label: 'Volume', value }).catch(
+        (error: unknown) => error as Error,
+      );
+      expect(String(refused)).toContain('value_not_accepted');
+      expect(String(refused)).toContain('from 0 to 10 in steps of 1');
+    }
+    // The field keeps the value it had.
+    const observed = await call({ kind: 'observe' });
+    expect(
+      ((observed.result?.submit_intents ?? []) as BrowserSubmitIntent[])[0]?.fields,
+    ).toMatchObject({ volume: '7' });
+    const editable = await call({ kind: 'fill', label: 'Notes', value: 'hello' }).catch(
+      (error: unknown) => error as Error,
+    );
+    expect(String(editable)).toContain('not_fillable');
+    expect(String(editable)).toContain('contenteditable');
+    expect(String(editable)).not.toContain('checkbox');
+  }, 20_000);
   test('hidden destinations are included in the complete observed submit intent', async () => {
     await call({ kind: 'open', url: `${fixture.url}/form/hidden_destination?run=hidden` });
     await call({ kind: 'fill', label: 'Name', value: 'A Person' });

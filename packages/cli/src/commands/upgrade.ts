@@ -4,12 +4,14 @@
  * target release's own deploy/scripts/upgrade.ts out of its tag into a
  * temporary directory and runs that copy, the procedure in docs/UPGRADING.md,
  * with every overlay file and profile deploy/melete.deploy.json names, under the
- * deployment lock, and records the run in deploy/.melete/history.jsonl. An
+ * deployment lock, and records the run in deploy/.melete/history.jsonl. Its
+ * backup goes in the contract's backup.dir, where `melete backup` puts this
+ * installation's backups, unless `--backup-dir` names another folder. An
  * installation that runs published images updates with `melete deploy` instead.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
 import type { Context } from '../context.ts';
 import { DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
@@ -17,6 +19,7 @@ import { appendHistory } from '../history.ts';
 import { envImageTag, readInstallation } from '../installation.ts';
 import { LockRefusal, withLock } from '../lock.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
+import { expandHome } from './backup.ts';
 import { journalCount } from './deploy.ts';
 
 export const UPGRADE_USAGE =
@@ -81,17 +84,36 @@ export async function runUpgrade(context: Context, args: readonly string[]): Pro
     context.err(`${release.problem}\n`);
     return EXIT.refused;
   }
+  // The upgrade's backup goes where this installation's backups go.
+  const backupDir = expandHome(config.backup.dir);
   const command = [
     process.execPath,
     join(release.directory, 'deploy', 'scripts', 'upgrade.ts'),
     ...args,
     '--repository',
     context.root,
+    ...(args.includes('--backup-dir') || !isAbsolute(backupDir) ? [] : ['--backup-dir', backupDir]),
     ...upgradeOverlayArguments(config),
   ];
+  // The installation's own backup folder is made the way melete backup makes it, so a
+  // second installation that has not backed up yet can upgrade. A folder named with
+  // --backup-dir must already exist: the release's script refuses one that does not.
+  const ownFolder = !args.includes('--backup-dir') && isAbsolute(backupDir);
+  if (ownFolder && !existsSync(backupDir)) {
+    if (dryRun)
+      context.out(
+        `${backupDir} does not exist yet; a real upgrade creates it (mode 700) before the backup.
+`,
+      );
+    else mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  }
+  // The folder the script makes its upgrade-<version>-<time> backup in.
+  const given = args.indexOf('--backup-dir');
+  const backupParent = given >= 0 ? (args[given + 1] ?? null) : ownFolder ? backupDir : null;
   const run = async () => {
     const before = { tag: envImageTag(installation.env ?? {}), revision: head(context) };
     const migrations = journalCount(context, null);
+    const earlier = upgradeBackups(backupParent, version);
     const code = await context.attach(command);
     if (code === 2)
       context.err(
@@ -109,13 +131,17 @@ export async function runUpgrade(context: Context, args: readonly string[]): Pro
         to: { tag: tag === before.tag ? version : tag, revision: head(context) },
         checkout: null,
         migrations: { from: migrations, to: journalCount(context, null) },
-        backup: null,
+        backup:
+          upgradeBackups(backupParent, version)
+            .filter((entry) => !earlier.includes(entry))
+            .at(-1) ?? null,
         result: code === 0 ? 'deployed' : 'failed',
         detail: code === 0 ? `upgraded to ${version}` : `upgrade.ts exited ${code}`,
       });
     }
     // upgrade.ts says which step stopped it and prints the rollback; its exit 1 covers both.
-    return code === 0 ? EXIT.ok : code === 2 ? EXIT.refused : EXIT.failed;
+    // It exits 3 when the repository it was given is not there, and says so itself.
+    return code === 0 ? EXIT.ok : code === 2 || code === 3 ? EXIT.refused : EXIT.failed;
   };
   try {
     if (dryRun) return await run();
@@ -167,6 +193,29 @@ function takeRelease(
     };
   }
   return { directory };
+}
+
+/**
+ * The backups an upgrade to `version` made in `parent`, oldest first, as paths.
+ * The script names each upgrade-<version>-<time>; the one a run made is the one
+ * that was not there before it.
+ */
+function upgradeBackups(parent: string | null, version: string): string[] {
+  if (parent === null) return [];
+  const prefix = `upgrade-${version}-`;
+  try {
+    return readdirSync(parent, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          entry.name.startsWith(prefix) &&
+          /^\d{8}T\d{6}Z$/.test(entry.name.slice(prefix.length)),
+      )
+      .map((entry) => join(parent, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 function head(context: Context): string | null {

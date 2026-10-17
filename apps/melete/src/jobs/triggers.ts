@@ -9,10 +9,13 @@ import {
   type JsonObject,
   jobState,
   jsonObject,
+  occurrenceBetween,
+  occurrencesAfter,
   PROCESS_LIMITS,
   type ProcessWatchKind,
   prefixedId,
   producesEvent,
+  scheduleRecurrence,
   type TriggerSpec,
   triggerSpec,
   type WatchObservation,
@@ -30,6 +33,8 @@ import { connection, event, experienceTurn, job, space, trigger } from '../db/sc
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
+import { personSetSchedule } from './attention.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
 import type { AttemptRunner } from './runner.ts';
@@ -66,6 +71,43 @@ function knownTimeZone(zone: string): boolean {
 
 const clipped = (text: string) => (text.length > 64 ? `${text.slice(0, 64)}…` : text);
 
+type ScheduleSpec = Extract<TriggerSpec, { kind: 'schedule' }>;
+
+/**
+ * The cron the queue keeps for a schedule. A calendar rule is woken every
+ * hour at its minute, in its zone, and each wake asks the rule whether this
+ * is one of its times: hourly, so a time moved by a daylight saving change
+ * is still met within the hour.
+ */
+export function queueCron(spec: ScheduleSpec): string {
+  const read = scheduleRecurrence(spec);
+  if (read) return `${read.start.minute} * * * *`;
+  return spec.cron ?? '';
+}
+
+/** The next `count` times a schedule fires after `after` (now by default). */
+export function scheduleTimes(
+  jobs: Pick<JobService, 'boss'>,
+  spec: ScheduleSpec,
+  count: number,
+  after = new Date(),
+): Date[] {
+  if (spec.rrule === undefined)
+    return jobs.boss.previewSchedule(spec.cron ?? '', { tz: spec.timezone, count });
+  const read = scheduleRecurrence(spec);
+  return read ? occurrencesAfter(read.rule, read.start, spec.timezone, after, count) : [];
+}
+
+/**
+ * How far back a wake looks for the rule time it is for. The wake at the
+ * rule's minute finds it at once; the margin covers a queue that ran late or
+ * caught up after a restart, and a time already fired is never fired again.
+ * It stays under the hour between wakes, so a time belongs to the first wake
+ * at or after it and to no later one: a routine paused over one of its times
+ * and resumed after does not run it late, as with a cron.
+ */
+export const RULE_WAKE_LOOKBACK_MS = 55 * 60_000;
+
 /**
  * Refuses a trigger that could never fire as the person meant it: a watch
  * pattern that does not compile, or a schedule that is not a valid cron and
@@ -98,12 +140,23 @@ export function checkTriggerSpec(jobs: Pick<JobService, 'boss'>, spec: TriggerSp
         `"${clipped(spec.timezone)}" is not a time zone. Use a name such as "America/Los_Angeles".`,
         400,
       );
+    if (spec.rrule !== undefined) {
+      // The spec's own parse has read the rule; what is left is whether it
+      // still has a time to come.
+      if (!scheduleTimes(jobs, spec, 1).length)
+        throw new ServiceError(
+          'invalid_schedule',
+          'This rule has no times left from now: its COUNT or UNTIL has passed, or the dates it names never happen. Check the rule and starts.',
+          400,
+        );
+      return;
+    }
     try {
-      jobs.boss.previewSchedule(spec.cron, { tz: spec.timezone, count: 1 });
+      jobs.boss.previewSchedule(spec.cron ?? '', { tz: spec.timezone, count: 1 });
     } catch {
       throw new ServiceError(
         'invalid_schedule',
-        `"${clipped(spec.cron)}" is not a cron this can follow. ${CRON_FORMAT}`,
+        `"${clipped(spec.cron ?? '')}" is not a cron this can follow. ${CRON_FORMAT}`,
         400,
       );
     }
@@ -388,8 +441,18 @@ export async function createProcessWatch(
 
 export class TriggerService {
   private started = false;
+  /**
+   * Routines whose schedule could not be registered. Each sync (every minute,
+   * after the recovery scan) tries them again; only the log is spared.
+   */
+  private readonly scheduleFailures = new ItemFailures('routine schedules', {
+    firstMs: 60_000,
+    maxMs: 60_000,
+  });
   /** Called for each new observation, in its delivery's transaction (situations' detectors). */
   readonly observers: ObservationHook[] = [];
+  /** The time a calendar rule's wake is checked against. */
+  clock: () => Date = () => new Date();
 
   constructor(
     readonly jobs: JobService,
@@ -449,7 +512,7 @@ export class TriggerService {
     });
     // pg-boss schedule() has no transaction adapter. The trigger row is authoritative;
     // startup and every recovery scan restore registrations after a crash here.
-    if (spec.kind === 'schedule') await this.syncSchedules();
+    if (spec.kind === 'schedule') await this.syncSchedules(created.id);
     return created;
   }
 
@@ -596,7 +659,10 @@ export class TriggerService {
       registration.kind === 'schedule' &&
       payload.kind === 'schedule_event' &&
       row.scheduleSkipRemaining > 0 &&
-      row.importance !== 'important'
+      row.importance !== 'important' &&
+      // A schedule the person asked for is never skipped, even one an earlier
+      // version left counting down.
+      !(await personSetSchedule(tx, row))
     ) {
       const [updated] = await tx
         .update(job)
@@ -826,6 +892,28 @@ export class TriggerService {
     await this.jobs.transaction(async (tx) => {
       const [registration] = await tx.select().from(trigger).where(eq(trigger.id, triggerId));
       if (!registration?.enabled || registration.kind !== 'schedule') return;
+      let occurrence = occurrenceId;
+      if (!byPerson) {
+        // A rule's hourly wake fires only on one of the rule's own times, and
+        // names it by that time, so a late or repeated wake never fires twice.
+        const spec = triggerSpec.safeParse(registration.spec);
+        if (spec.success && spec.data.kind === 'schedule' && spec.data.rrule !== undefined) {
+          const read = scheduleRecurrence(spec.data);
+          if (!read) return;
+          const now = this.clock();
+          const due = occurrenceBetween(
+            read.rule,
+            read.start,
+            spec.data.timezone,
+            new Date(
+              Math.max(now.getTime() - RULE_WAKE_LOOKBACK_MS, registration.createdAt.getTime()),
+            ),
+            new Date(now.getTime() + 60_000),
+          );
+          if (!due) return;
+          occurrence = `rule:${due.toISOString()}`;
+        }
+      }
       const row = await this.jobs.lock(tx, registration.jobId);
       if (!row || isTerminal(jobState.parse(row.state))) return;
       const received = await appendEvent(tx, {
@@ -833,9 +921,9 @@ export class TriggerService {
         payload: {
           kind: 'schedule_event',
           trigger_id: registration.id,
-          occurrence_id: occurrenceId,
+          occurrence_id: occurrence,
         },
-        dedupKey: `${registration.id}:schedule:${occurrenceId}`,
+        dedupKey: `${registration.id}:schedule:${occurrence}`,
       });
       if (!received) return;
       const woke = await this.registerWait(tx, row);
@@ -844,27 +932,56 @@ export class TriggerService {
     });
   }
 
-  async syncSchedules(): Promise<void> {
+  /**
+   * Registers every enabled routine's schedule and drops the rest. One routine
+   * whose schedule cannot be registered never stops the others: it is said in
+   * the log and the health detail, and only `own`, the routine just saved,
+   * answers with its error.
+   */
+  async syncSchedules(own?: string): Promise<void> {
     const rows = await this.jobs.db.select().from(trigger).where(eq(trigger.kind, 'schedule'));
     const schedules = await this.jobs.boss.getSchedules(QUEUES.triggerSchedule);
     const desired = new Set<string>();
+    let ownError: { error: unknown } | undefined;
+    // A failure kept for a routine or schedule that is gone (another instance
+    // removed it) has nothing left to retry, so it leaves the health detail now.
+    this.scheduleFailures.keepOnly(
+      new Set([
+        ...rows.filter((row) => row.enabled).map((row) => row.id),
+        ...schedules.map((schedule) => schedule.key),
+      ]),
+    );
     for (const row of rows) {
       if (!row.enabled) continue;
       desired.add(row.id);
-      const spec = triggerSpec.parse(row.spec);
-      if (spec.kind !== 'schedule') continue;
-      const current = schedules.find((schedule) => schedule.key === row.id);
-      if (current?.cron === spec.cron && current.timezone === spec.timezone) continue;
-      await this.jobs.boss.schedule(
-        QUEUES.triggerSchedule,
-        spec.cron,
-        { trigger_id: row.id },
-        { key: row.id, tz: spec.timezone, missed: 'once', retryLimit: 0 },
-      );
+      try {
+        const spec = triggerSpec.parse(row.spec);
+        if (spec.kind !== 'schedule') continue;
+        const current = schedules.find((schedule) => schedule.key === row.id);
+        const cron = queueCron(spec);
+        if (current?.cron === cron && current.timezone === spec.timezone) {
+          this.scheduleFailures.succeeded(row.id);
+          continue;
+        }
+        await this.jobs.boss.schedule(
+          QUEUES.triggerSchedule,
+          cron,
+          { trigger_id: row.id },
+          { key: row.id, tz: spec.timezone, missed: 'once', retryLimit: 0 },
+        );
+        this.scheduleFailures.succeeded(row.id);
+      } catch (error) {
+        this.scheduleFailures.failed(row.id, error, `${row.id} of ${row.jobId}`);
+        if (row.id === own) ownError = { error };
+      }
     }
     for (const schedule of schedules)
       if (!desired.has(schedule.key))
-        await this.jobs.boss.unschedule(QUEUES.triggerSchedule, schedule.key);
+        await this.jobs.boss.unschedule(QUEUES.triggerSchedule, schedule.key).then(
+          () => this.scheduleFailures.succeeded(schedule.key),
+          (error: unknown) => this.scheduleFailures.failed(schedule.key, error),
+        );
+    if (ownError) throw ownError.error;
   }
 
   async start(): Promise<void> {
