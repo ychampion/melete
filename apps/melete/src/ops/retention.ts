@@ -18,9 +18,10 @@
  *   delivery key, so it is not delivered twice.
  *
  * Rows go a small batch at a time, oldest first, each batch its own short
- * transaction that never takes the event order lock and skips rows another
- * transaction holds. A pass stops after a set number of batches, so a large
- * backlog goes over several passes.
+ * transaction that never takes the event order lock. It passes over model
+ * calls another transaction holds and waits for no lock longer than five
+ * seconds. A pass stops after a set number of batches, so a large backlog goes
+ * over several passes.
  */
 import type { Sql } from 'postgres';
 import { rollupFinishedDays, utcDay } from '../gateway/usage-day.ts';

@@ -531,9 +531,9 @@ Once an hour, one instance removes, a small batch at a time and oldest first:
   checked against are kept. Each removed event leaves its delivery key, so the
   same message is not delivered twice.
 
-Each batch is its own short transaction that skips rows in use and gives up
-after five seconds of waiting, to try again on the next pass; a large backlog
-goes over several passes. `MELETE_OBSERVATION_RETENTION_DAYS` (14 by default)
+Each batch is its own short transaction. It passes over model calls another
+transaction holds, and gives up after five seconds of waiting for anything
+else, to try again on the next pass; a large backlog goes over several passes. `MELETE_OBSERVATION_RETENTION_DAYS` (14 by default)
 still removes unused mail, calendar and document observations sooner.
 
 ## On a cloud VM

@@ -5,6 +5,7 @@
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import postgres from 'postgres';
 import { usageSeries, utcDay } from '../../src/gateway/usage-day.ts';
 import {
   applyRetention,
@@ -114,6 +115,47 @@ withDb('retention of model calls and connector events', () => {
     expect(kept?.calls).toBe(2);
   });
 
+  test('every day is rolled up before its calls go, whatever time zone the database keeps', async () => {
+    const person = 'own_zoned';
+    // A day before New York's clocks went forward, and two after it.
+    await call(new Date('2026-03-01T12:00:00.000Z'), person, 1);
+    await call(new Date('2026-03-10T12:00:00.000Z'), person, 2);
+    await call(new Date('2026-03-12T00:30:00.000Z'), person, 4);
+    const zoned = postgres(db().url, { max: 1, connection: { TimeZone: 'America/New_York' } });
+    try {
+      const result = await applyRetention(zoned, 40, now);
+      expect(result.modelUsage).toBe(3);
+    } finally {
+      await zoned.end();
+    }
+    const days = await db().sql`select day, sum(calls)::int as calls,
+        sum(cost_usd)::float8 as usd from usage_day where principal_id = ${person}
+      group by day order by day`;
+    expect(days.map((row) => [row.day, row.calls, Number(row.usd)])).toEqual([
+      ['2026-03-01', 1, 1],
+      ['2026-03-10', 1, 2],
+      ['2026-03-12', 1, 4],
+    ]);
+  });
+
+  test('a call another transaction holds is passed over, not waited for', async () => {
+    for (let index = 0; index < 3; index++) await call(daysAgo(60, index), 'own_held', 0.1);
+    const holder = await db().sql.reserve();
+    try {
+      await holder`begin`;
+      await holder`select id from model_usage order by created_at limit 1 for update`;
+      const started = Date.now();
+      const pass = await pruneModelUsage(db().sql, retentionCutoff(40, now), now);
+      expect(pass.removed).toBe(2);
+      expect(Date.now() - started).toBeLessThan(4_000);
+    } finally {
+      await holder`rollback`;
+      holder.release();
+    }
+    const next = await pruneModelUsage(db().sql, retentionCutoff(40, now), now);
+    expect(next.removed).toBe(1);
+  });
+
   test('a backlog goes a batch at a time, and a pass stops after its batches', async () => {
     for (let index = 0; index < 7; index++) await call(daysAgo(60, index), 'own_batch', 0.1);
     const cutoff = retentionCutoff(40, now);
@@ -141,7 +183,8 @@ withDb('retention of model calls and connector events', () => {
     await db().sql`insert into event (job_id, type, payload, dedup_key, created_at)
       values (${claims.job_id}, 'notice', ${JSON.stringify({
         kind: 'trigger_event',
-        because: [`event:${cited.seq}`],
+        // An empty citation beside a real one holds nothing else.
+        because: [null, `event:${cited.seq}`],
       })}::text::jsonb, ${randomUUID()}, ${old.toISOString()}::timestamptz)`;
 
     const removed = await pruneConnectorEvents(db().sql, retentionCutoff(40, now));
