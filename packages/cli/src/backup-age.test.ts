@@ -33,6 +33,12 @@ function install(backup: object, hosted?: boolean) {
 const age = (rig: ReturnType<typeof install>) =>
   judgeBackupAge(rig.deployDir, rig.config, NOW, '/nowhere');
 
+/** A backup directory as a finished run leaves it: its parts listed in SHA256SUMS. */
+function finished(dir: string) {
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'SHA256SUMS'), `${'0'.repeat(64)}  database.dump\n`);
+}
+
 describe('how old the newest backup is', () => {
   test('a self-hosted installation with no schedule is not judged', () => {
     expect(age(install({}))).toEqual([]);
@@ -66,8 +72,8 @@ describe('how old the newest backup is', () => {
 
   test('a backup in the folder counts by the time in its name', () => {
     const rig = install({}, true);
-    mkdirSync(join(rig.backups, 'melete-20261001T120000Z')); // 22 hours before NOW
-    mkdirSync(join(rig.backups, 'melete-20260901T120000Z'));
+    finished(join(rig.backups, 'melete-20261001T120000Z')); // 22 hours before NOW
+    finished(join(rig.backups, 'melete-20260901T120000Z'));
     mkdirSync(join(rig.backups, 'melete-final'));
     writeFileSync(join(rig.backups, 'melete-20261002T090000Z'), 'not a backup directory');
     const [result] = age(rig);
@@ -76,15 +82,26 @@ describe('how old the newest backup is', () => {
     expect(result?.detail).toContain('melete-20261001T120000Z');
   });
 
+  test('a backup stopped part way, with no SHA256SUMS yet, does not count', () => {
+    const rig = install({ scheduled: true });
+    finished(join(rig.backups, 'melete-20260930T040000Z')); // two days old
+    // Last night's run was killed before it finished: its directory is left.
+    mkdirSync(join(rig.backups, 'melete-20261002T040000Z'));
+    writeFileSync(join(rig.backups, 'melete-20261002T040000Z', 'database.dump'), 'half');
+    const [result] = age(rig);
+    expect(result).toMatchObject({ level: 'fail' });
+    expect(result?.detail).toContain('melete-20260930T040000Z');
+  });
+
   test('only the newest time counts, so pruning older backups changes nothing', () => {
     const rig = install({ scheduled: true });
-    mkdirSync(join(rig.backups, 'melete-20260920T000000Z'));
+    finished(join(rig.backups, 'melete-20260920T000000Z'));
     recordBackup(rig.deployDir, ago(2), 'ssh://vault:/srv/melete/melete-20261002T080000Z');
     expect(newestBackup(rig.deployDir, rig.config, '/nowhere')?.location).toBe(
       'ssh://vault:/srv/melete/melete-20261002T080000Z',
     );
     // A newer one in the folder wins over an older note.
-    mkdirSync(join(rig.backups, 'melete-20261002T093000Z'));
+    finished(join(rig.backups, 'melete-20261002T093000Z'));
     expect(newestBackup(rig.deployDir, rig.config, '/nowhere')?.location).toBe(
       join(rig.backups, 'melete-20261002T093000Z'),
     );
@@ -115,8 +132,8 @@ describe('check and status report it', () => {
       join(deployDir, DEPLOY_FILE),
       JSON.stringify({ contract: 1, backup: { dir: backups, keep: 3, scheduled: true } }),
     );
-    if (fresh) mkdirSync(join(backups, 'melete-20261002T040000Z'));
-    else mkdirSync(join(backups, 'melete-20260930T040000Z'));
+    if (fresh) finished(join(backups, 'melete-20261002T040000Z'));
+    else finished(join(backups, 'melete-20260930T040000Z'));
     return deployDir;
   };
   const levelIn = (printed: string) =>

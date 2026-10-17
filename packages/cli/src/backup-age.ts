@@ -1,8 +1,8 @@
 /**
  * How old the newest backup is. `melete backup` notes the time and place of
  * every backup it finishes in deploy/.melete/last-backup.json, so a backup
- * streamed to another machine counts too; a backup directory in the backup
- * folder counts by the time in its name. Only the newest time is read, so
+ * streamed to another machine counts too; a finished backup directory in the
+ * backup folder counts by the time in its name. Only the newest time is read, so
  * however old backups are pruned, the answer is the same.
  *
  * `check` and `status` judge it on a hosted installation, or on one whose
@@ -59,6 +59,11 @@ function recorded(deployDir: string): { at: Date; location: string } | null {
   }
 }
 
+/**
+ * The newest finished backup in the folder. A backup writes its SHA256SUMS
+ * once every part is in, so a directory without one is a run that was stopped
+ * part way, by a reboot or the memory killer, and does not count.
+ */
 function newestInFolder(dir: string): { at: Date; location: string } | null {
   if (!existsSync(dir)) return null;
   let newest: { at: Date; location: string } | null = null;
@@ -66,7 +71,8 @@ function newestInFolder(dir: string): { at: Date; location: string } | null {
     const at = backupNameTime(entry);
     if (!at || (newest && at <= newest.at)) continue;
     try {
-      if (statSync(join(dir, entry)).isDirectory()) newest = { at, location: join(dir, entry) };
+      if (statSync(join(dir, entry)).isDirectory() && existsSync(join(dir, entry, 'SHA256SUMS')))
+        newest = { at, location: join(dir, entry) };
     } catch {
       // Removed while it was read: not a backup any more.
     }
