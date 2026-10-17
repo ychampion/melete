@@ -130,6 +130,20 @@ function startSites() {
               '<div class="g-recaptcha" style="width:304px;height:78px;background:#ddd"></div>',
             ),
           );
+        case '/focus-thief':
+          // A page where something else takes focus whenever a sign-in field gets it, as a
+          // frame that keeps focusing its own input would. Its search box is outside the form.
+          if (post && rightPassword) return go('/account', 'sid=signed-in');
+          return html(
+            'Sign in',
+            `${form('/focus-thief', USER_FIELD + PASSWORD_FIELD)}
+            <input id="decoy" aria-label="Search"><script>
+              for (const id of ['u', 'p'])
+                document.getElementById(id).addEventListener('focus', () =>
+                  document.getElementById('decoy').focus(),
+                );
+            </script>`,
+          );
         case '/script-login':
           // A page that answers in place and leaves the password in its field. Its Report
           // button, outside the form, shows how long the field's value is.
@@ -236,6 +250,15 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     const looked = await call({ kind: 'observe' });
     expect(looked.observation?.tree).toContain('Your account');
     clean(looked.observation?.tree);
+  }, 40_000);
+
+  test('the password goes into its own field even when something else takes focus', async () => {
+    const result = await signIn('/focus-thief');
+    expect(outcome(result)).toBe('signed_in');
+    clean(result);
+    const sent = new URLSearchParams(posted('site', '/focus-thief').at(-1)?.body ?? '');
+    expect(sent.get('email')).toBe(USERNAME);
+    expect(sent.get('password')).toBe(PASSWORD);
   }, 40_000);
 
   test('a password the site refuses is said so', async () => {

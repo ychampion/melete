@@ -1163,7 +1163,7 @@ export class BrowserController {
         if (operation.kind === 'sign_in' && found.password) passwordTyped = true;
         let typed: 'nothing' | 'username' | 'password' | 'code';
         try {
-          typed = await this.typeSignIn(command, page, cdp, operation, found, nonce);
+          typed = await this.typeSignIn(command, page, operation, found, nonce);
         } catch (error) {
           const refused = signInRefusal(error);
           if (refused) return answer(refused);
@@ -1238,7 +1238,6 @@ export class BrowserController {
   private async typeSignIn(
     command: BrowserCommand,
     page: Page,
-    cdp: CDPSession,
     operation: Extract<BrowserCommand['operation'], { kind: 'sign_in' | 'sign_in_code' }>,
     found: SignInFields,
     nonce: string,
@@ -1246,15 +1245,23 @@ export class BrowserController {
     const network = this.network;
     if (!network) throw new BrowserFault('worker_unavailable');
     const field = (what: string) => page.locator(`[data-melete-sign-in="${nonce}:${what}"]`);
+    // The value goes into the marked field itself, through the page's own value setter, with
+    // the events typing raises, in one step. Nothing is typed into whatever has focus, which a
+    // frame on the page could take between a focus and the keystrokes after it.
     const type = async (what: string, text: string) => {
       const handle = await this.unique(field(what));
-      await this.input(command, () =>
-        handle.evaluate((element) => {
+      const filled = await this.input(command, () =>
+        handle.evaluate((element, value) => {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          if (!setter || element.tagName !== 'INPUT') return false;
           element.focus();
-          element.select();
-        }),
+          setter.call(element, value);
+          element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }, text),
       );
-      await this.input(command, () => cdp.send('Input.insertText', { text }));
+      if (!filled) throw new BrowserFault('control_not_found');
     };
     if (operation.kind === 'sign_in_code') {
       if (found.code === 'none') return 'nothing';
