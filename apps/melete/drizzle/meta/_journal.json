@@ -855,6 +855,13 @@
       "when": 1789232400101,
       "tag": "0121_attempt_requested_by",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1792267070524,
+      "tag": "0122_sandbox_provider_caps",
+      "breakpoints": true
     }
   ]
 }

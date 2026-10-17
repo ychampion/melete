@@ -272,6 +272,38 @@ export const sandboxControl = pgTable(
 );
 
 /**
+ * The computers this installation keeps at a provider whose plan caps them,
+ * for counting against the operator's caps (see `provider-caps.ts`). A row is
+ * written, under one lock per adapter, before the provider is asked to make a
+ * computer (`computer_id` is then `reserved:<id>`), so two requests can never
+ * both take the last place. A computer is awake while it is not `asleep` and
+ * either was used within the provider's idle time or holds a lease.
+ */
+export const sandboxProviderComputer = pgTable(
+  'sandbox_provider_computer',
+  {
+    adapter: text('adapter').notNull(),
+    computerId: text('computer_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    asleep: boolean('asleep').notNull().default(false),
+    activeAt: timestamp('active_at', { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.adapter, t.computerId] })],
+);
+
+/** One call keeping a capped computer awake while it runs; removed when it ends. */
+export const sandboxProviderLease = pgTable(
+  'sandbox_provider_lease',
+  {
+    id: text('id').primaryKey(),
+    adapter: text('adapter').notNull(),
+    computerId: text('computer_id').notNull(),
+    until: timestamp('until', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('sandbox_provider_lease_computer_idx').on(t.adapter, t.computerId)],
+);
+
+/**
  * Who wrote each file in a persistent computer's `/work`, so deleting a chat
  * can take the files it made there and leave the rest. `/work` is one folder
  * for every chat of the agent in the space, so a file is recorded against the

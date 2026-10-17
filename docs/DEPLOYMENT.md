@@ -1946,12 +1946,26 @@ more than that. The agent's `computer.*` desktop tools still run on the Docker
 computer; Maritime's screen, clicks and viewer links are in the adapter but
 not yet wired to the app.
 
-**Sizing.** Maritime limits how many computers exist and how many are awake at
-once; a sleeping computer counts only toward the first. For example, a plan
-with 500 computers and 60 awake serves 500 agents with their own kept
-computers, of which 60 can run commands at the same moment. A command sent while
-the account is at its awake limit is refused before it starts, which the
-service treats as a failure it may retry. Each computer has 2 GB of memory and 5 GB of disk unless the account
+**Sizing.** Maritime limits how many computers an account keeps and how many
+are awake at once; a sleeping computer counts only toward the first. A plan
+serves as many agents as it keeps computers, and as many of them as it lets be
+awake can run commands at the same moment.
+
+**Caps.** Two settings in `deploy/.env` keep this installation inside the plan,
+so it never asks for computers the plan does not include. Both are unset by
+default, which means no cap:
+
+- `MELETE_MARITIME_MAX_COMPUTERS`: the most computers kept at Maritime, asleep
+  or awake. Past it, a new computer is refused, and the agent tells the person
+  in a plain sentence. No computer is made.
+- `MELETE_MARITIME_MAX_AWAKE`: the most awake at once. A computer that would
+  wake past it waits up to 30 seconds for a place, then is refused the same
+  way. A sleeping computer is never swapped for a new one to get round it.
+
+Set them to the numbers in your Maritime plan. The counts are kept in the
+database, so several service instances share them and concurrent requests
+cannot pass a cap. Computers made before the caps were set are counted once
+they are next used. Each computer has 2 GB of memory and 5 GB of disk unless the account
 raises them.
 
 **How sleep works.** Maritime puts a computer to sleep after five minutes with

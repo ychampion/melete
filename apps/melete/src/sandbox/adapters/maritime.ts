@@ -112,6 +112,8 @@ const POLL_STEPS = 80;
 const POLL_STEP_MS = 250;
 /** Maritime sleeps a computer after five minutes without an action. */
 const TOUCH_EVERY_MS = 4 * 60_000;
+/** How long, after its last use, a computer is counted awake: Maritime's five minutes and a margin. */
+export const MARITIME_IDLE_SECONDS = 5 * 60 + 30;
 const COMPUTER_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const PLAIN = /^[A-Za-z0-9._-]{1,128}$/;
 const NOT_FOUND_EXIT = 3;
