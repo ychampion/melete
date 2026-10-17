@@ -107,7 +107,7 @@ const LAUNCH = [
  */
 const PROBE = [
   'import base64, socket, sys',
-  'ip, name, port, borrowed = sys.argv[1:5]',
+  'ip, name, port, borrowed, short = sys.argv[1:6]',
   'def direct(host, p):',
   '    try:',
   '        s = socket.create_connection((host, p), timeout=5)',
@@ -153,6 +153,7 @@ const PROBE = [
   "print('guard_public=' + guard('example.com:443'))",
   "print('guard_ip_443=' + guard(ip + ':443'))",
   "print('guard_name_443=' + guard(name + ':443'))",
+  "print('guard_id_443=' + guard(short + ':443'))",
   "print('guard_ip_8080=' + guard(ip + ':8080'))",
   "print('guard_borrowed=' + guard('example.com:443', borrowed))",
 ].join('\n');
@@ -347,6 +348,9 @@ if (!live) {
           ).Id,
         );
       const [aId, bId] = [await idOf(a), await idOf(b)];
+      // The engine's DNS answers B's short id on B's network, so the service resolves it to B.
+      const bShort = bId.slice(0, 12);
+      expect((await resolveHost(bShort)).map((answer) => answer.address)).toContain(bAddress);
       const onA = await members(a);
       const onB = await members(b);
       expect(onA).toContain(aId);
@@ -371,6 +375,7 @@ if (!live) {
         b.providerSandboxId,
         String(settings().egressPort),
         /cmd:([^@]+)@/.exec(borrowed.env.HTTPS_PROXY ?? '')?.[1] ?? '',
+        bShort,
       ]);
       borrowed.settle();
       process.stdout.write(`docker isolation, network:\n${probe.text}\n`);
@@ -382,14 +387,18 @@ if (!live) {
       // A's own way out works, so each refusal below is the guard's, not a broken probe.
       expect(line(probe.text, 'guard_public')).toMatch(/^200:/);
       expect(line(probe.text, 'guard_ip_443')).toBe('403:address_denied:');
-      expect(line(probe.text, 'guard_name_443')).toBe('403:address_denied:');
+      // A computer's name carries its session id's underscore, which no CONNECT target may hold.
+      expect(line(probe.text, 'guard_name_443')).toBe('403:destination_denied:');
+      // Its short id is a name the guard does look up, and the answer, B's address, is refused.
+      expect(line(probe.text, 'guard_id_443')).toBe('403:address_denied:');
       expect(line(probe.text, 'guard_ip_8080')).toBe('403:destination_denied:');
       expect(line(probe.text, 'guard_borrowed')).toBe('407:token_refused:');
       const refusals = recorded
         .filter((record) => record.verdict === 'refused')
         .map((record) => [record.host, record.reason]);
       expect(refusals).toContainEqual([bAddress, 'address_denied']);
-      expect(refusals).toContainEqual([b.providerSandboxId, 'address_denied']);
+      expect(refusals).toContainEqual([bShort, 'address_denied']);
+      expect(refusals).toContainEqual([`${b.providerSandboxId}:443`, 'destination_denied']);
       expect(refusals).toContainEqual(['example.com', 'token_refused']);
     });
 
