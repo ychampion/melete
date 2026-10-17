@@ -772,16 +772,12 @@ export async function takeBackup(
       fix: 'For a copy where nothing changes underneath, back up with --offline: it stops the writers while the files are copied.',
     });
 
-  if (destination.kind === 'dir')
-    results.push(
-      ...pruneBackups(
-        context,
-        config,
-        destination.dir,
-        name,
-        stripped.key === null ? null : masterKeyFingerprint(stripped.key),
-      ),
-    );
+  const fingerprint = stripped.key === null ? null : masterKeyFingerprint(stripped.key);
+  results.push(
+    ...(destination.kind === 'dir'
+      ? pruneBackups(context, config, destination.dir, name, fingerprint)
+      : pruneRemote(context, config, destination.target, name, fingerprint)),
+  );
   // Noted for check and status, which judge how old the newest backup is. The
   // backup is whole whatever becomes of the note, so a note that cannot be
   // written is said, never taken for a failed backup.
@@ -859,11 +855,7 @@ export function setInstallation(set: string): string | null {
  * `unknown`, as is a set in which nothing says. A set that holds no file is
  * no one's backup.
  */
-function ownerOf(
-  set: string,
-  project: string,
-  fingerprint: string | null,
-): 'ours' | 'another' | 'unknown' {
+function ownerOf(set: string, project: string, fingerprint: string | null): Owner {
   const read = (file: string) => {
     try {
       return readFileSync(join(set, file), 'utf8');
@@ -877,7 +869,19 @@ function ownerOf(
   } catch {
     return 'unknown';
   }
-  if (files.length === 0) return 'ours';
+  return ownerFrom(files.length, read, project, fingerprint);
+}
+
+type Owner = 'ours' | 'another' | 'unknown';
+
+/** ownerOf's reading, from a set's file count and a reader of its files, wherever it is. */
+function ownerFrom(
+  count: number,
+  read: (file: string) => string | null,
+  project: string,
+  fingerprint: string | null,
+): Owner {
+  if (count === 0) return 'ours';
   const recorded = read(FINGERPRINT_FILE)?.trim() || null;
   const sameKey = recorded === null || fingerprint === null || recorded === fingerprint;
   const named = (value: unknown) =>
@@ -927,28 +931,186 @@ function pruneBackups(
 ): Result[] {
   const named = lastSwitched(readHistory(context.deployDir))?.backup;
   const isNamed = (entry: string) => !!named && resolve(join(dir, entry)) === resolve(named);
-  const { keep, max_age_days: days } = config.backup;
-  const now = context.now().getTime();
-  const oldest = days === null ? null : now - days * DAY_MS;
   const sets = readdirSync(dir)
     .filter((entry) => BACKUP_NAME.test(entry))
     .filter((entry) => statSync(join(dir, entry)).isDirectory())
-    .sort();
-  const owners = new Map(
-    sets.map((entry) => [
+    .map((entry) => ({
       entry,
-      entry === made ? 'ours' : ownerOf(join(dir, entry), config.project, fingerprint),
-    ]),
+      owner: entry === made ? 'ours' : ownerOf(join(dir, entry), config.project, fingerprint),
+      changedMs: statSync(join(dir, entry)).mtimeMs,
+    }));
+  const plan = prunePlan(sets, made, config, context.now().getTime(), isNamed);
+  for (const entry of plan.removed) rmSync(join(dir, entry), { recursive: true, force: true });
+  return pruneResults(plan, dir, config, isNamed);
+}
+
+/**
+ * The same for backups streamed to another machine: the sets there are
+ * listed, and judged by the same files, over ssh, and the ones beyond keep
+ * and max_age_days removed there. A listing that fails prunes nothing.
+ */
+function pruneRemote(
+  context: Context,
+  config: DeployConfig,
+  target: SshTarget,
+  made: string,
+  fingerprint: string | null,
+): Result[] {
+  const where = `ssh://${target.host}:${target.path}`;
+  const named = lastSwitched(readHistory(context.deployDir))?.backup;
+  const isNamed = (entry: string) => named === `${where}/${entry}`;
+  const listed = context.run(sshCommand(target, remoteListing(target.path)));
+  const sets = listed.code === 0 ? parseRemoteListing(listed.stdout) : null;
+  if (sets === null)
+    return [
+      {
+        id: 'backup.keep',
+        level: 'warn',
+        detail: `The backups in ${where} could not be listed, so keep and max_age_days removed none of them this time${
+          listed.stderr.trim() ? `: ${listed.stderr.trim().split('\n').at(-1)}` : '.'
+        }`,
+      },
+    ];
+  const plan = prunePlan(
+    sets.map((set) => ({
+      entry: set.entry,
+      owner:
+        set.entry === made
+          ? 'ours'
+          : ownerFrom(
+              set.count,
+              (file) => set.files.get(file) ?? null,
+              config.project,
+              fingerprint,
+            ),
+      changedMs: set.changedMs,
+    })),
+    made,
+    config,
+    context.now().getTime(),
+    isNamed,
   );
-  const kept = sets.filter((entry) => owners.get(entry) === 'ours');
-  const age = (entry: string) => Math.min(madeAt(entry), statSync(join(dir, entry)).mtimeMs);
-  const beyond = new Set(kept.slice(0, Math.max(0, kept.length - keep)));
-  const removed = kept.filter(
-    (entry) =>
-      entry !== made &&
-      ((beyond.has(entry) && !isNamed(entry)) || (oldest !== null && age(entry) < oldest)),
+  if (plan.removed.length > 0) {
+    const gone = context.run(
+      sshCommand(
+        target,
+        `rm -rf -- ${plan.removed.map((entry) => `${target.path}/${entry}`).join(' ')}`,
+      ),
+    );
+    if (gone.code !== 0)
+      return [
+        {
+          id: 'backup.keep',
+          level: 'warn',
+          detail: `Could not remove ${plan.removed.join(', ')} from ${where}, which keep and max_age_days leave out: ${
+            gone.stderr.trim().split('\n').at(-1) || `exit ${gone.code}`
+          }`,
+        },
+      ];
+  }
+  return pruneResults(plan, where, config, isNamed);
+}
+
+/** The files ownerOf reads, as a listing carries them. */
+const OWNER_FILES = [CONTENTS_FILE, FINGERPRINT_FILE, DEPLOY_FILE];
+
+/**
+ * A script that lists the backup sets in a remote folder: for each, its name,
+ * when its folder last changed and how many files it holds, then the files
+ * ownerOf reads, base64 encoded. Of deploy.env, which holds service keys,
+ * only its COMPOSE_PROJECT_NAME line leaves the machine. It ends with `end`,
+ * so a listing cut short is never taken for a whole one.
+ */
+export function remoteListing(path: string): string {
+  const owned = OWNER_FILES.map(
+    (file) =>
+      `[ -f "$d/${file}" ] && echo "file $d ${file} $(head -c 65536 "$d/${file}" | base64 | tr -d '\\n')"; `,
+  ).join('');
+  return (
+    `cd ${path} || exit 1; for d in melete-*; do [ -d "$d" ] || continue; ` +
+    `t=$(stat -c %Y "$d" 2>/dev/null || stat -f %m "$d" 2>/dev/null || echo -); ` +
+    `echo "set $d $t $(ls -A "$d" | wc -l)"; ${owned}` +
+    `[ -f "$d/deploy.env" ] && echo "file $d deploy.env $(grep -m 1 '^COMPOSE_PROJECT_NAME=' "$d/deploy.env" | base64 | tr -d '\\n')"; ` +
+    'done; echo end'
   );
-  for (const entry of removed) rmSync(join(dir, entry), { recursive: true, force: true });
+}
+
+type RemoteSet = {
+  entry: string;
+  changedMs: number | null;
+  count: number;
+  files: Map<string, string>;
+};
+
+/** The sets a remote listing names, or null when it is not a whole listing. */
+export function parseRemoteListing(stdout: string): RemoteSet[] | null {
+  const lines = stdout.split('\n').map((line) => line.trim());
+  while (lines.at(-1) === '') lines.pop();
+  if (lines.pop() !== 'end') return null;
+  const sets = new Map<string, RemoteSet>();
+  for (const line of lines) {
+    const [kind, entry = '', first = '', second = ''] = line.split(/\s+/);
+    if (!BACKUP_NAME.test(entry)) continue;
+    if (kind === 'set') {
+      const seconds = Number(first);
+      sets.set(entry, {
+        entry,
+        changedMs: first !== '-' && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null,
+        count: Number(second) || 0,
+        files: new Map(),
+      });
+    } else if (kind === 'file' && (OWNER_FILES.includes(first) || first === 'deploy.env'))
+      sets.get(entry)?.files.set(first, Buffer.from(second, 'base64').toString('utf8'));
+  }
+  return [...sets.values()];
+}
+
+type PrunePlan = { removed: string[]; kept: string[]; unknown: string[]; now: number };
+
+/**
+ * Which sets keep and max_age_days remove, wherever they are: this
+ * installation's beyond the newest `keep`, except the one the last deploy
+ * took, and any of this installation's older than `max_age_days`, never the
+ * one just made. A set is as old as the earlier of its name and the last
+ * change to its folder.
+ */
+export function prunePlan(
+  sets: { entry: string; owner: Owner; changedMs: number | null }[],
+  made: string,
+  config: Pick<DeployConfig, 'backup'>,
+  now: number,
+  isNamed: (entry: string) => boolean,
+): PrunePlan {
+  const { keep, max_age_days: days } = config.backup;
+  const oldest = days === null ? null : now - days * DAY_MS;
+  const sorted = [...sets].sort((a, b) => (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+  const kept = sorted.filter((set) => set.owner === 'ours');
+  const age = (set: (typeof sets)[number]) =>
+    Math.min(madeAt(set.entry), set.changedMs ?? Number.POSITIVE_INFINITY);
+  const beyond = new Set(kept.slice(0, Math.max(0, kept.length - keep)).map((set) => set.entry));
+  const removed = kept
+    .filter(
+      (set) =>
+        set.entry !== made &&
+        ((beyond.has(set.entry) && !isNamed(set.entry)) || (oldest !== null && age(set) < oldest)),
+    )
+    .map((set) => set.entry);
+  return {
+    removed,
+    kept: kept.map((set) => set.entry),
+    unknown: sorted.filter((set) => set.owner === 'unknown').map((set) => set.entry),
+    now,
+  };
+}
+
+/** What a pruning says: what it removed, names from a clock ahead, and sets it left alone. */
+function pruneResults(
+  { removed, kept, unknown, now }: PrunePlan,
+  dir: string,
+  config: DeployConfig,
+  isNamed: (entry: string) => boolean,
+): Result[] {
+  const { keep, max_age_days: days } = config.backup;
   const results: Result[] = [];
   if (removed.length > 0) {
     const rule =
@@ -976,7 +1138,6 @@ function pruneBackups(
       detail: `${ahead.join(', ')} ${one(ahead.length, 'is', 'are')} named for more than a day after this machine's clock, so a clock was wrong when ${one(ahead.length, 'it was', 'they were')} made. ${one(ahead.length, 'It ages', 'They age')} from the last change to ${one(ahead.length, 'its', 'their')} folder instead.`,
       fix: "Check this machine's clock (timedatectl on Linux).",
     });
-  const unknown = sets.filter((entry) => owners.get(entry) === 'unknown');
   if (unknown.length > 0)
     results.push({
       id: 'backup.keep_unknown',

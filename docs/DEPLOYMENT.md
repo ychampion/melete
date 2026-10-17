@@ -2918,7 +2918,13 @@ beyond the newest `backup.keep` (3 by default), and every one older than
 always stays. Each holds the files, so the disk they take is at most about
 `backup.keep` times what `--estimate` reports. `--to` streams every part to
 another machine over SSH and keeps nothing on this disk, for a host short on
-space; nothing is removed there.
+space. `backup.keep` and `backup.max_age_days` apply in the folder there in the
+same way: the backups in it are listed over SSH, and this installation's beyond
+them are removed there, never another installation's or one that does not say
+whose it is. The listing reads only the files that name a backup's
+installation, and of its `deploy.env` only the `COMPOSE_PROJECT_NAME` line, so
+no service key leaves that machine. When the listing fails, nothing is removed
+that night and the backup warns (`backup.keep`).
 
 **What "online" means for the files.** By default the stack keeps running. The
 database is dumped first and the files are copied after it, so every file the
@@ -3140,6 +3146,9 @@ Then say that backups run on a schedule, in `deploy/melete.deploy.json`:
 ```json
 "backup": { "dir": "~/melete-backups", "keep": 3, "scheduled": true }
 ```
+
+`keep` (and `max_age_days`, 30 by default) hold on the backup host as well, so
+the nightly backups over SSH there never grow past the newest three.
 
 Every backup `melete backup` finishes, here or over SSH, is noted in
 `deploy/.melete/last-backup.json`. With `"scheduled": true`, and always on a

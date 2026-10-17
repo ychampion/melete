@@ -17,6 +17,8 @@
 #
 # Set "backup": { "scheduled": true } in deploy/melete.deploy.json as well, so
 # `check` and `status` fail once the newest backup is more than 26 hours old.
+# Its backup.keep and backup.max_age_days are applied on the backup host too:
+# each run removes this installation's older backups there.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
