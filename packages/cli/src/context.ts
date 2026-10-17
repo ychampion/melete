@@ -515,20 +515,17 @@ export async function stream(
 
 /**
  * `quiet` (--json) keeps the line that a backup or restore reads without the memory
- * bound off stderr. On Windows, where every source is, it is said once a run.
+ * bound off stderr. It is said once a run: its reason is the same for every part.
  */
 export function realContext(
   deployDir: string = DEFAULT_DEPLOY_DIR,
   options: { quiet?: boolean } = {},
 ): Context {
   const dir = resolve(deployDir);
-  let toldWindows = false;
+  let told = false;
   const unbounded = (reason: string) => {
-    if (options.quiet) return;
-    if (reason === UNBOUNDED_ON_WINDOWS) {
-      if (toldWindows) return;
-      toldWindows = true;
-    }
+    if (options.quiet || told) return;
+    told = true;
     process.stderr.write(
       `${reason}, so this backup or restore reads its data without a memory limit. It will work, but may use as much memory as the data it moves.\n`,
     );

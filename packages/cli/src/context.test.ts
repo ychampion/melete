@@ -326,7 +326,7 @@ for (;;) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(
     expect(said).toEqual([]);
   });
 
-  test('a command says on stderr, for each part, that it reads without the memory limit; --json keeps it quiet', async () => {
+  test('a command says on stderr, once a run, that it reads without the memory limit; --json keeps it quiet', async () => {
     const before = process.env.TMPDIR;
     const missing = join(tmpdir(), 'melete-stream-missing', 'nested');
     const write = process.stderr.write;
@@ -350,6 +350,6 @@ for (;;) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(
     }
     expect(results).toEqual([true, true, true]);
     const line = `No private pipe could be made in the temporary folder ${missing}, which does not exist, so this backup or restore reads its data without a memory limit. It will work, but may use as much memory as the data it moves.\n`;
-    expect(lines).toEqual([line, line]);
+    expect(lines).toEqual([line]);
   });
 });
