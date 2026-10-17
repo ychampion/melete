@@ -141,7 +141,7 @@ export async function main(
     process.stderr.write(`${error instanceof Error ? error.message : error}\n${USAGE}`);
     return EXIT.refused;
   }
-  const context: Context = make(parsed.deployDir);
+  const context: Context = make(parsed.deployDir, { quiet: parsed.json });
   if (options.signals) {
     const stop = interruption(parsed.command, context.err, (code) => process.exit(code));
     context.interruptHint = stop.hint;

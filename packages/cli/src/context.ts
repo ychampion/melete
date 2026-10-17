@@ -192,25 +192,53 @@ const STREAM_TIMEOUT_MS = 6 * 60 * 60_000;
 /** A pipe holds 64 KB on Linux. */
 const PIPE_SLICE = 64 * 1024;
 
+/** Why a temporary folder took no private folder, by its error code. */
+const FOLDER_TROUBLE: Record<string, string> = {
+  ENOENT: 'which does not exist',
+  ENOTDIR: 'which is not a folder',
+  EROFS: 'which is read-only',
+  EACCES: 'which cannot be written to',
+  EPERM: 'which cannot be written to',
+  ENOSPC: 'which is full',
+};
+
+/** Why every source command on Windows is read without the bound. */
+const UNBOUNDED_ON_WINDOWS = 'Windows has no private pipe of the kind used elsewhere';
+
 /**
  * A pipe for a source command's output that is read here only when the next bytes
  * are wanted. Bun reads a command's own stdout as fast as the command writes it,
  * whatever the sinks take, so a dump decrypted faster than it loads would gather in
  * memory. On this pipe the command waits instead. Its name is removed at once.
- * Null where none can be made (no mkfifo, or a temporary folder that cannot be
- * written): the source is then read as Bun reads it, which works, only unbounded.
+ * Where none can be made (no mkfifo, or a temporary folder that cannot be written),
+ * it says why, in plain words: the source is then read as Bun reads it, which works,
+ * only unbounded.
  */
-function sourcePipe(): { read: number; write: number } | null {
+function sourcePipe(): { read: number; write: number } | string {
   let dir: string | null = null;
   const opened: number[] = [];
+  const code = (error: unknown) =>
+    error instanceof Error && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : String(error instanceof Error ? error.message : error);
   try {
-    dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    const folder = tmpdir();
+    try {
+      dir = mkdtempSync(join(folder, 'melete-stream-'));
+    } catch (error) {
+      const why = FOLDER_TROUBLE[code(error)] ?? `which gave ${code(error)}`;
+      return `No private pipe could be made in the temporary folder ${folder}, ${why}`;
+    }
     const path = join(dir, 'source');
-    const made = Bun.spawnSync(['mkfifo', '-m', '600', path], {
-      stdout: 'ignore',
-      stderr: 'ignore',
-    });
-    if (made.exitCode !== 0) return null;
+    let made: ReturnType<typeof Bun.spawnSync>;
+    try {
+      made = Bun.spawnSync(['mkfifo', '-m', '600', path], { stdout: 'ignore', stderr: 'ignore' });
+    } catch (error) {
+      return code(error) === 'ENOENT' || /not found/i.test(String(error))
+        ? 'There is no mkfifo command on this machine to make a private pipe with'
+        : `mkfifo could not be run to make a private pipe (${code(error)})`;
+    }
+    if (made.exitCode !== 0) return `mkfifo exited ${made.exitCode} making a private pipe`;
     // A read end that does not wait comes first, so neither of the others waits to open.
     const opening = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     opened.push(opening);
@@ -220,9 +248,9 @@ function sourcePipe(): { read: number; write: number } | null {
     opened.length = 0;
     closeSync(opening);
     return { read, write };
-  } catch {
+  } catch (error) {
     for (const fd of opened) closeSync(fd);
-    return null;
+    return `A private pipe could not be opened (${code(error)})`;
   } finally {
     if (dir !== null) rmSync(dir, { recursive: true, force: true });
   }
@@ -276,7 +304,14 @@ function pulled(fd: number): ReadableStream<Uint8Array> {
   );
 }
 
-export async function stream(source: Source, sinks: readonly Endpoint[]): Promise<StreamResult> {
+/**
+ * `unbounded` is told, once, why a source command is read without the bound, when it is.
+ */
+export async function stream(
+  source: Source,
+  sinks: readonly Endpoint[],
+  unbounded?: (reason: string) => void,
+): Promise<StreamResult> {
   const hash = createHash('sha256');
   let bytes = 0;
   const problems: string[] = [];
@@ -368,7 +403,9 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
     else {
       // Windows has no named pipes of this kind: there, as where none can be made, the
       // source is read as Bun reads it.
-      const pipe = process.platform === 'win32' ? null : sourcePipe();
+      const made = process.platform === 'win32' ? UNBOUNDED_ON_WINDOWS : sourcePipe();
+      const pipe = typeof made === 'string' ? null : made;
+      if (typeof made === 'string') unbounded?.(made);
       try {
         producer = Bun.spawn([...source.command], {
           stdin: 'ignore',
@@ -476,8 +513,23 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
   };
 }
 
-export function realContext(deployDir: string = DEFAULT_DEPLOY_DIR): Context {
+/**
+ * `quiet` (--json) keeps the line that a backup or restore reads without the memory
+ * bound off stderr. It is said once a run: its reason is the same for every part.
+ */
+export function realContext(
+  deployDir: string = DEFAULT_DEPLOY_DIR,
+  options: { quiet?: boolean } = {},
+): Context {
   const dir = resolve(deployDir);
+  let told = false;
+  const unbounded = (reason: string) => {
+    if (options.quiet || told) return;
+    told = true;
+    process.stderr.write(
+      `${reason}, so this backup or restore reads its data without a memory limit. It will work, but may use as much memory as the data it moves.\n`,
+    );
+  };
   return {
     deployDir: dir,
     root: dirname(dir),
@@ -486,7 +538,7 @@ export function realContext(deployDir: string = DEFAULT_DEPLOY_DIR): Context {
     machine: localMachine,
     probePort,
     fetch: (url, init) => fetch(url, init),
-    stream,
+    stream: (source, sinks) => stream(source, sinks, unbounded),
     freeAt,
     sameDisk,
     sleep: (ms) => Bun.sleep(ms),
