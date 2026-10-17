@@ -846,14 +846,15 @@ export function AddConnection({
 }) {
   const kinds = useLoad(() => adapter.connectionKinds(), []);
   const [chosen, setChosen] = useState<string | null>(null);
-  const [signingIn, setSigningIn] = useState<string | null>(null);
+  // The sign-in being made: a catalog entry, or an app found by searching, which the catalog does not list.
+  const [signingIn, setSigningIn] = useState<SignInEntry | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const list = kinds.data?.kinds ?? [];
   const kind = list.find((item) => item.id === chosen);
   const catalog = kinds.data?.catalog ?? [];
   const accounts = catalog.filter(isSignIn);
   const apps = catalog.filter(isApp);
-  const account = accounts.find((item) => item.id === signingIn);
+  const account = signingIn;
   const app = apps.find((item) => item.id === connecting);
   const easier = (kindId: string) => accounts.find((item) => item.id === SIGN_IN_FOR[kindId]);
   // An instance that does not serve kinds cannot install anything, so nothing is drawn.
@@ -896,7 +897,7 @@ export function AddConnection({
             const entry = easier(kind.id);
             if (!entry) return;
             setChosen(null);
-            setSigningIn(entry.id);
+            setSigningIn(entry);
           }}
           onDone={() => {
             setChosen(null);
@@ -908,7 +909,7 @@ export function AddConnection({
           entries={catalog}
           kinds={list}
           {...(connected ? { connected } : {})}
-          onOpen={(item) => (isApp(item) ? setConnecting(item.id) : setSigningIn(item.id))}
+          onOpen={(item) => (isApp(item) ? setConnecting(item.id) : setSigningIn(item))}
           onChoose={setChosen}
         />
       )}
@@ -1095,7 +1096,7 @@ function AppSearch({
       <Input
         value={query}
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="Find an app, such as Zendesk or Shopify"
+        placeholder="Find an app by name"
         aria-label="Find an app to connect"
       />
       {error ? <span className="app-connect-note">{error}</span> : null}

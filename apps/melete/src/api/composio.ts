@@ -15,8 +15,13 @@ import { type ComposioTriggers, signedByComposio } from '../connectors/composio-
 import { ServiceError } from './errors.ts';
 
 export const COMPOSIO_EVENTS_PATH = '/composio/events';
-/** The most a delivery may weigh; a trigger's payload is a notice, not the mail itself. */
-const MAX_DELIVERY_BYTES = 256 * 1024;
+/**
+ * The most a delivery may weigh. A new-mail trigger carries the message's
+ * text and parts, so it is larger than most webhooks; one past this is
+ * refused unread, and its account is still read on its schedule. Applied
+ * before the body is read (api/auth.ts) and again here.
+ */
+export const MAX_DELIVERY_BYTES = 1024 * 1024;
 
 export function mountComposio(
   app: Hono,
@@ -49,27 +54,39 @@ export function mountComposio(
     const triggers = deps.triggers;
     if (!secret || !triggers)
       return c.json({ error: { code: 'not_found', message: 'Not found.' } }, 404);
-    const body = await c.req.text();
-    if (Buffer.byteLength(body) > MAX_DELIVERY_BYTES)
+    // The signature covers the bytes as sent, so they are checked before any decoding.
+    const body = Buffer.from(await c.req.arrayBuffer());
+    if (body.byteLength > MAX_DELIVERY_BYTES)
       return c.json({ error: { code: 'too_large', message: 'Too large.' } }, 413);
+    const id = c.req.header('webhook-id') ?? null;
     const signed = signedByComposio(
       secret,
       {
-        id: c.req.header('webhook-id') ?? null,
+        id,
         timestamp: c.req.header('webhook-timestamp') ?? null,
         signature: c.req.header('webhook-signature') ?? null,
       },
       body,
       deps.now?.(),
     );
-    if (!signed) return c.json({ error: { code: 'unauthorized', message: 'Bad signature.' } }, 401);
+    if (!signed || !id)
+      return c.json({ error: { code: 'unauthorized', message: 'Bad signature.' } }, 401);
+    // Composio sends a delivery again until it is answered, and a signed one
+    // could be sent again by anyone who saw it: each id is taken once.
+    if (!(await triggers.firstDelivery(id))) return c.body(null, 204);
     let delivery: unknown;
     try {
-      delivery = JSON.parse(body);
+      delivery = JSON.parse(body.toString('utf8'));
     } catch {
       delivery = null;
     }
-    await triggers.receive(delivery);
+    try {
+      await triggers.receive(delivery);
+    } catch (error) {
+      // Not taken after all: Composio's next try is counted and acted on.
+      await triggers.forgetDelivery(id).catch(() => undefined);
+      throw error;
+    }
     return c.body(null, 204);
   });
 }

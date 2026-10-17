@@ -140,9 +140,12 @@ async function harness() {
   });
   const triggers = new ComposioTriggers({ sql: fixture.sql, client, meter });
   /** A delivery from Composio's trigger, signed as Composio signs it. */
-  const deliver = (body: unknown, secret = WEBHOOK_SECRET) => {
+  const deliver = (
+    body: unknown,
+    secret = WEBHOOK_SECRET,
+    id = `msg_${Math.random().toString(36).slice(2)}`,
+  ) => {
     const text = JSON.stringify(body);
-    const id = `msg_${Math.random().toString(36).slice(2)}`;
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = createHmac('sha256', secret)
       .update(`${id}.${timestamp}.${text}`)
@@ -257,6 +260,18 @@ withDb('signing in to Google through Composio', () => {
       await t.app.request('/composio/apps?query=acme', t.as(t.cookie))
     ).json()) as { apps: { toolkit: string }[] };
     expect(searched.apps.map((app) => app.toolkit)).toEqual(['acme_crm']);
+    // An app the remote MCP catalog offers shows once, as its own server's entry.
+    const titles = (listed.catalog ?? []).map((entry) => entry.title);
+    for (const title of ['Notion', 'Linear', 'GitHub', 'Stripe', 'Sentry', 'Atlassian'])
+      expect(titles.filter((shown) => shown === title)).toHaveLength(1);
+    expect(listed.catalog?.find((entry) => entry.title === 'Notion')?.connect.method).toBe(
+      'mcp_sign_in',
+    );
+    expect(listed.catalog?.some((entry) => entry.id === 'app-jira')).toBe(false);
+    const notion = (await (
+      await t.app.request('/composio/apps?query=notion', t.as(t.cookie))
+    ).json()) as { apps: unknown[] };
+    expect(notion.apps).toEqual([]);
   });
 
   test('one sign-in connects Gmail and Google Calendar, a consent page each, keeping no token', async () => {
@@ -675,9 +690,17 @@ withDb('signing in to Google through Composio', () => {
       const [watched] = await t.sql`select interval_s from source_cursor
         where connection_id = ${id} and stream = 'mail'`;
       expect(Number(watched?.interval_s)).toBe(MANAGED_WATCH_SECONDS.mail?.day ?? 0);
-      // A new month: the triggers come back on.
-      await t.sql`delete from composio_usage where dimension = 'trigger_events'`;
+      // Swept again within the month, they stay off.
       await t.triggers.sweep();
+      for (const row of kept) expect(composio.triggers.get(String(row.id))?.enabled).toBe(false);
+      // The next billing month, with the same limit: the triggers come back on.
+      const nextMonth = new ComposioMeter(
+        t.sql,
+        { ...t.meter.settings, caps: { ...t.meter.settings.caps } },
+        () => t.meter.period().to,
+      );
+      expect(nextMonth.period().start).not.toBe(t.meter.period().start);
+      await new ComposioTriggers({ sql: t.sql, client, meter: nextMonth }).sweep();
       for (const row of kept) expect(composio.triggers.get(String(row.id))?.enabled).toBe(true);
     } finally {
       delete t.meter.settings.caps.trigger_events;
@@ -685,11 +708,69 @@ withDb('signing in to Google through Composio', () => {
     }
   }, 60_000);
 
+  test('a delivery is taken once by its id, one too large is refused unread, and one for an account not here moves nothing', async () => {
+    const t = need();
+    const [mail] = await t.sql`select id, configuration from connection where provider = 'imap'
+      and configuration->>'account' = 'person@example.test' and status = 'active'`;
+    const configuration = mail?.configuration as Record<string, string>;
+    const event = (accountId: string, triggerId: string, data: unknown = {}) => ({
+      id: 'evt_2',
+      type: 'composio.trigger.message',
+      metadata: {
+        trigger_id: triggerId,
+        connected_account_id: accountId,
+        trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE',
+      },
+      data,
+    });
+    const used = async () => (await t.meter.standing()).dimensions.trigger_events.used;
+    const due = async () => {
+      const [row] = await t.sql`select next_poll_at <= now() as due from source_cursor
+        where connection_id = ${String(mail?.id)} and stream = 'mail'`;
+      return Boolean(row?.due);
+    };
+    const later = () => t.sql`update source_cursor set next_poll_at = now() + interval '1 hour'
+      where connection_id = ${String(mail?.id)}`;
+    try {
+      await later();
+      const start = await used();
+      // A new-mail delivery carries the message's text: well past a sign-in form's size.
+      const big = event(configuration.connected_account_id ?? '', configuration.trigger_id ?? '', {
+        message_text: 'x'.repeat(200 * 1024),
+      });
+      expect((await t.deliver(big, WEBHOOK_SECRET, 'msg_replayed_once')).status).toBe(204);
+      expect(await used()).toBe(start + 1);
+      expect(await due()).toBe(true);
+      // The same id again, as a retry or a replay: answered, neither counted nor acted on.
+      await later();
+      expect((await t.deliver(big, WEBHOOK_SECRET, 'msg_replayed_once')).status).toBe(204);
+      expect(await used()).toBe(start + 1);
+      expect(await due()).toBe(false);
+      // Past the limit on a delivery's size: refused before it is read, not counted.
+      const huge = event(configuration.connected_account_id ?? '', configuration.trigger_id ?? '', {
+        message_text: 'x'.repeat(1024 * 1024),
+      });
+      expect((await t.deliver(huge)).status).toBe(413);
+      expect(await used()).toBe(start + 1);
+      // For an account or trigger not here (another install's, or one removed):
+      // counted, since Composio billed it, but no account is read.
+      expect((await t.deliver(event('ca_notours', 'ti_notours'))).status).toBe(204);
+      expect(
+        (await t.deliver(event(configuration.connected_account_id ?? '', 'ti_removed'))).status,
+      ).toBe(204);
+      expect(await used()).toBe(start + 3);
+      expect(await due()).toBe(false);
+    } finally {
+      await t.sql`delete from composio_usage`;
+    }
+  }, 60_000);
+
   test('another app signs in through Composio as one connection whose tools the agent finds and runs there', async () => {
     const t = need();
     composio.signInAs(googleUpstream(person));
-    // An app Composio does not sign in to, or one of Google's own parts, is refused.
-    for (const toolkit of ['spotify', 'gmail', 'no_such_app'])
+    // An app Composio does not sign in to, one of Google's own parts, or one the
+    // remote MCP catalog offers itself (Notion, Jira) is refused.
+    for (const toolkit of ['spotify', 'gmail', 'no_such_app', 'notion', 'jira'])
       expect(
         (await t.app.request('/managed-sign-ins', t.as(t.cookie, { provider: 'app', toolkit })))
           .status,
@@ -747,7 +828,7 @@ withDb('signing in to Google through Composio', () => {
       const known = composio.accounts.size;
       const refused = await t.app.request(
         '/managed-sign-ins',
-        t.as(t.cookie, { provider: 'app', toolkit: 'notion' }),
+        t.as(t.cookie, { provider: 'app', toolkit: 'acme_crm' }),
       );
       expect(refused.status).toBe(409);
       expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(
@@ -757,7 +838,7 @@ withDb('signing in to Google through Composio', () => {
       // One more place, and the sign-in starts.
       t.meter.settings.accountsCap = inUse + 1;
       composio.signInAs(googleUpstream(person));
-      await t.start({ provider: 'app', toolkit: 'notion' });
+      await t.start({ provider: 'app', toolkit: 'acme_crm' });
       expect(composio.accounts.size).toBe(known + 1);
     } finally {
       delete t.meter.settings.accountsCap;

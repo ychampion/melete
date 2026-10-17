@@ -31,18 +31,30 @@ export const WATCH_TRIGGERS: Record<string, { slug: string; config: Record<strin
 /** How far a delivery's timestamp may be from now, in seconds. */
 const TOLERANCE_S = 300;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** A delivery's `webhook-id`, as `composio_delivery` keeps it. */
+const DELIVERY_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+/** How long a taken delivery's id is kept: far past the signature's tolerance. */
+const DELIVERY_KEEP = '1 day';
 
-/** Whether a delivery carries a valid signature under `secret`, made within the tolerance. */
+/**
+ * Whether a delivery carries a valid signature under `secret` over exactly
+ * these bytes, made within the tolerance. The comparison takes the same time
+ * whatever the signature holds.
+ */
 export function signedByComposio(
   secret: string,
   headers: { id?: string | null; timestamp?: string | null; signature?: string | null },
-  body: string,
+  body: string | Uint8Array,
   now = Date.now(),
 ): boolean {
   const { id, timestamp, signature } = headers;
-  if (!id || !timestamp || !signature || !/^\d{1,12}$/.test(timestamp)) return false;
+  if (!id || !DELIVERY_ID.test(id) || !timestamp || !signature || !/^\d{1,12}$/.test(timestamp))
+    return false;
   if (Math.abs(now / 1000 - Number(timestamp)) > TOLERANCE_S) return false;
-  const expected = createHmac('sha256', secret).update(`${id}.${timestamp}.${body}`).digest();
+  const expected = createHmac('sha256', secret)
+    .update(`${id}.${timestamp}.`)
+    .update(typeof body === 'string' ? Buffer.from(body, 'utf8') : body)
+    .digest();
   return signature.split(' ').some((part) => {
     const [version, value] = part.split(',', 2);
     if (version !== 'v1' || !value) return false;
@@ -107,6 +119,19 @@ export class ComposioTriggers {
     await this.deps.client.deleteTrigger(triggerId);
   }
 
+  /** Whether a verified delivery's id is new here; it is kept, so the same id is taken once. */
+  async firstDelivery(id: string): Promise<boolean> {
+    if (!DELIVERY_ID.test(id)) return false;
+    const rows = await this.deps.sql`insert into composio_delivery (id) values (${id})
+      on conflict (id) do nothing returning id`;
+    return rows.length > 0;
+  }
+
+  /** Give back a delivery's id that was not acted on, so Composio's next try is. */
+  async forgetDelivery(id: string): Promise<void> {
+    await this.deps.sql`delete from composio_delivery where id = ${id}`;
+  }
+
   /**
    * One delivery, already verified. Counted first, since Composio billed it;
    * then the account it names is read now. Answers whether it was for a
@@ -148,15 +173,21 @@ export class ComposioTriggers {
     await this.deps.sql`insert into composio_usage (period, dimension, used)
       values (${period}, ${OFF}, 1)
       on conflict (period, dimension) do update set used = 1, updated_at = now()`;
+    let failed = 0;
     for (const { triggerId } of await this.kept())
       await this.deps.client.setTrigger(triggerId, 'disable').catch((error) => {
         // Tried again on the next sweep while events are still spent.
         this.offFor = null;
+        failed += 1;
         process.stderr.write(
           `composio: trigger_not_switched_off ${error instanceof ComposioFault ? error.kind : 'error'}\n`,
         );
       });
-    process.stderr.write('composio: trigger events reached their limit; triggers switched off\n');
+    process.stderr.write(
+      failed
+        ? `composio: trigger events reached their limit; ${failed} trigger(s) not switched off yet, tried again next sweep\n`
+        : 'composio: trigger events reached their limit; triggers switched off\n',
+    );
   }
 
   /**
@@ -164,6 +195,8 @@ export class ComposioTriggers {
    * in a new period, and watched connections without one are given one.
    */
   async sweep(): Promise<void> {
+    await this.deps.sql`delete from composio_delivery
+      where received_at < now() - ${DELIVERY_KEEP}::interval`;
     if (await this.deps.meter?.spent('trigger_events')) {
       await this.switchOff();
       return;
@@ -183,17 +216,24 @@ export class ComposioTriggers {
           where dimension = ${OFF}`;
       this.offFor = null;
     }
+    // In no fixed order, so a few accounts Composio keeps refusing cannot hold
+    // every other one back; each without a trigger is read on its schedule meanwhile.
     const missing = await this.deps.sql`select id from connection
       where status = 'active' and configuration->>'via' = 'composio'
         and configuration->>'kind' in ${this.deps.sql(Object.keys(WATCH_TRIGGERS))}
         and configuration->>'trigger_id' is null
-      limit 50`;
+      order by random() limit 50`;
+    let unmade = 0;
+    let reason = '';
     for (const row of missing)
       await this.watch(String(row.id)).catch((error) => {
-        process.stderr.write(
-          `composio: trigger_not_made ${error instanceof ComposioFault ? error.kind : 'error'}\n`,
-        );
+        unmade += 1;
+        reason = error instanceof ComposioFault ? error.message : 'error';
       });
+    if (unmade)
+      process.stderr.write(
+        `composio: trigger_not_made count=${unmade} last=${reason}; those accounts are read on a schedule\n`,
+      );
   }
 }
 
@@ -224,10 +264,15 @@ export function startComposioUpkeep(deps: {
             `composio: usage_unread ${error instanceof ComposioFault ? error.kind : 'error'}\n`,
           );
         });
-      await deps.triggers?.sweep().catch(() => {
-        process.stderr.write('composio: trigger_sweep_failed\n');
+      await deps.triggers?.sweep().catch((error) => {
+        process.stderr.write(
+          `composio: trigger_sweep_failed ${error instanceof ComposioFault ? error.message : 'error'}\n`,
+        );
       });
-      const standing = await deps.meter.standing().catch(() => null);
+      const standing = await deps.meter.standing().catch(() => {
+        process.stderr.write('composio: usage_standing_unread\n');
+        return null;
+      });
       if (standing) process.stderr.write(standingLine(standing));
     } finally {
       running = false;

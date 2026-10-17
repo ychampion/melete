@@ -5,9 +5,18 @@
  * app, or when the operator set an auth config of their own for it.
  *
  * Gmail, Google Calendar and Google Drive are not here: they are the parts of
- * the Google sign-in, read by Melete's own mail, calendar and Drive code.
+ * the Google sign-in, read by Melete's own mail, calendar and Drive code. Nor
+ * is an app the remote MCP catalog already connects (Notion, Linear, Jira,
+ * GitHub, ...): its own server's entry is the one offered, so each app shows
+ * once. A connection already made through Composio for one keeps working.
  */
-import { type ComposioClient, type ComposioToolkitInfo, TOOLKIT_SLUG } from './composio.ts';
+import { mcpCatalogCovers } from '@melete/contracts';
+import {
+  COMPOSIO_OWN_TOOLKIT,
+  type ComposioClient,
+  type ComposioToolkitInfo,
+  TOOLKIT_SLUG,
+} from './composio.ts';
 
 export type ComposioApp = {
   toolkit: string;
@@ -17,7 +26,24 @@ export type ComposioApp = {
   categories: string[];
 };
 
-/** The popular apps, each one Composio signs in to with its own OAuth app. */
+/** The toolkits the Google sign-in connects, never offered as apps of their own. */
+const GOOGLE_PARTS = new Set(['gmail', 'googlecalendar', 'googledrive']);
+
+/**
+ * Whether a toolkit is never offered as an app here, whatever Composio says
+ * of it: one of Google's parts, Composio's own, or an app the remote MCP
+ * catalog already offers.
+ */
+export const notOfferedHere = (toolkit: string): boolean =>
+  !TOOLKIT_SLUG.test(toolkit) ||
+  GOOGLE_PARTS.has(toolkit) ||
+  COMPOSIO_OWN_TOOLKIT.test(toolkit) ||
+  mcpCatalogCovers(toolkit);
+
+/**
+ * The popular apps, each one Composio signs in to with its own OAuth app,
+ * less any the remote MCP catalog offers itself.
+ */
 export const POPULAR_APPS: ReadonlyArray<Omit<ComposioApp, 'logo' | 'categories'>> = [
   { toolkit: 'slack', title: 'Slack', description: 'Read and send messages in your workspace.' },
   { toolkit: 'notion', title: 'Notion', description: 'Search, read and edit pages and databases.' },
@@ -55,10 +81,7 @@ export const POPULAR_APPS: ReadonlyArray<Omit<ComposioApp, 'logo' | 'categories'
   { toolkit: 'discord', title: 'Discord', description: 'Servers, channels and messages.' },
   { toolkit: 'linkedin', title: 'LinkedIn', description: 'Your profile and posts.' },
   { toolkit: 'youtube', title: 'YouTube', description: 'Videos, playlists and channels.' },
-];
-
-/** The toolkits the Google sign-in connects, never offered as apps of their own. */
-const GOOGLE_PARTS = new Set(['gmail', 'googlecalendar', 'googledrive']);
+].filter((app) => !notOfferedHere(app.toolkit));
 
 const SEARCH_MS = 10 * 60_000;
 const MAX_KEPT = 200;
@@ -77,8 +100,7 @@ export class ComposioCatalog {
   /** Whether an app found at Composio can be signed in to here. */
   private offered(info: ComposioToolkitInfo): boolean {
     return (
-      TOOLKIT_SLUG.test(info.slug) &&
-      !GOOGLE_PARTS.has(info.slug) &&
+      !notOfferedHere(info.slug) &&
       !info.noAuth &&
       (info.managedAuth || this.configured.has(info.slug))
     );
@@ -110,7 +132,7 @@ export class ComposioCatalog {
 
   /** An app's name when it can be connected here, or null. */
   async title(toolkit: string): Promise<string | null> {
-    if (!TOOLKIT_SLUG.test(toolkit) || GOOGLE_PARTS.has(toolkit)) return null;
+    if (notOfferedHere(toolkit)) return null;
     const popular = POPULAR_APPS.find((app) => app.toolkit === toolkit);
     if (popular) return popular.title;
     const found = await this.find(toolkit.replace(/_/g, ' '));

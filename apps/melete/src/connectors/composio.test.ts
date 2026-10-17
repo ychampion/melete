@@ -6,12 +6,13 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHmac } from 'node:crypto';
+import { MCP_CATALOG, mcpCatalogCovers } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { CAP_WORDS, ComposioCapReached, type ComposioMeter } from '../signals/managed-calls.ts';
 import { mailObservation } from '../signals/observations.ts';
 import { ComposioClient, ComposioFault, type ComposioToolkit } from './composio.ts';
 import { ComposioAppConnector } from './composio-app.ts';
-import { ComposioCatalog, POPULAR_APPS } from './composio-catalog.ts';
+import { ComposioCatalog, notOfferedHere, POPULAR_APPS } from './composio-catalog.ts';
 import {
   composioToolFetch,
   MANAGED_GOOGLE_BASES,
@@ -650,6 +651,18 @@ describe('running a tool for one account', () => {
     expect(fake.sessions.size).toBe(opened + 1);
     const [session] = [...fake.sessions.values()].slice(-1);
     expect(session).toMatchObject({ toolkit: 'gmail', account: id });
+    // What Composio is asked for: one toolkit, pinned to this account and its own
+    // user, with every extra that could cost more than a plain tool call off.
+    expect(session?.request).toEqual({
+      user_id: 'melete:own_test:own_test',
+      toolkits: { enable: ['gmail'] },
+      connected_accounts: { gmail: [id] },
+      manage_connections: { enable: false },
+      workbench: { enable: false },
+      proxy_execute: { enable: false },
+      instant: false,
+      search: { enable: false },
+    });
     fake.dropSessions();
     expect(
       await own.run({
@@ -697,6 +710,26 @@ describe('running a tool for one account', () => {
     expect(timedOut).toBeInstanceOf(ComposioFault);
     expect((timedOut as ComposioFault).mayHaveRun).toBe(true);
     expect(held.count).toBe(4);
+  });
+
+  test('Composio’s own tools are never run, and their place is given back', async () => {
+    const id = await activeAccount(recorded(gmailRoute).upstream);
+    const { meter, held } = countingMeter();
+    const own = new ComposioRunner(client, meter);
+    const before = fake.executions.length;
+    for (const tool of [
+      'COMPOSIO_MULTI_EXECUTE_TOOL',
+      'COMPOSIO_REMOTE_WORKBENCH',
+      'COMPOSIO_MANAGE_CONNECTIONS',
+    ]) {
+      const error = await own
+        .run({ connectedAccountId: id, toolkit: 'gmail', tool, args: {} })
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ComposioFault);
+      expect((error as ComposioFault).kind).toBe('refused');
+    }
+    expect(fake.executions.length).toBe(before);
+    expect(held).toEqual({ count: 0, released: 3 });
   });
 
   test('a spent limit refuses the call before anything reaches Composio, an approved send included', async () => {
@@ -877,7 +910,7 @@ describe('an app connected through Composio', () => {
 
 describe('the app catalog', () => {
   test('the popular list leaves out Google’s parts, and search offers only apps that can be signed in to here', async () => {
-    expect(POPULAR_APPS.length).toBeGreaterThanOrEqual(20);
+    expect(POPULAR_APPS.length).toBeGreaterThanOrEqual(15);
     expect(
       POPULAR_APPS.some((app) => ['gmail', 'googlecalendar', 'googledrive'].includes(app.toolkit)),
     ).toBe(false);
@@ -897,6 +930,29 @@ describe('the app catalog', () => {
       'Spotify',
     );
     expect(await catalog.search('<script>')).toEqual([]);
+  });
+
+  test('an app the remote MCP catalog offers is offered there only, worked out from that catalog', async () => {
+    // Every MCP catalog entry, and each product it names, hides its Composio twin.
+    const covered = MCP_CATALOG.flatMap((entry) => [entry.id, ...(entry.products ?? [])]);
+    expect(covered).toEqual(
+      expect.arrayContaining(['notion', 'linear', 'jira', 'confluence', 'github', 'stripe']),
+    );
+    for (const toolkit of covered) expect(mcpCatalogCovers(toolkit)).toBe(true);
+    for (const toolkit of ['slack', 'asana', 'hubspot', 'atlassian_bitbucket', 'notionx', ''])
+      expect(mcpCatalogCovers(toolkit)).toBe(false);
+    expect(mcpCatalogCovers('Microsoft-Teams')).toBe(false);
+    for (const toolkit of covered)
+      expect(POPULAR_APPS.some((app) => app.toolkit === toolkit)).toBe(false);
+    expect(POPULAR_APPS.some((app) => app.toolkit === 'slack')).toBe(true);
+    // The fake lists Notion as an app Composio signs in to; it is still not offered.
+    const catalog = new ComposioCatalog(client, new Set(['notion', 'jira']));
+    expect((await catalog.search('notion')).map((app) => app.toolkit)).toEqual([]);
+    expect(await catalog.title('notion')).toBeNull();
+    expect(await catalog.title('jira')).toBeNull();
+    expect(await catalog.title('slack')).toBe('Slack');
+    // Composio's own toolkits are never offered either.
+    expect(notOfferedHere('composio_search')).toBe(true);
   });
 });
 
@@ -924,5 +980,27 @@ describe('a trigger delivery’s signature', () => {
     expect(signedByComposio(secret, { ...headers, id: 'msg_2' }, body, now)).toBe(false);
     expect(signedByComposio(secret, headers, body, now + 10 * 60_000)).toBe(false);
     expect(signedByComposio(secret, { ...headers, signature: null }, body, now)).toBe(false);
+  });
+
+  test('is checked over the exact bytes sent, whatever they decode to, and needs a plain id', () => {
+    const now = Date.parse('2026-10-05T12:00:00Z');
+    const timestamp = String(now / 1000);
+    // A byte-order mark and a byte that is not UTF-8: decoding would change both.
+    const bytes = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from('{"a":"'),
+      Buffer.from([0xff]),
+      Buffer.from('"}'),
+    ]);
+    const signature = `v1,${createHmac('sha256', secret)
+      .update(Buffer.concat([Buffer.from(`msg_1.${timestamp}.`), bytes]))
+      .digest('base64')}`;
+    const headers = { id: 'msg_1', timestamp, signature };
+    expect(signedByComposio(secret, headers, bytes, now)).toBe(true);
+    expect(signedByComposio(secret, headers, bytes.toString('utf8'), now)).toBe(false);
+    expect(signedByComposio(secret, { ...headers, id: 'msg 1' }, bytes, now)).toBe(false);
+    expect(signedByComposio(secret, { ...headers, timestamp: `${timestamp}.5` }, bytes, now)).toBe(
+      false,
+    );
   });
 });

@@ -13,6 +13,7 @@ import {
   CONNECTION_KIND_DESCRIPTORS,
   type ConnectionCatalogEntry,
   type ConnectionKindDescriptor,
+  composioAppSearchResponse,
   connectionKindListResponse,
   ID_PREFIXES,
   MCP_CATALOG,
@@ -20,6 +21,7 @@ import {
   managedSignInRequest,
   managedSignInStart,
   mcpCatalogConfig,
+  mcpCatalogCovers,
   mcpCatalogEntry,
   mcpConnectedClientList,
   mcpDiscoveredConfig,
@@ -48,6 +50,39 @@ const COVERS: Record<ConnectionKindDescriptor['kind'], ConnectionCatalogEntry['c
 /** What the service's catalog says about a Google sign-in through Composio. */
 const COMPOSIO_NOTE =
   'Composio handles this sign-in and keeps the Google access. Your mail, calendar and Drive reach Melete through Composio.';
+
+/**
+ * Apps Composio signs in to, as the mock's stand-in for its catalog. As on the
+ * service, an app the remote MCP catalog offers itself is left out, so
+ * Notion here never shows; the first few are the popular cards.
+ */
+const MOCK_COMPOSIO_APPS = [
+  { toolkit: 'slack', title: 'Slack', description: 'Read and send messages in your workspace.' },
+  { toolkit: 'notion', title: 'Notion', description: 'Search, read and edit pages and databases.' },
+  { toolkit: 'asana', title: 'Asana', description: 'Tasks, projects and teams.' },
+  { toolkit: 'hubspot', title: 'HubSpot', description: 'Contacts, companies and deals.' },
+  { toolkit: 'dropbox', title: 'Dropbox', description: 'Files and folders.' },
+  { toolkit: 'zendesk', title: 'Zendesk', description: 'Tickets, users and help center articles.' },
+  { toolkit: 'jira', title: 'Jira', description: 'Issues, boards and sprints.' },
+  { toolkit: 'intercom', title: 'Intercom', description: 'Conversations and contacts.' },
+].filter((app) => !mcpCatalogCovers(app.toolkit));
+const MOCK_POPULAR_APPS = 3;
+
+const composioAppEntry = (app: (typeof MOCK_COMPOSIO_APPS)[number]): ConnectionCatalogEntry => ({
+  id: `app-${app.toolkit.replace(/_/g, '-')}`,
+  title: app.title,
+  description: app.description,
+  covers: ['tools'],
+  connect: {
+    method: 'managed_sign_in',
+    provider: 'app',
+    toolkit: app.toolkit,
+    via: 'composio',
+    start: '/managed-sign-ins',
+    note: `Composio handles this sign-in and keeps the ${app.title} access. The agent finds and runs ${app.title} tools through Composio, and asks before any that change something.`,
+  },
+  available: true,
+});
 
 /** Everything the mock offers to connect: account sign-ins, catalog apps, then forms. */
 export function mockCatalog(options: { composio?: boolean } = {}): ConnectionCatalogEntry[] {
@@ -84,6 +119,9 @@ export function mockCatalog(options: { composio?: boolean } = {}): ConnectionCat
               available: true,
             },
     ),
+    ...(options.composio
+      ? MOCK_COMPOSIO_APPS.slice(0, MOCK_POPULAR_APPS).map(composioAppEntry)
+      : []),
     ...MCP_CATALOG.map(
       (entry): ConnectionCatalogEntry => ({
         id: entry.id,
@@ -431,6 +469,31 @@ export function mountMockSignIns(
       );
     });
   }
+
+  // Apps to connect through Composio, found by name, when Composio is on.
+  app.get('/composio/apps', (c) => {
+    if (!options.composio)
+      return Response.json(
+        {
+          error: {
+            code: 'provider_not_configured',
+            message: 'Connecting apps through Composio needs a Composio key. Set COMPOSIO_API_KEY.',
+          },
+        },
+        { status: 409 },
+      );
+    const query = (c.req.query('query') ?? '').trim().toLowerCase();
+    const apps = query
+      ? MOCK_COMPOSIO_APPS.filter(
+          (app) => app.title.toLowerCase().includes(query) || app.toolkit.includes(query),
+        )
+      : [];
+    return Response.json(
+      composioAppSearchResponse.parse({
+        apps: apps.map((app) => ({ ...app, logo: null, categories: [] })),
+      }),
+    );
+  });
 
   // Google through Composio: one consent page stands in for both of its pages.
   app.post('/managed-sign-ins', async (c) => {

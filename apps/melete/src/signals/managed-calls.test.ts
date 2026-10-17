@@ -6,6 +6,8 @@
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { testDatabase } from '../../test/helpers/database.ts';
+import type { ComposioClient } from '../connectors/composio.ts';
+import { sweepManagedRemovals } from '../connectors/managed-accounts.ts';
 import {
   CAP_WORDS,
   ComposioCapReached,
@@ -208,5 +210,120 @@ withDb('the Composio meter', () => {
     expect(raced.filter((r) => r.startsWith('ca_'))).toHaveLength(1);
     expect(raced.filter((r) => r === 'connected_accounts')).toHaveLength(2);
     expect((await capped.standing()).accounts).toEqual({ used: 2, cap: 2 });
+  });
+
+  test('the account lock is let go before Composio is called, and a held place is let go after', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const sql = handle.sql;
+    const capped = meter({ accountsCap: 3 });
+    // Two sign-ins at once: each waits inside `make` until the other is there too,
+    // which only happens when neither holds the lock while Composio answers.
+    let inside = 0;
+    let most = 0;
+    const make = (id: string) => async () => {
+      inside += 1;
+      most = Math.max(most, inside);
+      for (let waited = 0; inside < 2 && waited < 2_000; waited += 10) await Bun.sleep(10);
+      await sql`insert into managed_account_removal (connected_account_id) values (${id})`;
+      inside -= 1;
+      return id;
+    };
+    const made = await Promise.all([
+      capped.withAccountSlot(make('ca_overlap1')),
+      capped.withAccountSlot(make('ca_overlap2')),
+    ]);
+    expect(made).toEqual(['ca_overlap1', 'ca_overlap2']);
+    expect(most).toBe(2);
+    // Held places are gone; only the two accounts count.
+    const held =
+      await sql`select 1 from managed_account_removal where connected_account_id like 'slot_%'`;
+    expect(held).toHaveLength(0);
+    expect((await capped.standing()).accounts).toEqual({ used: 2, cap: 3 });
+    // A sign-in whose call to Composio failed gives its place back.
+    expect(
+      await refused(
+        capped.withAccountSlot(async () => {
+          throw new Error('composio_unavailable');
+        }),
+      ),
+    ).toBeInstanceOf(Error);
+    expect((await capped.standing()).accounts).toEqual({ used: 2, cap: 3 });
+  });
+
+  test('a place a crash left held counts until it falls due, then goes without reaching Composio', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const sql = handle.sql;
+    const capped = meter({ accountsCap: 1 });
+    await sql`insert into managed_account_removal (connected_account_id, next_attempt_at)
+      values ('slot_crashed', now() + interval '1 hour')`;
+    expect(await refused(capped.withAccountSlot(async () => 'made'))).toBeInstanceOf(
+      ComposioCapReached,
+    );
+    const untouchable = {
+      removeAccount: async () => {
+        throw new Error('a held place must never reach Composio');
+      },
+    } as unknown as ComposioClient;
+    const due = Date.now() + 2 * 60 * 60_000;
+    expect(await sweepManagedRemovals(sql, untouchable, due)).toEqual({
+      removed: [],
+      kept: [],
+      failed: [],
+    });
+    expect(await capped.withAccountSlot(async () => 'made')).toBe('made');
+  });
+
+  test('the month turns over at the start of the billing day, in UTC; a call given back after it returns to its own month', async () => {
+    let clock = Date.parse('2026-10-14T23:59:59.999Z');
+    if (!handle) throw new Error('Postgres unavailable');
+    const capped = new ComposioMeter(
+      handle.sql,
+      settings({ caps: { tool_calls: 2 }, billingDay: 15 }),
+      () => clock,
+    );
+    const first = await capped.reserve('tool_calls');
+    await capped.reserve('tool_calls');
+    expect(first.period).toBe('2026-09-15');
+    expect(await refused(capped.reserve('tool_calls'))).toBeInstanceOf(ComposioCapReached);
+    // One millisecond later is a new month with its own count.
+    clock = Date.parse('2026-10-15T00:00:00.000Z');
+    const fresh = await capped.reserve('tool_calls');
+    expect(fresh.period).toBe('2026-10-15');
+    expect((await capped.standing()).dimensions.tool_calls).toMatchObject({ used: 1 });
+    // The last month's call given back now leaves this month's count alone.
+    await capped.release(first);
+    expect((await capped.standing()).dimensions.tool_calls).toMatchObject({ used: 1 });
+    const [old] = await handle.sql`select used from composio_usage
+      where period = '2026-09-15' and dimension = 'tool_calls'`;
+    expect(Number(old?.used)).toBe(1);
+  });
+
+  test('a limit lowered below this month’s use refuses every call at once, an approved one included', async () => {
+    const generous = meter({ caps: { tool_calls: 10 } });
+    for (let i = 0; i < 5; i++) await generous.reserve('tool_calls');
+    const lowered = meter({ caps: { tool_calls: 3 } });
+    expect(await refused(lowered.reserve('tool_calls'))).toBeInstanceOf(ComposioCapReached);
+    expect(await lowered.spent('tool_calls')).toBe(true);
+    expect((await lowered.standing()).dimensions.tool_calls).toEqual({
+      used: 5,
+      cap: 3,
+      state: 'reached',
+    });
+    // Nothing was added by the refusals.
+    expect((await generous.standing()).dimensions.tool_calls.used).toBe(5);
+  });
+
+  test('a call sent while Composio’s count is read is counted on top of it, never lost', async () => {
+    const capped = meter({ caps: { tool_calls: 100 } });
+    await capped.reserve('tool_calls');
+    // Composio counts 50 (calls it ran that Melete gave back, say); while it
+    // answers, one more call is sent, which its answer does not include.
+    await capped.reconcile(async () => {
+      await capped.reserve('tool_calls');
+      return { tool_calls: 50 };
+    }, 0);
+    expect((await capped.standing()).dimensions.tool_calls.used).toBe(51);
+    await capped.reserve('tool_calls');
+    expect((await capped.standing()).dimensions.tool_calls.used).toBe(52);
   });
 });

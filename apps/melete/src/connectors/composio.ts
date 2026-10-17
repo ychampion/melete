@@ -26,6 +26,9 @@ export type ComposioToolkit = (typeof COMPOSIO_TOOLKITS)[number];
 export const TOOLKIT_SLUG = /^[a-z0-9][a-z0-9_]{0,63}$/;
 /** A tool's slug at Composio. */
 export const TOOL_SLUG = /^[A-Z0-9][A-Z0-9_]{0,127}$/;
+/** Composio's own meta and helper tools, and its own toolkits: never run, never offered. */
+export const COMPOSIO_OWN_TOOL = /^COMPOSIO_/;
+export const COMPOSIO_OWN_TOOLKIT = /^composio/;
 
 export type ComposioFaultKind =
   /** The project key was refused: the operator's setting, not the person's account. */
@@ -353,7 +356,11 @@ export class ComposioClient {
     args: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<ComposioToolResult> {
-    if (!ID.test(sessionId) || !TOOL_SLUG.test(tool)) throw new ComposioFault('refused');
+    // Composio's own tools (`COMPOSIO_MULTI_EXECUTE_TOOL`, the workbench, ...) run
+    // in a session too, and one of them can make several billed calls; only an
+    // app's own tool is ever run.
+    if (!ID.test(sessionId) || !TOOL_SLUG.test(tool) || COMPOSIO_OWN_TOOL.test(tool))
+      throw new ComposioFault('refused');
     const answer = record(
       await this.call('POST', `/tool_router/session/${sessionId}/execute`, {
         body: { tool_slug: tool, arguments: args },

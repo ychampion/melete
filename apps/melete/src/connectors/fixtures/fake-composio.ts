@@ -65,8 +65,8 @@ export type FakeComposio = {
   proxyCalls: { account: string; method: string; endpoint: string }[];
   /** Every tool run in a session: the session's account, the tool and its arguments. */
   executions: { account: string; tool: string; args: Record<string, unknown> }[];
-  /** Sessions opened, by id: the user, toolkit and account each was opened for. */
-  sessions: Map<string, { user: string; toolkit: string; account: string }>;
+  /** Sessions opened, by id: the user, toolkit and account each was opened for, and the whole request. */
+  sessions: Map<string, { user: string; toolkit: string; account: string; request: unknown }>;
   /** Trigger instances, by id. */
   triggers: Map<string, { slug: string; account: string; config: unknown; enabled: boolean }>;
   /** What the usage summary reports, by entity. */
@@ -344,7 +344,7 @@ export async function startFakeComposio(
         )
           return error(400, 'ToolRouter_ExtrasNotExpected');
         const id = `trs_${randomBytes(6).toString('hex')}`;
-        sessions.set(id, { user: body.user_id ?? '', toolkit, account });
+        sessions.set(id, { user: body.user_id ?? '', toolkit, account, request: body });
         usage.sessions = (usage.sessions ?? 0) + 1;
         return Response.json(
           {

@@ -21,6 +21,7 @@
  * count. A limit is checked against the larger of Melete's count and
  * Composio's plus whatever Melete counted since Composio's was read.
  */
+import { randomBytes } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 
 /** The pool, or one transaction on it. */
@@ -92,6 +93,14 @@ export type Reservation = { period: string; dimension: Metered; units: number };
 /** Locks that serialize counting; any two fixed numbers no other code takes. */
 const USAGE_LOCK = 0x6d656c_01;
 const ACCOUNTS_LOCK = 0x6d656c_02;
+
+/**
+ * A place held for a sign-in under way, in `managed_account_removal`: never an
+ * id Composio gives (its ids start `ca_`), and never sent to Composio.
+ */
+export const ACCOUNT_SLOT_PREFIX = 'slot_';
+/** How long a held place lasts if a crash leaves it behind: longer than any sign-in's calls. */
+const ACCOUNT_SLOT_MS = 60 * 60_000;
 
 const MICROS = 1_000_000;
 const micros = (usd: number) => Math.round(usd * MICROS);
@@ -294,8 +303,11 @@ export class ComposioMeter {
     return !this.allows(counts, dimension);
   }
 
-  /** Accounts at Composio now: those a live connection acts for, and those still to remove. */
-  private async accountsInUse(query: Sql): Promise<number> {
+  /**
+   * Accounts at Composio now: those a live connection acts for, those still to
+   * remove, and places held for sign-ins under way (see `withAccountSlot`).
+   */
+  private async accountsInUse(query: Query): Promise<number> {
     const [row] = await query`select count(distinct id)::int as used from (
         select configuration->>'connected_account_id' as id from connection
           where status <> 'revoked' and configuration->>'via' = 'composio'
@@ -305,20 +317,33 @@ export class ComposioMeter {
   }
 
   /**
-   * Run `make`, which creates a connected account at Composio, only while the
-   * account limit leaves room for one more. Held under a lock until `make`
-   * has recorded the account it made, so two sign-ins cannot both take the
-   * last place.
+   * Run `make`, which creates a connected account at Composio and queues it in
+   * `managed_account_removal`, only while the account limit leaves room for
+   * one more. The place is taken under a lock and held by a placeholder row,
+   * so two sign-ins cannot both take the last one, while the lock itself is
+   * let go before Composio is called. The placeholder goes once `make` has
+   * settled; one a crash leaves behind is cleared by the removal sweep when it
+   * falls due, without reaching Composio.
    */
   async withAccountSlot<T>(make: () => Promise<T>): Promise<T> {
     const cap = this.settings.accountsCap;
     if (cap === undefined) return make();
-    return this.sql.begin(async (tx) => {
+    const slot = `${ACCOUNT_SLOT_PREFIX}${randomBytes(12).toString('hex')}`;
+    await this.sql.begin(async (tx) => {
       await tx`select pg_advisory_xact_lock(${ACCOUNTS_LOCK})`;
-      if ((await this.accountsInUse(this.sql)) >= cap)
-        throw new ComposioCapReached('connected_accounts');
-      return make();
-    }) as Promise<T>;
+      if ((await this.accountsInUse(tx)) >= cap) throw new ComposioCapReached('connected_accounts');
+      await tx`insert into managed_account_removal (connected_account_id, next_attempt_at)
+        values (${slot}, ${new Date(this.now() + ACCOUNT_SLOT_MS).toISOString()}::timestamptz)`;
+    });
+    try {
+      return await make();
+    } finally {
+      await this
+        .sql`delete from managed_account_removal where connected_account_id = ${slot}`.catch(() => {
+        // Cleared by the removal sweep once it falls due.
+        process.stderr.write('composio: a held account place was not let go yet\n');
+      });
+    }
   }
 
   /**
@@ -334,6 +359,12 @@ export class ComposioMeter {
     if (this.reconciling) return this.reconciling;
     this.reconciling = (async () => {
       const { start, from } = this.period();
+      // Melete's own count is read before Composio's: a call sent while Composio
+      // answers is then counted twice for a while, never missed.
+      const before = new Map<string, number>();
+      for (const row of await this.sql`select dimension, used from composio_usage
+          where period = ${start}`)
+        before.set(String(row.dimension), Number(row.used));
       const totals = await usage(from, this.now());
       const reported: Partial<Record<Metered, number>> = {};
       for (const [entity, quantity] of Object.entries(totals)) {
@@ -341,12 +372,16 @@ export class ComposioMeter {
           entity === 'tool_calls' ? 'tool_calls' : /trigger/.test(entity) ? 'trigger_events' : null;
         if (dimension) reported[dimension] = (reported[dimension] ?? 0) + quantity;
       }
-      for (const dimension of METERED)
-        await this.sql`insert into composio_usage (period, dimension, used, reported)
-          values (${start}, ${dimension}, 0, ${reported[dimension] ?? 0})
+      for (const dimension of METERED) {
+        const seen = before.get(dimension) ?? 0;
+        await this
+          .sql`insert into composio_usage (period, dimension, used, reported, used_at_report)
+          values (${start}, ${dimension}, 0, ${reported[dimension] ?? 0}, 0)
           on conflict (period, dimension) do update
-            set reported = excluded.reported, used_at_report = composio_usage.used,
+            set reported = excluded.reported,
+              used_at_report = least(composio_usage.used, ${seen}::bigint),
               updated_at = now()`;
+      }
       this.reconciledAt = this.now();
     })().finally(() => {
       this.reconciling = null;

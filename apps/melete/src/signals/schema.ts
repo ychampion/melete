@@ -161,12 +161,31 @@ export const composioUsage = pgTable(
 );
 
 /**
+ * Each trigger delivery from Composio that was taken, by its `webhook-id`, so
+ * a delivery sent again (a retry, or a replay within the signature's
+ * tolerance) is counted and acted on once. Rows older than a day are removed.
+ */
+export const composioDelivery = pgTable(
+  'composio_delivery',
+  {
+    id: text('id').primaryKey(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('composio_delivery_received_idx').on(table.receivedAt),
+    check('composio_delivery_id_check', sql`${table.id} ~ '^[A-Za-z0-9_.:-]{1,128}$'`),
+  ],
+);
+
+/**
  * Composio accounts waiting to be revoked and deleted there: one whose space
  * was removed, one whose disconnection could not reach Composio, and one made
  * for a sign-in that was never finished, due once that sign-in has expired.
  * A row stays until Composio confirms the account is gone, or until a live
  * connection is found acting for it, so nothing is dropped on a failure. Only
- * the account id is kept, never the key or anything the account holds.
+ * the account id is kept, never the key or anything the account holds. A row
+ * whose id starts `slot_` is a place held for a sign-in under way, counted
+ * against the account limit and never sent to Composio.
  */
 export const managedAccountRemoval = pgTable(
   'managed_account_removal',

@@ -1056,14 +1056,24 @@ Melete's own `email.*`, `calendar.*` and `documents.*` tools; see
 #### Connecting an app through Composio
 
 With `COMPOSIO_API_KEY` set, the catalog also lists popular apps that
-Composio signs in to with its own OAuth app (Slack, Notion, GitHub, Linear,
-Google Docs and Sheets, Outlook, Teams, Jira, Asana, HubSpot, Salesforce and
-others; `POPULAR_APPS` in `apps/melete/src/connectors/composio-catalog.ts`),
-each as `app-<toolkit>`. `GET /composio/apps?query=` searches everything else
-Composio offers; an app is found only when Composio has a managed sign-in for
-it, or when the operator set an auth config of their own for it in
-`COMPOSIO_AUTH_CONFIGS` (`toolkit=ac_id,...`). Answers are kept for ten
-minutes.
+Composio signs in to with its own OAuth app (Slack, Google Docs and Sheets,
+Outlook, Teams, Asana, HubSpot, Salesforce and others; `POPULAR_APPS` in
+`apps/melete/src/connectors/composio-catalog.ts`), each as `app-<toolkit>`.
+`GET /composio/apps?query=` searches everything else Composio offers; an app
+is found only when Composio has a managed sign-in for it, or when the operator
+set an auth config of their own for it in `COMPOSIO_AUTH_CONFIGS`
+(`toolkit=ac_id,...`). Answers are kept for ten minutes.
+
+An app the remote MCP catalog above already offers is not offered again
+through Composio: its own server's entry wins, so each app appears once. The
+overlap comes from the MCP catalog itself (`mcpCatalogCovers` in
+`packages/contracts/src/mcp-catalog.ts`): an entry's id, and the `products`
+it names when they go by other names (Atlassian covers Composio's `jira` and
+`confluence`). Today that hides Notion, Linear, Jira, Confluence, Sentry,
+Stripe and GitHub from the popular list, from search and from a new sign-in,
+and a new MCP entry hides its Composio twin by itself. A connection already
+made through Composio for one of them keeps working. Composio's own toolkits
+and its meta tools (`COMPOSIO_*`) are never offered or run.
 
 `POST /managed-sign-ins` with `{ "provider": "app", "toolkit": "slack" }`
 signs in the same way as the Google sign-in, and installs one connection per
@@ -1110,11 +1120,18 @@ limit when the new one is unset.
 - A call takes its place in the count before it is sent and gives it back only
   when it surely did not run; a call that timed out stays counted. The count is
   kept in Postgres under a lock, so several Melete processes share it.
-- Trigger events are counted as they arrive. Past their limit, Melete switches
+- Trigger events are counted as they arrive. A delivery is taken only when its
+  signature, made with `COMPOSIO_WEBHOOK_SECRET` over the exact bytes sent, is
+  less than five minutes old, and each `webhook-id` is taken once, so a retry
+  or a replay is neither counted nor acted on twice. A delivery larger than
+  1 MiB is refused unread. Without the secret the address answers 404. Past
+  their limit, Melete switches
   every trigger off at Composio and reads accounts on the fallback schedule; it
   switches them back on in the next month.
 - Every ten minutes Melete asks Composio for its own counts for the month and
   uses whichever is larger, its own or Composio's plus what it ran since.
+  Composio's usage numbers cover tool calls, not trigger events, so the event
+  count is Melete's own.
 - A new sign-in past the accounts limit is refused before Composio makes an
   account.
 
