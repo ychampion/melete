@@ -160,15 +160,27 @@ async function capture(
   words: string,
   args: Record<string, unknown>,
   pasted?: { start: number; end: number }[],
+  /** Another space to say it in, and the zone the person's device reports. */
+  where: { space?: string; deviceZone?: string } = {},
 ) {
   const chat = await required(jobs).transaction((tx) =>
     required(jobs).createInTransaction(
       tx,
-      { space_id: spaceId, title: 'A request', objective: 'A request' },
+      { space_id: where.space ?? spaceId, title: 'A request', objective: 'A request' },
       { kind: 'chat' },
     ),
   );
-  await required(jobs).input(chat.id, words, pasted);
+  await required(jobs).transaction((tx) =>
+    required(jobs).inputInTransaction(
+      tx,
+      chat.id,
+      words,
+      undefined,
+      [],
+      pasted ?? [],
+      where.deviceZone,
+    ),
+  );
   const turn = await claim(chat.id);
   expect(turn.claims.scopes).toContain('intent.capture');
   const response = await required(brokerApp).request('/tools/call', {
@@ -274,6 +286,32 @@ withDb('intents', () => {
     const [work] = await required(handle).db.select().from(job).where(eq(job.id, run));
     expect(work?.kind).toBe('run');
     expect(['completed', 'failed', 'cancelled']).not.toContain(work?.state);
+  }, 60_000);
+
+  test('a reminder reads back in the zone the person wrote from, as their work is told', async () => {
+    // A new account: its profile still holds the zone it was made with, and
+    // the person writes from Los Angeles.
+    const pacific = newId('sp');
+    const h = required(handle);
+    await h.db.insert(space).values({ id: pacific, name: 'Personal', gitPath: `/s/${pacific}` });
+    await h.db.insert(experienceProfile).values({ spaceId: pacific, timeZone: 'UTC' });
+    const zone = 'America/Los_Angeles';
+    // 21:50 UTC is the afternoon in Los Angeles and the evening in UTC.
+    const due = `${dayAhead(3).iso}T21:50:00.000Z`;
+    const { result, row } = await capture(
+      'Remind me to call the bank at 2:50',
+      { title: 'Call the bank', kind: 'other', deadline_at: due },
+      undefined,
+      { space: pacific, deviceZone: zone },
+    );
+    const local = whenWords(due, zone);
+    expect(local).not.toBe(whenWords(due, 'UTC'));
+    expect(result.read_back).toContain(local);
+    expect(result.read_back).not.toContain(whenWords(due, 'UTC'));
+    // Home reads it back the same way.
+    const shown = await required(intents).view(row);
+    expect(shown.read_back.line).toContain(local);
+    expect(shown.read_back.line).not.toContain(whenWords(due, 'UTC'));
   }, 60_000);
 
   test('a value the person never said shows as inferred', async () => {
