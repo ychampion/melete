@@ -17,13 +17,14 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { resolveOriginWarnings } from '../../src/broker/trust.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { session } from '../../src/db/auth-schema.ts';
-import { connection, experienceProfile, job, owner, space } from '../../src/db/schema.ts';
+import { connection, experienceProfile, job, owner, runState, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { whenWords } from '../../src/intents/origins.ts';
 import { intent } from '../../src/intents/schema.ts';
 import { IntentService, type ReversalStep } from '../../src/intents/service.ts';
+import { localNow } from '../../src/jobs/local-now.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -312,6 +313,31 @@ withDb('intents', () => {
     const shown = await required(intents).view(row);
     expect(shown.read_back.line).toContain(local);
     expect(shown.read_back.line).not.toContain(whenWords(due, 'UTC'));
+    // The work carrying it out reads "2:50 PM" in its goal, and is told the
+    // same zone, so it is not taken for 2:50 PM in UTC.
+    const [work] = await h.db
+      .select({ goal: runState.goal })
+      .from(runState)
+      .where(eq(runState.jobId, required(row.runId)));
+    expect(work?.goal).toContain(local);
+    const shift = await claim(required(row.runId));
+    expect(required(shift.bundle.local_now).time_zone).toBe(zone);
+    // So is a part of that work handed to a step.
+    const stepZone = await required(jobs).transaction(async (tx) => {
+      const step = await required(jobs).createInTransaction(
+        tx,
+        { space_id: pacific, title: 'Find the number', objective: 'Find the number' },
+        { kind: 'run_step' },
+      );
+      await tx.insert(runState).values({
+        jobId: step.id,
+        spaceId: pacific,
+        parentRunId: required(row.runId),
+        goal: 'Find the number',
+      });
+      return (await localNow(tx, step, new Date())).time_zone;
+    });
+    expect(stepZone).toBe(zone);
   }, 60_000);
 
   test('a value the person never said shows as inferred', async () => {

@@ -11,7 +11,7 @@
 import { canonicalTimeZone } from '@melete/contracts';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { event, experienceProfile, job } from '../db/schema.ts';
+import { event, experienceProfile, job, runState } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import type { JobRow } from './service.ts';
@@ -123,13 +123,32 @@ export async function personZone(
   return (await zoneChoice(tx, spaceId, ids.length ? ids : await recentChats(tx, spaceId))).zone;
 }
 
+/** The conversation long work was started from: a run's own, or for a step, its run's. */
+async function startedFrom(tx: Reader, row: JobRow): Promise<string | null> {
+  if (row.kind !== 'run' && row.kind !== 'run_step') return null;
+  const [own] = await tx
+    .select({ conversationId: runState.conversationId, parent: runState.parentRunId })
+    .from(runState)
+    .where(eq(runState.jobId, row.id));
+  if (own?.conversationId || !own?.parent) return own?.conversationId ?? null;
+  const [run] = await tx
+    .select({ conversationId: runState.conversationId })
+    .from(runState)
+    .where(eq(runState.jobId, own.parent));
+  return run?.conversationId ?? null;
+}
+
 /**
- * When and where this attempt starts. `now` is the database's clock. A
+ * When and where this attempt starts. `now` is the database's clock. Long
+ * work also reads the device's zone from the conversation it was started
+ * from, so the times it was given there read as the person meant them. A
  * mismatch is recorded the first time it is seen, and only that attempt is
  * told of it.
  */
 export async function localNow(tx: Transaction, row: JobRow, now: Date): Promise<LocalNow> {
-  const { saved, device, used, zone } = await zoneChoice(tx, row.spaceId, [row.id]);
+  const conversation = await startedFrom(tx, row);
+  const ids = conversation ? [row.id, conversation] : [row.id];
+  const { saved, device, used, zone } = await zoneChoice(tx, row.spaceId, ids);
   let zoneMismatch: LocalNow['zone_mismatch'] = null;
   if (device && device !== saved) {
     const told = await appendEvent(tx, {
