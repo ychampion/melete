@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
+import { defaultPrivacyRouter } from '../privacy/index.ts';
+import { withSignIn } from './configured.ts';
 import {
   type CredentialRepository,
   type CredentialRow,
@@ -7,8 +9,9 @@ import {
   type SignInStatus,
 } from './credentials.ts';
 import { type FakeIssuer, startFakeIssuer } from './fixtures/fake-oauth.ts';
+import { createModelGateway, providersFromEnv } from './index.ts';
 import { chatgptIssuer, exchangeCode, OAuthFailure, pkcePair } from './oauth.ts';
-import { GatewayError } from './types.ts';
+import { GatewayError, type GatewaySettlement } from './types.ts';
 
 /**
  * One map and one lock per provider, shared by every service built on it, as
@@ -284,6 +287,121 @@ describe('the gateway credential', () => {
     const second = await credential.current();
     expect(issuer.refreshCount).toBe(1);
     expect(second.token).not.toBe(first.token);
+  });
+
+  test('a token refreshed after a refusal says so, and one refreshed on expiry does not', async () => {
+    issuer.lifetime = 60;
+    await signIn();
+    const credential = service().credential('chatgpt');
+    expect(credential.refreshes).toBe(true);
+    const first = await credential.current();
+    expect(first.retried).toBe(false);
+    clock += 45_000;
+    const renewed = await credential.current();
+    expect(renewed.generation).not.toBe(first.generation);
+    expect(renewed.retried).toBe(false);
+    credential.rejected(renewed.generation);
+    const retried = await credential.current();
+    expect(retried.generation).not.toBe(renewed.generation);
+    expect(retried.retried).toBe(true);
+    // Used again after that, the same token is no longer the retry: a refusal
+    // of it now is refreshed like any other.
+    const reused = await credential.current();
+    expect(reused.generation).toBe(retried.generation);
+    expect(reused.retried).toBe(false);
+    // A later turn refused again refreshes once more.
+    credential.rejected(retried.generation);
+    const again = await credential.current();
+    expect(again.generation).not.toBe(retried.generation);
+    expect(again.retried).toBe(true);
+    expect(issuer.refreshCount).toBe(3);
+  });
+
+  test('through the gateway, a refreshed token refused again is a refused key, and a later refusal is refreshed', async () => {
+    await signIn();
+    const settled: GatewaySettlement[] = [];
+    // Statuses the provider answers with, in order; 200 once they run out.
+    const answers: number[] = [];
+    const server = createModelGateway({
+      authenticate: async () => ({
+        jobId: 'job',
+        attemptId: 'att',
+        privacy: { kind: 'job' as const },
+        epoch: 1,
+        revision: 1,
+        maxRequests: 20,
+        maxTokens: 50_000,
+        allowedModels: [{ provider: 'chatgpt', model: 'gpt-5.1-codex' }],
+      }),
+      budget: {
+        reserve: async () => ({ id: 'r' }),
+        settle: async (_reservation, settlement) => {
+          settled.push(settlement);
+        },
+      },
+      privacy: defaultPrivacyRouter(),
+      providers: withSignIn(providersFromEnv({}), service()),
+      onError: (error) => logs.push(error.message),
+      fetch: async () => {
+        const status = answers.shift() ?? 200;
+        if (status !== 200)
+          return new Response('{"error":{"message":"invalid token"}}', { status });
+        return Response.json({
+          model: 'gpt-5.1-codex',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+          usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+        });
+      },
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('expected TCP listener');
+      const call = async () => {
+        const answer = await fetch(
+          `http://127.0.0.1:${address.port}/providers/chatgpt/v1/responses`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              authorization: 'Bearer melete-surrogate-test',
+              'x-melete-capability': 'cap',
+            },
+            body: JSON.stringify({ model: 'gpt-5.1-codex', max_tokens: 10, input: 'hello' }),
+          },
+        );
+        const code = answer.ok
+          ? null
+          : ((await answer.json()) as { error: { code: string } }).error.code;
+        return { status: answer.status, code };
+      };
+      // Refused once: refreshed for the engine's next try.
+      answers.push(401);
+      expect(await call()).toEqual({ status: 502, code: 'provider_rejected_request' });
+      // The refreshed token is refused too: it is a refused key.
+      answers.push(401);
+      expect(await call()).toEqual({ status: 401, code: 'provider_key_refused' });
+      expect(issuer.refreshCount).toBe(1);
+      // The next turn refreshes once more, and that token serves.
+      expect((await call()).status).toBe(200);
+      expect((await call()).status).toBe(200);
+      expect(issuer.refreshCount).toBe(2);
+      // Refused later, after it has served, it is refreshed again, not named a refused key.
+      answers.push(401);
+      expect(await call()).toEqual({ status: 502, code: 'provider_rejected_request' });
+      expect((await call()).status).toBe(200);
+      expect(issuer.refreshCount).toBe(3);
+      expect(settled.map((settlement) => settlement.failure ?? null)).toEqual([
+        null,
+        'key_refused',
+        null,
+        null,
+        null,
+        null,
+      ]);
+    } finally {
+      server.close();
+    }
   });
 
   test('a revoked refresh token asks for a new sign-in and keeps no tokens', async () => {
