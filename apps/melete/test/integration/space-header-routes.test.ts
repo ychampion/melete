@@ -1,6 +1,6 @@
 /**
- * Settings, voice, computers, deadlines and the session's files answer for
- * the space the session is in. A request that names a different space in
+ * Settings, voice, computers, deadlines, the session's files, attachments and
+ * the source of a needs-you item answer for the space the session is in. A request that names a different space in
  * x-melete-space, even a room the person is in, is refused rather than
  * answered for the session's space as if it were the one asked about.
  */
@@ -9,6 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AttachmentService } from '../../src/attachments/store.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { owner, space, spaceMembership } from '../../src/db/schema.ts';
@@ -21,6 +22,7 @@ import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { SituationService } from '../../src/situations/service.ts';
+import { LocalBlobStore } from '../../src/storage/local.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -46,6 +48,7 @@ const app =
         jobs,
         triggers,
         situations,
+        attachments: new AttachmentService(handle.sql, new LocalBlobStore(join(root, 'blobs'))),
         registry,
         checkDatabase: async () => 'ok',
       })
@@ -102,14 +105,16 @@ type Call = readonly [method: string, path: string, body?: unknown];
 
 async function request([method, path, body]: Call, header?: string, cookie = token) {
   if (!app) throw new Error('Postgres unavailable');
+  // A form sets its own multipart content type.
+  const form = body instanceof FormData;
   return app.request(path, {
     method,
     headers: {
       Cookie: `melete_session=${cookie}`,
       ...(header ? { 'x-melete-space': header } : {}),
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(body === undefined || form ? {} : { 'Content-Type': 'application/json' }),
     },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(body === undefined ? {} : { body: form ? body : JSON.stringify(body) }),
   });
 }
 
@@ -142,6 +147,12 @@ const deadline = {
   by: 'others',
 };
 
+function upload() {
+  const form = new FormData();
+  form.append('file', new File(['hello'], 'note.txt', { type: 'text/plain' }));
+  return form;
+}
+
 const calls: Record<string, Call[]> = {
   devices: [
     ['GET', '/devices'],
@@ -165,6 +176,13 @@ const calls: Record<string, Call[]> = {
     ['GET', `/screenshots/${newId('act')}`],
     ['GET', `/messages/${newId('msg')}/reactions`],
   ],
+  attachments: [
+    ['GET', '/attachments/limits'],
+    ['POST', '/attachments', upload()],
+    ['GET', `/attachments/${newId('file')}/content`],
+    ['DELETE', `/attachments/${newId('file')}`],
+  ],
+  'needs-you': [['POST', `/needs-you/${newId('tri')}/source`, {}]],
 };
 
 withDb('a space named in x-melete-space', () => {
