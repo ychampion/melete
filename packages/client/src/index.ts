@@ -24,5 +24,5 @@ export {
   type SubscribeOptions,
   subscribeEvents,
 } from './events.ts';
-export { parseFrame, readSse, type SseFrame } from './sse.ts';
+export { parseFrame, readSse, type SseFrame, SseIdleError } from './sse.ts';
 export type * from './types.ts';

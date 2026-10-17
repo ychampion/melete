@@ -59,6 +59,7 @@ import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
 import { appendToolTrace, heldSearchCall } from '../experience/tools.ts';
+import { turnSpoke } from '../gateway/turn-notes.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { UNSETTLED_OPTIONS } from '../jobs/unsettled.ts';
@@ -2141,6 +2142,8 @@ export class BrokerService implements BrokerOperations {
         `say:${claims.attempt_id}:${createHash('sha256').update(ref).digest('hex')}`,
       );
     });
+    // The person was told something: a later quiet stretch is counted from now.
+    turnSpoke(claims.attempt_id);
   }
 
   /**

@@ -70,6 +70,7 @@ import { CasePanel, useCase } from './CasePanel.tsx';
 import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { headState } from './head-state.ts';
 import { runningTurn, workerName } from './live-card.ts';
 import { Markdown } from './Markdown.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
@@ -696,6 +697,8 @@ export function ChatScreen({ id }: { id: string | null }) {
     ),
   );
   const now = useNow(Boolean(last && WORKING.includes(last.status)) || holding);
+  // Where the work stands, for the header, from the conversation and its stream.
+  const head = headState(conversation, state.lastEventAt, now, state.live);
 
   useEffect(() => {
     setAgentId(conversation?.agent_id ?? fallback?.id ?? null);
@@ -1217,6 +1220,12 @@ export function ChatScreen({ id }: { id: string | null }) {
             {amount
               ? ` · ${amount.figure} ${found?.item.status === 'settled' ? 'settled' : amount.direction}`
               : ''}
+            {head ? (
+              <span className="chat-state" data-tone={head.tone}>
+                {' · '}
+                {head.words}
+              </span>
+            ) : null}
           </>
         ) : undefined
       }
@@ -1264,6 +1273,12 @@ export function ChatScreen({ id }: { id: string | null }) {
           <div className="chat-head">
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
+            {head ? (
+              <span className="chat-state chat-state-pill clamp1" data-tone={head.tone}>
+                <span className="chat-state-dot" aria-hidden="true" />
+                {head.words}
+              </span>
+            ) : null}
             <div className="grow" />
             {touch ? null : voiceButton(32)}
             {computerToggle()}

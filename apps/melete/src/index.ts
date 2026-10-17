@@ -105,6 +105,7 @@ import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { type AccountMailer, accountMailerFromEnv } from './experience/account-mail.ts';
+import { configuredAckWriter } from './experience/ack.ts';
 import { ExperienceBeliefs } from './experience/beliefs.ts';
 import { ExperienceEffects } from './experience/effects.ts';
 import { ExperienceMemory } from './experience/memory.ts';
@@ -1008,6 +1009,7 @@ export async function bootstrap(
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
   let memoryEmbedder: Awaited<ReturnType<typeof embeddingFromEnv>> = null;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
+  let ackWriter: Awaited<ReturnType<typeof configuredAckWriter>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
   let searchGateway: Awaited<ReturnType<typeof configuredSearchGateway>> | undefined;
@@ -1094,6 +1096,7 @@ export async function bootstrap(
       () => historySummariser?.close(),
       () => searchGateway?.close(),
       () => voiceCompanion?.close(),
+      () => ackWriter?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
       // After the registry: each server's container is removed by its connector first.
@@ -1394,6 +1397,14 @@ export async function bootstrap(
         signIn,
         spending,
       });
+    // A turn's first line when the agent is slow to speak: one short call, on
+    // the fast model, through the gateway. Off unless MELETE_ACK_AFTER_MS is set.
+    if (handle && env.MELETE_ACK_AFTER_MS > 0)
+      ackWriter = await configuredAckWriter(env, options.fakeProvider, privacy, {
+        settings: modelSettings,
+        signIn,
+        spending,
+      });
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
         sql: handle.sql,
@@ -1664,6 +1675,9 @@ export async function bootstrap(
             }
           : {}),
         loadCatalog: catalog?.forAttempt,
+        ...(ackWriter
+          ? { acknowledge: { afterMs: env.MELETE_ACK_AFTER_MS, writer: ackWriter.writer } }
+          : {}),
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
         // The scopes the active connections the job may use grant, and the
         // lifecycle wait. The test connector's scopes are added beside them when

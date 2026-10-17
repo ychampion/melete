@@ -1180,13 +1180,48 @@ export type StreamItem =
   | { type: 'gap'; gap: StreamGap };
 
 /**
+ * How long a conversation's stream may send nothing before it is treated as
+ * lost. The service sends a keepalive at least every 15 seconds, so three
+ * missed in a row means the connection is gone even if it never closed.
+ */
+export const STREAM_IDLE_MS = 45_000;
+
+/**
+ * Waits `ms` before the next try, or less: the device coming back online, or
+ * the page coming back into view, tries again at once. Aborting ends the wait.
+ */
+export function waitToReconnect(
+  ms: number,
+  signal?: AbortSignal,
+  events:
+    | Pick<EventTarget, 'addEventListener' | 'removeEventListener'>
+    | undefined = typeof window === 'undefined' ? undefined : window,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      events?.removeEventListener('online', done);
+      events?.removeEventListener('focus', done);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    events?.addEventListener('online', done);
+    events?.addEventListener('focus', done);
+    signal?.addEventListener('abort', done);
+  });
+}
+
+/**
  * Follow one conversation's events. Durable items replay on reconnect from
  * the cursor; a break yields a gap so the transcript can say streamed text may
- * be missing rather than stitching two halves together.
+ * be missing rather than stitching two halves together. A stream that goes
+ * silent past `STREAM_IDLE_MS` is reopened from the cursor, and a stream that
+ * was working starts its next retry from the shortest wait.
  */
 export async function* subscribeConversation(
   id: string,
-  options: { after?: number; signal?: AbortSignal } = {},
+  options: { after?: number; signal?: AbortSignal; idleMs?: number } = {},
 ): AsyncGenerator<StreamItem, void, void> {
   let cursor = options.after ?? 0;
   let attempt = 0;
@@ -1195,7 +1230,7 @@ export async function* subscribeConversation(
     if (options.signal?.aborted) return;
     if (attempt > 1) {
       yield { type: 'gap', gap: { after: cursor, next: null, reason: 'reconnect' } };
-      await new Promise((resolve) => setTimeout(resolve, Math.min(500 * 2 ** (attempt - 2), 8000)));
+      await waitToReconnect(Math.min(500 * 2 ** (attempt - 2), 8000), options.signal);
       if (options.signal?.aborted) return;
     }
     let body: ReadableStream<Uint8Array> | null = null;
@@ -1221,7 +1256,10 @@ export async function* subscribeConversation(
     }
     yield { type: 'open' };
     try {
-      for await (const frame of readSse(body)) {
+      for await (const frame of readSse(body, { idleMs: options.idleMs ?? STREAM_IDLE_MS })) {
+        // Something came through: the connection works, so a later drop
+        // retries from the shortest wait again.
+        attempt = 1;
         if (frame.comment) continue;
         let event: ExperienceEvent;
         try {

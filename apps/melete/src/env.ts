@@ -656,6 +656,12 @@ const variables = z.object({
   MELETE_REVIEW_PROVIDER: z.string().optional(),
   /** How long one review may take before the action goes to the person. */
   MELETE_REVIEW_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(20_000).default(12_000),
+  /**
+   * How long a conversation turn may stay silent before the person gets a
+   * one-line acknowledgement from the fast model, in milliseconds. `0` turns
+   * it off, which is the default for now.
+   */
+  MELETE_ACK_AFTER_MS: z.coerce.number().int().min(0).max(30_000).default(0),
   /** Reviews one space may ask for in an hour; past it, the person is asked. */
   MELETE_REVIEW_HOURLY_LIMIT: z.coerce.number().int().nonnegative().default(60),
   /**
