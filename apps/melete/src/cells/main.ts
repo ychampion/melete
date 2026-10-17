@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DEFAULT_STDIO_IMAGES } from '../connectors/mcp-stdio-docker.ts';
+import { guardProcessLogs } from '../log-guard.ts';
 import { parseNetworkPool } from '../runtime/network-pool.ts';
 import { startCellsServer } from './server.ts';
 
@@ -37,6 +38,7 @@ function setting(name: string, fallback?: string): string {
 }
 
 if (import.meta.main) {
+  guardProcessLogs();
   const bind = setting('MELETE_CELLS_BIND', '0.0.0.0:8791');
   const [hostname = '0.0.0.0', port = '8791'] = bind.split(/:(?=\d+$)/);
   const project = setting('MELETE_COMPOSE_PROJECT', 'melete');

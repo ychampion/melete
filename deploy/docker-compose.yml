@@ -10,11 +10,14 @@ name: ${COMPOSE_PROJECT_NAME:-melete}
 
 # Docker's default log has no size limit. Every service rotates a bounded
 # json-file instead; attempt containers get the same limits from the supervisor.
+# Each line also names its Compose project and service, for a log shipper
+# (docker-compose.log-shipping.yml) to say where it came from.
 x-logging: &bounded-logs
   driver: json-file
   options:
     max-size: "10m"
     max-file: "5"
+    labels: "com.docker.compose.project,com.docker.compose.service"
 
 # Health checks: every second while a service starts, so `up --wait` and the
 # start order stay quick, then every 30 seconds. Each check starts a process in

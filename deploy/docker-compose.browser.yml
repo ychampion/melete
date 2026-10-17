@@ -34,6 +34,7 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+        labels: "com.docker.compose.project,com.docker.compose.service"
     init: true
     networks: [browser-control, browser-egress]
     user: "10003:10003"

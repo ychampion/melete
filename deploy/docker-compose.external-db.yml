@@ -31,6 +31,7 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+        labels: "com.docker.compose.project,com.docker.compose.service"
     networks: [edge]
     environment:
       DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}

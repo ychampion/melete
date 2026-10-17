@@ -481,6 +481,10 @@ refuses sign-in there; an alert target (`MELETE_ALERT_WEBHOOK_URL`, or
 and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`. Say in your
 privacy terms how long backups keep what people remove; see
 [How long backups keep what was removed](#how-long-backups-keep-what-was-removed).
+The logs hold no one's messages, files or secrets
+([What the logs hold](#what-the-logs-hold)); to keep them past rotation, set
+`MELETE_LOG_SHIP_ENDPOINT` to your log collector and start the shipper in
+[Shipping logs](#shipping-logs). It stays off unless you start it.
 
 Mark such an installation with `"hosted": true` in `deploy/melete.deploy.json`.
 `check` and `status` then fail, under `hosted.public_url`, `hosted.web_origin`,
@@ -2685,8 +2689,63 @@ A container that was removed when its work ended has no logs left.
 The limits live in the `x-logging` anchor at the top of
 `deploy/docker-compose.yml`; a changed limit applies when a container is
 recreated, not on restart. `bun run compose:check` and
-`bun run browser:compose:check` refuse a service without the bound. Logs that
-must outlive rotation belong in a log collector you run beside the stack.
+`bun run browser:compose:check` refuse a service without the bound. Each line
+also names its Compose project and service (the json-file driver's `labels`
+option), so a shipped line says where it came from.
+
+### What the logs hold
+
+The service and `melete-cells` write ids, codes, counts and short reasons:
+which job, attempt, connection or route failed, and why. They never write
+what someone wrote, a file's contents, a prompt, a model's answer, a password,
+a token or a sign-in secret. `apps/melete/src/log-content.test.ts` reads every
+place they write a line and fails on one that writes a value named like
+content or a secret. Error messages are written, cut short; before any line
+leaves the process, known secret shapes are taken out of it (an address's
+user and password, `Bearer` credentials, JWTs, provider keys, private keys,
+`password=`-style pairs, long random tokens) and email addresses become
+`[email]` (`apps/melete/src/log-guard.ts`). Ids, digests and container names
+stay, since the log is read by them.
+
+### Shipping logs
+
+Rotation keeps about 50 MB per container. To keep logs longer, or to search
+them in one place, send them to a log collector that accepts OTLP over HTTP:
+Grafana Loki 3 (its `/otlp` endpoint), Grafana Cloud, an OpenTelemetry
+Collector of your own, or any hosted service that takes OTLP logs.
+`deploy/docker-compose.log-shipping.yml` runs an OpenTelemetry Collector
+(`deploy/config/log-shipping.yaml`) that reads the json-file logs of every
+container on the machine, from the moment it first starts, and sends each line with
+its `container.id`, `service.name` (the Compose service) and
+`service.namespace` (the Compose project). It is a Compose project of its own,
+so `deploy`, `upgrade` and `logs` neither start nor need it, and nothing is
+sent anywhere until you start it:
+
+```bash
+bun run melete set MELETE_LOG_SHIP_ENDPOINT=https://otlp.example.net/otlp   # /v1/logs is added
+read -rs MELETE_LOG_SHIP_AUTHORIZATION && export MELETE_LOG_SHIP_AUTHORIZATION   # e.g. "Basic <base64 of user:key>"; leave unset if none
+bun run melete set --from-env MELETE_LOG_SHIP_AUTHORIZATION && unset MELETE_LOG_SHIP_AUTHORIZATION
+docker compose -p melete-logs --env-file deploy/.env \
+  -f deploy/docker-compose.log-shipping.yml up -d
+docker compose -p melete-logs --env-file deploy/.env -f deploy/docker-compose.log-shipping.yml logs --tail 20
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `MELETE_LOG_SHIP_ENDPOINT` | none (required) | The collector's OTLP/HTTP base address |
+| `MELETE_LOG_SHIP_AUTHORIZATION` | empty | The `Authorization` header it expects, if any |
+| `MELETE_LOG_SHIP_MEMORY_LIMIT` | `512m` | The shipper's memory cap |
+
+The shipper runs as root, because Docker's log files are readable by root
+alone, with no capabilities, no new privileges and a read-only filesystem; it
+mounts the log folder read-only and has no Docker socket. Where each file was
+read up to, and batches waiting while the endpoint is unreachable, are kept in
+its `log-shipping-state` volume, so a restart neither resends nor skips. On a
+machine that runs other containers too, their logs are shipped as well; filter
+by `service.namespace` at the collector, or run Melete on a machine of its
+own. Stop it with the same `docker compose -p melete-logs --env-file
+deploy/.env -f deploy/docker-compose.log-shipping.yml` prefix and `down`,
+adding `--volumes` to forget where it was.
 
 ## Backup and restore
 
@@ -3078,6 +3137,10 @@ docker image rm melete-service:local melete-runtime:local melete-web:local \
   postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
 # With Tailscale, also remove:
 #   tailscale/tailscale@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+# With log shipping, first run
+#   docker compose -p melete-logs --env-file deploy/.env -f deploy/docker-compose.log-shipping.yml down --volumes
+# and also remove:
+#   otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
 # With prebuilt images, remove those instead of the :local ones:
 #   docker image ls --format '{{.Repository}}:{{.Tag}}' 'ghcr.io/ychampion/melete-*' | xargs -r docker image rm
 ```
