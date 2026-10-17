@@ -209,25 +209,44 @@ export function inPrivateRange(address: string, hosts: PrivateHosts): boolean {
   });
 }
 
+/** A network as `inNetworks` checks it: the bits an address on it shares. */
+export type Network = { readonly family: 4 | 6; readonly shift: bigint; readonly value: bigint };
+
+/**
+ * Networks, each written as an interface reports it (`172.18.0.3/16`, host
+ * bits and all) or as a range, read once to be checked many times. An entry
+ * that does not parse is left out, so it matches nothing.
+ */
+export function readNetworks(networks: readonly string[]): Network[] {
+  return networks.flatMap((network) => {
+    const [base = '', bits, ...rest] = network.split('/');
+    const net = addressNumber(base);
+    if (rest.length || !net || !/^\d{1,3}$/.test(bits ?? '')) return [];
+    // An IPv4-mapped network is read as the IPv4 network it carries.
+    const prefix = Number(bits) - (isIP(base) === 6 && net.family === 4 ? 96 : 0);
+    if (prefix < 0 || prefix > bitsOf(net.family)) return [];
+    const shift = BigInt(bitsOf(net.family) - prefix);
+    return [{ family: net.family, shift, value: net.value >> shift }];
+  });
+}
+
+/** Whether an address is on one of these networks, as `readNetworks` read them. */
+export function inNetworks(address: string, networks: readonly Network[]): boolean {
+  const parsed = addressNumber(address);
+  if (!parsed) return false;
+  return networks.some(
+    (network) =>
+      network.family === parsed.family && parsed.value >> network.shift === network.value,
+  );
+}
+
 /**
  * Whether an address is on one of these networks, each written as an
  * interface reports it (`172.18.0.3/16`, host bits and all) or as a range.
  * An entry that does not parse matches nothing.
  */
 export function onNetworks(address: string, networks: readonly string[]): boolean {
-  const parsed = addressNumber(address);
-  if (!parsed) return false;
-  return networks.some((network) => {
-    const [base = '', bits, ...rest] = network.split('/');
-    const net = addressNumber(base);
-    if (rest.length || !net || net.family !== parsed.family || !/^\d{1,3}$/.test(bits ?? ''))
-      return false;
-    // An IPv4-mapped network is read as the IPv4 network it carries.
-    const prefix = Number(bits) - (isIP(base) === 6 && net.family === 4 ? 96 : 0);
-    if (prefix < 0 || prefix > bitsOf(net.family)) return false;
-    const shift = BigInt(bitsOf(net.family) - prefix);
-    return parsed.value >> shift === net.value >> shift;
-  });
+  return inNetworks(address, readNetworks(networks));
 }
 
 /**

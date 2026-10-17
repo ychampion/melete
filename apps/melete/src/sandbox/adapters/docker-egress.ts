@@ -40,9 +40,11 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { connect, isIP, type Socket } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import {
-  onNetworks,
+  inNetworks,
+  type Network,
   type PrivateHosts,
   privateHostsFromEnv,
+  readNetworks,
 } from '../../connectors/private-hosts.ts';
 import { listedPin } from '../../connectors/public-fetch.ts';
 import { type ResolvedAddress, resolveHost } from '../../connectors/web.ts';
@@ -105,10 +107,11 @@ export type SandboxEgressOptions = {
 /**
  * Every network this process sits on, as its interfaces report them (each
  * computer's network it joined, the deployment's own, loopback), and Melete's
- * network pool, read at each connection since the service joins a computer's
- * network when it starts. In the Compose deployment these hold the other
- * computers, the database, the cell service and the engine's host; nothing a
- * computer may reach through this relay is on them.
+ * network pool. In the Compose deployment these hold the other computers, the
+ * database, the cell service and the engine's host; nothing a computer may
+ * reach through this relay is on them. The guard reads them again whenever it
+ * lets out a computer it did not know, since the service joins that
+ * computer's network first, and at least every `OWN_NETWORKS_MS`.
  */
 export function serviceNetworks(): string[] {
   const own = Object.values(networkInterfaces())
@@ -116,6 +119,13 @@ export function serviceNetworks(): string[] {
     .flatMap((entry) => (entry.cidr ? [entry.cidr] : []));
   return [...own, ...meleteNetworks()];
 }
+
+/**
+ * How long the service's networks, once read, are used before they are read
+ * again. A service on a network per computer has hundreds of interfaces, and
+ * reading them all at every connection would hold up every other request.
+ */
+export const OWN_NETWORKS_MS = 5_000;
 
 /** How long a record budget lasts, and how often coalesced counts are written. */
 const RECORD_WINDOW_MS = 60_000;
@@ -223,6 +233,8 @@ export class SandboxEgressGuard {
   private readonly bodies: BodyBudget;
   private readonly now: () => number;
   private readonly flusher: ReturnType<typeof setInterval>;
+  /** The networks no tunnel may lead into, as last read; see `ownNetworks`. */
+  private own: { at: number; networks: readonly Network[] } | null = null;
 
   constructor(private readonly options: SandboxEgressOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -272,6 +284,9 @@ export class SandboxEgressGuard {
       if (options.container) current.container = options.container;
       return;
     }
+    // A computer let out for the first time: the service has just joined its
+    // network, so the next connection reads the service's networks again.
+    this.own = null;
     // An address handed to a new container ends whatever the old one held.
     if (current) {
       this.end(current);
@@ -591,6 +606,17 @@ export class SandboxEgressGuard {
     }
   }
 
+  /** The networks no tunnel may lead into, read again when stale; see `serviceNetworks`. */
+  private ownNetworks(): readonly Network[] {
+    const now = this.now();
+    if (!this.own || now - this.own.at >= OWN_NETWORKS_MS || now < this.own.at)
+      this.own = {
+        at: now,
+        networks: readNetworks((this.options.ownNetworks ?? serviceNetworks)()),
+      };
+    return this.own.networks;
+  }
+
   private async tunnel(
     target: string,
     authorization: string | string[] | undefined,
@@ -626,11 +652,11 @@ export class SandboxEgressGuard {
       const answers = family
         ? [{ address: host, family: family as 4 | 6 }]
         : await this.resolve(host);
-      const own = (this.options.ownNetworks ?? serviceNetworks)();
+      const own = this.ownNetworks();
       // Another computer, or anything behind the service, whatever range was listed.
       pinned = answers.some(
         (answer) =>
-          onNetworks(answer.address, own) || this.grants.has(clientAddress(answer.address)),
+          inNetworks(answer.address, own) || this.grants.has(clientAddress(answer.address)),
       )
         ? undefined
         : listedPin(answers, (this.options.privateHosts ?? privateHostsFromEnv)());

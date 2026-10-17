@@ -14,6 +14,7 @@ import { type EgressAttribution, MAX_RECEIPT_HOSTS, OTHER_HOSTS } from '../../eg
 import {
   clientAddress,
   hostListed,
+  OWN_NETWORKS_MS,
   proxyToken,
   SandboxEgressGuard,
   type SandboxEgressOptions,
@@ -446,6 +447,40 @@ test("by default the service's own networks, loopback and the network pool stay 
   // A listed address on none of them is still reached.
   if (!onNetworks('10.20.0.5', own))
     expect((await ask(port, connectTo('10.20.0.5:443'))).status).toBe(200);
+});
+
+test("the service's networks are read again when a new computer is let out, not at every connection", async () => {
+  const listed = parsePrivateHosts('10.0.0.0/8');
+  let clock = 1_000_000;
+  let reads = 0;
+  const networks = ['172.18.0.2/16'];
+  const { guard, port, dialled } = await guarded({ 'example.com': PUBLIC }, undefined, {
+    privateHosts: () => listed,
+    now: () => clock,
+    ownNetworks: () => {
+      reads += 1;
+      return [...networks];
+    },
+  });
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  for (let each = 0; each < 5; each += 1)
+    expect((await ask(port, connectTo('example.com:443'))).status).toBe(200);
+  expect(reads).toBe(1);
+  // The service joins computer B's network, then lets B out: its network is refused at once.
+  networks.push('10.40.1.18/28');
+  guard.allow('10.40.1.20', 'melete-sbx-b');
+  expect((await ask(port, connectTo('10.40.1.29:443'))).reason).toBe('address_denied');
+  expect(reads).toBe(2);
+  // Another command in a computer already let out reads nothing again.
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  expect((await ask(port, connectTo('10.40.1.30:443'))).reason).toBe('address_denied');
+  expect(reads).toBe(2);
+  // A network joined some other way is refused once the networks are read again.
+  networks.push('10.60.0.2/24');
+  clock += OWN_NETWORKS_MS;
+  expect((await ask(port, connectTo('10.60.0.9:443'))).reason).toBe('address_denied');
+  expect(reads).toBe(3);
+  expect(dialled.map((each) => each.address)).toEqual(Array(5).fill('93.184.215.14'));
 });
 
 test('with no list, an internal address stays out of reach', async () => {
