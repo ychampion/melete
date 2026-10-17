@@ -9,14 +9,15 @@
  * it the same way. Nothing is reached through a running service.
  *
  * The computers are found by the labels the docker sandbox adapter puts on
- * their volumes: `com.melete.sandbox=v1`, this installation's
- * `melete.project` (MELETE_SANDBOX_PROJECT), and `com.melete.sandbox.name`,
- * the computer's container. Another installation's computers on the same
- * engine carry another project, so they are never listed.
+ * their volumes: `com.melete.sandbox=v1`, `com.melete.sandbox.name`, the
+ * computer's container, `melete.project`, the sandbox project it was made
+ * under, and `melete.install_project`, the Compose project of the
+ * installation that made it (see ownedBy).
  */
 import type { Context } from './context.ts';
-import type { DeployConfig } from './deploy-config.ts';
+import { type DeployConfig, PROJECT_NAME } from './deploy-config.ts';
 import { type Installation, longRunningServices } from './installation.ts';
+import { INSTALL_PROJECT, labelOf, otherInstallations } from './sandbox-leftovers.ts';
 
 /** The service that starts the runtime's attempt containers. */
 export const CELLS_SERVICE = 'melete-cells';
@@ -60,6 +61,8 @@ export type Contents = {
   parts: { part: FilePart; file: string }[];
   computers: ComputerVolume[];
   blobs: 'local' | 's3';
+  /** The Compose project of the installation the backup is of; absent in a set made before backups named it. */
+  project?: string;
 };
 
 export const partFile = (part: FilePart) => `${part}.tar`;
@@ -346,39 +349,124 @@ export const measureCommand = (image: string, volumes: readonly string[]): strin
 
 export class FilesRefusal extends Error {}
 
+/** Whose agents' computers are this installation's: its Compose project, and its sandbox project now. */
+export type ComputerOwner = { installProject: string; sandboxProject: string | null };
+
 /**
- * This installation's computers' volumes on this engine, with their labels.
- * Null project: the installation has no docker computers, so none are listed.
- * A listing that fails throws: a backup never leaves the computers out silently.
- * A volume labelled for this installation whose name is not a computer's
- * `-work` or `-home` is not taken; its name goes into `skipped`, so the backup
- * can say so.
+ * Whether a computer's labels make it this installation's. One that names the
+ * installation that made it is this one's when that is this installation's
+ * Compose project, whatever sandbox project it was made under: an agent's
+ * workspace is resumed by the name it was made with, so one made before
+ * MELETE_SANDBOX_PROJECT changed can still be in use. Another installation's
+ * is never this one's, even under the same sandbox project. One made before
+ * computers named their installation is judged by its sandbox project alone,
+ * as before: this installation's when it is the one it runs with now.
+ */
+export function ownedBy(labels: Record<string, string>, owner: ComputerOwner): boolean {
+  const installation = labels[INSTALL_PROJECT];
+  if (installation) return installation === owner.installProject;
+  return owner.sandboxProject !== null && labels[SANDBOX_PROJECT] === owner.sandboxProject;
+}
+
+/**
+ * A computer volume that names no installation, made under a sandbox project
+ * this installation does not run with now: it may be this installation's,
+ * from before MELETE_SANDBOX_PROJECT changed, or another's. Which cannot be
+ * told, so a backup leaves it out and says so.
+ */
+export type UnattributedVolume = { volume: string; project: string };
+
+/**
+ * A computer volume that names another installation, one with no Melete
+ * service container on this engine: made by this installation before its
+ * Compose project was renamed, or by one that was removed. Which cannot be
+ * told, so a backup leaves it out and says so.
+ */
+export type ElsewhereVolume = { volume: string; installation: string };
+
+/** The computer volumes a backup leaves out because it cannot tell whose they are. */
+export type UnclaimedVolumes = { unattributed: UnattributedVolume[]; elsewhere: ElsewhereVolume[] };
+
+/**
+ * This installation's computers' volumes on this engine, with their labels
+ * (see ownedBy). A listing that fails throws: a backup never leaves the
+ * computers out silently. A volume of this installation whose name is not a
+ * computer's `-work` or `-home` is not taken; its name goes into `skipped`, so
+ * the backup can say so. When `unclaimed` is given, the computer volumes this
+ * installation does not take but may be its own go into it: those that name
+ * no installation, made under a sandbox project that neither this
+ * installation nor any other on the engine runs with now (one under a project
+ * another installation runs with is that one's, as its own backup takes it),
+ * and those that name an installation with no service container here. When
+ * the engine cannot say which installations it has, each such volume is named.
  */
 export function listComputerVolumes(
   context: Context,
-  sandboxProject: string | null,
+  owner: ComputerOwner,
   skipped: string[] = [],
+  unclaimed?: UnclaimedVolumes,
 ): ComputerVolume[] {
-  if (!sandboxProject) return [];
   const listed = context.run([
     'docker',
     'volume',
     'ls',
-    '--quiet',
     '--filter',
     `label=${SANDBOX_OWNER}=v1`,
-    '--filter',
-    `label=${SANDBOX_PROJECT}=${sandboxProject}`,
+    '--format',
+    `{{.Name}}\t{{json (.Label "${SANDBOX_PROJECT}")}}\t{{json (.Label "${INSTALL_PROJECT}")}}`,
   ]);
   if (listed.code !== 0)
     throw new FilesRefusal(
       `The agents' computers' volumes could not be listed: ${listed.stderr.trim().split('\n').at(-1) || `exit ${listed.code}`}`,
     );
-  const all = listed.stdout
+  const rows = listed.stdout
     .split('\n')
-    .map((name) => name.trim())
+    .map((line) => line.trim())
     .filter(Boolean)
-    .sort();
+    .map((line) => {
+      const fields = line.split('\t');
+      const project = labelOf(fields[1] ?? '');
+      const installation = labelOf(fields[2] ?? '');
+      // A line this command does not read could be one of this installation's.
+      if (fields.length !== 3 || !fields[0] || project === null || installation === null)
+        throw new FilesRefusal(
+          "The agents' computers' volumes could not be read: docker volume ls printed a line this command does not read.",
+        );
+      return { name: fields[0], project, installation };
+    })
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const labelled = (row: { project: string; installation: string }) => ({
+    [SANDBOX_PROJECT]: row.project,
+    ...(row.installation ? { [INSTALL_PROJECT]: row.installation } : {}),
+  });
+  if (unclaimed) {
+    const unknown = rows.filter(
+      (row) =>
+        !row.installation && row.project !== owner.sandboxProject && COMPUTER_VOLUME.test(row.name),
+    );
+    const another = rows.filter(
+      (row) =>
+        row.installation &&
+        row.installation !== owner.installProject &&
+        COMPUTER_VOLUME.test(row.name),
+    );
+    // Not knowing which installations are here, or what they run with, each such volume is named.
+    const others =
+      unknown.length > 0 || another.length > 0
+        ? otherInstallations(context.run, owner.installProject)
+        : null;
+    unclaimed.unattributed.push(
+      ...unknown
+        .filter((row) => !others?.sandboxProjects.has(row.project))
+        .map((row) => ({ volume: row.name, project: row.project })),
+    );
+    unclaimed.elsewhere.push(
+      ...another
+        .filter((row) => !others?.installations.has(row.installation))
+        .map((row) => ({ volume: row.name, installation: row.installation })),
+    );
+  }
+  const all = rows.filter((row) => ownedBy(labelled(row), owner)).map((row) => row.name);
   skipped.push(...all.filter((name) => !COMPUTER_VOLUME.test(name)));
   const names = all.filter((name) => COMPUTER_VOLUME.test(name));
   if (names.length === 0) return [];
@@ -411,7 +499,7 @@ export function listComputerVolumes(
     if (
       !labels ||
       labels[SANDBOX_NAME] !== computer ||
-      labels[SANDBOX_PROJECT] !== sandboxProject ||
+      !ownedBy(labels, owner) ||
       labels[SANDBOX_OWNER] !== 'v1'
     )
       throw new FilesRefusal(`${volume}'s labels could not be read, or do not name its computer.`);
@@ -420,31 +508,48 @@ export function listComputerVolumes(
 }
 
 /**
- * Whether a computer volume a backup lists is this installation's: labelled by
- * the adapter for this sandbox project and for the computer its name gives.
- * Another installation's computers, or a list edited by hand, are never
- * restored into.
+ * A computer volume a backup lists, as a restore into `owner` puts it back;
+ * null when it is not the set's to put back. A set holds the computers of the
+ * installation it is a backup of, `set` (the Compose project its
+ * contents.json names), whatever it was called and whatever sandbox project
+ * each was made under. One whose labels name another installation, or that
+ * the adapter did not label for the computer its name gives, under the
+ * sandbox project that name begins with, is not one of them: it is never
+ * restored. A set from before contents.json named its installation (`set`
+ * null) says nothing more, so its computers are judged by ownedBy for
+ * `owner`, as a backup is. Each comes back named for `owner`, whose computers
+ * they now are, so its own backups take them.
  */
-export function ownComputer(volume: ComputerVolume, sandboxProject: string | null): boolean {
-  return (
-    sandboxProject !== null &&
-    volume.computer.startsWith(`melete-sbx-${sandboxProject}-`) &&
+export function restoredComputer(
+  volume: ComputerVolume,
+  set: string | null,
+  owner: ComputerOwner,
+): ComputerVolume | null {
+  const project = volume.labels[SANDBOX_PROJECT];
+  const installation = volume.labels[INSTALL_PROJECT];
+  const made =
+    Boolean(project) &&
+    volume.computer.startsWith(`melete-sbx-${project}-`) &&
     volume.labels[SANDBOX_OWNER] === 'v1' &&
-    volume.labels[SANDBOX_NAME] === volume.computer &&
-    volume.labels[SANDBOX_PROJECT] === sandboxProject
-  );
+    volume.labels[SANDBOX_NAME] === volume.computer;
+  const sets = set === null ? ownedBy(volume.labels, owner) : !installation || installation === set;
+  return made && sets
+    ? { ...volume, labels: { ...volume.labels, [INSTALL_PROJECT]: owner.installProject } }
+    : null;
 }
 
 /**
  * A computer volume as the engine has it now: absent, this installation's (its
- * labels name the computer and the project), someone else's, or unreadable,
- * with why. As with volumePresence, only "no such volume" is absent.
+ * labels name the computer, and ownedBy takes them), the same computer's but
+ * named for another installation (`elsewhere`, the Compose project it names),
+ * something else, or unreadable, with why. As with volumePresence, only "no
+ * such volume" is absent.
  */
 export function volumeOnEngine(
   context: Context,
   volume: ComputerVolume,
-  sandboxProject: string,
-): 'absent' | 'ours' | 'foreign' | { unreadable: string } {
+  owner: ComputerOwner,
+): 'absent' | 'ours' | 'foreign' | { elsewhere: string } | { unreadable: string } {
   const read = context.run([
     'docker',
     'volume',
@@ -461,11 +566,10 @@ export function volumeOnEngine(
   } catch {
     return 'foreign';
   }
-  return labels[SANDBOX_NAME] === volume.computer &&
-    labels[SANDBOX_PROJECT] === sandboxProject &&
-    labels[SANDBOX_OWNER] === 'v1'
-    ? 'ours'
-    : 'foreign';
+  if (labels[SANDBOX_NAME] !== volume.computer || labels[SANDBOX_OWNER] !== 'v1') return 'foreign';
+  if (ownedBy(labels, owner)) return 'ours';
+  const installation = labels[INSTALL_PROJECT];
+  return installation ? { elsewhere: installation } : 'foreign';
 }
 
 /**
@@ -540,9 +644,8 @@ export function computerPaused(context: Context, computer: string): boolean {
 }
 
 /** The settings a backup of the files reads from deploy/.env. */
-export type FileSettings = {
+export type FileSettings = ComputerOwner & {
   image: string | null;
-  sandboxProject: string | null;
   /** MELETE_SANDBOX_PROVIDER, when it names something other than this engine. */
   remoteSandboxes: string | null;
   blobs: DeployConfig['blobs'];
@@ -556,6 +659,7 @@ export function fileSettings(installation: Installation): FileSettings {
   return {
     cells: longRunningServices(installation).includes(CELLS_SERVICE),
     image: helperImage(installation),
+    installProject: installation.config.project,
     sandboxProject: env.MELETE_SANDBOX_PROJECT?.trim() || null,
     remoteSandboxes: provider && provider !== 'docker' ? provider : null,
     blobs: installation.config.blobs,
@@ -572,7 +676,7 @@ export function measureFiles(
   if (!settings.image) return null;
   let computers: ComputerVolume[];
   try {
-    computers = listComputerVolumes(context, settings.sandboxProject);
+    computers = listComputerVolumes(context, settings);
   } catch {
     return null;
   }
@@ -608,6 +712,12 @@ export function parseContents(text: string): Contents | string {
     (contents.blobs !== 'local' && contents.blobs !== 's3')
   )
     return `${CONTENTS_FILE} does not say how it was taken`;
+  // Which installation's computers the set holds: one it cannot name is refused, never guessed.
+  if (
+    contents.project !== undefined &&
+    (typeof contents.project !== 'string' || !PROJECT_NAME.test(contents.project))
+  )
+    return `${CONTENTS_FILE} names an installation that is not a Compose project`;
   for (const part of contents.parts)
     if (!FILE_PARTS.includes(part?.part) || part.file !== partFile(part.part))
       return `${CONTENTS_FILE} names a part this command does not know`;

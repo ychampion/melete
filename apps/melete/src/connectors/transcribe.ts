@@ -32,8 +32,8 @@ import {
   capabilityTool,
   receipt,
 } from '@melete/contracts';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
-import type { Query } from '../broker/records.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import type { ProviderCheck } from './elevenlabs.ts';
 import { noLinks, openBeneath, segmentsFor } from './files.ts';
@@ -42,10 +42,9 @@ import {
   atomicWrite,
   capabilityDirectory,
   digest,
-  outputOnlyNew,
   readBytes,
   refuseTakenOutput,
-  writeNew,
+  saveOutput,
 } from './tts.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { scriptFromWav, spokenDurationMs } from './wav.ts';
@@ -227,7 +226,7 @@ export type TranscriptionConnectorOptions = {
   workRoot: string;
   spacesRoot: string;
   /** Where whose job it is is read, for the shared Files rule (`shared-files.ts`). */
-  sql?: Query;
+  sql?: Sql;
   adapter: TranscriptionAdapter | null;
   provider: string;
   unitCostUsd?: number;
@@ -324,14 +323,12 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
         transcriptMarkdown(transcript, media.name, options.adapter.model),
       );
       const file = await target(ctx, name);
-      if (await outputOnlyNew(options.sql, ctx)) {
-        if (!(await writeNew(file, bytes)))
-          return {
-            outcome: 'failed',
-            reason: alreadyInFiles(transcriptName(name)),
-            retryable: false,
-          };
-      } else await atomicWrite(file, bytes);
+      if (!(await saveOutput(options.sql, ctx, file, bytes)))
+        return {
+          outcome: 'failed',
+          reason: alreadyInFiles(transcriptName(name)),
+          retryable: false,
+        };
       const hash = digest(bytes);
       const proof: Receipt = {
         action_id: action.id,

@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { ID_PREFIXES } from '@melete/contracts';
 import { and, eq, sql } from 'drizzle-orm';
+import type { Context } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { principal, space } from '../db/schema.ts';
@@ -25,6 +26,21 @@ export type SessionSpace = {
  */
 export function ownsSessionSpace(session: Pick<SessionSpace, 'role'> | undefined): boolean {
   return session?.role === 'owner';
+}
+
+/**
+ * For a route that answers for the space the session is in. A request that
+ * names a different space, even a room the person is in, is refused rather
+ * than answered for the session's space as if it were the one asked about.
+ */
+export function requireSessionSpace(c: Context, spaceId: string) {
+  const named = c.req.header('x-melete-space');
+  if (named && named !== spaceId)
+    throw new ServiceError(
+      'scope_denied',
+      'This works only in the space you are signed in to.',
+      400,
+    );
 }
 
 /** A space the session named earlier, with the membership generation it was chosen under. */

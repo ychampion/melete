@@ -188,6 +188,7 @@ import {
 import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
+import { requireSessionSpace } from './principals/session-space.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
@@ -238,6 +239,7 @@ import { mountSituations } from './situations/routes.ts';
 import { SituationService } from './situations/service.ts';
 import { startSmsReplies } from './sms/inbox.ts';
 import { mountSms } from './sms/routes.ts';
+import { mountSpaceAudit } from './spaces/audit.ts';
 import { mountSpacePolicy } from './spaces/policy.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
@@ -424,7 +426,9 @@ export function createApp(deps: AppDeps) {
     deps.resolveSpace ??
     (async (c) => {
       const spaceId = c.get('experienceSpaceId');
-      return spaceId ? { spaceId, principalId: c.get('owner')?.id } : null;
+      if (!spaceId) return null;
+      requireSessionSpace(c, spaceId);
+      return { spaceId, principalId: c.get('owner')?.id };
     });
   if (deps.db)
     mountArtifacts(
@@ -462,6 +466,7 @@ export function createApp(deps: AppDeps) {
   // non-GET under /spaces/:id runs before the handler that removes one.
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
+  if (deps.db && deps.sql) mountSpaceAudit(app, { db: deps.db, sql: deps.sql });
   // What work in a space may use, set by its owner or the setup owner.
   if (deps.db) mountSpacePolicy(app, { db: deps.db });
   if (connections) mountConnections(app, connections);

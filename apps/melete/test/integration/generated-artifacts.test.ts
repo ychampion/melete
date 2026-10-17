@@ -118,7 +118,7 @@ databaseTest('artifact bytes require a session and matching artifact and job spa
   const hiddenId = recordId('art');
   await fixture.sql`insert into artifact (id, space_id, job_id, path, content_hash, mime, size) values
     (${hiddenId}, ${foreign.claims.space_id}, ${foreign.claims.job_id}, 'artifacts/episode.wav', ${proof.external_ref ?? ''}, 'audio/wav', ${bytes.length})`;
-  expect((await content(hiddenId, { 'x-melete-space': foreign.claims.space_id })).status).toBe(404);
+  expect((await content(hiddenId, { 'x-melete-space': foreign.claims.space_id })).status).toBe(400);
   await fixture.sql`update artifact set space_id = ${spaceId} where id = ${hiddenId}`;
   expect((await content(hiddenId)).status).toBe(404);
   expect((await content(recordId('art'))).status).toBe(404);

@@ -46,6 +46,7 @@ import type { Env } from '../env.ts';
 import { answerStream, answerText } from '../experience/answer-filter.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { ownJob } from '../principals/authority.ts';
+import { requireSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { ServiceError } from './errors.ts';
 import {
@@ -334,6 +335,7 @@ export function mountVoice(
     const principalId = c.get('owner')?.id;
     if (!spaceId || !principalId)
       throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+    requireSessionSpace(c, spaceId);
     return { spaceId, principalId };
   };
 

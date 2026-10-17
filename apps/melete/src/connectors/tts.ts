@@ -30,11 +30,12 @@ import {
   capabilityTool,
   receipt,
 } from '@melete/contracts';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import type { ProviderCheck } from './elevenlabs.ts';
-import { alreadyInFiles, onlyNewFiles } from './shared-files.ts';
+import { alreadyInFiles, filesHold, inFilesTurn, onlyNewFiles } from './shared-files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { silentWav, WAV_MIME } from './wav.ts';
 
@@ -103,6 +104,29 @@ export async function writeNew(file: string, bytes: Uint8Array): Promise<boolean
  */
 export const outputOnlyNew = (query: Query | undefined, ctx: ConnectorContext) =>
   query ? onlyNewFiles(query, ctx.job_id, ctx.space_id) : Promise.resolve(false);
+
+/**
+ * Save a capability's output at `file` in the space's Files, in its turn
+ * there on every instance (`inFilesTurn`, held through `sql`), so it never
+ * replaces a file between another step's check of it and its change to it.
+ * Only as a new file where `outputOnlyNew` says so: false when that name is
+ * taken.
+ */
+export const saveOutput = (
+  sql: Sql | undefined,
+  ctx: ConnectorContext,
+  file: string,
+  bytes: Uint8Array,
+): Promise<boolean> =>
+  inFilesTurn(
+    ctx.space_id,
+    async (query) => {
+      if (await outputOnlyNew(query ?? sql, ctx)) return writeNew(file, bytes);
+      await atomicWrite(file, bytes);
+      return true;
+    },
+    filesHold(sql),
+  );
 
 /**
  * Refuse, before anyone is asked, a capability step whose output name is
@@ -269,7 +293,7 @@ function safeName(value: string): string {
 export type CapabilityConnectorOptions = {
   spacesRoot: string;
   /** Where whose job it is is read, for the shared Files rule (`shared-files.ts`). */
-  sql?: Query;
+  sql?: Sql;
   adapter: SpeechAdapter | null;
   provider: string;
   unitCostUsd?: number;
@@ -328,10 +352,8 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
       const voice = typeof payload.voice === 'string' ? payload.voice : 'alto';
       const bytes = await options.adapter.synthesize({ script, voice });
       const file = await target(ctx, name);
-      if (await outputOnlyNew(options.sql, ctx)) {
-        if (!(await writeNew(file, bytes)))
-          return { outcome: 'failed', reason: alreadyInFiles(safeName(name)), retryable: false };
-      } else await atomicWrite(file, bytes);
+      if (!(await saveOutput(options.sql, ctx, file, bytes)))
+        return { outcome: 'failed', reason: alreadyInFiles(safeName(name)), retryable: false };
       const hash = digest(bytes);
       const proof: Receipt = {
         action_id: action.id,

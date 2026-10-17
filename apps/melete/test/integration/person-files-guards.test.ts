@@ -25,12 +25,19 @@ import { dirname, join } from 'node:path';
 import type { PersonFile } from '@melete/contracts';
 import { recordId } from '../../src/broker/records.ts';
 import * as filesModule from '../../src/connectors/files.ts';
+import { createFilesConnector } from '../../src/connectors/files.ts';
+import * as trashModule from '../../src/connectors/files-trash.ts';
 import {
   filesTrash,
   moveToTrash,
   oneAtATime,
   sweepTrash,
 } from '../../src/connectors/files-trash.ts';
+import { filesHold } from '../../src/connectors/shared-files.ts';
+import {
+  connectorAction as filesTestAction,
+  connectorContext as filesTestContext,
+} from '../../src/connectors/test-fixtures.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
 import { LocalWorkspaceFs } from '../../src/runtime/workspace-fs.ts';
@@ -613,6 +620,93 @@ databaseTest(
         await sql()`update session set space_id = ${row.space_id},
           membership_generation = ${row.membership_generation} where token_hash = ${row.token_hash}`;
     }
+  },
+);
+
+databaseTest(
+  "in a shared space, a member's delete never takes what the owner's agent saved over the file while it ran",
+  async () => {
+    const digestOf = (value: string) => hash(value.split('=')[1] ?? '');
+    const [me] = await sql()`select principal_id from session
+      where token_hash = ${digestOf(cookie)}`;
+    const shared = recordId('sp');
+    await sql()`insert into space (id, name, kind, owner_principal_id, audience, git_path)
+      values (${shared}, 'Studio', 'shared', ${me?.principal_id}, 'space', ${join(spacesRoot, shared)})`;
+    await sql()`insert into space_membership (principal_id, space_id, role)
+      values (${me?.principal_id}, ${shared}, 'owner'), (${otherPrincipal}, ${shared}, 'member')`;
+    const chat = recordId('job');
+    await sql()`insert into job (id, space_id, principal_id, kind, title, objective, state,
+        lease_epoch, budget, constraints)
+      select ${chat}, ${shared}, ${otherPrincipal}, 'chat', 'Sketches', objective, state,
+        lease_epoch, budget, constraints
+      from job where id = ${jobId}`;
+    const at = join(spacesRoot, shared, 'artifacts', 'sketch.md');
+    await mkdir(dirname(at), { recursive: true });
+    await writeFile(at, "the member's sketch\n");
+    const id = await fileAction(
+      { path: 'sketch.md', area: 'artifacts', content_hash: hash("the member's sketch\n") },
+      chat,
+    );
+    // The owner's agent saves over the same file once the member's delete has
+    // found it still as their chat saved it, and before it is taken.
+    const ownerSaves = async () => {
+      const action = filesTestAction('files.write', {
+        path: 'sketch.md',
+        area: 'artifacts',
+        content: "the owner's sketch",
+      });
+      return createFilesConnector({ workRoot, spacesRoot }).execute(action, {
+        ...filesTestContext(action),
+        space_id: shared,
+      });
+    };
+    let saving: Promise<unknown> | null = null;
+    const original = trashModule.moveToTrash;
+    const spy = spyOn(trashModule, 'moveToTrash').mockImplementation(async (...args) => {
+      if (!saving) {
+        saving = ownerSaves();
+        await Promise.race([saving.catch(() => {}), Bun.sleep(2500)]);
+      }
+      return original(...args);
+    });
+    const sessions = [digestOf(cookie), digestOf(otherCookie)];
+    const before = await sql()`select token_hash, space_id, membership_generation from session
+      where token_hash in ${sql()(sessions)}`;
+    try {
+      await sql()`update session set space_id = ${shared}, membership_generation = 0
+        where token_hash in ${sql()(sessions)}`;
+      const response = await remove(id, otherCookie);
+      expect(saving).not.toBeNull();
+      expect(((await saving) as { outcome?: string } | null)?.outcome).toBe('succeeded');
+      // The member's delete took the member's sketch, and then the owner's
+      // agent saved theirs: the owner's is in the space's Files.
+      expect(response.status).toBe(200);
+      expect(await readFile(at, 'utf8')).toBe("the owner's sketch");
+    } finally {
+      spy.mockRestore();
+      for (const row of before)
+        await sql()`update session set space_id = ${row.space_id},
+          membership_generation = ${row.membership_generation} where token_hash = ${row.token_hash}`;
+    }
+  },
+);
+
+databaseTest(
+  "a delete on the Files page waits while another instance holds the space's Files turn",
+  async () => {
+    const id = await savedInFiles('held/turn.md', 'kept while held\n');
+    let removing: Promise<Response> | undefined;
+    let during = false;
+    // Another instance's turn in the same space's Files, held in the database
+    // only: past this process's own queue.
+    await filesHold(sql())(spaceId, async () => {
+      removing = Promise.resolve(remove(id));
+      await Bun.sleep(500);
+      during = await exists(inFiles('held', 'turn.md'));
+    });
+    expect(during).toBe(true);
+    expect((await removing)?.status).toBe(200);
+    expect(await exists(inFiles('held', 'turn.md'))).toBe(false);
   },
 );
 

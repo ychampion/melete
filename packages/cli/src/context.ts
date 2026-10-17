@@ -4,10 +4,20 @@
  * Docker and a temporary directory.
  */
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, statfsSync, statSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  mkdtempSync,
+  openSync,
+  read,
+  rmSync,
+  statfsSync,
+  statSync,
+  writeSync,
+} from 'node:fs';
 import { connect } from 'node:net';
-import { networkInterfaces } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { networkInterfaces, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import {
   type CommandOutput,
   spawnCommand,
@@ -179,6 +189,92 @@ function sameDisk(a: string, b: string): boolean | null {
 }
 
 const STREAM_TIMEOUT_MS = 6 * 60 * 60_000;
+/** A pipe holds 64 KB on Linux. */
+const PIPE_SLICE = 64 * 1024;
+
+/**
+ * A pipe for a source command's output that is read here only when the next bytes
+ * are wanted. Bun reads a command's own stdout as fast as the command writes it,
+ * whatever the sinks take, so a dump decrypted faster than it loads would gather in
+ * memory. On this pipe the command waits instead. Its name is removed at once.
+ * Null where none can be made (no mkfifo, or a temporary folder that cannot be
+ * written): the source is then read as Bun reads it, which works, only unbounded.
+ */
+function sourcePipe(): { read: number; write: number } | null {
+  let dir: string | null = null;
+  const opened: number[] = [];
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
+    const path = join(dir, 'source');
+    const made = Bun.spawnSync(['mkfifo', '-m', '600', path], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    if (made.exitCode !== 0) return null;
+    // A read end that does not wait comes first, so neither of the others waits to open.
+    const opening = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    opened.push(opening);
+    const write = openSync(path, constants.O_WRONLY);
+    opened.push(write);
+    const read = openSync(path, constants.O_RDONLY);
+    opened.length = 0;
+    closeSync(opening);
+    return { read, write };
+  } catch {
+    for (const fd of opened) closeSync(fd);
+    return null;
+  } finally {
+    if (dir !== null) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** How far a source is read ahead of its sinks: enough that reading and writing overlap. */
+const READ_AHEAD = 16;
+
+/**
+ * Reads a descriptor a pipe's worth at a time, at most READ_AHEAD pieces ahead of
+ * what was asked for, so a source that outruns its sinks holds about 1 MB here.
+ */
+function pulled(fd: number): ReadableStream<Uint8Array> {
+  let reading: Promise<unknown> = Promise.resolve();
+  let closed = false;
+  let cancelled = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    closeSync(fd);
+  };
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        const buffer = new Uint8Array(PIPE_SLICE);
+        const count = new Promise<number>((settle, fail) =>
+          read(fd, buffer, 0, buffer.length, null, (error, n) => (error ? fail(error) : settle(n))),
+        );
+        reading = count.catch(() => undefined);
+        let n: number;
+        try {
+          n = await count;
+        } catch (error) {
+          close();
+          throw error;
+        }
+        if (cancelled) return;
+        if (n === 0) {
+          close();
+          controller.close();
+        } else controller.enqueue(buffer.subarray(0, n));
+      },
+      cancel() {
+        // A read under way still uses the descriptor, so it is closed once that read
+        // returns: at once when the source, stopped, has exited, or with its next bytes.
+        cancelled = true;
+        void reading.then(close);
+      },
+    },
+    { highWaterMark: READ_AHEAD },
+  );
+}
 
 export async function stream(source: Source, sinks: readonly Endpoint[]): Promise<StreamResult> {
   const hash = createHash('sha256');
@@ -187,9 +283,21 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
   let sourceStderr = '';
   const files: number[] = [];
   // stderr is read from the start, so a process that writes a lot there never stalls.
-  const children: { name: string; child: ReturnType<typeof Bun.spawn>; stderr: Promise<string> }[] =
-    [];
+  // `short`: bytes came that the sink no longer took, because it had closed its input or exited.
+  const children: {
+    name: string;
+    child: ReturnType<typeof Bun.spawn>;
+    stderr: Promise<string>;
+    exit: number | null;
+    short: boolean;
+  }[] = [];
   let producer: ReturnType<typeof Bun.spawn> | null = null;
+  // Set when every sink had stopped taking bytes, and the source was stopped before its end.
+  let cut = false;
+  // Set when the source command was still running when it was stopped here.
+  let stoppedRunning = false;
+  // Called when a command sink exits, to wake the read that waits beside it.
+  let wake: (() => void) | undefined;
   let producerStderr: Promise<string> = Promise.resolve('');
   const short = (text: string) => text.trim().split('\n').slice(-3).join(' ').slice(0, 400);
   try {
@@ -209,22 +317,38 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
           stdout: 'ignore',
           stderr: 'pipe',
         });
-        children.push({
+        const entry = {
           name: sink.command[0] ?? 'command',
           child,
           stderr: new Response(child.stderr as ReadableStream).text(),
+          exit: null as number | null,
+          short: false,
+        };
+        children.push(entry);
+        void child.exited.then((code) => {
+          entry.exit = code;
+          wake?.();
         });
         const stdin = child.stdin as import('bun').FileSink;
         // A sink that stops reading early (pg_restore at its first error) says why by
         // its exit; the bytes it no longer takes are dropped, never left to throw later.
+        // Bytes it did not take fail the stream even when it exits 0: its part is short.
         let closed = false;
         writers.push(async (chunk) => {
-          if (closed) return;
-          try {
-            await stdin.write(chunk);
-            await stdin.flush();
-          } catch {
-            closed = true;
+          // A pipe's worth at a time: when the pipe breaks part way through a large
+          // write, Bun can drop the rest of it with no error, so a short sink went unseen.
+          for (let offset = 0; offset < chunk.length; offset += PIPE_SLICE) {
+            if (closed || entry.exit !== null) {
+              entry.short = true;
+              return;
+            }
+            try {
+              await stdin.write(chunk.subarray(offset, offset + PIPE_SLICE));
+              await stdin.flush();
+            } catch {
+              closed = true;
+              entry.short = true;
+            }
           }
         });
         closers.push(async () => {
@@ -242,36 +366,99 @@ export async function stream(source: Source, sinks: readonly Endpoint[]): Promis
     if ('bytes' in source) reader = new Blob([source.bytes]).stream();
     else if ('file' in source) reader = Bun.file(source.file).stream();
     else {
-      producer = Bun.spawn([...source.command], {
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-      reader = producer.stdout as ReadableStream<Uint8Array>;
+      // Windows has no named pipes of this kind: there, as where none can be made, the
+      // source is read as Bun reads it.
+      const pipe = process.platform === 'win32' ? null : sourcePipe();
+      try {
+        producer = Bun.spawn([...source.command], {
+          stdin: 'ignore',
+          stdout: pipe ? pipe.write : 'pipe',
+          stderr: 'pipe',
+        });
+      } catch (error) {
+        if (pipe) closeSync(pipe.read);
+        throw error;
+      } finally {
+        // The command holds the write end alone, so the read ends when it does.
+        if (pipe) closeSync(pipe.write);
+      }
+      reader = pipe ? pulled(pipe.read) : (producer.stdout as ReadableStream<Uint8Array>);
       producerStderr = new Response(producer.stderr as ReadableStream).text();
     }
     const timer = setTimeout(() => {
       producer?.kill();
       for (const { child } of children) child.kill();
     }, STREAM_TIMEOUT_MS);
+    // Once no sink takes more and each has failed (by its exit, or by bytes it left),
+    // the rest of the source changes nothing: it is not read, so a restore that stops
+    // at its first error says so then, not after the whole dump. A sink that exited 0
+    // is waited on: the next bytes, if any come, show it stopped short. A file takes
+    // every byte, so a stream with a file sink, or with none, is always read to its end.
+    const watched = sinks.length > 0 && children.length === sinks.length;
+    const stopped = () =>
+      watched &&
+      children.every((entry) => entry.short || (entry.exit !== null && entry.exit !== 0));
+    const chunks = reader.getReader();
     try {
-      for await (const chunk of reader) {
-        hash.update(chunk);
-        bytes += chunk.length;
-        for (const write of writers) await write(chunk);
+      let next = chunks.read();
+      let finished = false;
+      for (;;) {
+        // A sink's exit is raced with the next bytes, so a slow source does not delay its failure.
+        // The race is with a promise made for this read alone: one raced with a sink's own exit
+        // would hold every chunk read before that exit, so a long stream would fill memory.
+        const running = watched && children.some((entry) => entry.exit === null);
+        const step = running
+          ? await Promise.race([
+              next,
+              new Promise<null>((settle) => {
+                wake = () => settle(null);
+              }),
+            ])
+          : await next;
+        wake = undefined;
+        if (step === null) {
+          if (stopped()) break;
+          continue;
+        }
+        if (step.done) {
+          finished = true;
+          break;
+        }
+        hash.update(step.value);
+        bytes += step.value.length;
+        for (const write of writers) await write(step.value);
+        if (stopped()) break;
+        next = chunks.read();
+      }
+      cut = !finished;
+      if (cut) {
+        stoppedRunning =
+          producer !== null && producer.exitCode === null && producer.signalCode === null;
+        producer?.kill();
+        await chunks.cancel().catch(() => undefined);
       }
       for (const close of closers) await close();
       if (producer) {
         const [code, stderr] = await Promise.all([producer.exited, producerStderr]);
         sourceStderr = stderr.trimEnd().slice(-400);
-        if (code !== 0) problems.push(`${producerName} exited ${code}: ${short(stderr)}`);
+        // A source stopped here says nothing of its own, whether the signal ended it or it
+        // exited on the pipe it could no longer write (docker run does); one that had already
+        // failed by itself still does.
+        if (code !== 0 && !stoppedRunning)
+          problems.push(`${producerName} exited ${code}: ${short(stderr)}`);
       }
-      for (const { name, child, stderr: text } of children) {
+      for (const { name, child, stderr: text, short: left } of children) {
         const [code, stderr] = await Promise.all([child.exited, text]);
         if (code !== 0) problems.push(`${name} exited ${code}: ${short(stderr)}`);
+        else if (left)
+          problems.push(
+            `${name} exited 0 but stopped reading before the end of its input${stderr.trim() ? `: ${short(stderr)}` : ''}`,
+          );
       }
     } finally {
       clearTimeout(timer);
+      // Lets go of the source when something here failed part way; otherwise a no-op.
+      await chunks.cancel().catch(() => undefined);
     }
   } catch (error) {
     problems.push(error instanceof Error ? error.message : String(error));

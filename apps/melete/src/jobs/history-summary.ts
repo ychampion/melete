@@ -21,9 +21,11 @@ import {
   type ContextGenerations,
   contextGenerations,
   EARLIER_SUMMARY_CHARACTERS,
+  STANDING_INSTRUCTIONS,
 } from '@melete/contracts';
 import { z } from 'zod';
 import { estimateInputTokens } from '../gateway/metering.ts';
+import { ownWords, pastedSpans, saysWanted } from '../intents/said.ts';
 
 /** The notice kind a summary is kept under, in the job's events. */
 export const HISTORY_SUMMARY_KIND = 'history_summary';
@@ -31,8 +33,37 @@ export const HISTORY_SUMMARY_KIND = 'history_summary';
 /** Of the room for the earlier conversation, how much stays as messages after an extension. */
 export const KEEP_SHARE = 0.5;
 
+/**
+ * A rule the person set that holds until they change it: what it is about,
+ * and the rule in their own words. A later rule about the same topic replaces
+ * an earlier one.
+ */
+export const standingInstruction = z.object({ topic: z.string(), rule: z.string() });
+export type StandingInstruction = z.infer<typeof standingInstruction>;
+
+/**
+ * The rules as read, entry by entry. A model held to no answer schema may give
+ * a rule as plain text or without a topic, and one entry in the wrong shape
+ * must never cost the rest of the summary: what is not a rule is left out.
+ * Absent, as in a summary stored before rules were kept apart, there are none.
+ */
+const standingList = z.preprocess(
+  (value) =>
+    Array.isArray(value)
+      ? value.flatMap((entry: unknown) => {
+          if (typeof entry === 'string') return [{ topic: '', rule: entry }];
+          const { topic, rule } = (entry ?? {}) as { topic?: unknown; rule?: unknown };
+          return typeof entry === 'object' && typeof rule === 'string'
+            ? [{ topic: typeof topic === 'string' ? topic : '', rule }]
+            : [];
+        })
+      : [],
+  z.array(standingInstruction),
+);
+
 /** What one summary keeps. Each list item is one line; the story is a short account in order. */
 export const conversationSummary = z.object({
+  standing_instructions: standingList,
   facts: z.array(z.string()),
   decisions: z.array(z.string()),
   open_tasks: z.array(z.string()),
@@ -42,6 +73,7 @@ export const conversationSummary = z.object({
 export type ConversationSummary = z.infer<typeof conversationSummary>;
 
 export const EMPTY_SUMMARY: ConversationSummary = {
+  standing_instructions: [],
   facts: [],
   decisions: [],
   open_tasks: [],
@@ -110,6 +142,10 @@ const line = (text: string) => text.replace(/\s+/g, ' ').trim();
 /** What a summary that kept nothing says, so the messages it covers are never a silent gap. */
 export const EMPTY_SUMMARY_TEXT = 'Nothing in those messages needed keeping.';
 
+/** The same, when the person's standing instructions from them are kept apart. */
+export const EMPTY_SUMMARY_WITH_STANDING_TEXT =
+  'Nothing else in those messages needed keeping beyond the standing instructions they set.';
+
 /**
  * The summary as the attempt reads it, held to the contract's size. Facts,
  * decisions, open tasks and names come before the story, so a summary that has
@@ -134,6 +170,127 @@ export function renderSummary(summary: ConversationSummary): string {
   if (text.length <= EARLIER_SUMMARY_CHARACTERS) return text;
   return `${text.slice(0, EARLIER_SUMMARY_CHARACTERS - 1).trimEnd()}…`;
 }
+
+/**
+ * Text as a comparison reads it: case, typographic quotes, spacing and a
+ * closing full stop make no difference to whether two rules are the same, or
+ * whether a rule is in what the person wrote.
+ */
+const comparable = (text: string) =>
+  text
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["']+|["'.!;,]+$/g, '')
+    .trim();
+
+/**
+ * "Don't forget to" asks for what follows it rather than ruling it out, so it
+ * reads as "remember to" wherever a rule is looked for.
+ */
+const reminded = (text: string) =>
+  text.replace(/\b(?:do not|don't|dont|never)\s+(?:forget|fail)\s+to\b/g, 'remember to');
+
+/**
+ * What the person wrote as a rule is looked for in: comparable, one line per
+ * paragraph, so a rule never runs from one message into the next.
+ */
+const heard = (text: string) =>
+  text
+    .split(/\n\s*\n/)
+    .map((paragraph) => reminded(comparable(paragraph)))
+    .filter(Boolean)
+    .join('\n');
+
+/**
+ * The words in a message the person sent that are theirs, read from how it
+ * was sent rather than from the text the model is shown: only what they
+ * wrote (the files they attached are never part of it), less what the
+ * composer saw them paste and what reads as someone else's by its shape (a
+ * quote, a forward, a reply chain, pasted headers, a letter, a long copied
+ * passage), as an intent's details are read (`ownWords`). An option the
+ * assistant offered and the person picked is their choice, in the
+ * assistant's words, so none of it is.
+ *
+ * Where the shape is unsure the text counts as pasted. That only keeps a rule
+ * out of the standing instructions: the summary still records it as
+ * something said.
+ */
+export function personWords(sent: { text: string; pasted?: unknown; chosen?: unknown }): string {
+  if (sent.chosen !== undefined && sent.chosen !== null) return '';
+  return ownWords(sent.text, pastedSpans(sent.pasted));
+}
+
+/**
+ * The standing instructions after a summary call, and any rule it offered
+ * that cannot be kept as one.
+ *
+ * The summariser is asked for the whole list, but what it returns is merged
+ * rather than taken: a rule it leaves out is kept, because a standing
+ * instruction goes only when the person replaces it. A rule it offers
+ * replaces the one with the same topic and moves to the end, so the list is
+ * oldest first and the newest version of a rule always wins; two rules the
+ * same answer gives under one topic are both kept. A rule is new only when
+ * its words are in what the person wrote in the messages that call read
+ * (`personText`), as words of their own and not ruled out where they are
+ * said: one the summariser paraphrased, cut from a "never", or took from the
+ * assistant or a page it quoted, is not the person's instruction, so it goes
+ * back to the summary's facts (`facts`, the ones it returned) instead of being
+ * carried as one, unless they already say it.
+ */
+export function mergeStanding(
+  previous: readonly StandingInstruction[],
+  offered: readonly StandingInstruction[],
+  personText: string,
+  facts: readonly string[] = [],
+): { standing: StandingInstruction[]; demoted: string[] } {
+  const said = heard(personText);
+  const keyOf = (entry: StandingInstruction) => comparable(entry.topic) || comparable(entry.rule);
+  const held = new Map<string, StandingInstruction>();
+  // A second rule held under one topic sits beside the first, as it was added.
+  const beside = (key: string, entry: StandingInstruction) =>
+    `${key}\u0000${comparable(entry.rule)}`;
+  for (const entry of previous) {
+    const key = keyOf(entry);
+    held.set(held.has(key) ? beside(key, entry) : key, entry);
+  }
+  const known = new Set(facts.map(comparable));
+  const demoted: string[] = [];
+  // The topics this answer has set a rule under so far.
+  const added = new Set<string>();
+  for (const entry of offered) {
+    const rule = line(entry.rule).slice(0, STANDING_INSTRUCTIONS.characters);
+    const wording = comparable(rule);
+    if (!wording) continue;
+    // Already held, under this topic or another: nothing changed.
+    if ([...held.values()].some((kept) => comparable(kept.rule) === wording)) continue;
+    if (!saysWanted(said, reminded(wording))) {
+      // Offered again on a later call, it is already a fact: never a second copy.
+      if (!known.has(wording)) demoted.push(rule);
+      known.add(wording);
+      continue;
+    }
+    const kept = { topic: line(entry.topic), rule };
+    let key = keyOf(kept);
+    // A second rule under a topic this same answer used is a rule beside the
+    // first, not a newer version of it: the answer gives only the newest.
+    if (added.has(key)) key = beside(key, kept);
+    added.add(key);
+    held.delete(key);
+    held.set(key, kept);
+  }
+  return { standing: [...held.values()].slice(-STANDING_INSTRUCTIONS.items), demoted };
+}
+
+/** The standing instructions as an attempt is handed them, oldest first. */
+export const standingRules = (summary: ConversationSummary): string[] =>
+  summary.standing_instructions
+    .map((entry) => line(entry.rule).slice(0, STANDING_INSTRUCTIONS.characters))
+    .filter(Boolean)
+    .slice(-STANDING_INSTRUCTIONS.items);
 
 /** A completed tool call, whose identity always stays in the transcript. */
 export const isToolIdentity = (message: CanonicalMessage) =>
@@ -194,8 +351,12 @@ export function planExtension(
   return { summarise, through: summarise.at(-1)?.at ?? last.at };
 }
 
-/** One call's worth of messages, as text, and how many messages it completes. */
-export type SummaryChunk = { text: string; completes: number };
+/**
+ * One call's worth of messages, as text, and how many messages it completes.
+ * `person` is what the person wrote in those messages (`personWords`), which
+ * a standing instruction has to be found in.
+ */
+export type SummaryChunk = { text: string; completes: number; person: string };
 
 /** A message as the summariser reads it. */
 function messageText(message: CanonicalMessage): string {
@@ -229,25 +390,36 @@ function partsOf(message: CanonicalMessage, maxTokens: number): string[] {
  * message too long for one call is split into parts across calls. `completes`
  * counts the messages whose last part is in that chunk or an earlier one, so a
  * run of calls stopped early says exactly which messages it covered.
+ *
+ * `spoken` holds, for each message the person the conversation belongs to
+ * sent, their own words in it, as the conversation was read from its events
+ * (`assembleHistory`). A message it does not hold has none: whoever's it is,
+ * and whatever it says, nothing in it can set a rule.
  */
 export function chunkMessages(
   messages: readonly CanonicalMessage[],
   maxTokens: number,
+  spoken: ReadonlyMap<CanonicalMessage, string> = new Map(),
 ): SummaryChunk[] {
   const chunks: SummaryChunk[] = [];
   let text: string[] = [];
+  let person: string[] = [];
   let used = 0;
   let completed = 0;
   const flush = () => {
-    if (text.length) chunks.push({ text: text.join('\n\n'), completes: completed });
+    if (text.length)
+      chunks.push({ text: text.join('\n\n'), completes: completed, person: person.join('\n\n') });
     text = [];
+    person = [];
     used = 0;
   };
   for (const [index, message] of messages.entries()) {
     const parts = partsOf(message, maxTokens);
+    const words = message.role === 'user' ? (spoken.get(message) ?? null) : null;
     for (const [number, part] of parts.entries()) {
       const cost = estimateInputTokens(part);
       if (used > 0 && used + cost > maxTokens) flush();
+      if (words !== null && (number === 0 || text.length === 0)) person.push(words);
       text.push(part);
       used += cost;
       if (number === parts.length - 1) completed = index + 1;

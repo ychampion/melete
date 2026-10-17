@@ -54,8 +54,8 @@ import {
   journalOnEngine,
   journalRemovals,
   legacyMembers,
-  ownComputer,
   parseContents,
+  restoredComputer,
   volumeOnEngine,
   volumePresence,
   volumesHoldingFiles,
@@ -80,7 +80,7 @@ import {
 } from '../plan.ts';
 import { installationSecrets, redact } from '../redact.ts';
 import { EXIT, type ExitCode, type Result, renderReport, report } from '../schema.ts';
-import { BACKUP_NAME, expandHome, writersOf } from './backup.ts';
+import { BACKUP_NAME, expandHome, setInstallation, writersOf } from './backup.ts';
 
 export const RESTORE_USAGE =
   'Usage: bun run melete restore <backup directory> [--plan | --verify | --yes] [--keep-database [--replace-files]]';
@@ -564,22 +564,26 @@ function filesToRestore(
         },
       ],
     };
-  // Only this installation's computers, and only into volumes that are theirs or absent:
-  // a backup of another installation, or a list edited by hand, never reaches another's.
-  const { sandboxProject } = fileSettings(installation);
-  const listed = contents?.computers ?? [];
+  // The computers of the installation the set is a backup of, named for this one, and
+  // only into volumes that are this installation's or absent: a computer of another
+  // installation the list names, by hand or not, never comes back, and nothing is put
+  // into a volume here that is not this installation's.
+  const owner = fileSettings(installation);
+  const set = contents === null ? null : setInstallation(backup);
+  const listed = (contents?.computers ?? []).map((volume) => ({
+    volume,
+    restored: restoredComputer(volume, set, owner),
+  }));
   const states = new Map(
-    listed.map((volume) => [
+    listed.map(({ volume, restored }) => [
       volume.volume,
-      ownComputer(volume, sandboxProject) && sandboxProject
-        ? volumeOnEngine(context, volume, sandboxProject)
-        : 'foreign',
+      restored ? volumeOnEngine(context, restored, owner) : ('another' as const),
     ]),
   );
   // Unknown is neither absent nor ours: a volume the engine could not describe might be
   // another installation's, so nothing is planned into it.
   const unknown = [...states].flatMap(([volume, state]) =>
-    typeof state === 'object' ? [`${volume} (${state.unreadable})`] : [],
+    typeof state === 'object' && 'unreadable' in state ? [`${volume} (${state.unreadable})`] : [],
   );
   if (unknown.length > 0)
     return {
@@ -593,12 +597,23 @@ function filesToRestore(
         },
       ],
     };
-  const leftOut = new Set(
-    listed
-      .filter((volume) => states.get(volume.volume) === 'foreign')
-      .map((volume) => volume.computer),
+  // Why each computer is left out: the first of its volumes that is not put back says.
+  const leftOut = new Map<string, 'another' | 'foreign' | { elsewhere: string }>();
+  for (const { volume } of listed) {
+    const state = states.get(volume.volume);
+    if (
+      state === undefined ||
+      state === 'ours' ||
+      state === 'absent' ||
+      leftOut.has(volume.computer)
+    )
+      continue;
+    if (state === 'another' || state === 'foreign' || 'elsewhere' in state)
+      leftOut.set(volume.computer, state);
+  }
+  const computers = listed.flatMap(({ restored }) =>
+    restored && !leftOut.has(restored.computer) ? [restored] : [],
   );
-  const computers = listed.filter((volume) => !leftOut.has(volume.computer));
   const names = [...new Set(computers.map((computer) => computer.computer))];
   const containerStates = new Map(
     names.map((computer) => [computer, computerExists(context, computer)]),
@@ -630,12 +645,36 @@ function filesToRestore(
           : `Holds the spaces' files, the files kept by their content, the agents' shared /work and ${names.length} agent computer(s); each volume is emptied and put back from its archive.${contents.blobs === 's3' ? ' Files kept in the S3 bucket are not in it: the bucket keeps its own.' : ''}`,
     },
   ];
-  if (leftOut.size > 0)
+  const another = [...leftOut].filter(([, why]) => why === 'another').map(([name]) => name);
+  const foreign = [...leftOut].filter(([, why]) => why === 'foreign').map(([name]) => name);
+  const elsewhere = [...leftOut].flatMap(([name, why]) =>
+    typeof why === 'object' ? [{ name, installation: why.elsewhere }] : [],
+  );
+  const reasons = [
+    another.length === 0
+      ? null
+      : set === null
+        ? `${another.length} agent computer(s) in this backup are not this installation's (Compose project ${owner.installProject}, ${owner.sandboxProject ? `MELETE_SANDBOX_PROJECT=${owner.sandboxProject}` : 'no MELETE_SANDBOX_PROJECT'}): made by another installation, or, before computers named the installation that made them, under another sandbox project. Nothing in the backup names the installation it is of, so nothing else says whose they are.`
+        : `${another.length} agent computer(s) in this backup are not computers of the installation it is a backup of (${set}): their labels name another installation, or are not the ones the sandbox gives the computer their name says.`,
+    foreign.length === 0
+      ? null
+      : `${foreign.length} agent computer(s) in this backup have a volume of the same name on this engine that is not this installation's, or not one it can tell is its own (made before computers named their installation, under a sandbox project it does not run with now): ${foreign.join(', ')}.`,
+  ].filter((reason): reason is string => reason !== null);
+  if (reasons.length > 0)
     results.push({
       id: 'restore.computers_left_out',
       level: 'warn',
-      detail: `${leftOut.size} agent computer(s) in this backup are not this installation's${sandboxProject ? ` (MELETE_SANDBOX_PROJECT=${sandboxProject})` : ', which has no MELETE_SANDBOX_PROJECT'}, or a volume of the same name on this engine belongs to something else: they are left out, and nothing of theirs here is touched.`,
+      detail: `${reasons.join(' ')} They are left out, and nothing of theirs here is touched.`,
     });
+  if (elsewhere.length > 0) {
+    const named = [...new Set(elsewhere.map((each) => each.installation))];
+    results.push({
+      id: 'restore.computers_named_elsewhere',
+      level: 'warn',
+      detail: `${elsewhere.length} agent computer(s) in this backup have volumes here that name the installation${named.length === 1 ? '' : 's'} ${named.join(', ')}, not this one (Compose project ${owner.installProject}): ${elsewhere.map((each) => each.name).join(', ')}. They are left out, and nothing of theirs here is touched.`,
+      fix: "If they are this installation's, from before its COMPOSE_PROJECT_NAME changed, and no other installation uses them, remove each one's container and both volumes (docker rm -f <computer>, then docker volume rm <computer>-work <computer>-home) and run this restore again: each is then made named for this installation and put back as the backup holds it. Anything written to them since the backup is lost, as it is for every volume a restore puts back.",
+    });
+  }
   // What becomes of a computer whose container is gone is the service's to say:
   // one that makes the container again on kept volumes brings the computer back
   // whole; an earlier one gives the agent a new computer.
