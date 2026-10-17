@@ -13,16 +13,21 @@ import {
   runResponse,
 } from '@melete/contracts';
 import { and, eq, sql } from 'drizzle-orm';
+import { ServiceError } from '../../src/api/errors.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { connection, event, owner, principal, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { OperationService } from '../../src/jobs/operations.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
-import { forgetSeen, markSeen, ROUTINES_BACK_LINE } from '../../src/jobs/resting.ts';
+import { forgetSeen, markSeen, ROUTINES_BACK_LINE, routinesKept } from '../../src/jobs/resting.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
+import { principalContext } from '../../src/principals/authority.ts';
+import { ReachService } from '../../src/reach/service.ts';
+import { twilioSignature, validTwilioSignature } from '../../src/reach/twilio.ts';
 import { attachRuns, RunService } from '../../src/runs/service.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { freshAgent } from '../helpers/agents.ts';
@@ -224,11 +229,124 @@ withDb('standing work for people who stopped coming', () => {
     expect(home.routines_back).toBeUndefined();
   });
 
+  test('the result of work under way still reaches it while the person is away', async () => {
+    required(jobs).standingWork = { restAfterDays: 14 };
+    forgetSeen();
+    await markSeen(required(handle).db, ownerId, 14);
+    const operations = new OperationService(required(jobs), required(runner));
+    const waitForMail = async (goal: string) => {
+      const run = (await start({ goal })).id;
+      const shift = await claim(run);
+      await required(runs).call(shift.claims, 'run.checkpoint', {
+        summary: 'Ready.',
+        next: 'Wait for mail.',
+        next_shift: { kind: 'event', connection_id: mailId, event_name: 'mail.new' },
+      });
+      await required(runner).commitOutcome(shift.claims, done());
+      await waiting(run);
+      return run;
+    };
+    const waits = await waitForMail('Export the ledger, then wait for the bank');
+    const busy = await waitForMail('Export the receipts, then wait for the bank');
+    // One piece of mail before they go: both wake, one goes back to waiting,
+    // the other is still to start its shift when its export ends.
+    await mail('before', { from: 'bank@example.test', subject: 'Statement' });
+    const shift = await claim(waits);
+    await required(runs).call(shift.claims, 'run.checkpoint', {
+      summary: 'Read it.',
+      next: 'Wait for the export.',
+    });
+    await required(runner).commitOutcome(shift.claims, done());
+    await waiting(waits);
+    expect((await row(busy)).state).toBe('queued');
+    const exportOf = async (id: string, key: string) =>
+      operations.register(id, {
+        operation_key: key,
+        kind: 'timer',
+        trigger_id: (await triggerOf(id)).id,
+      });
+    const ledger = await exportOf(waits, 'ledger-export');
+    const receipts = await exportOf(busy, 'receipts-export');
+
+    await away(20);
+    // Work it started ends while the person is away: it hears so at once.
+    await operations.handleWake({ id: ledger.id, version: ledger.version });
+    expect((await row(waits)).state).toBe('queued');
+    // Work that was not waiting yet hears it once it waits, after the person is back.
+    await operations.handleWake({ id: receipts.id, version: receipts.version });
+    forgetSeen();
+    expect(await markSeen(required(handle).db, ownerId, 14)).toBe(true);
+    const later = await claim(busy);
+    await required(runs).call(later.claims, 'run.checkpoint', {
+      summary: 'Read it.',
+      next: 'Wait for the export.',
+    });
+    await required(runner).commitOutcome(later.claims, done());
+    expect((await row(busy)).state).toBe('queued');
+  });
+
+  test('a reply to Melete’s text, or a key pressed on its call, is the person being seen', async () => {
+    const seen: string[] = [];
+    const number = '+15550009999';
+    const token = 'r'.repeat(32);
+    const account = `AC${'c'.repeat(32)}`;
+    const base = 'https://melete.example/api';
+    const reach = new ReachService({
+      db: required(handle).db,
+      config: {
+        provider: {
+          from: '+15550001000',
+          name: 'fake',
+          text: async () => ({ ref: 'SM0', status: 'queued' }),
+          call: async () => ({ ref: 'CA0', status: 'queued' }),
+          authentic: (url, params, signature) =>
+            validTwilioSignature(signature, url, params.entries(), token),
+          ownAccount: (params) => params.get('AccountSid') === account,
+        },
+        callbackBase: base,
+        unavailable: null,
+        prices: { textUsd: 0.01, callUsdPerMinute: 0.02 },
+        codePrefixes: ['+1'],
+        codesPerHour: 1000,
+      },
+      seen: async (principalId) => seen.push(principalId),
+    });
+    await required(handle)
+      .sql`insert into reach_number (principal_id, number, verified_at) values (${ownerId}, ${number}, now())`;
+    const text = (body: string, sid: string) => {
+      const params = new URLSearchParams({
+        AccountSid: account,
+        MessageSid: sid,
+        From: number,
+        To: '+15550001000',
+        Body: body,
+      });
+      const url = `${base}/reach/twilio/sms`;
+      return reach.inbound(url, params, twilioSignature(url, params.entries(), token));
+    };
+    expect((await text('Got it, thanks', 'SMrest1')).outcome).toBe('acknowledged');
+    expect(seen).toEqual([ownerId]);
+    // Asking it to stop is not using it.
+    expect((await text('STOP', 'SMrest2')).outcome).toBe('stop');
+    expect(seen).toEqual([ownerId]);
+    const contact = newId('rch');
+    await required(handle).sql`insert into reach_contact (id, principal_id, purpose, channel,
+        due_at, state, reason, number, provider_ref)
+      values (${contact}, ${ownerId}, 'notice', 'call', now(), 'sent', 'test', ${number}, 'CArest')`;
+    const press = (digit: string) => {
+      const params = new URLSearchParams({ AccountSid: account, CallSid: 'CArest', Digits: digit });
+      const url = `${base}/reach/twilio/key/${contact}`;
+      return reach.keypress(contact, url, params, twilioSignature(url, params.entries(), token));
+    };
+    expect(await press('1')).toContain('marked it as seen');
+    expect(seen).toEqual([ownerId, ownerId]);
+    await press('9');
+    expect(seen).toEqual([ownerId, ownerId]);
+  });
+
   test('a routine past the limit is refused with a sentence to pass on', async () => {
-    const [kept] = await required(handle).sql`select count(*)::int as n from job j
-      where j.principal_id = ${ownerId} and j.state not in ('completed', 'failed', 'cancelled')
-        and (j.kind = 'routine' or (j.kind = 'run' and exists (select 1 from trigger t where t.job_id = j.id)))`;
-    const limit = Number(required(kept).n) + 1;
+    const kept = await routinesKept(required(handle).db, ownerId);
+    const limit = kept + 1;
     required(jobs).standingWork = { routinesPerPerson: limit };
     await daily('Every morning, check the garden forecast');
 
@@ -254,6 +372,16 @@ withDb('standing work for people who stopped coming', () => {
       agent_id: persona.id,
     });
     expect(routine.status).toBe(409);
+
+    // A schedule added to any other work of theirs makes it one more routine too.
+    const once = await principalContext.run(ownerId, () =>
+      required(jobs).create({ space_id: spaceId, title: 'Once', objective: 'Answer once' }),
+    );
+    const added = await required(triggers)
+      .create(once.id, { kind: 'schedule', cron: '0 7 * * *', timezone: 'UTC' })
+      .catch((error: unknown) => error);
+    expect(added).toBeInstanceOf(ServiceError);
+    expect((added as ServiceError).code).toBe('too_many_routines');
 
     // Work that does not repeat is not a routine, and is still taken.
     await start({ goal: 'Find a plumber once' });

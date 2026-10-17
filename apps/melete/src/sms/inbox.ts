@@ -152,7 +152,13 @@ export class SmsInbox {
     if (!experience) return;
     const owner = await this.owner(connection.id);
     if (!owner) return;
-    await this.deps.seen?.(owner).catch(() => undefined);
+    await this.deps
+      .seen?.(owner)
+      .catch((error: unknown) =>
+        process.stderr.write(
+          `sms: last seen not recorded (${error instanceof Error ? error.message : 'error'})\n`,
+        ),
+      );
     await principalContext.run(owner, async () => {
       let conversation: string | null;
       try {

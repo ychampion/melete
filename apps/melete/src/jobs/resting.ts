@@ -54,18 +54,34 @@ export async function personResting(
 }
 
 /**
- * What one person keeps standing: routines not yet ended, and long work
- * that wakes on a schedule or a watch. `except` is a job being set up in this
- * transaction, counted by the caller.
+ * What one person keeps standing: work not yet ended that wakes on a schedule
+ * or a watch, paused or not. Routines always have their schedule. A watch on a
+ * process belongs to work under way and is not counted. `except` is a job
+ * being set up in this transaction, counted by the caller. Read from the
+ * trigger table, which holds only standing work, never by scanning all jobs.
  */
-async function standingCount(tx: Transaction, principalId: string, except?: string) {
-  const [row] = await tx.execute(sql`select count(*)::int as n from job j
+export async function routinesKept(
+  tx: Pick<Transaction, 'execute'>,
+  principalId: string,
+  except?: string,
+): Promise<number> {
+  const [row] = await tx.execute(sql`select count(distinct t.job_id)::int as n
+    from trigger t join job j on j.id = t.job_id
     where j.principal_id = ${principalId}
       and j.state not in ${TERMINAL}
       and (${except ?? null}::text is null or j.id <> ${except ?? null})
-      and (j.kind = 'routine'
-        or (j.kind = 'run' and exists (select 1 from trigger t where t.job_id = j.id)))`);
+      and not (${sql.raw(PROCESS_WATCH_SQL('t'))})`);
   return Number((row as { n?: unknown } | undefined)?.n ?? 0);
+}
+
+/** Whether the job already stands on something other than a process watch, and so is already counted. */
+export async function alreadyStanding(
+  tx: Pick<Transaction, 'execute'>,
+  jobId: string,
+): Promise<boolean> {
+  const [row] = await tx.execute(sql`select 1 as standing from trigger t
+    where t.job_id = ${jobId} and not (${sql.raw(PROCESS_WATCH_SQL('t'))}) limit 1`);
+  return Boolean(row);
 }
 
 /**
@@ -80,7 +96,7 @@ export async function checkRoutineRoom(
   except?: string,
 ): Promise<void> {
   if (!routinesPerPerson || !principalId) return;
-  const kept = await standingCount(tx, principalId, except);
+  const kept = await routinesKept(tx, principalId, except);
   if (kept < routinesPerPerson) return;
   throw new ServiceError(
     'too_many_routines',
@@ -107,6 +123,18 @@ export async function markSeen(
   const last = lastMarked.get(principalId);
   if (last !== undefined && now - last < SEEN_EVERY_MS) return false;
   lastMarked.set(principalId, now);
+  // Not recorded: the next request tries again rather than a few minutes on.
+  return record(db, principalId, restAfterDays).catch((error: unknown) => {
+    if (lastMarked.get(principalId) === now) lastMarked.delete(principalId);
+    throw error;
+  });
+}
+
+async function record(
+  db: Database,
+  principalId: string,
+  restAfterDays: number | undefined,
+): Promise<boolean> {
   const [state] = await db.execute(sql`select
       last_seen_at < now() - make_interval(secs => ${SEEN_EVERY_MS / 1000}) as stale,
       (${restAfterDays ?? null}::int is not null
@@ -129,9 +157,17 @@ export async function markSeen(
     // Another request ended the rest first.
     if (!(prior as { away?: unknown } | undefined)?.away) return false;
     // A watch on a process belongs to work under way, not to standing work; it
-    // never rested, and moving it on could lose the end it waits for.
+    // never rested, and moving it on could lose the end it waits for. For the
+    // same reason a trigger stops short of the result of an operation its work
+    // started that it has not read yet.
     const moved = await tx.execute(sql`update trigger t
-      set cursor = (select coalesce(max(seq), 0) from event)::text
+      set cursor = coalesce(
+        (select min(e.seq) - 1 from event e
+          where e.job_id = t.job_id and e.type = 'notice'
+            and e.seq > (case when t.cursor ~ '^[0-9]{1,18}$' then t.cursor::bigint else 0 end)
+            and e.payload->>'kind' = 'operation_event'
+            and e.payload->>'trigger_id' = t.id and e.payload ? 'operation_id'),
+        (select coalesce(max(seq), 0) from event))::text
       from job j
       where j.id = t.job_id and j.principal_id = ${principalId}
         and j.state not in ${TERMINAL} and t.enabled

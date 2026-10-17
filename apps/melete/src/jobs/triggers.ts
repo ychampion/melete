@@ -37,7 +37,7 @@ import { ItemFailures } from '../ops/item-failures.ts';
 import { personSetSchedule } from './attention.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
-import { personResting } from './resting.ts';
+import { alreadyStanding, checkRoutineRoom, personResting } from './resting.ts';
 import type { AttemptRunner } from './runner.ts';
 import { jobMayUseConnection } from './scopes.ts';
 import type { JobRow, JobService } from './service.ts';
@@ -60,6 +60,9 @@ export type TriggerRow = typeof trigger.$inferSelect;
  * transaction, and the cursor means none of them is tested twice.
  */
 export const WATCH_SCAN_LIMIT = 200;
+
+/** An operation event that is the result of an operation the job started (see operations.ts). */
+const OPERATION_RESULT = sql`${event.payload} ? 'operation_id'`;
 
 function knownTimeZone(zone: string): boolean {
   try {
@@ -497,6 +500,14 @@ export class TriggerService {
         checkEventSource(source.provider, spec.event_name);
         checkTriggerScope(spec);
       }
+      // A first schedule or watch makes the work one more routine for its person.
+      if (watchedProcess(spec) === null && !(await alreadyStanding(tx, row.id)))
+        await checkRoutineRoom(
+          tx,
+          row.principalId,
+          this.jobs.standingWork?.routinesPerPerson,
+          row.id,
+        );
       const [start] = await tx
         .select({ seq: event.seq })
         .from(event)
@@ -596,15 +607,18 @@ export class TriggerService {
     if (!registration?.enabled)
       throw new ServiceError('invalid_wait', 'Wait trigger is missing or disabled.');
     // The person has been away long enough that their standing work rests:
-    // what arrives is let pass, and coming back counts from then.
-    if (watchedProcess(registration.spec) === null && (await this.resting(tx, row))) return row;
+    // what its schedule or connection brings is let pass, and coming back
+    // counts from then. The result of an operation the work started is its
+    // work under way, and still reaches it.
+    const resting = watchedProcess(registration.spec) === null && (await this.resting(tx, row));
     const spec = triggerSpec.parse(registration.spec);
     // A trigger made before its connection stopped serving this job, or before
     // the rule existed, hears nothing more from it.
     if (spec.kind !== 'schedule' && !(await jobMayUseConnection(tx, row.id, spec.connection_id)))
       return row;
-    const source =
-      spec.kind === 'schedule'
+    const source = resting
+      ? sql`false`
+      : spec.kind === 'schedule'
         ? and(
             sql`${event.payload}->>'kind' = 'schedule_event'`,
             sql`${event.payload}->>'trigger_id' = ${registration.id}`,
@@ -630,6 +644,7 @@ export class TriggerService {
               eq(event.jobId, row.id),
               sql`${event.payload}->>'kind' = 'operation_event'`,
               sql`${event.payload}->>'trigger_id' = ${registration.id}`,
+              resting ? OPERATION_RESULT : undefined,
             ),
           ),
         ),

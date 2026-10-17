@@ -594,13 +594,16 @@ export function createApp(deps: AppDeps) {
     intents.deps.reverse = undoThrough((spaceId, actionId) => undoing.undo(spaceId, actionId));
   }
   if (intents) mountIntents(app, intents);
+  const reachDb = deps.db;
   const reaching =
     deps.reach ??
-    (deps.db
+    (reachDb
       ? new ReachService({
-          db: deps.db,
+          db: reachDb,
           config: reachConfigFromEnv(deps.env),
           ...(noticing ? { ack: (principalId, id) => noticing.ack(principalId, id) } : {}),
+          seen: (principalId) =>
+            markSeen(reachDb, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
         })
       : undefined);
   if (reaching) mountReach(app, reaching);
@@ -1985,6 +1988,8 @@ export async function bootstrap(
             db: handle.db,
             config: reachConfigFromEnv(env),
             ack: (principalId, id) => noticing.ack(principalId, id),
+            seen: (principalId) =>
+              markSeen(handle.db, principalId, env.MELETE_REST_ROUTINES_AFTER_DAYS),
           });
           const climbing = reach;
           noticing.deps.escalate = (tx, row, pushed) => climbing.escalate(tx, row, pushed);
