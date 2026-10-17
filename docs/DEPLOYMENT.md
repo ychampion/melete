@@ -2155,7 +2155,9 @@ fewest, and among equals to the one who started something longest ago, so one
 person with many chats or routines cannot keep everyone else waiting.
 `MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` (unset by default, which is no limit of
 its own) also caps how many one person runs at once, even while slots are
-free; `init --hosted` writes `2`. The cap counts everything a person runs.
+free; `init --hosted` writes `2`. The cap counts everything a person runs on
+one service instance; with several, each counts its own (see
+[Running more than one service instance](#running-more-than-one-service-instance)).
 Their routines and quiet work may use all of it but one slot, which stays free
 for their chats, so their own routines never hold back their chat (with a cap
 of `1`, a chat waits for their running routine). Work held by its person's cap waits
@@ -2772,6 +2774,12 @@ own.
   serves it. Run one instance, or send every request for a computer to the same
   instance, when people take over the agent's computer; otherwise another
   instance's sweep can suspend a computer while someone is using it.
+- Attempt slots (`MELETE_ATTEMPT_CONCURRENCY`) and a person's own cap
+  (`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON`) are counted by each instance for
+  the attempts it runs, so a person can run up to their cap on every instance,
+  and work one instance holds back for its person's cap can be started by
+  another. Run one instance where that cap must hold exactly. The spending caps
+  and the limits on computers are kept in Postgres and hold across instances.
 
 ## Upgrading
 
