@@ -18,7 +18,7 @@ import { deleteCookie } from 'hono/cookie';
 import { SESSION_COOKIE } from '../api/auth.ts';
 import { recordOperatorAction } from '../operator/audit.ts';
 import { type AccountExportDeps, accountExport } from './export.ts';
-import type { AccountRemovalService } from './removal.ts';
+import { type AccountRemovalService, removedEmail } from './removal.ts';
 import { zipStream } from './zip.ts';
 
 export type AccountRoutes = AccountExportDeps & { accounts?: AccountRemovalService };
@@ -71,15 +71,15 @@ export function mountAccount(app: Hono, deps: AccountRoutes): void {
     const request = deleteAccountRequest.parse(await c.req.json());
     const owner = c.get('owner');
     const id = c.req.param('id');
-    const [target] = await deps.sql`select email from principal where id = ${id}`;
     const removal = await accounts.remove(owner.id, id, request.confirm_email);
     // The owner deleting someone else's account is an operator's change, kept
-    // with the others the operator console lists.
+    // with the others the operator console lists. The deleted account is
+    // named as its own row now is, by its id: its email has left every entry.
     if (owner.id !== id)
       await recordOperatorAction(deps.sql, {
         actor: { id: owner.id, email: owner.email },
         action: 'removed',
-        target: { id, email: target ? String(target.email) : null },
+        target: { id, email: removedEmail(id) },
         detail: 'Account and its spaces deleted',
       });
     return c.json({ removal: accountRemoval.parse(removal) }, 202);

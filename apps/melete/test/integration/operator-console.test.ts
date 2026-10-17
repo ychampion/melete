@@ -583,6 +583,21 @@ withDb('the operator console', () => {
     expect(late.status).toBe(404);
   });
 
+  test('an account deleted from the account list is recorded by its id alone', async () => {
+    const h = await harness();
+    const { owner } = await setUp(h);
+    const leaving = await person(h, owner, 'listed@example.test');
+    const done = await h.call(owner, `/principals/${leaving.id}`, 'DELETE', {
+      confirm_email: 'listed@example.test',
+    });
+    expect(done.status).toBe(202);
+    const { entries } = operatorAudit.parse(await (await h.call(owner, '/operator/audit')).json());
+    const removed = entries.find((entry) => entry.action === 'removed');
+    expect(removed?.target).toEqual({ id: leaving.id, email: removedEmail(leaving.id) });
+    // Nor is the address anywhere else in the operator record.
+    expect(JSON.stringify(entries)).not.toContain('listed@example.test');
+  });
+
   test('every change is recorded with who did it, and never a link or code', async () => {
     const h = await harness({ mailer: { send: async () => {} } });
     const { owner, ownerId } = await setUp(h);
