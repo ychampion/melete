@@ -286,6 +286,29 @@ describe('the gateway credential', () => {
     expect(second.token).not.toBe(first.token);
   });
 
+  test('a token refreshed after a refusal says so, and one refreshed on expiry does not', async () => {
+    issuer.lifetime = 60;
+    await signIn();
+    const credential = service().credential('chatgpt');
+    expect(credential.refreshes).toBe(true);
+    const first = await credential.current();
+    expect(first.retried).toBe(false);
+    clock += 45_000;
+    const renewed = await credential.current();
+    expect(renewed.generation).not.toBe(first.generation);
+    expect(renewed.retried).toBe(false);
+    credential.rejected(renewed.generation);
+    const retried = await credential.current();
+    expect(retried.generation).not.toBe(renewed.generation);
+    expect(retried.retried).toBe(true);
+    // A later turn refused again refreshes once more.
+    credential.rejected(retried.generation);
+    const again = await credential.current();
+    expect(again.generation).not.toBe(retried.generation);
+    expect(again.retried).toBe(true);
+    expect(issuer.refreshCount).toBe(3);
+  });
+
   test('a revoked refresh token asks for a new sign-in and keeps no tokens', async () => {
     issuer.lifetime = 60;
     await signIn();

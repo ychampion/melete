@@ -262,6 +262,8 @@ export class ProviderSignIn {
   private readonly refreshing = new Map<string, Promise<Rotation | Ended>>();
   /** Generations whose access token a provider refused; the next use refreshes first. */
   private readonly refused = new Map<string, number>();
+  /** Generations got by refreshing a refused token; a refusal of one of these is final. */
+  private readonly retried = new Map<string, number>();
   private readonly resolved = new Map<string, Promise<OAuthIssuer>>();
   private readonly fetcher: OAuthFetch;
   private readonly now: () => number;
@@ -535,6 +537,7 @@ export class ProviderSignIn {
       rejected: (generation) => {
         this.refused.set(provider, generation);
       },
+      refreshes: true,
     };
   }
 
@@ -556,7 +559,8 @@ export class ProviderSignIn {
       if (error instanceof GatewayError) throw error;
       throw new GatewayError(503, 'provider_credential_unavailable');
     }
-    if (!this.fresh(current.tokens) || this.refused.get(provider) === current.generation) {
+    const afterRefusal = this.refused.get(provider) === current.generation;
+    if (!this.fresh(current.tokens) || afterRefusal) {
       let flight = this.refreshing.get(provider);
       if (!flight) {
         flight = this.refresh(provider, current.generation).finally(() =>
@@ -567,11 +571,13 @@ export class ProviderSignIn {
       const refreshed = await flight;
       if ('ended' in refreshed) throw signInRequired();
       current = refreshed;
+      if (afterRefusal) this.retried.set(provider, current.generation);
     }
     const issuer = await this.issuerForCall(provider);
     return {
       token: current.tokens.accessToken,
       generation: current.generation,
+      retried: this.retried.get(provider) === current.generation,
       headers: issuer.requestHeaders?.(current.tokens) ?? {},
     };
   }
