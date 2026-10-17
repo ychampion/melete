@@ -1408,9 +1408,9 @@ export class SandboxSessions {
 
   /**
    * Destroy the sandboxes of sessions whose lease has run out, suspend
-   * workspaces whose attempt stopped renewing them, and destroy workspaces
-   * suspended for longer than the retention period. Returns the sessions it
-   * closed.
+   * workspaces whose attempt stopped renewing them, destroy workspaces
+   * suspended for longer than the retention period, and hand the computers
+   * of deleted agents to Melete. Returns the sessions it closed.
    */
   async sweep(providerFor: ProviderFor, signal: AbortSignal, only?: string[]): Promise<string[]> {
     const swept: string[] = [];
@@ -1487,9 +1487,12 @@ export class SandboxSessions {
       }
     }
     if (only) return swept;
+    // A deleted agent's computer is kept for Melete, however long it waits.
     const stale = await this.sql`select id, adapter, connection_id, status from sandbox_session
       where status = 'paused'
         and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})
+        and not exists (select 1 from agent
+          where agent.id = sandbox_session.agent_id and agent.deleted_at is not null)
       order by lease_expires_at limit 100`;
     for (const candidate of stale) {
       const provider = await this.reachable(
@@ -1515,7 +1518,85 @@ export class SandboxSessions {
         // Recorded on the row, which is now `closing`; the next sweep retries it.
       }
     }
+    await this.handOverDeleted();
     return swept;
+  }
+
+  /**
+   * Hand the computer of a deleted agent to Melete, its files and all, once
+   * nothing is at work on it. Its chats moved to Melete, so Melete is the
+   * agent that would use it. While Melete has a computer of its own the
+   * deleted agent's waits, kept as it is, and is handed over once Melete has
+   * none. Returns the sessions handed over.
+   */
+  async handOverDeleted(): Promise<string[]> {
+    // Only to a Melete that uses a computer through that connection and has
+    // none of its own: one it could not open would leave it with no computer.
+    const waiting = await this.sql`select s.id, s.space_id, s.agent_id, s.connection_id,
+        m.id as melete_id
+      from sandbox_session s
+      join agent a on a.id = s.agent_id
+      join agent m on m.space_id = s.space_id and m.is_default and m.deleted_at is null
+      where a.deleted_at is not null and s.status in ('ready', 'paused')
+        and m.uses_computer
+        and (m.allowed_connection_ids is null
+          or jsonb_exists(m.allowed_connection_ids, s.connection_id))
+        and not exists (select 1 from sandbox_session o
+          where o.space_id = s.space_id and o.agent_id = m.id
+            and o.status in ('opening', 'ready', 'paused'))
+      order by s.opened_at limit 100`;
+    const handed: string[] = [];
+    for (const row of waiting) {
+      const id = String(row.id);
+      const spaceId = String(row.space_id);
+      const from = String(row.agent_id);
+      const to = String(row.melete_id);
+      const connectionId = String(row.connection_id);
+      try {
+        const moved = await this.sql.begin(async (tx) => {
+          // Both workspaces' locks, then both computers' /work records, each
+          // pair always in the same order, as an opening or a read-back takes one.
+          for (const agentId of [from, to].sort())
+            await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${spaceId}:${agentId}`}))`;
+          for (const agentId of [from, to].sort())
+            await tx`select pg_advisory_xact_lock(hashtext(${`work:${spaceId}:${agentId}:${connectionId}`}))`;
+          const [own] = await tx`select 1 from sandbox_session
+            where space_id = ${spaceId} and agent_id = ${to}
+              and status in ('opening', 'ready', 'paused') limit 1`;
+          if (own) return false;
+          // Its retention starts again as Melete's.
+          const [taken] = await tx`update sandbox_session set agent_id = ${to},
+              lease_expires_at = greatest(lease_expires_at, now())
+            where id = ${id} and agent_id = ${from} and ${notHeldByPerson(tx)}
+              and (status = 'paused'
+                or (status = 'ready' and ${attemptGone(tx)} and not ${displayInUse(tx)}))
+            returning id`;
+          if (!taken) return false;
+          // What is known about its /work goes with it. Anything Melete kept
+          // about a computer of its own on this connection is of one gone.
+          for (const table of [
+            'sandbox_work_file',
+            'sandbox_work_read',
+            'sandbox_work_removal',
+          ] as const) {
+            await tx`delete from ${tx(table)}
+              where space_id = ${spaceId} and agent_id = ${to} and connection_id = ${connectionId}`;
+            await tx`update ${tx(table)} set agent_id = ${to}
+              where space_id = ${spaceId} and agent_id = ${from} and connection_id = ${connectionId}`;
+          }
+          await tx`update sandbox_process set agent_id = ${to}
+            where space_id = ${spaceId} and agent_id = ${from} and connection_id = ${connectionId}`;
+          return true;
+        });
+        if (moved) handed.push(id);
+      } catch (error) {
+        // Recorded on the row; the next sweep tries again, and the rest go on.
+        await this.sql`update sandbox_session
+          set last_error = ${`the computer could not be handed to Melete: ${message(error)}`}
+          where id = ${id}`.catch(() => {});
+      }
+    }
+    return handed;
   }
 
   /**
