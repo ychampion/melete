@@ -178,6 +178,7 @@ import { InstanceRegistry, instanceId } from './ops/instance.ts';
 import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
+import { startRetention } from './ops/retention.ts';
 import {
   ownsSpace,
   refusedForRemoval,
@@ -937,6 +938,7 @@ export async function bootstrap(
   let stopObservationRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
+  let stopRetention: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
   let stopStagedWriteSweep: (() => void) | undefined;
   let stopAccessSweep: (() => void) | undefined;
@@ -994,6 +996,7 @@ export async function bootstrap(
     stopObservationRetention?.();
     stopEgressRetention?.();
     stopUsageRollup?.();
+    stopRetention?.();
     stopTrashSweep?.();
     stopStagedWriteSweep?.();
     stopAccessSweep?.();
@@ -1117,6 +1120,10 @@ export async function bootstrap(
       );
       // Each finished day of model calls is rolled up for reports, by one instance.
       stopUsageRollup = startUsageRollup(handle.sql, () => leading(leases, 'usage-rollup'));
+      // Model calls and unused connector events older than MELETE_RETENTION_DAYS go, when set.
+      stopRetention = startRetention(handle.sql, env.MELETE_RETENTION_DAYS, () =>
+        leading(leases, 'retention'),
+      );
       // Sessions, links and codes that expired go, so the tables do not grow for ever.
       stopAccessSweep = startAccessSweep(handle.sql, () => leading(leases, 'access-sweep'));
       // Sealed tokens that refreshes and disconnections left behind go now and once a day.

@@ -46,6 +46,11 @@ export async function pruneObservations(
      * go with them.
      */
     keepTriaged?: boolean;
+    /**
+     * Every connector event, whatever its name, rather than only mail,
+     * calendar and document observations. The same holds keep what is held.
+     */
+    anyName?: boolean;
   },
 ): Promise<number> {
   const [found] = await q`select to_regclass('public.situation') is not null as situations,
@@ -65,7 +70,7 @@ export async function pruneObservations(
     doomed as (
       select e.seq from event e
       where e.job_id is null and e.payload->>'kind' = 'connector_event'
-        and e.payload->>'event_name' in ${q(OBSERVATION_NAMES)}
+        ${scope.anyName ? q`` : q`and e.payload->>'event_name' in ${q(OBSERVATION_NAMES)}`}
         ${scope.connectionId ? q`and e.payload->>'connection_id' = ${scope.connectionId}` : q``}
         ${scope.before ? q`and e.created_at < ${scope.before.toISOString()}::timestamptz` : q``}
         and ('event:' || e.seq) not in (select h from cited)

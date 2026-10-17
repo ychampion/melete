@@ -1058,6 +1058,13 @@ const variables = z.object({
   MELETE_OBSERVATION_TOMBSTONE_DAYS: unsetWhenBlank(
     z.coerce.number().int().min(1).max(3650).default(180),
   ),
+  /**
+   * How many days the record of each model call, and what connected accounts
+   * reported that no job took in, is kept. Unset keeps both; each day's calls
+   * are summed into the daily usage roll-up before they go. At least 35, so
+   * this month's spending and the roll-up still read whole days.
+   */
+  MELETE_RETENTION_DAYS: unsetWhenBlank(z.coerce.number().int().min(35).max(3650).optional()),
   /** How many days the record of where each computer connected is kept. */
   MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
   /**
