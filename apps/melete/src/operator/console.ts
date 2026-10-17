@@ -43,6 +43,7 @@ import {
   PersonLimitStore,
 } from '../gateway/person-limits.ts';
 import {
+  counterPeriods,
   periodBounds,
   type SpendingGuard,
   type SpendingLimits,
@@ -161,18 +162,37 @@ export class OperatorConsole {
   /** This month's and today's spending of everyone who spent, by person. */
   private async spendByPerson(only?: string) {
     const { sql } = this.deps;
-    const { monthStart, dayStart } = periodBounds(this.now());
-    const rows = await sql<
-      { principal_id: string; month_usd: number; day_usd: number; background_month_usd: number }[]
-    >`select principal_id,
-        coalesce(sum(cost_usd), 0)::float8 as month_usd,
-        coalesce(sum(cost_usd) filter (where created_at >= ${dayStart.toISOString()}::timestamptz), 0)::float8 as day_usd,
-        coalesce(sum(cost_usd) filter (where class = 'background'), 0)::float8 as background_month_usd
-      from model_usage
-      where created_at >= ${monthStart.toISOString()}::timestamptz and principal_id is not null
-        ${only ? sql`and principal_id = ${only}` : sql``}
-      group by principal_id`;
-    return new Map(rows.map((row) => [String(row.principal_id), row]));
+    const { month, day } = counterPeriods(this.now());
+    // The running totals the spending caps read (`spend_counter`), not a sum
+    // of the month's calls.
+    const rows = await sql<{ period: string; scope: string; usd: number }[]>`
+      select period, scope, usd::float8 as usd from spend_counter
+      where period in (${month}, ${day})
+        and ${
+          only
+            ? sql`scope in (${`person:${only}`}, ${`background:${only}`})`
+            : sql`(scope like 'person:%' or scope like 'background:%')`
+        }`;
+    const spend = new Map<
+      string,
+      { principal_id: string; month_usd: number; day_usd: number; background_month_usd: number }
+    >();
+    for (const row of rows) {
+      const [kind, ...rest] = row.scope.split(':');
+      const id = rest.join(':');
+      const entry = spend.get(id) ?? {
+        principal_id: id,
+        month_usd: 0,
+        day_usd: 0,
+        background_month_usd: 0,
+      };
+      const usd = Number(row.usd);
+      if (kind === 'person' && row.period === month) entry.month_usd = usd;
+      else if (kind === 'person' && row.period === day) entry.day_usd = usd;
+      else if (kind === 'background' && row.period === month) entry.background_month_usd = usd;
+      spend.set(id, entry);
+    }
+    return spend;
   }
 
   private effective(caps: PersonCaps): OperatorCaps {
@@ -491,14 +511,11 @@ export class OperatorConsole {
   }
 
   private async installationSpend(now: Date) {
-    const { monthStart, dayStart } = periodBounds(now);
-    const [row] = await this.deps.sql<{ month_usd: number; day_usd: number }[]>`select
-        coalesce(sum(cost_usd), 0)::float8 as month_usd,
-        coalesce(sum(cost_usd) filter (where created_at >= ${dayStart.toISOString()}::timestamptz), 0)::float8 as day_usd
-      from model_usage where created_at >= ${monthStart.toISOString()}::timestamptz`;
-    return {
-      month_usd: cents(Number(row?.month_usd ?? 0)),
-      day_usd: cents(Number(row?.day_usd ?? 0)),
-    };
+    const { month, day } = counterPeriods(now);
+    const rows = await this.deps.sql<{ period: string; usd: number }[]>`
+      select period, usd::float8 as usd from spend_counter
+      where period in (${month}, ${day}) and scope = 'installation'`;
+    const usd = (period: string) => Number(rows.find((row) => row.period === period)?.usd ?? 0);
+    return { month_usd: cents(usd(month)), day_usd: cents(usd(day)) };
   }
 }

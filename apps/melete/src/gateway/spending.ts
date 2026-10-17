@@ -268,10 +268,18 @@ const accountOff = (now: Date): LimitReached => ({
   resetsAt: periodBounds(now).nextDay,
 });
 
+/** The UTC month and day `spend_counter` keys a moment by. */
+export function counterPeriods(now: Date) {
+  const iso = now.toISOString();
+  return { month: iso.slice(0, 7), day: iso.slice(0, 10) };
+}
+
 export class SpendingGuard implements GatewaySpending {
   private readonly scopes = new WeakMap<GatewayPrincipal, Promise<SpendingScope>>();
   private readonly holds = new Map<GatewayPrincipal, Hold[]>();
   private readonly cached = new Map<string, { at: number; totals: Totals }>();
+  /** Bumped when a call is recorded: a read begun before it is not kept. */
+  private generation = 0;
   /** Whether each person's account is turned off, as read a moment ago. */
   private readonly off = new Map<string, { at: number; off: boolean }>();
   /** The admission now being judged; the next waits for it. */
@@ -396,48 +404,39 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   /**
-   * The person's and the installation's totals for today and this month. A
-   * read is reused for a moment, so a busy conversation does not scan the
-   * month on every call; recording a call reads afresh.
+   * The person's and the installation's totals for today and this month, read
+   * from the running counters `model_usage` keeps (`spend_counter`): a few
+   * rows by key, however many calls the month holds. A read is reused for a
+   * moment; recording a call drops every reuse, so the next admission reads
+   * the totals with that call in them.
    */
   async totals(personId: string | null, now = this.now(), fresh = false): Promise<Totals> {
     const key = personId ?? '';
     const hit = this.cached.get(key);
     if (!fresh && hit && now.getTime() - hit.at < TOTALS_TTL_MS) return hit.totals;
-    const { monthStart, dayStart } = periodBounds(now);
-    const day = dayStart.toISOString();
-    const [row] = await this.sql`select
-        coalesce(sum(cost_usd), 0)::float8 as im_usd,
-        coalesce(sum(input_tokens + output_tokens), 0)::float8 as im_tokens,
-        coalesce(sum(cost_usd) filter (where created_at >= ${day}::timestamptz), 0)::float8 as id_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where created_at >= ${day}::timestamptz), 0)::float8 as id_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId}), 0)::float8 as pm_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId}), 0)::float8 as pm_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and class = 'background'), 0)::float8 as bm_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and class = 'background'), 0)::float8 as bm_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and class = 'background' and created_at >= ${day}::timestamptz), 0)::float8 as bd_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and class = 'background' and created_at >= ${day}::timestamptz), 0)::float8 as bd_tokens
-      from model_usage where created_at >= ${monthStart.toISOString()}::timestamptz`;
-    const total = (usd: unknown, tokens: unknown): SpendingTotals => ({
-      usd: round(Number(usd ?? 0)),
-      tokens: Number(tokens ?? 0),
-    });
-    const totals: Totals = {
-      installation: {
-        month: total(row?.im_usd, row?.im_tokens),
-        day: total(row?.id_usd, row?.id_tokens),
-      },
-      person: personId
-        ? { month: total(row?.pm_usd, row?.pm_tokens), day: total(row?.pd_usd, row?.pd_tokens) }
-        : null,
-      background: personId
-        ? { month: total(row?.bm_usd, row?.bm_tokens), day: total(row?.bd_usd, row?.bd_tokens) }
-        : null,
+    const generation = this.generation;
+    const { month, day } = counterPeriods(now);
+    const scopes = personId
+      ? ['installation', `person:${personId}`, `background:${personId}`]
+      : ['installation'];
+    const rows = await this.sql<{ period: string; scope: string; usd: number; tokens: number }[]>`
+      select period, scope, usd::float8 as usd, tokens::float8 as tokens from spend_counter
+      where period in (${month}, ${day}) and scope in ${this.sql(scopes)}`;
+    const total = (scope: string, period: string): SpendingTotals => {
+      const row = rows.find((entry) => entry.scope === scope && entry.period === period);
+      return { usd: round(Number(row?.usd ?? 0)), tokens: Number(row?.tokens ?? 0) };
     };
-    if (this.cached.size > 1000) this.cached.clear();
-    this.cached.set(key, { at: now.getTime(), totals });
+    const both = (scope: string) => ({ month: total(scope, month), day: total(scope, day) });
+    const totals: Totals = {
+      installation: both('installation'),
+      person: personId ? both(`person:${personId}`) : null,
+      background: personId ? both(`background:${personId}`) : null,
+    };
+    // A call recorded while this read was under way may be missing from it.
+    if (generation === this.generation) {
+      if (this.cached.size > 1000) this.cached.clear();
+      this.cached.set(key, { at: now.getTime(), totals });
+    }
     return totals;
   }
 
@@ -679,7 +678,6 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
-    this.release(principal);
     try {
       const scope = await this.scopeOf(principal);
       const usage = settlement.usage ?? settlement.spendEstimate ?? null;
@@ -704,11 +702,17 @@ export class SpendingGuard implements GatewaySpending {
           ${scope.usageClass}, ${scope.tier}, ${scope.triggerId}, ${scope.situationId},
           ${usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0},
           ${usage?.cacheWriteInputTokens ?? 0})`;
+      // Every total read before now lacks this call, the installation's in
+      // other people's included: none is reused, nor one being read now.
+      this.generation += 1;
+      this.cached.clear();
+      // Only now that the call is in the totals does its hold go, so neither
+      // is missing in between from what the next admission reads.
+      this.release(principal);
       const limits = await this.limitsFor(scope.personId);
       if (anyLimit(limits)) await this.noticeOnce(scope.personId, limits);
-      // The next admission reads the totals with this call in them.
-      else if (anyBackgroundLimit(limits)) await this.totals(scope.personId, this.now(), true);
     } catch (error) {
+      this.release(principal);
       process.stderr.write(
         `spending: a model call was not recorded (${error instanceof Error ? error.message : 'error'})\n`,
       );

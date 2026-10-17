@@ -1604,6 +1604,26 @@ export const spendingNotice = pgTable(
 );
 
 /**
+ * What `model_usage` adds up to so far, kept as it is written: dollars and
+ * tokens for the installation (`installation`), each person (`person:<id>`)
+ * and each person's background calls alone (`background:<id>`), per UTC month
+ * (`YYYY-MM`) and day (`YYYY-MM-DD`). A trigger on `model_usage` keeps each
+ * row in step with every insert, change and delete there, in the same
+ * transaction, so the spending caps read a few rows instead of summing the
+ * month. Rows for past periods are removed by the hourly usage rollup.
+ */
+export const spendCounter = pgTable(
+  'spend_counter',
+  {
+    period: text('period').notNull(),
+    scope: text('scope').notNull(),
+    usd: doublePrecision('usd').notNull().default(0),
+    tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.period, t.scope] })],
+);
+
+/**
  * A person's own spending caps, set by the installation's owner in place of
  * the installation's per-person caps (`MELETE_SPEND_PERSON_*`). A column left
  * null keeps the installation's cap for that period. Dollars only: token
