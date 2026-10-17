@@ -105,7 +105,6 @@ const RUNS_UNAVAILABLE = 'Long work is not connected yet.';
 const STARTERS_UNAVAILABLE = 'Starter tasks are not connected yet.';
 const SPACE_OWNER_SURFACES = new Set([
   'PATCH /profile',
-  'GET /home',
   'GET /starters',
   'POST /starters/dismiss',
   'GET /tasks',
