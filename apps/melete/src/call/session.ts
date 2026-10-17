@@ -76,6 +76,14 @@ export type CallTiming = {
    * and hands back the floor. The work is not stopped.
    */
   holdMs: number;
+  /** Silence, while a decision or a question waits on the screen, after which the call says it still waits. */
+  waitMs: number;
+  /**
+   * How many times the call says it still waits on one decision or question.
+   * After that it says the decision stays on the screen and hands back the
+   * floor, so a long wait neither repeats itself nor goes quiet mid-answer.
+   */
+  waitReminders: number;
 };
 
 const DEFAULT_TIMING: CallTiming = {
@@ -83,9 +91,14 @@ const DEFAULT_TIMING: CallTiming = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   pollMs: 200,
   fillerMs: 1200,
-  // ElevenLabs asks again when a response goes quiet for its cascade timeout (15 s at most).
+  // ElevenLabs asks again when a response goes quiet for its cascade timeout
+  // (15 s here), and drops the call after asking a few times: every quiet
+  // stretch inside a response stays well under it.
   stillMs: 10_000,
   holdMs: 120_000,
+  waitMs: 12_000,
+  // With the first mention, about 45 seconds of waiting on the call.
+  waitReminders: 3,
 };
 
 /** What the call says, kept short: it is heard, not read. */
@@ -96,6 +109,20 @@ export const CALL_WORDS = {
   failed: 'I couldn’t finish that. What happened is in the chat.',
   approval: 'Before I go ahead, I need your OK. I’ve put it on your screen.',
   question: 'I need to ask you something. It’s on your screen:',
+  approvalStill: [
+    'I’m still waiting for your OK on the screen.',
+    'Still waiting for your OK.',
+    'Your OK is still on the screen when you’re ready.',
+  ],
+  questionStill: [
+    'I’m still waiting for your answer on the screen.',
+    'Still waiting for your answer.',
+    'The question is still on the screen when you’re ready.',
+  ],
+  approvalLeft: 'I’ll leave it on your screen. Once you’ve decided, the rest will be in the chat.',
+  questionLeft:
+    'I’ll leave the question on your screen. Once you’ve answered, the rest will be in the chat.',
+  stillOnScreen: 'That’s still waiting for you on the screen.',
   passedOn: 'Got it. I’ve passed that on.',
   stopping: 'Stopping now.',
   paused: 'Paused. Say carry on when you’re ready.',
@@ -122,8 +149,13 @@ export class CallSession {
   private current: { eventId: number | undefined; abort: AbortController } | null = null;
   /** How much of each turn's spoken answer has been sent, so a turn is never read twice. */
   private readonly spoken = new Map<string, number>();
-  /** The waits already told, so one approval is said once. */
-  private readonly told = new Set<string>();
+  /**
+   * Each wait the call has told, and how many times it has said, since, that
+   * it still waits: one approval is announced once and reminded of a few times.
+   */
+  private readonly told = new Map<string, number>();
+  /** The waits the call has said it leaves on the screen; they are not reminded of again. */
+  private readonly leftOnScreen = new Set<string>();
   /** The newest transcript event, and how many of the person's turns have been taken. */
   private latestEvent: number | undefined;
   private heard = 0;
@@ -158,7 +190,12 @@ export class CallSession {
     if (message.type === 'close' || message.type === 'error') return this.end(true);
     if (message.type === 'init') {
       if (this.binding) return;
-      this.binding = this.bind(message.conversation_id).catch(() => null);
+      this.binding = this.bind(message.conversation_id).catch((error: unknown) => {
+        process.stderr.write(
+          `call: a call could not be joined to its chat (${error instanceof Error ? error.message : 'error'})\n`,
+        );
+        return null;
+      });
       const chat = await this.binding;
       if (!chat) return this.end(true);
       this.chat = chat;
@@ -299,8 +336,10 @@ export class CallSession {
     alreadySpoke: boolean,
     heardBefore = false,
   ): Promise<void> {
-    const { now, sleep, pollMs, fillerMs, stillMs, holdMs } = this.timing;
+    const { now, sleep, pollMs, fillerMs, stillMs, holdMs, waitMs, waitReminders } = this.timing;
     this.following = turnId;
+    /** Whether this response has said anything about what waits on the screen. */
+    let mentioned = false;
     let heldFrom = now();
     // A turn the call already said it was working on is not announced again: a
     // response that carries it on says it is still working, soon.
@@ -328,19 +367,44 @@ export class CallSession {
       }
       const waiting = await chat.waiting();
       if (signal.aborted || this.closed) return;
-      if (waiting && !this.told.has(waiting.key)) {
-        this.told.add(waiting.key);
-        this.speak(
-          eventId,
-          waiting.kind === 'approval'
-            ? CALL_WORDS.approval
-            : `${CALL_WORDS.question} ${waiting.text.slice(0, 300)}`,
-          false,
-        );
-        lastWord = now();
-        filled = true;
-        // The person decides on the screen; the answer that follows is still read.
-        heldFrom = now();
+      if (waiting) {
+        const at = now();
+        const approval = waiting.kind === 'approval';
+        const reminders = this.told.get(waiting.key);
+        if (this.leftOnScreen.has(waiting.key)) {
+          // Already handed back: a new response says where it is, once, and ends.
+          if (!mentioned) return this.speak(eventId, CALL_WORDS.stillOnScreen, true);
+        } else if (reminders === undefined) {
+          this.told.set(waiting.key, 0);
+          this.speak(
+            eventId,
+            approval ? CALL_WORDS.approval : `${CALL_WORDS.question} ${waiting.text.slice(0, 300)}`,
+            false,
+          );
+          mentioned = true;
+          lastWord = at;
+          filled = true;
+          // The person decides on the screen; the answer that follows is still read.
+          heldFrom = at;
+        } else if (!mentioned || at - (lastWord ?? heldFrom) >= waitMs) {
+          // Quiet for too long inside a response, the provider asks again and
+          // in the end drops the call: say it still waits, a few times, then
+          // leave the decision on the screen and hand back the floor.
+          if (reminders >= waitReminders) {
+            this.leftOnScreen.add(waiting.key);
+            return this.speak(
+              eventId,
+              approval ? CALL_WORDS.approvalLeft : CALL_WORDS.questionLeft,
+              true,
+            );
+          }
+          const lines = approval ? CALL_WORDS.approvalStill : CALL_WORDS.questionStill;
+          this.speak(eventId, lines[reminders % lines.length] ?? lines[0], false);
+          this.told.set(waiting.key, reminders + 1);
+          mentioned = true;
+          lastWord = at;
+          filled = true;
+        }
       }
       if (done) {
         if (turn.status === 'failed' && !this.spoken.get(turnId))

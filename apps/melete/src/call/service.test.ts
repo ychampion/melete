@@ -147,6 +147,66 @@ describe('starting a call', () => {
   });
 });
 
+describe('one call per chat', () => {
+  test('a second call into the same chat takes over, and the first is hung up', async () => {
+    const { calls } = service();
+    await calls.start(scope);
+    await calls.start(scope);
+    const first = await open(calls, 'conv_1');
+    expect(first.closed).toBeNull();
+    const second = await open(calls, 'conv_2');
+    expect(first.closed).toBe(1000);
+    expect(second.closed).toBeNull();
+    // The first closing does not end the second's hold on the chat.
+    calls.websocket.close?.(first.socket, 1000, '');
+    const third = await (async () => {
+      await calls.start(scope);
+      return open(calls, 'conv_3');
+    })();
+    expect(second.closed).toBe(1000);
+    expect(third.closed).toBeNull();
+  });
+
+  test('a call into another chat is left alone', async () => {
+    const { calls } = service();
+    await calls.start(scope);
+    await calls.start({ ...scope, conversationId: 'job_2' });
+    const first = await open(calls, 'conv_1');
+    const other = await open(calls, 'conv_2');
+    expect(first.closed).toBeNull();
+    expect(other.closed).toBeNull();
+  });
+
+  test('hanging up while the call is still being set up leaves no timer or record open', async () => {
+    const records: { seconds: number; ended: boolean }[] = [];
+    let release: (id: string) => void = () => {};
+    const usage: CallUsage = {
+      used: async () => 0,
+      begin: () => new Promise<string>((resolve) => (release = resolve)),
+      record: async (_id, seconds, ended) => {
+        records.push({ seconds, ended });
+      },
+    };
+    const { calls, bound } = service({ usage, monthlyMinutes: 60 });
+    await calls.start(scope);
+    const upstream = fakeSocket();
+    calls.websocket.open?.(upstream.socket);
+    void calls.websocket.message(
+      upstream.socket,
+      JSON.stringify({ type: 'init', conversation_id: 'conv_1' }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // ElevenLabs hangs up before the usage row is written.
+    calls.websocket.close?.(upstream.socket, 1000, '');
+    release('use_1');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(upstream.socket.data.usage).toBeUndefined();
+    expect(upstream.socket.data.cutoff).toBeUndefined();
+    expect(records).toEqual([{ seconds: 0, ended: true }]);
+    expect(bound).toEqual([]);
+  });
+});
+
 describe('the upstream WebSocket', () => {
   const upgrader = (result: boolean) => ({ upgrade: () => result }) as never;
   const request = (path: string, headers: Record<string, string> = {}) =>

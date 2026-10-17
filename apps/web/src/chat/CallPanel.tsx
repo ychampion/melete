@@ -73,6 +73,9 @@ export function CallPanel({
   const clock = useNowTick(phase !== 'ended');
   const panel = useRef<HTMLDivElement>(null);
   const line = useRef<Line | null>(null);
+  /** Whether the person muted, read by a call that connects after they did. */
+  const mutedNow = useRef(muted);
+  mutedNow.current = muted;
   const waiting = waitingOnPerson(transcript);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new attempt starts the call again
@@ -99,6 +102,17 @@ export function CallPanel({
         return;
       }
       if (closed) return;
+      // Loaded with the first call, so chats that never call do not carry it,
+      // and before the token, so a slow or failed load spends none of its minutes.
+      let client: typeof import('@elevenlabs/client');
+      try {
+        client = await import('@elevenlabs/client');
+      } catch (error) {
+        console.warn('call: the call client could not load', error);
+        end('The call could not load. Reload the page and call again.');
+        return;
+      }
+      if (closed) return;
       const started = await adapter.startCall(conversationId);
       if (closed) return;
       if (started.data === null) {
@@ -106,9 +120,7 @@ export function CallPanel({
         return;
       }
       try {
-        // Loaded with the first call, so chats that never call do not carry it.
-        const { Conversation } = await import('@elevenlabs/client');
-        const conversation = await Conversation.startSession({
+        const conversation = await client.Conversation.startSession({
           conversationToken: started.data.token,
           connectionType: 'webrtc',
           onConnect: () => {
@@ -124,7 +136,10 @@ export function CallPanel({
             if (role === 'user') setHeard(words);
             else setSaid(words);
           },
-          onError: () => end('The call ran into a problem. Call again when you are ready.'),
+          onError: (message) => {
+            console.warn('call: the call reported a problem', message);
+            end('The call ran into a problem. Call again when you are ready.');
+          },
           onDisconnect: (details) =>
             end(
               details.reason === 'user'
@@ -135,11 +150,15 @@ export function CallPanel({
             ),
         });
         if (closed) {
-          void conversation.endSession();
+          void conversation.endSession().catch(() => {});
           return;
         }
         line.current = conversation as unknown as Line;
+        // Muted before this call connected (or on the call before it): the
+        // microphone follows what the button shows.
+        if (mutedNow.current) line.current.setMicMuted(true);
       } catch (error) {
+        console.warn('call: the call could not connect', error);
         end(
           error instanceof DOMException
             ? microphoneProblem(error)
@@ -156,7 +175,12 @@ export function CallPanel({
   }, [conversationId, attempt]);
 
   useEffect(() => {
-    line.current?.setMicMuted(muted);
+    try {
+      line.current?.setMicMuted(muted);
+    } catch (error) {
+      // A call that has just dropped has no microphone left to mute.
+      console.warn('call: the microphone could not be muted', error);
+    }
   }, [muted]);
 
   useEffect(() => {

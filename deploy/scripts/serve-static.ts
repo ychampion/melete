@@ -379,8 +379,17 @@ type CallBridge = {
   authorization: string;
   upstream?: WebSocket;
   waiting: (string | Uint8Array)[];
+  /** Bytes held in `waiting` while the API side opens. */
+  held: number;
   closed?: boolean;
 };
+
+/**
+ * The largest message carried, the same limit the API sets. Until the API has
+ * accepted the connection (and so checked that it is from ElevenLabs), no more
+ * than this is held in all: the provider sends only its opening message first.
+ */
+export const CALL_BRIDGE_MESSAGE_BYTES = 2 * 1024 * 1024;
 
 /**
  * The one WebSocket this server passes through: ElevenLabs connecting for a
@@ -408,23 +417,40 @@ function callBridge(apiOrigin: string) {
         );
       };
       upstream.onclose = (event) => {
-        if (!socket.data.closed)
-          socket.close(event.code === 1005 ? 1000 : event.code, event.reason);
+        if (socket.data.closed) return;
+        // 1005 and 1006 only describe a close; they are never sent in one.
+        if (event.code === 1005) socket.close(1000, event.reason);
+        else if (event.code === 1006 || event.code === 1015)
+          socket.close(1011, 'call service unavailable');
+        else socket.close(event.code, event.reason);
       };
       upstream.onerror = () => {
-        if (!socket.data.closed) socket.close(1011, 'call service unavailable');
+        if (socket.data.closed) return;
+        process.stderr.write('web: a call could not reach the API\n');
+        socket.close(1011, 'call service unavailable');
       };
     },
     message(socket: ServerWebSocket<CallBridge>, message: string | Buffer) {
       const data = typeof message === 'string' ? message : new Uint8Array(message);
       const upstream = socket.data.upstream;
-      if (upstream?.readyState === WebSocket.OPEN) upstream.send(data);
-      else socket.data.waiting.push(data);
+      if (upstream?.readyState === WebSocket.OPEN) {
+        upstream.send(data);
+        return;
+      }
+      socket.data.held += typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+      if (socket.data.held > CALL_BRIDGE_MESSAGE_BYTES) {
+        socket.data.waiting.length = 0;
+        socket.close(1009, 'too much before the call connected');
+        return;
+      }
+      socket.data.waiting.push(data);
     },
     close(socket: ServerWebSocket<CallBridge>) {
       socket.data.closed = true;
+      socket.data.waiting.length = 0;
       socket.data.upstream?.close();
     },
+    maxPayloadLength: CALL_BRIDGE_MESSAGE_BYTES,
   };
 }
 
@@ -462,7 +488,7 @@ export function createStaticServer(options: StaticServerOptions) {
       ) {
         const authorization = request.headers.get(SPEECH_ENGINE_AUTH_HEADER);
         if (!authorization) return new Response('Not a call.\n', { status: 401 });
-        return server.upgrade(request, { data: { authorization, waiting: [] } })
+        return server.upgrade(request, { data: { authorization, waiting: [], held: 0 } })
           ? undefined
           : new Response('The call could not connect.\n', { status: 400 });
       }

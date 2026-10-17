@@ -85,7 +85,18 @@ export type Upstream = {
   session?: CallSession;
   usage?: { id: string; startedAt: number; timer?: ReturnType<typeof setInterval> };
   cutoff?: ReturnType<typeof setTimeout>;
+  /** The conversation the call was bound to. */
+  conversationId?: string;
+  /** The connection has closed; a binding still under way starts nothing for it. */
+  ended?: boolean;
 };
+
+/**
+ * The largest message the upstream WebSocket takes. ElevenLabs sends the
+ * call's whole transcript each turn; a 40-minute call's words are a small
+ * fraction of this.
+ */
+export const CALL_MESSAGE_BYTES = 2 * 1024 * 1024;
 
 export type CallServiceDeps = {
   voice: CallVoice;
@@ -102,6 +113,7 @@ export type CallServiceDeps = {
 export const NO_CALLS: WebSocketHandler<Upstream> = {
   open: (socket) => socket.close(1008, 'no calls here'),
   message: () => {},
+  maxPayloadLength: 1024,
 };
 
 /** How often a call's time so far is written down, so a crash loses little of it. */
@@ -109,6 +121,13 @@ const USAGE_TICK_MS = 30_000;
 
 export class CallService {
   private readonly pending = new Map<string, Pending>();
+  /**
+   * The call each conversation is on. One at a time: a second call into the
+   * same chat (another tab, or calling again after the line dropped) takes
+   * over, and the older one is hung up, so one voice never reaches the chat
+   * twice.
+   */
+  private readonly live = new Map<string, ServerWebSocket<Upstream>>();
   private readonly now: () => number;
 
   constructor(private readonly deps: CallServiceDeps) {
@@ -197,6 +216,7 @@ export class CallService {
       socket.data.session?.closedByPeer();
       void this.finish(socket);
     },
+    maxPayloadLength: CALL_MESSAGE_BYTES,
   };
 
   private async bindCall(socket: ServerWebSocket<Upstream>, id: string): Promise<CallChat | null> {
@@ -204,17 +224,38 @@ export class CallService {
     if (!call) return null;
     const since = new Date(this.now());
     const usage = this.deps.usage;
-    if (usage) {
-      const usageId = await usage.begin(call.scope.principalId).catch(() => null);
-      if (usageId) {
-        const record = { id: usageId, startedAt: this.now() } as NonNullable<Upstream['usage']>;
-        record.timer = setInterval(() => {
-          void usage.record(usageId, (this.now() - record.startedAt) / 1000, false).catch(() => {});
-        }, USAGE_TICK_MS);
-        record.timer.unref?.();
-        socket.data.usage = record;
-      }
+    let usageId: string | null = null;
+    if (usage)
+      usageId = await usage.begin(call.scope.principalId).catch(() => {
+        process.stderr.write('call: call time could not be recorded\n');
+        return null;
+      });
+    // Hung up while the call was being set up: nothing is kept running for it.
+    if (socket.data.ended) {
+      if (usage && usageId)
+        await usage.record(usageId, 0, true).catch(() => {
+          process.stderr.write('call: call time could not be recorded\n');
+        });
+      return null;
     }
+    if (usage && usageId) {
+      const record = { id: usageId, startedAt: this.now() } as NonNullable<Upstream['usage']>;
+      let told = false;
+      record.timer = setInterval(() => {
+        void usage.record(record.id, (this.now() - record.startedAt) / 1000, false).catch(() => {
+          // Said once per call: the next tick or the end of the call writes it again.
+          if (!told) process.stderr.write('call: call time could not be recorded\n');
+          told = true;
+        });
+      }, USAGE_TICK_MS);
+      record.timer.unref?.();
+      socket.data.usage = record;
+    }
+    const conversationId = call.scope.conversationId;
+    const earlier = this.live.get(conversationId);
+    socket.data.conversationId = conversationId;
+    this.live.set(conversationId, socket);
+    if (earlier && earlier !== socket) earlier.close(1000, 'the call moved');
     // A capped person's call ends when their minutes do.
     if (call.secondsLeft !== null) {
       socket.data.cutoff = setTimeout(
@@ -227,6 +268,10 @@ export class CallService {
   }
 
   private async finish(socket: ServerWebSocket<Upstream>) {
+    socket.data.ended = true;
+    const conversationId = socket.data.conversationId;
+    if (conversationId && this.live.get(conversationId) === socket)
+      this.live.delete(conversationId);
     if (socket.data.cutoff) clearTimeout(socket.data.cutoff);
     const usage = socket.data.usage;
     socket.data.usage = undefined;

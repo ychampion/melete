@@ -8,6 +8,7 @@ import {
   CALL_WORDS,
   type CallChat,
   CallSession,
+  type CallTiming,
   type CallTurn,
   type CallWaiting,
 } from './session.ts';
@@ -100,7 +101,7 @@ const heard = (eventId: number, ...history: [string, string][]) =>
     user_transcript: history.map(([role, content]) => ({ role, content })),
   });
 
-function call(fake = fakeChat(), timing = QUICK) {
+function call(fake = fakeChat(), timing: Partial<CallTiming> = QUICK) {
   const link = fakeLink();
   const session = new CallSession(
     link.link,
@@ -202,6 +203,67 @@ describe('a call speaks into the chat', () => {
     await answering;
     expect(link.spoken(1).filter((words) => words === CALL_WORDS.approval)).toHaveLength(1);
     expect(link.spoken(1).at(-1)).toBe('Sent it to Sam.');
+  });
+
+  test('a long wait on a decision is never quiet past the reminder interval, and is handed back after a few reminders', async () => {
+    const { fake, link, session } = call(fakeChat(), {
+      ...QUICK,
+      waitMs: 40,
+      waitReminders: 2,
+    });
+    await session.receive(init());
+    const answering = session.receive(heard(1, ['user', 'Book the table for eight']));
+    await until(() => fake.said.length === 1, 'the message');
+    fake.wait({ kind: 'approval', key: 'apr_9' });
+    await answering;
+    // Announced once, reminded twice, then left on the screen: the response ends.
+    expect(link.spoken(1)).toEqual([
+      CALL_WORDS.approval,
+      CALL_WORDS.approvalStill[0],
+      CALL_WORDS.approvalStill[1],
+      CALL_WORDS.approvalLeft,
+    ]);
+    expect(link.finals(1)).toBe(1);
+    // The provider re-engaging the quiet line hears once where it is, and no reminders start again.
+    await session.receive(
+      heard(2, ['user', 'Book the table for eight'], ['agent', CALL_WORDS.approvalLeft]),
+    );
+    expect(link.spoken(2)).toEqual([CALL_WORDS.stillOnScreen]);
+    expect(link.finals(2)).toBe(1);
+    // The work was left waiting, not stopped.
+    expect(fake.controls).toEqual([]);
+  });
+
+  test('reminders come at the interval, and the answer after the decision is read', async () => {
+    const stamps: number[] = [];
+    const fake = fakeChat();
+    const { link, session } = call(fake, {
+      ...QUICK,
+      waitMs: 30,
+      waitReminders: 10,
+    });
+    const send = link.link.send;
+    link.link.send = (reply) => {
+      if (reply.type === 'agent_response' && reply.content) stamps.push(Date.now());
+      return send(reply);
+    };
+    await session.receive(init());
+    const answering = session.receive(heard(1, ['user', 'Pay the electricity bill']));
+    await until(() => fake.said.length === 1, 'the message');
+    fake.wait({ kind: 'question', key: 'q_1', text: 'Which card?' });
+    await until(() => link.spoken(1).length >= 3, 'two reminders');
+    fake.wait(null);
+    fake.write('turn_1', 'Paid with the Visa.', 'done');
+    await answering;
+    const spoken = link.spoken(1);
+    expect(spoken[0]).toBe(`${CALL_WORDS.question} Which card?`);
+    expect(spoken[1]).toBe(CALL_WORDS.questionStill[0]);
+    expect(spoken.at(-1)).toBe('Paid with the Visa.');
+    expect(spoken).not.toContain(CALL_WORDS.questionLeft);
+    // No gap between the words said while waiting is much longer than the interval.
+    const waits = stamps.slice(0, 3);
+    for (let i = 1; i < waits.length; i++)
+      expect((waits[i] ?? 0) - (waits[i - 1] ?? 0)).toBeLessThan(30 + 100);
   });
 
   test('"stop" while the work runs works the stop control at once', async () => {

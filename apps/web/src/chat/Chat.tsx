@@ -1143,6 +1143,10 @@ export function ChatScreen({ id }: { id: string | null }) {
   // A call where the installation can take one; voice mode where it cannot.
   const calling = Boolean(voice?.call);
   const voiceLabel = calling ? 'Call' : 'Voice mode';
+  // Opened before the voice status is read (a new voice chat), the panel waits for it, so a call
+  // never begins as voice mode first, and the composer stays until a panel takes its place.
+  const voiceShown =
+    voiceOpen && conversationId !== null && Boolean(voice?.call || voice?.voice_mode);
   const endVoice = () => {
     setVoiceOpen(false);
     setVoiceMin(false);
@@ -1403,7 +1407,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               ))}
             </div>
           </div>
-          {voiceOpen && conversationId ? (
+          {voiceShown && conversationId ? (
             <div className="chat-foot" data-call={voiceMin ? 'minimised' : 'open'}>
               <div className="chat-foot-inner">
                 {calling ? (
@@ -1486,7 +1490,7 @@ ${words}`
               ) : null}
             </div>
           ) : null}
-          <div className="chat-foot" hidden={Boolean(pending) || (voiceOpen && !voiceMin)}>
+          <div className="chat-foot" hidden={Boolean(pending) || (voiceShown && !voiceMin)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button
