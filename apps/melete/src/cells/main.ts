@@ -9,9 +9,10 @@
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DEFAULT_STDIO_IMAGES } from '../connectors/mcp-stdio-docker.ts';
 import { parseNetworkPool } from '../runtime/network-pool.ts';
+import { RuntimeImages } from './runtime-images.ts';
 import { startCellsServer } from './server.ts';
 
 /** The key in `path`, written there first if there is none. */
@@ -40,14 +41,18 @@ if (import.meta.main) {
   const bind = setting('MELETE_CELLS_BIND', '0.0.0.0:8791');
   const [hostname = '0.0.0.0', port = '8791'] = bind.split(/:(?=\d+$)/);
   const project = setting('MELETE_COMPOSE_PROJECT', 'melete');
+  const keyFile = setting('MELETE_CELLS_KEY_FILE');
+  const runtimeImage = setting('MELETE_RUNTIME_IMAGE');
   const server = startCellsServer({
     socket: setting('MELETE_DOCKER_SOCKET', '/var/run/docker.sock'),
-    key: cellsKey(setting('MELETE_CELLS_KEY_FILE')),
+    key: cellsKey(keyFile),
     hostname,
     port: Number(port),
     project,
     sandboxProject: process.env.MELETE_SANDBOX_PROJECT?.trim() || undefined,
-    runtimeImage: setting('MELETE_RUNTIME_IMAGE'),
+    runtimeImage,
+    // Beside the key, in this service's own volume, so it outlasts a restart.
+    runtimeImages: new RuntimeImages(runtimeImage, join(dirname(keyFile), 'runtime-images.json')),
     sandboxImage: process.env.MELETE_SANDBOX_DOCKER_IMAGE?.trim() || undefined,
     mcpImages: [
       process.env.MELETE_MCP_NODE_IMAGE?.trim() || DEFAULT_STDIO_IMAGES.node,

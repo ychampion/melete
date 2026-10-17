@@ -69,6 +69,7 @@ import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
+import { EngineImageUnavailable } from '../runtime/cell-host.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
 import { type AnswerJoin, answerJoin } from './answer-join.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
@@ -108,6 +109,20 @@ import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts
 
 export const HEARTBEAT_MS = 15_000;
 export const LEASE_MS = 45_000;
+/**
+ * What a conversation's turn ends with when its engine could not start because
+ * the engine image the service started with is gone or refused.
+ */
+export const ENGINE_IMAGE_NOTE =
+  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then send your message again.';
+/** What long work asks the person when its engine could not start that way. */
+export const ENGINE_IMAGE_QUESTION =
+  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then say "continue" to try again.';
+/** Why long work or a helper stopped that way, in its record. */
+const ENGINE_IMAGE_WHY =
+  'Its engine could not start: the engine image Melete started with is no longer available.';
+/** The reason an attempt lost that way is recorded with. */
+export const ENGINE_IMAGE_REASON = 'engine_image_unavailable';
 /** What a conversation's turn ends with when its work was cut off and could not be resumed. */
 export const LOST_NOTE =
   'This was interrupted before it could finish, for example because Melete restarted while it was working. Nothing more will happen here until you send another message.';
@@ -1582,9 +1597,14 @@ export class AttemptRunner {
       .where(eq(attempt.id, attemptId));
     await this.gap(tx, attemptId, row.id, 'lost');
     const run = this.runs && isRunKind(row.kind) ? this.runs : null;
-    const remaining = run
-      ? await run.failuresRemaining(tx, row, jobBudget.parse(row.budget))
-      : Math.max(0, jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0));
+    // Without its engine image every further attempt would fail the same way
+    // until the service starts again, so none is made.
+    const remaining =
+      reason === ENGINE_IMAGE_REASON
+        ? 0
+        : run
+          ? await run.failuresRemaining(tx, row, jobBudget.parse(row.budget))
+          : Math.max(0, jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0));
     // A routine whose run is lost for good goes back to its schedule.
     const rest = row.state === 'running' && remaining === 0 ? await routineRest(tx, row) : null;
     // A wait the lost attempt was told had been set aside goes to its retry, as
@@ -1607,7 +1627,9 @@ export class AttemptRunner {
                 wait: {
                   kind: 'user_input',
                   question:
-                    'My work on this keeps getting interrupted. Say "continue" to try again.',
+                    reason === ENGINE_IMAGE_REASON
+                      ? ENGINE_IMAGE_QUESTION
+                      : 'My work on this keeps getting interrupted. Say "continue" to try again.',
                 },
                 reason: 'recovery',
               },
@@ -1625,6 +1647,8 @@ export class AttemptRunner {
                 { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
                 { attemptId, reason: 'recovery', ...(setAside ? { wait: setAside } : {}) },
               );
+    const why =
+      reason === ENGINE_IMAGE_REASON ? ENGINE_IMAGE_WHY : 'Its work kept getting interrupted.';
     // Long work that stops to ask gives the person what it has first.
     if (
       run &&
@@ -1632,22 +1656,20 @@ export class AttemptRunner {
       moved.kind === 'run' &&
       moved.state === 'waiting_for_input'
     )
-      await run.giveSoFar(tx, moved, attemptId, 'Its work kept getting interrupted.');
+      await run.giveSoFar(tx, moved, attemptId, why);
     if (run && moved.kind === 'run_step' && moved.state === 'failed')
-      await run.stepEnded(tx, moved, {
-        kind: 'failed',
-        retryable: false,
-        reason: 'Its work kept getting interrupted.',
-      });
+      await run.stepEnded(tx, moved, { kind: 'failed', retryable: false, reason: why });
     // A conversation whose last attempt was lost has ended: its turn says so,
     // in the saved copy and on the stream, instead of looking busy for ever.
     // So has a routine's run that went back to its schedule.
     const turnFailed = Boolean(row.currentTurnId) && (moved.state === 'failed' || rest !== null);
-    // A disconnected app is said as such, not as a restart.
+    // A disconnected app is said as such, not as a restart; so is a missing engine image.
     const note =
-      turnFailed && (await disconnectedDuring(tx, row.id, attemptId))
-        ? DISCONNECTED_NOTE
-        : LOST_NOTE;
+      reason === ENGINE_IMAGE_REASON
+        ? ENGINE_IMAGE_NOTE
+        : turnFailed && (await disconnectedDuring(tx, row.id, attemptId))
+          ? DISCONNECTED_NOTE
+          : LOST_NOTE;
     await appendEvent(tx, {
       jobId: row.id,
       attemptId,
@@ -2030,7 +2052,11 @@ export class AttemptRunner {
       ) {
         await this.loseAttempt(
           claims.attempt_id,
-          error instanceof Error ? error.message : 'runtime_crashed',
+          error instanceof EngineImageUnavailable
+            ? ENGINE_IMAGE_REASON
+            : error instanceof Error
+              ? error.message
+              : 'runtime_crashed',
         );
       }
     } finally {
