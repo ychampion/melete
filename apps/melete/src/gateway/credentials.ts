@@ -262,8 +262,6 @@ export class ProviderSignIn {
   private readonly refreshing = new Map<string, Promise<Rotation | Ended>>();
   /** Generations whose access token a provider refused; the next use refreshes first. */
   private readonly refused = new Map<string, number>();
-  /** Generations got by refreshing a refused token; a refusal of one of these is final. */
-  private readonly retried = new Map<string, number>();
   private readonly resolved = new Map<string, Promise<OAuthIssuer>>();
   private readonly fetcher: OAuthFetch;
   private readonly now: () => number;
@@ -571,13 +569,14 @@ export class ProviderSignIn {
       const refreshed = await flight;
       if ('ended' in refreshed) throw signInRequired();
       current = refreshed;
-      if (afterRefusal) this.retried.set(provider, current.generation);
     }
     const issuer = await this.issuerForCall(provider);
     return {
       token: current.tokens.accessToken,
       generation: current.generation,
-      retried: this.retried.get(provider) === current.generation,
+      // Only the call that refreshed because of a refusal is the retry. A later
+      // use of the same token, after it has served, is refreshed again if refused.
+      retried: afterRefusal,
       headers: issuer.requestHeaders?.(current.tokens) ?? {},
     };
   }

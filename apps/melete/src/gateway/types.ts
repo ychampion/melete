@@ -247,8 +247,8 @@ export interface GatewayProvider {
 export interface SignedInCredential {
   /**
    * The access token to send now. Throws a GatewayError when there is none to
-   * send. `retried` is set when this token was got by refreshing one the
-   * provider refused, so a refusal of it is final.
+   * send. `retried` is set when this call refreshed a token the provider
+   * refused, so a refusal of the new one is final.
    */
   current(): Promise<{
     token: string;
