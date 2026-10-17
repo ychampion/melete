@@ -248,6 +248,7 @@ import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
 import { BlobCollector } from './storage/gc.ts';
+import { storagePerPersonBytes } from './storage/per-person.ts';
 import { configuredTriageGateway, type TriageClassifier } from './triage/classifier.ts';
 import { mountNeedsYou } from './triage/routes.ts';
 import { TriageService } from './triage/service.ts';
@@ -448,6 +449,7 @@ export function createApp(deps: AppDeps) {
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
       { days: deps.env.MELETE_TRASH_DAYS, maxBytes: deps.env.MELETE_TRASH_MAX_MB * 1024 * 1024 },
+      deps.sql ? { sql: deps.sql, quota: storagePerPersonBytes(deps.env) } : undefined,
     );
   // Apps a person can open, and the changes they make to their own.
   if (deps.sql)

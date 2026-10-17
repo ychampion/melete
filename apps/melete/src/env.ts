@@ -1061,6 +1061,13 @@ const variables = z.object({
   /** The most one conversation's trash holds, in MiB; older trash makes room first. */
   MELETE_TRASH_MAX_MB: unsetWhenBlank(z.coerce.number().int().min(1).max(1048576).default(1024)),
   /**
+   * The most one person may keep, in MiB, across their spaces: their Files,
+   * what their chats saved and what they sent in chat. Unset, nobody is limited.
+   */
+  MELETE_STORAGE_PER_PERSON_MB: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(1073741824).optional(),
+  ),
+  /**
    * How many days an observation read from a connected mailbox or calendar is
    * kept when no job, situation or listening trigger holds it.
    */

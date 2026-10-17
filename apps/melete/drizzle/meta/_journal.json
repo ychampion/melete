@@ -862,6 +862,13 @@
       "when": 1789232400102,
       "tag": "0122_principal_last_seen",
       "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1789232400103,
+      "tag": "0123_stored_file",
+      "breakpoints": true
     }
   ]
 }
