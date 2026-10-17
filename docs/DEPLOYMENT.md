@@ -2018,7 +2018,12 @@ environment, a log, a receipt or the model.
 **What works.** Commands, with Melete's exit records, so a command whose answer
 is lost is never run twice. Commands longer than Maritime's 30-second `exec`
 run in the background and are polled until they finish. Files in and out of
-the workspace, kept on the computer's `/data` disk. Sleep and wake for a kept
+the workspace, kept on the computer's `/data` disk. Maritime's desktop user is
+not root and cannot make `/work`, so the workspace lives at `/data/work` and the
+adapter respells `/work` at its edge: in a command's folder, in file paths, and
+in a command's words wherever `/work` stands as a path of its own. A command
+that means the text `/work` itself, such as `grep /work notes.txt`, sees
+`/data/work` instead, and `pwd` prints `/data/work`. Sleep and wake for a kept
 workspace. Each computer is found again by a hash of this installation's ids,
 never by a person's name or email, and reconciliation removes only this
 installation's own computers.
@@ -2032,13 +2037,13 @@ computer; Maritime's screen, clicks and viewer links are in the adapter but
 not yet wired to the app.
 
 **Sizing.** Maritime limits how many computers an account keeps and how many
-are awake at once; a sleeping computer counts only toward the first. A plan
+are awake at once; a sleeping computer counts only toward the first. An account
 serves as many agents as it keeps computers, and as many of them as it lets be
 awake can run commands at the same moment.
 
-**Caps.** Two settings in `deploy/.env` keep this installation inside the plan,
-so it never asks for computers the plan does not include. Both are unset by
-default, which means no cap:
+**Caps.** Two settings in `deploy/.env` keep this installation inside the
+account's limits, so it never asks for computers the account does not allow.
+Both are unset by default, which means no cap:
 
 - `MELETE_MARITIME_MAX_COMPUTERS`: the most computers kept at Maritime, asleep
   or awake. Past it, a new computer is refused, and the agent tells the person
@@ -2047,14 +2052,18 @@ default, which means no cap:
   wake past it waits up to 30 seconds for a place, then is refused the same
   way. A sleeping computer is never swapped for a new one to get round it.
 
-Set them to the numbers in your Maritime plan. The counts are kept in the
+Set them to your Maritime account's limits. The counts are kept in the
 database, so several service instances share them and concurrent requests
 cannot pass a cap. Computers made before the caps were set are counted once
-they are next used. Each computer has 2 GB of memory and 5 GB of disk unless the account
+they are next checked or used. Lowering a cap below what is in use refuses new
+computers and wakes until enough are deleted or asleep; computers already awake
+keep working. A create whose answer was lost keeps its place for up to fifteen
+minutes, since Maritime may have made the computer; reconciliation removes such
+a computer. Each computer has 2 GB of memory and 5 GB of disk unless the account
 raises them.
 
 **How sleep works.** Maritime puts a computer to sleep after five minutes with
-no action, keeping its memory and its disk; it is free while asleep. Melete
+no action, keeping its memory and its disk. Melete
 wakes it before every command and touches it every four minutes while a
 command runs, so a long command is not put to sleep under it. After seven days
 asleep the memory snapshot is dropped and the next wake boots fresh on the same

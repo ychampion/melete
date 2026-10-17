@@ -20,7 +20,8 @@
  * - Sleeping keeps the computer's memory, so what runs keeps running; any
  *   action, `exec` or file call wakes it. `GET` does not.
  * - A deleted computer is 404 `not_found` afterwards.
- * - The desktop user can make `/work` (as a passwordless `sudo` would let it).
+ * - The desktop user is not root and has no `sudo`: nothing can be made at the
+ *   top of the filesystem, so `/work` cannot be made, as on a real computer.
  * - The computer's egress is open.
  *
  * Fixtures written through it are marked `authored-from-documented-api`. They
@@ -135,6 +136,8 @@ export function createMaritimeStandin() {
     });
     sandbox.fs.mkdir('/data', true);
     sandbox.fs.mkdir('/home/desk', true);
+    // Root's, as on Maritime: the desktop user cannot make /work there.
+    sandbox.fs.seal('/');
     const record: Held = {
       sandbox,
       externalUserId,

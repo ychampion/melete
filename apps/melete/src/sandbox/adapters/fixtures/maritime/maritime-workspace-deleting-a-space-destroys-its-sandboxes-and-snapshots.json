@@ -9,7 +9,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 40,
+        "atMs": 147,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers",
         "path": "/api/v1/computers",
@@ -36,7 +36,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 40,
+        "atMs": 147,
         "body": {
           "id": "fake-sbx-0001",
           "os": "linux",
@@ -62,7 +62,7 @@
     },
     {
       "request": {
-        "atMs": 40,
+        "atMs": 148,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/wake",
         "path": "/api/v1/computers/fake-sbx-0001/wake",
@@ -81,7 +81,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 41,
+        "atMs": 148,
         "body": {
           "status": "awake",
           "wakeMs": 0,
@@ -91,7 +91,7 @@
     },
     {
       "request": {
-        "atMs": 41,
+        "atMs": 148,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/actions",
         "path": "/api/v1/computers/fake-sbx-0001/actions",
@@ -116,7 +116,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 41,
+        "atMs": 148,
         "body": {
           "action": "cursor_position",
           "ok": true,
@@ -126,16 +126,16 @@
     },
     {
       "request": {
-        "atMs": 41,
+        "atMs": 149,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
-        "bodySha256": "034b600836f423ed5120e6b71b2896b15e02238577bce95b7f2422d84dc6d0d8",
+        "bodySha256": "e252a3bb228b15d3199c2361b86954a6363b9f3fc3aad493ee4f662cab05bb06",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 'w=\"$1\"; s=\"$2\"; r=\"$3\"; t=\"$4\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\n[ -e \"$w\" ] || ln -s \"$s\" \"$w\" 2>/dev/null || sudo -n ln -s \"$s\" \"$w\" 2>/dev/null\n[ -d \"$w\" ] && [ -w \"$w\" ] || exit 5\necho ready' 'melete' '/work' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
+          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
           "timeoutS": 30
         }
       },
@@ -151,7 +151,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 41,
+        "atMs": 149,
         "body": {
           "exitCode": 0,
           "stdout": "ready\n",
@@ -161,7 +161,7 @@
     },
     {
       "request": {
-        "atMs": 42,
+        "atMs": 150,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/files",
         "path": "/api/v1/computers/fake-sbx-0001/files?path=%2Fdata%2F.melete-run%2Fsandbox-env",
@@ -182,7 +182,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 42,
+        "atMs": 150,
         "body": {
           "path": "/data/.melete-run/sandbox-env",
           "size": 0
@@ -191,16 +191,16 @@
     },
     {
       "request": {
-        "atMs": 46,
+        "atMs": 177,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/files",
         "path": "/api/v1/computers/fake-sbx-0001/files?path=%2Fdata%2F.melete-run%2Fact_01J0WORKSPACEWRITE0001.cmd",
-        "bodySha256": "5622d1d5825d8fe403897e70c7e8f8d754ba09c67e9ca43f5f10f904c97bc0ab",
+        "bodySha256": "a5cc9148b309822e5ef68fa501da0eb7468a5cc011ae557ca6203fd9d60d98ce",
         "headers": {
           "content-type": "application/octet-stream"
         },
         "body": {
-          "bytes": 1145
+          "bytes": 1150
         }
       },
       "response": {
@@ -211,29 +211,29 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJwYXRoIjoiL2RhdGEvLm1lbGV0ZS1ydW4vYWN0XzAxSjBXT1JLU1BBQ0VXUklURTAwMDEuY21kIiwic2l6ZSI6MTE0NX0="
+            "base64": "eyJwYXRoIjoiL2RhdGEvLm1lbGV0ZS1ydW4vYWN0XzAxSjBXT1JLU1BBQ0VXUklURTAwMDEuY21kIiwic2l6ZSI6MTE1MH0="
           }
         ],
         "end": "complete",
-        "atMs": 46,
+        "atMs": 178,
         "body": {
           "path": "/data/.melete-run/act_01J0WORKSPACEWRITE0001.cmd",
-          "size": 1145
+          "size": 1150
         }
       }
     },
     {
       "request": {
-        "atMs": 46,
+        "atMs": 178,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
-        "bodySha256": "3ea966c03b61b1d0835b216d10c2d363d1ac60fe3ffb178b83ce80c20897cc29",
+        "bodySha256": "af2f18678063a0297a23213e5b562e672858c5c3d684ab4ace09e783eb77cc0d",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": ": melete-launch act_01J0WORKSPACEWRITE0001; '/bin/sh' '-c' 'b=\"$1\"; c=\"$2\"; i=\"$3\"; e=\"$4\"\ncd \"$c\" 2>/dev/null || exit 112\n[ -f \"$b.cmd\" ] || exit 112\n[ \"$e\" = - ] || [ -f \"$e\" ] || exit 112\nrm -f \"$b.rc\" \"$b.rc.tmp\" \"$b.log\"\nsetsid sh -c \"$7\" melete-run \"$b\" \"$e\" \"$5\" \"$6\" < \"$i\" > /dev/null 2>&1 &\necho \"pid=$!\"' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0001' '/work' '/dev/null' '-' '20' '/data/.melete-run/sandbox-env' 'b=\"$1\"\n[ -f \"$4\" ] && . \"$4\"\n[ \"$2\" = - ] || . \"$2\"\n[ \"$2\" = - ] || rm -f \"$2\"\ntimeout -s KILL \"$3\" sh -c '\\''. \"$1\"'\\'' melete-cmd \"$b.cmd\" > \"$b.log\" 2>&1\nprintf '\\''%s'\\'' \"$?\" > \"$b.rc.tmp\"\nmv -f \"$b.rc.tmp\" \"$b.rc\"'",
+          "command": ": melete-launch act_01J0WORKSPACEWRITE0001; '/bin/sh' '-c' 'b=\"$1\"; c=\"$2\"; i=\"$3\"; e=\"$4\"\ncd \"$c\" 2>/dev/null || exit 112\n[ -f \"$b.cmd\" ] || exit 112\n[ \"$e\" = - ] || [ -f \"$e\" ] || exit 112\nrm -f \"$b.rc\" \"$b.rc.tmp\" \"$b.log\"\nsetsid sh -c \"$7\" melete-run \"$b\" \"$e\" \"$5\" \"$6\" < \"$i\" > /dev/null 2>&1 &\necho \"pid=$!\"' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0001' '/data/work' '/dev/null' '-' '20' '/data/.melete-run/sandbox-env' 'b=\"$1\"\n[ -f \"$4\" ] && . \"$4\"\n[ \"$2\" = - ] || . \"$2\"\n[ \"$2\" = - ] || rm -f \"$2\"\ntimeout -s KILL \"$3\" sh -c '\\''. \"$1\"'\\'' melete-cmd \"$b.cmd\" > \"$b.log\" 2>&1\nprintf '\\''%s'\\'' \"$?\" > \"$b.rc.tmp\"\nmv -f \"$b.rc.tmp\" \"$b.rc\"'",
           "timeoutS": 30
         }
       },
@@ -249,7 +249,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 47,
+        "atMs": 179,
         "body": {
           "exitCode": 0,
           "stdout": "pid=1003\n",
@@ -259,16 +259,16 @@
     },
     {
       "request": {
-        "atMs": 47,
+        "atMs": 180,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
-        "bodySha256": "b3acf88a468f1efc12f0c0b080b3513abf3931e3dbaef7e7939583a251d2593f",
+        "bodySha256": "1fbeaea5d287a37f8a14c1a2f83222b71dc1fd026df6d96e81cf5b131eaab1b5",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 'b=\"$1\"\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || exit 75\ncat \"$b.rc\"\nprintf '\\''\\n'\\''\nhead -c 4096 \"$b.log\"' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0001'",
+          "command": "'/bin/sh' '-c' 'b=\"$1\"\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || exit 75\ncat \"$b.rc\"\nprintf '\\''\\n'\\''\n[ -f \"$b.log\" ] && wc -c < \"$b.log\" || echo 0' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0001'",
           "timeoutS": 30
         }
       },
@@ -280,21 +280,21 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJleGl0Q29kZSI6MCwic3Rkb3V0IjoiMFxuIiwic3RkZXJyIjoiIn0="
+            "base64": "eyJleGl0Q29kZSI6MCwic3Rkb3V0IjoiMFxuMFxuIiwic3RkZXJyIjoiIn0="
           }
         ],
         "end": "complete",
-        "atMs": 316,
+        "atMs": 440,
         "body": {
           "exitCode": 0,
-          "stdout": "0\n",
+          "stdout": "0\n0\n",
           "stderr": ""
         }
       }
     },
     {
       "request": {
-        "atMs": 317,
+        "atMs": 441,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
@@ -319,7 +319,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 317,
+        "atMs": 443,
         "body": {
           "exitCode": 0,
           "stdout": "",
@@ -329,7 +329,7 @@
     },
     {
       "request": {
-        "atMs": 318,
+        "atMs": 444,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
@@ -354,7 +354,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 318,
+        "atMs": 445,
         "body": {
           "exitCode": 0,
           "stdout": "",
@@ -364,7 +364,7 @@
     },
     {
       "request": {
-        "atMs": 318,
+        "atMs": 445,
         "method": "GET",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/files",
         "path": "/api/v1/computers/fake-sbx-0001/files?path=%2Fdata%2F.melete-tmp%2Flist-000001",
@@ -379,11 +379,11 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "ZiAxIDY0NCA0NzAuMDo0NzAuMDo0NzAgZXhpdABmIDAgNjQ0IDQ2My4wOjQ2My4wOjQ2MyBvdXQA"
+            "base64": "ZiAxIDY0NCA0MzYuMDo0MzYuMDo0MzYgZXhpdABmIDAgNjQ0IDQyOS4wOjQyOS4wOjQyOSBvdXQA"
           }
         ],
         "end": "complete",
-        "atMs": 318,
+        "atMs": 445,
         "body": {
           "bytes": 57
         }
@@ -391,7 +391,7 @@
     },
     {
       "request": {
-        "atMs": 319,
+        "atMs": 486,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
@@ -416,7 +416,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 319,
+        "atMs": 486,
         "body": {
           "exitCode": 0,
           "stdout": "",
@@ -426,7 +426,7 @@
     },
     {
       "request": {
-        "atMs": 329,
+        "atMs": 554,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/sleep",
         "path": "/api/v1/computers/fake-sbx-0001/sleep",
@@ -445,7 +445,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 329,
+        "atMs": 554,
         "body": {
           "id": "fake-sbx-0001",
           "os": "linux",
@@ -471,7 +471,7 @@
     },
     {
       "request": {
-        "atMs": 334,
+        "atMs": 587,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers",
         "path": "/api/v1/computers",
@@ -498,7 +498,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 334,
+        "atMs": 587,
         "body": {
           "id": "fake-sbx-0002",
           "os": "linux",
@@ -524,7 +524,7 @@
     },
     {
       "request": {
-        "atMs": 335,
+        "atMs": 588,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/wake",
         "path": "/api/v1/computers/fake-sbx-0002/wake",
@@ -543,7 +543,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 335,
+        "atMs": 588,
         "body": {
           "status": "awake",
           "wakeMs": 0,
@@ -553,7 +553,7 @@
     },
     {
       "request": {
-        "atMs": 335,
+        "atMs": 588,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/actions",
         "path": "/api/v1/computers/fake-sbx-0002/actions",
@@ -578,7 +578,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 335,
+        "atMs": 588,
         "body": {
           "action": "cursor_position",
           "ok": true,
@@ -588,16 +588,16 @@
     },
     {
       "request": {
-        "atMs": 335,
+        "atMs": 589,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/exec",
         "path": "/api/v1/computers/fake-sbx-0002/exec",
-        "bodySha256": "034b600836f423ed5120e6b71b2896b15e02238577bce95b7f2422d84dc6d0d8",
+        "bodySha256": "e252a3bb228b15d3199c2361b86954a6363b9f3fc3aad493ee4f662cab05bb06",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 'w=\"$1\"; s=\"$2\"; r=\"$3\"; t=\"$4\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\n[ -e \"$w\" ] || ln -s \"$s\" \"$w\" 2>/dev/null || sudo -n ln -s \"$s\" \"$w\" 2>/dev/null\n[ -d \"$w\" ] && [ -w \"$w\" ] || exit 5\necho ready' 'melete' '/work' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
+          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
           "timeoutS": 30
         }
       },
@@ -613,7 +613,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 335,
+        "atMs": 589,
         "body": {
           "exitCode": 0,
           "stdout": "ready\n",
@@ -623,7 +623,7 @@
     },
     {
       "request": {
-        "atMs": 335,
+        "atMs": 589,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/files",
         "path": "/api/v1/computers/fake-sbx-0002/files?path=%2Fdata%2F.melete-run%2Fsandbox-env",
@@ -644,7 +644,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 335,
+        "atMs": 589,
         "body": {
           "path": "/data/.melete-run/sandbox-env",
           "size": 0
@@ -653,16 +653,16 @@
     },
     {
       "request": {
-        "atMs": 336,
+        "atMs": 646,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/files",
         "path": "/api/v1/computers/fake-sbx-0002/files?path=%2Fdata%2F.melete-run%2Fact_01J0WORKSPACEWRITE0002.cmd",
-        "bodySha256": "7ebf6767d2e5f67e94e37f9eafe696c3a72908bff8ad70f1720c551d4dd053e6",
+        "bodySha256": "71816f5ed8c3423f6b221c42cc4d1a96b0de2cf1fe47fca7dbd6d338bfd8a70f",
         "headers": {
           "content-type": "application/octet-stream"
         },
         "body": {
-          "bytes": 1145
+          "bytes": 1150
         }
       },
       "response": {
@@ -673,29 +673,29 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJwYXRoIjoiL2RhdGEvLm1lbGV0ZS1ydW4vYWN0XzAxSjBXT1JLU1BBQ0VXUklURTAwMDIuY21kIiwic2l6ZSI6MTE0NX0="
+            "base64": "eyJwYXRoIjoiL2RhdGEvLm1lbGV0ZS1ydW4vYWN0XzAxSjBXT1JLU1BBQ0VXUklURTAwMDIuY21kIiwic2l6ZSI6MTE1MH0="
           }
         ],
         "end": "complete",
-        "atMs": 336,
+        "atMs": 646,
         "body": {
           "path": "/data/.melete-run/act_01J0WORKSPACEWRITE0002.cmd",
-          "size": 1145
+          "size": 1150
         }
       }
     },
     {
       "request": {
-        "atMs": 336,
+        "atMs": 646,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/exec",
         "path": "/api/v1/computers/fake-sbx-0002/exec",
-        "bodySha256": "20fabc9858b20bacb5cb9ec0509e1d6374238f2bf2bde08da46a6f8ab4226422",
+        "bodySha256": "38b0db77c425d044b903e606f2f3733030ec73f4940f26e5b0ff38addefb5f70",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": ": melete-launch act_01J0WORKSPACEWRITE0002; '/bin/sh' '-c' 'b=\"$1\"; c=\"$2\"; i=\"$3\"; e=\"$4\"\ncd \"$c\" 2>/dev/null || exit 112\n[ -f \"$b.cmd\" ] || exit 112\n[ \"$e\" = - ] || [ -f \"$e\" ] || exit 112\nrm -f \"$b.rc\" \"$b.rc.tmp\" \"$b.log\"\nsetsid sh -c \"$7\" melete-run \"$b\" \"$e\" \"$5\" \"$6\" < \"$i\" > /dev/null 2>&1 &\necho \"pid=$!\"' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0002' '/work' '/dev/null' '-' '20' '/data/.melete-run/sandbox-env' 'b=\"$1\"\n[ -f \"$4\" ] && . \"$4\"\n[ \"$2\" = - ] || . \"$2\"\n[ \"$2\" = - ] || rm -f \"$2\"\ntimeout -s KILL \"$3\" sh -c '\\''. \"$1\"'\\'' melete-cmd \"$b.cmd\" > \"$b.log\" 2>&1\nprintf '\\''%s'\\'' \"$?\" > \"$b.rc.tmp\"\nmv -f \"$b.rc.tmp\" \"$b.rc\"'",
+          "command": ": melete-launch act_01J0WORKSPACEWRITE0002; '/bin/sh' '-c' 'b=\"$1\"; c=\"$2\"; i=\"$3\"; e=\"$4\"\ncd \"$c\" 2>/dev/null || exit 112\n[ -f \"$b.cmd\" ] || exit 112\n[ \"$e\" = - ] || [ -f \"$e\" ] || exit 112\nrm -f \"$b.rc\" \"$b.rc.tmp\" \"$b.log\"\nsetsid sh -c \"$7\" melete-run \"$b\" \"$e\" \"$5\" \"$6\" < \"$i\" > /dev/null 2>&1 &\necho \"pid=$!\"' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0002' '/data/work' '/dev/null' '-' '20' '/data/.melete-run/sandbox-env' 'b=\"$1\"\n[ -f \"$4\" ] && . \"$4\"\n[ \"$2\" = - ] || . \"$2\"\n[ \"$2\" = - ] || rm -f \"$2\"\ntimeout -s KILL \"$3\" sh -c '\\''. \"$1\"'\\'' melete-cmd \"$b.cmd\" > \"$b.log\" 2>&1\nprintf '\\''%s'\\'' \"$?\" > \"$b.rc.tmp\"\nmv -f \"$b.rc.tmp\" \"$b.rc\"'",
           "timeoutS": 30
         }
       },
@@ -711,7 +711,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 337,
+        "atMs": 647,
         "body": {
           "exitCode": 0,
           "stdout": "pid=1003\n",
@@ -721,16 +721,16 @@
     },
     {
       "request": {
-        "atMs": 337,
+        "atMs": 648,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/exec",
         "path": "/api/v1/computers/fake-sbx-0002/exec",
-        "bodySha256": "1bf7472283978ca20a43de50e4c6099bfb6d3d2aad86567e46be163d708f0fa2",
+        "bodySha256": "7b0585e3eed8631902f08190e1075fc305d958e10429b7a702ac9a3b75968d4d",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 'b=\"$1\"\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || exit 75\ncat \"$b.rc\"\nprintf '\\''\\n'\\''\nhead -c 4096 \"$b.log\"' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0002'",
+          "command": "'/bin/sh' '-c' 'b=\"$1\"\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || sleep 0.25\n[ -f \"$b.rc\" ] || exit 75\ncat \"$b.rc\"\nprintf '\\''\\n'\\''\n[ -f \"$b.log\" ] && wc -c < \"$b.log\" || echo 0' 'melete' '/data/.melete-run/act_01J0WORKSPACEWRITE0002'",
           "timeoutS": 30
         }
       },
@@ -742,21 +742,21 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJleGl0Q29kZSI6MCwic3Rkb3V0IjoiMFxuIiwic3RkZXJyIjoiIn0="
+            "base64": "eyJleGl0Q29kZSI6MCwic3Rkb3V0IjoiMFxuMFxuIiwic3RkZXJyIjoiIn0="
           }
         ],
         "end": "complete",
-        "atMs": 587,
+        "atMs": 914,
         "body": {
           "exitCode": 0,
-          "stdout": "0\n",
+          "stdout": "0\n0\n",
           "stderr": ""
         }
       }
     },
     {
       "request": {
-        "atMs": 587,
+        "atMs": 919,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/exec",
         "path": "/api/v1/computers/fake-sbx-0002/exec",
@@ -781,7 +781,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 587,
+        "atMs": 920,
         "body": {
           "exitCode": 0,
           "stdout": "",
@@ -791,7 +791,7 @@
     },
     {
       "request": {
-        "atMs": 587,
+        "atMs": 923,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/exec",
         "path": "/api/v1/computers/fake-sbx-0002/exec",
@@ -816,7 +816,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 587,
+        "atMs": 923,
         "body": {
           "exitCode": 0,
           "stdout": "",
@@ -826,7 +826,7 @@
     },
     {
       "request": {
-        "atMs": 588,
+        "atMs": 929,
         "method": "GET",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/files",
         "path": "/api/v1/computers/fake-sbx-0002/files?path=%2Fdata%2F.melete-tmp%2Flist-000002",
@@ -840,12 +840,12 @@
         },
         "chunks": [
           {
-            "atMs": 0,
-            "base64": "ZiAxIDY0NCA0OTUuMDo0OTUuMDo0OTUgZXhpdABmIDAgNjQ0IDQ4OC4wOjQ4OC4wOjQ4OCBvdXQA"
+            "atMs": 1,
+            "base64": "ZiAxIDY0NCA0NjAuMDo0NjAuMDo0NjAgZXhpdABmIDAgNjQ0IDQ1My4wOjQ1My4wOjQ1MyBvdXQA"
           }
         ],
         "end": "complete",
-        "atMs": 588,
+        "atMs": 930,
         "body": {
           "bytes": 57
         }
@@ -853,7 +853,7 @@
     },
     {
       "request": {
-        "atMs": 588,
+        "atMs": 946,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/exec",
         "path": "/api/v1/computers/fake-sbx-0002/exec",
@@ -878,7 +878,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 588,
+        "atMs": 946,
         "body": {
           "exitCode": 0,
           "stdout": "",
@@ -888,7 +888,7 @@
     },
     {
       "request": {
-        "atMs": 592,
+        "atMs": 961,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/sleep",
         "path": "/api/v1/computers/fake-sbx-0002/sleep",
@@ -907,7 +907,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 592,
+        "atMs": 961,
         "body": {
           "id": "fake-sbx-0002",
           "os": "linux",
@@ -933,7 +933,7 @@
     },
     {
       "request": {
-        "atMs": 605,
+        "atMs": 1000,
         "method": "GET",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002",
         "path": "/api/v1/computers/fake-sbx-0002",
@@ -952,7 +952,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 605,
+        "atMs": 1000,
         "body": {
           "id": "fake-sbx-0002",
           "os": "linux",
@@ -978,7 +978,7 @@
     },
     {
       "request": {
-        "atMs": 605,
+        "atMs": 1001,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/wake",
         "path": "/api/v1/computers/fake-sbx-0002/wake",
@@ -997,7 +997,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 605,
+        "atMs": 1001,
         "body": {
           "status": "awake",
           "wakeMs": 0,
@@ -1007,7 +1007,7 @@
     },
     {
       "request": {
-        "atMs": 605,
+        "atMs": 1002,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/actions",
         "path": "/api/v1/computers/fake-sbx-0002/actions",
@@ -1032,7 +1032,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 605,
+        "atMs": 1002,
         "body": {
           "action": "cursor_position",
           "ok": true,
@@ -1042,16 +1042,16 @@
     },
     {
       "request": {
-        "atMs": 606,
+        "atMs": 1002,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/exec",
         "path": "/api/v1/computers/fake-sbx-0002/exec",
-        "bodySha256": "034b600836f423ed5120e6b71b2896b15e02238577bce95b7f2422d84dc6d0d8",
+        "bodySha256": "e252a3bb228b15d3199c2361b86954a6363b9f3fc3aad493ee4f662cab05bb06",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 'w=\"$1\"; s=\"$2\"; r=\"$3\"; t=\"$4\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\n[ -e \"$w\" ] || ln -s \"$s\" \"$w\" 2>/dev/null || sudo -n ln -s \"$s\" \"$w\" 2>/dev/null\n[ -d \"$w\" ] && [ -w \"$w\" ] || exit 5\necho ready' 'melete' '/work' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
+          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
           "timeoutS": 30
         }
       },
@@ -1067,7 +1067,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 606,
+        "atMs": 1003,
         "body": {
           "exitCode": 0,
           "stdout": "ready\n",
@@ -1077,7 +1077,7 @@
     },
     {
       "request": {
-        "atMs": 606,
+        "atMs": 1007,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002/files",
         "path": "/api/v1/computers/fake-sbx-0002/files?path=%2Fdata%2F.melete-run%2Fsandbox-env",
@@ -1098,7 +1098,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 606,
+        "atMs": 1007,
         "body": {
           "path": "/data/.melete-run/sandbox-env",
           "size": 0
@@ -1107,7 +1107,7 @@
     },
     {
       "request": {
-        "atMs": 612,
+        "atMs": 1091,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers",
         "path": "/api/v1/computers",
@@ -1134,7 +1134,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 612,
+        "atMs": 1092,
         "body": {
           "id": "fake-sbx-0003",
           "os": "linux",
@@ -1160,7 +1160,7 @@
     },
     {
       "request": {
-        "atMs": 613,
+        "atMs": 1092,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0003/wake",
         "path": "/api/v1/computers/fake-sbx-0003/wake",
@@ -1179,7 +1179,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 613,
+        "atMs": 1092,
         "body": {
           "status": "awake",
           "wakeMs": 0,
@@ -1189,7 +1189,7 @@
     },
     {
       "request": {
-        "atMs": 613,
+        "atMs": 1093,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0003/actions",
         "path": "/api/v1/computers/fake-sbx-0003/actions",
@@ -1214,7 +1214,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 613,
+        "atMs": 1093,
         "body": {
           "action": "cursor_position",
           "ok": true,
@@ -1224,16 +1224,16 @@
     },
     {
       "request": {
-        "atMs": 613,
+        "atMs": 1094,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0003/exec",
         "path": "/api/v1/computers/fake-sbx-0003/exec",
-        "bodySha256": "034b600836f423ed5120e6b71b2896b15e02238577bce95b7f2422d84dc6d0d8",
+        "bodySha256": "e252a3bb228b15d3199c2361b86954a6363b9f3fc3aad493ee4f662cab05bb06",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 'w=\"$1\"; s=\"$2\"; r=\"$3\"; t=\"$4\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\n[ -e \"$w\" ] || ln -s \"$s\" \"$w\" 2>/dev/null || sudo -n ln -s \"$s\" \"$w\" 2>/dev/null\n[ -d \"$w\" ] && [ -w \"$w\" ] || exit 5\necho ready' 'melete' '/work' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
+          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
           "timeoutS": 30
         }
       },
@@ -1249,7 +1249,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 613,
+        "atMs": 1099,
         "body": {
           "exitCode": 0,
           "stdout": "ready\n",
@@ -1259,7 +1259,7 @@
     },
     {
       "request": {
-        "atMs": 613,
+        "atMs": 1102,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0003/files",
         "path": "/api/v1/computers/fake-sbx-0003/files?path=%2Fdata%2F.melete-run%2Fsandbox-env",
@@ -1280,7 +1280,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 613,
+        "atMs": 1103,
         "body": {
           "path": "/data/.melete-run/sandbox-env",
           "size": 0
@@ -1289,7 +1289,7 @@
     },
     {
       "request": {
-        "atMs": 618,
+        "atMs": 1122,
         "method": "DELETE",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001",
         "path": "/api/v1/computers/fake-sbx-0001",
@@ -1301,12 +1301,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 618
+        "atMs": 1123
       }
     },
     {
       "request": {
-        "atMs": 625,
+        "atMs": 1147,
         "method": "DELETE",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002",
         "path": "/api/v1/computers/fake-sbx-0002",
@@ -1318,12 +1318,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 625
+        "atMs": 1147
       }
     },
     {
       "request": {
-        "atMs": 628,
+        "atMs": 1177,
         "method": "DELETE",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0003",
         "path": "/api/v1/computers/fake-sbx-0003",
@@ -1335,12 +1335,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 628
+        "atMs": 1177
       }
     },
     {
       "request": {
-        "atMs": 810,
+        "atMs": 1358,
         "method": "GET",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001",
         "path": "/api/v1/computers/fake-sbx-0001",
@@ -1359,7 +1359,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 810,
+        "atMs": 1358,
         "body": {
           "error": "not_found",
           "message": "computer not found"
@@ -1368,7 +1368,7 @@
     },
     {
       "request": {
-        "atMs": 810,
+        "atMs": 1359,
         "method": "GET",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0002",
         "path": "/api/v1/computers/fake-sbx-0002",
@@ -1387,7 +1387,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 810,
+        "atMs": 1359,
         "body": {
           "error": "not_found",
           "message": "computer not found"
@@ -1396,7 +1396,7 @@
     },
     {
       "request": {
-        "atMs": 810,
+        "atMs": 1360,
         "method": "GET",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0003",
         "path": "/api/v1/computers/fake-sbx-0003",
@@ -1415,7 +1415,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 810,
+        "atMs": 1360,
         "body": {
           "error": "not_found",
           "message": "computer not found"

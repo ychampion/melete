@@ -27,6 +27,7 @@ import {
   maritimeExternalUserId,
   maritimeLabels,
   maritimeName,
+  maritimeWords,
 } from './maritime.ts';
 import {
   AUTHORED_NOTE,
@@ -451,6 +452,153 @@ test('a command longer than one exec runs in the background and is never run twi
   }
 });
 
+test("without root, Melete's /work is /data/work, translated at the adapter's boundary", async () => {
+  const { provider, standin } = standinProvider();
+  const handle = await openSandbox(provider, spec(), signal());
+  const computer = standin.engine.get(handle.providerSandboxId);
+  // The stand-in refuses /work as Maritime does, and nothing tried to make it.
+  expect(computer?.fs.lstat('/work')).toBeUndefined();
+  expect(() => computer?.fs.mkdir('/work', true)).toThrow('EACCES');
+  await provider.putFiles(
+    handle,
+    (async function* () {
+      yield { path: '/work/notes/a.txt', bytes: new TextEncoder().encode('hello'), mode: 0o644 };
+    })(),
+    signal(),
+  );
+  expect(new TextDecoder().decode(computer?.fs.readFile('/data/work/notes/a.txt'))).toBe('hello');
+  expect((await provider.listFiles(handle, '/work', signal())).map((each) => each.path)).toEqual([
+    'notes',
+    'notes/a.txt',
+  ]);
+  expect(
+    new TextDecoder().decode(await provider.getFile(handle, '/work/notes/a.txt', 64, signal())),
+  ).toBe('hello');
+  let markers = 0;
+  const run = (argv: string[], cwd = '/work') => {
+    markers += 1;
+    return provider.exec(
+      handle,
+      {
+        marker: `act_01J0MARITIMEWORK${String(markers).padStart(4, '0')}`,
+        argv,
+        cwd,
+        timeoutMs: 5_000,
+        maxOutputBytes: 4096,
+      },
+      signal(),
+    );
+  };
+  const text = (outcome: Awaited<ReturnType<typeof run>>) =>
+    new TextDecoder().decode(outcome.output);
+  // A command starts in the workspace; a relative path reaches it.
+  expect(text(await run(['cat', 'notes/a.txt']))).toBe('hello');
+  expect(text(await run(['cat', 'a.txt'], '/work/notes'))).toBe('hello');
+  // A word that is a /work path names the workspace (the service's own `rm -- /work/...`).
+  expect(await run(['rm', '-f', '--', '/work/notes/a.txt'])).toMatchObject({ exitCode: 0 });
+  expect(computer?.fs.lstat('/data/work/notes/a.txt')).toBeUndefined();
+  // A /work path inside a command's own words names the workspace too.
+  expect(await run(['sh', '-c', 'printf kept > /work/notes/b.txt'])).toMatchObject({ exitCode: 0 });
+  expect(text(await run(['sh', '-c', 'cd /work && cat "/work/notes/b.txt"'], '/tmp'))).toBe('kept');
+  expect(new TextDecoder().decode(computer?.fs.readFile('/data/work/notes/b.txt'))).toBe('kept');
+  await provider.destroy(handle, signal());
+});
+
+test('only /work standing as a path is respelled in a command', () => {
+  const cases: [string, string][] = [
+    ['/work', '/data/work'],
+    ['/work/a b', '/data/work/a b'],
+    ["cat '/work/x' > /work/y", "cat '/data/work/x' > /data/work/y"],
+    ['cd /work&&ls', 'cd /data/work&&ls'],
+    ['PATH=/work/bin:/work/tools', 'PATH=/data/work/bin:/data/work/tools'],
+    ['$(cd /work)', '$(cd /data/work)'],
+    ['/workspace /worker ./work ~/work a/work', '/workspace /worker ./work ~/work a/work'],
+    ['https://example.com/work/x', 'https://example.com/work/x'],
+    ['/data/work', '/data/work'],
+  ];
+  for (const [word, spelled] of cases) expect(maritimeWords(word)).toBe(spelled);
+});
+
+test("a command's output comes back byte for byte up to the caller's cap, with its true size", async () => {
+  const { provider } = standinProvider();
+  const handle = await openSandbox(provider, spec(), signal());
+  // Not text: every byte value, then enough to pass any small fixed cap.
+  const bytes = new Uint8Array(10_000).map((_, index) => index % 256);
+  await provider.putFiles(
+    handle,
+    (async function* () {
+      yield { path: '/work/out.bin', bytes, mode: 0o644 };
+    })(),
+    signal(),
+  );
+  let markers = 0;
+  const run = (maxOutputBytes: number) => {
+    markers += 1;
+    return provider.exec(
+      handle,
+      {
+        marker: `act_01J0MARITIMEOUTPUT${String(markers).padStart(4, '0')}`,
+        argv: ['cat', '/work/out.bin'],
+        cwd: '/work',
+        timeoutMs: 5_000,
+        maxOutputBytes,
+      },
+      signal(),
+    );
+  };
+  const whole = await run(256 * 1024);
+  expect(whole).toMatchObject({
+    state: 'exited',
+    exitCode: 0,
+    totalBytes: 10_000,
+    captureLimited: false,
+  });
+  expect(Buffer.from(whole.output).equals(Buffer.from(bytes))).toBe(true);
+  const cut = await run(100);
+  expect(cut).toMatchObject({ exitCode: 0, totalBytes: 10_000, captureLimited: true });
+  expect(Buffer.from(cut.output).equals(Buffer.from(bytes.slice(0, 100)))).toBe(true);
+  const none = await run(0);
+  expect(none).toMatchObject({ exitCode: 0, totalBytes: 10_000, captureLimited: true });
+  expect(none.output.byteLength).toBe(0);
+  await provider.destroy(handle, signal());
+});
+
+test('a computer that goes away under a running command ends the wait at once', async () => {
+  let gone = false;
+  const { provider } = standinProvider(async (url, init, response) => {
+    const poll =
+      url.pathname.endsWith('/exec') &&
+      typeof init.body === 'string' &&
+      init.body.includes('.rc') &&
+      !init.body.includes('melete-launch');
+    if (!gone || !poll) return response;
+    await response.body?.cancel().catch(() => {});
+    return new Response(JSON.stringify({ error: 'not_found', message: 'computer not found' }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  const handle = await openSandbox(provider, spec(), signal());
+  gone = true;
+  const started = performance.now();
+  const lost = await provider
+    .exec(
+      handle,
+      {
+        marker: 'act_01J0MARITIMEGONE0000000',
+        argv: ['sh', '-c', 'sleep 3'],
+        cwd: '/work',
+        timeoutMs: 120_000,
+        maxOutputBytes: 4096,
+      },
+      signal(),
+    )
+    .catch((error: unknown) => error);
+  expect(lost).toBeInstanceOf(SandboxTransportError);
+  expect((lost as SandboxTransportError).started).toBe('yes');
+  expect(performance.now() - started).toBeLessThan(10_000);
+}, 30_000);
+
 test("stdin and a command's own environment reach it in files, never in its words", async () => {
   const { provider, sent } = standinProvider();
   const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-maritime-env-'));
@@ -603,6 +751,19 @@ test('viewer links: watch to look, control to take the wheel', async () => {
   expect(
     await provider.viewerLink(handle, { mode: 'watch', ttlSeconds: 5 }, signal()).catch((e) => e),
   ).toBeInstanceOf(SandboxAdapterRefusal);
+  // A link that lets someone drive the desktop is short-lived: five minutes unless asked, ten at most.
+  await provider.viewerLink(handle, { mode: 'control' }, signal());
+  expect(JSON.parse(sent.at(-1)?.body ?? '{}')).toEqual({ mode: 'control', ttlS: 300 });
+  const asked = sent.length;
+  expect(
+    await provider
+      .viewerLink(handle, { mode: 'control', ttlSeconds: 3600 }, signal())
+      .catch((e) => e),
+  ).toBeInstanceOf(SandboxAdapterRefusal);
+  expect(sent.length).toBe(asked);
+  expect(
+    (await provider.viewerLink(handle, { mode: 'watch', ttlSeconds: 3600 }, signal())).mode,
+  ).toBe('watch');
   const shot = await provider.screenshot(handle, signal());
   expect(shot).toMatchObject({ type: 'image/png', width: 1200, height: 750, frameId: 1 });
   expect(

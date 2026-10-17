@@ -32,9 +32,17 @@
  * proof the command started; whatever is lost after it is left to the marker,
  * never to a second run.
  *
+ * The workspace. The desktop user is not root and has no passwordless `sudo`,
+ * so `/work` cannot be made. Melete's `/work` is `/data/work` on the computer,
+ * on the disk Maritime keeps, and the adapter translates at its boundary: a
+ * command's working directory, every file path, and every `/work` path that
+ * stands on its own in a command's words (`cat /work/a`, `cd /work && ...`),
+ * so a command written for `/work` runs unchanged. The one thing this cannot
+ * tell apart is a command that means the text `/work` rather than the folder,
+ * such as a search for it: that search looks for `/data/work`.
+ *
  * Files. Maritime's files API reads and writes up to 8 MiB under `/data` and
- * `/home/desk` only. `/work` is made a link to `/data/work`, so the workspace
- * sits on the computer's kept disk, and every transfer outside those two roots
+ * `/home/desk` only. Every transfer outside those two roots
  * is staged through `/data/.melete-tmp` and moved with a short command. An
  * upload above 8 MiB is refused; a read above it is refused unless the caller
  * wants no more than 8 MiB of it. Listings are made with `find`, because the
@@ -119,8 +127,29 @@ const PLAIN = /^[A-Za-z0-9._-]{1,128}$/;
 const NOT_FOUND_EXIT = 3;
 
 export const MARITIME_WORKDIR = '/work';
-/** Where `/work` lives: on the disk Maritime keeps. */
+/** Where Melete's `/work` is on the computer: on the disk Maritime keeps, owned by the desktop user. */
 export const MARITIME_WORK_STORE = '/data/work';
+
+/** Melete's `/work` path as the computer spells it; any other path is unchanged. */
+export function maritimePath(path: string): string {
+  if (path === MARITIME_WORKDIR) return MARITIME_WORK_STORE;
+  if (path.startsWith(`${MARITIME_WORKDIR}/`))
+    return `${MARITIME_WORK_STORE}${path.slice(MARITIME_WORKDIR.length)}`;
+  return path;
+}
+
+/**
+ * `/work` where it stands as a path of its own in a command's words: at the
+ * start of a word, or after a space, quote, `=`, `:`, `(`, `;`, `|`, `&`, `<`,
+ * `>` or `,`, and followed by `/`, the end, or one of those. `/workspace`,
+ * `./work` and `host/work` are not it.
+ */
+const WORK_IN_WORDS = /(^|[\s'"`=:(;|&<>,])\/work(?=$|[/\s'"`;|&)<>,])/g;
+
+/** A command word with every `/work` path in it spelled as the computer has it. */
+export function maritimeWords(word: string): string {
+  return word.replace(WORK_IN_WORDS, `$1${MARITIME_WORK_STORE}`);
+}
 export const MARITIME_MARKER_ROOT = '/data/.melete-exec';
 export const MARITIME_RUN_ROOT = '/data/.melete-run';
 export const MARITIME_TMP_ROOT = '/data/.melete-tmp';
@@ -137,17 +166,14 @@ export const MARITIME_IMAGES: Readonly<Record<string, { os: 'linux'; arch: 'x86_
   };
 
 /**
- * Make the kept directories and `/work`, as a link to `/data/work`, through
- * `sudo` where the desktop user cannot. Exit 4: the kept disk is not writable;
- * exit 5: `/work` cannot be made.
+ * Make the workspace and the kept directories, as the desktop user, on the
+ * kept disk. Exit 4: the kept disk is not writable.
  */
 const PREPARE = [
-  'w="$1"; s="$2"; r="$3"; t="$4"',
+  's="$1"; r="$2"; t="$3"',
   'mkdir -p -m 0700 "$r" "$t" 2>/dev/null',
   'mkdir -p "$s" 2>/dev/null',
   '[ -d "$s" ] && [ -w "$s" ] && [ -d "$r" ] && [ -w "$r" ] && [ -d "$t" ] && [ -w "$t" ] || exit 4',
-  '[ -e "$w" ] || ln -s "$s" "$w" 2>/dev/null || sudo -n ln -s "$s" "$w" 2>/dev/null',
-  '[ -d "$w" ] && [ -w "$w" ] || exit 5',
   'echo ready',
 ].join('\n');
 
@@ -181,7 +207,11 @@ const RUNNER = [
   'mv -f "$b.rc.tmp" "$b.rc"',
 ].join('\n');
 
-/** Wait inside the computer for the status; exit 75 while there is none yet. */
+/**
+ * Wait inside the computer for the status; exit 75 while there is none yet.
+ * Then print the status and the size of the output on lines of their own. The
+ * output itself is read through the files API, byte for byte.
+ */
 function pollScript(steps: number): string {
   return [
     'b="$1"',
@@ -189,7 +219,7 @@ function pollScript(steps: number): string {
     '[ -f "$b.rc" ] || exit 75',
     'cat "$b.rc"',
     "printf '\\n'",
-    'head -c 4096 "$b.log"',
+    '[ -f "$b.log" ] && wc -c < "$b.log" || echo 0',
   ].join('\n');
 }
 const PENDING_EXIT = 75;
@@ -219,7 +249,7 @@ export function maritimeCapabilities(): SandboxCapabilities {
     // No inbound port or preview URL is documented for computers.
     ports: 'none',
     image: 'template',
-    // A flat monthly price per machine; the coarsest unit this type names.
+    // Billed per computer over time; the coarsest unit this type names.
     billing: 'per_hour',
     regions: [],
     maxUploadBytes: MARITIME_FILE_LIMIT,
@@ -398,6 +428,10 @@ export function maritimeActionsFor(command: DesktopCommand): MaritimeAction[] {
 }
 
 export type MaritimeViewer = { url: string; expiresAt: string; mode: 'watch' | 'control' };
+/** A link that lets someone drive the desktop is short-lived: this long unless asked... */
+const CONTROL_LINK_SECONDS = 300;
+/** ...and never longer than this. */
+const CONTROL_LINK_MAX_SECONDS = 600;
 export type MaritimeScreenshot = {
   bytes: Uint8Array;
   type: string;
@@ -424,7 +458,9 @@ export interface MaritimeProvider extends SandboxProvider {
    * A signed link to the computer's screen: `watch` to look, `control` for a
    * person to take the wheel (Maritime refuses agent actions while they hold
    * it). The link is a credential for that one computer until it expires:
-   * hand it to the person, never to a log, a receipt or the model.
+   * hand it only to the person whose agent the computer serves, never to
+   * anyone else, a log, a receipt or the model. A `control` link lasts five
+   * minutes unless asked, and at most ten.
    */
   viewerLink(
     handle: SandboxHandle,
@@ -690,21 +726,17 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
     return image;
   }
 
-  /** Wake, make `/work` and the kept directories, and write the sandbox's environment. */
+  /** Wake, make the workspace and the kept directories, and write the sandbox's environment. */
   async function ready(id: string, spec: SandboxSpec, signal: AbortSignal): Promise<void> {
     await touch(id, signal, true);
     const prepared = await run(
       id,
       PREPARE,
-      [MARITIME_WORKDIR, MARITIME_WORK_STORE, MARITIME_RUN_ROOT, MARITIME_TMP_ROOT],
+      [MARITIME_WORK_STORE, MARITIME_RUN_ROOT, MARITIME_TMP_ROOT],
       signal,
     );
     if (prepared.exitCode === 4)
       throw new SandboxAdapterRefusal('the computer has no writable /data for the workspace');
-    if (prepared.exitCode === 5)
-      throw new SandboxAdapterRefusal(
-        'the computer has no writable /work, and the desktop user cannot make one (no passwordless sudo)',
-      );
     if (prepared.exitCode !== 0)
       throw new SandboxTransportError(`preparing the computer exited ${prepared.exitCode}`);
     await putRaw(id, SANDBOX_ENV_FILE, envFileBody(spec.env), signal);
@@ -748,7 +780,7 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
           'DELETE',
           `/${id}`,
           undefined,
-          [204, 404],
+          [200, 204, 404],
           AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         ).catch(() => {});
         throw error;
@@ -778,7 +810,7 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
       const files = [`${base}.cmd`, ...(spec.stdin ? [stdin] : []), ...(hasEnv ? [envFile] : [])];
       const command = commandOf(LAUNCH, [
         base,
-        spec.cwd,
+        maritimePath(spec.cwd),
         stdin,
         envFile,
         String(spec.timeoutMs / 1000),
@@ -791,7 +823,10 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
         await putRaw(
           id,
           `${base}.cmd`,
-          new TextEncoder().encode(`${spec.argv.map(shellQuote).join(' ')}\n`),
+          // Every `/work` path in the words names the workspace on this computer.
+          new TextEncoder().encode(
+            `${spec.argv.map((word) => shellQuote(maritimeWords(word))).join(' ')}\n`,
+          ),
           signal,
         );
         if (spec.stdin) await putRaw(id, stdin, spec.stdin, signal);
@@ -814,7 +849,7 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
           error.status < 500 &&
           error.status !== 408
         )
-          // Refused before the command reached the computer's shell: a plan
+          // Refused before the command reached the computer's shell: an account
           // refusal, a person holding the desktop, or a malformed request.
           throw new SandboxStartRefused(`Maritime refused the command: ${error.message}`);
         throw new SandboxTransportError(
@@ -885,6 +920,10 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
           lastError = null;
         } catch (error) {
           if (signal.aborted) throw after(error);
+          // A computer that is gone, or a key Maritime no longer accepts, does
+          // not come back by waiting: the marker decides at once.
+          if (error instanceof MaritimeApiError && [401, 403, 404].includes(error.status))
+            throw after(goneOr(id, error, 'poll'));
           // A poll only reads, so asking again is safe; a person holding the
           // desktop or a lost answer is waited out until the deadline.
           failures += 1;
@@ -901,17 +940,30 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
           continue;
         }
         if (polled.exitCode === PENDING_EXIT) continue;
-        const newline = polled.stdout.indexOf('\n');
-        const status = (newline < 0 ? polled.stdout : polled.stdout.slice(0, newline)).trim();
-        if (polled.exitCode !== 0 || !/^\d{1,3}$/.test(status))
+        const [status = '', size = ''] = polled.stdout.split('\n').map((line) => line.trim());
+        if (polled.exitCode !== 0 || !/^\d{1,3}$/.test(status) || !/^\d{1,16}$/.test(size))
           throw after(new Error(`the status could not be read (exit ${polled.exitCode})`));
         const durationMs = Math.round(performance.now() - started);
+        const totalBytes = Number(size);
+        // The output, up to what the caller keeps, byte for byte through the
+        // files API; the command has ended, so reading it again is safe.
+        const keep = Math.min(spec.maxOutputBytes, totalBytes, MARITIME_FILE_LIMIT);
+        let output: Uint8Array = new Uint8Array();
+        for (let attempt = 1; keep > 0; attempt += 1) {
+          try {
+            output = (await getRaw(id, `${base}.log`, keep, signal)) ?? new Uint8Array();
+            break;
+          } catch (error) {
+            if (signal.aborted || attempt >= 3 || error instanceof SandboxGone) throw after(error);
+            await delay(500 * attempt, signal).catch((aborted: unknown) => {
+              throw after(aborted);
+            });
+          }
+        }
         await cleanup(id, [...files, `${base}.rc`, `${base}.log`]);
         const exitCode = Number(status);
         // `timeout -s KILL` reports the kill it sent as 137.
         const timedOut = exitCode === 137 && durationMs >= spec.timeoutMs - 50;
-        const said = new TextEncoder().encode(newline < 0 ? '' : polled.stdout.slice(newline + 1));
-        const output = said.slice(0, spec.maxOutputBytes);
         return {
           started: 'yes',
           state: timedOut ? 'killed' : 'exited',
@@ -920,8 +972,8 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
           timedOut,
           durationMs,
           output,
-          totalBytes: said.byteLength,
-          captureLimited: said.byteLength > output.byteLength,
+          totalBytes: Math.max(totalBytes, output.byteLength),
+          captureLimited: totalBytes > output.byteLength,
         };
       }
     },
@@ -965,8 +1017,9 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
           );
         const stage = `${MARITIME_TMP_ROOT}/put-${nonce()}`;
         await putRaw(id, stage, file.bytes, signal);
-        const parent = file.path.slice(0, file.path.lastIndexOf('/')) || '/';
-        const words = [parent, stage, file.path, (file.mode & 0o111) !== 0 ? '755' : '644'];
+        const target = maritimePath(file.path);
+        const parent = target.slice(0, target.lastIndexOf('/')) || '/';
+        const words = [parent, stage, target, (file.mode & 0o111) !== 0 ? '755' : '644'];
         const added = words.reduce((sum, word) => sum + shellQuote(word).length + 1, 110);
         if (length + added > COMMAND_CHARS - 600 || batch.length / 4 >= 40) await flush();
         batch.push(...words);
@@ -981,7 +1034,7 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
       checkPath(base);
       await touch(id, signal);
       const stage = `${MARITIME_TMP_ROOT}/list-${nonce()}`;
-      const listed = await run(id, LIST, [base, stage], signal);
+      const listed = await run(id, LIST, [maritimePath(base), stage], signal);
       if (listed.exitCode === NOT_FOUND_EXIT) {
         throw new SandboxFileNotFound(`no such directory: ${root}`);
       }
@@ -1040,11 +1093,12 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
         throw new SandboxAdapterRefusal('a read takes a whole number of bytes');
       await touch(id, signal);
       const limit = Math.min(maxBytes, MARITIME_FILE_LIMIT);
-      // Under the files API's roots a file is read straight; the marker's own
-      // files, read after every command, are there.
-      if (direct(path) && maxBytes <= MARITIME_FILE_LIMIT) {
+      const where = maritimePath(path);
+      // Under the files API's roots a file is read straight; the workspace and
+      // the marker's own files, read after every command, are there.
+      if (direct(where) && maxBytes <= MARITIME_FILE_LIMIT) {
         try {
-          const bytes = await getRaw(id, path, limit, signal);
+          const bytes = await getRaw(id, where, limit, signal);
           if (bytes) return bytes;
           throw new SandboxFileNotFound(`no such file: ${path}`);
         } catch (error) {
@@ -1054,7 +1108,7 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
         }
       }
       const stage = `${MARITIME_TMP_ROOT}/get-${nonce()}`;
-      const staged = await run(id, STAGE_OUT, [path, String(limit), stage], signal);
+      const staged = await run(id, STAGE_OUT, [where, String(limit), stage], signal);
       if (staged.exitCode === NOT_FOUND_EXIT)
         throw new SandboxFileNotFound(`no such file: ${path}`);
       let bytes: Uint8Array | null = null;
@@ -1076,7 +1130,7 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
     async pause(handle, signal): Promise<{ resumeRef: string }> {
       const id = computerId(handle);
       try {
-        // Memory is snapshotted and the disk kept; the computer is free while it sleeps.
+        // Memory is snapshotted and the disk kept while the computer sleeps.
         await api('POST', `/${id}/sleep`, undefined, [200], signal);
       } catch (error) {
         throw goneOr(id, error, 'put to sleep');
@@ -1174,9 +1228,15 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
 
     async viewerLink(handle, request, signal): Promise<MaritimeViewer> {
       const id = computerId(handle);
-      const ttl = request.ttlSeconds ?? 600;
-      if (!Number.isInteger(ttl) || ttl < 30 || ttl > 3600)
-        throw new SandboxAdapterRefusal('a viewer link lasts 30 seconds to an hour');
+      const control = request.mode === 'control';
+      const ttl = request.ttlSeconds ?? (control ? CONTROL_LINK_SECONDS : 600);
+      const longest = control ? CONTROL_LINK_MAX_SECONDS : 3600;
+      if (!Number.isInteger(ttl) || ttl < 30 || ttl > longest)
+        throw new SandboxAdapterRefusal(
+          control
+            ? 'a link to take the wheel lasts 30 seconds to ten minutes'
+            : 'a viewer link lasts 30 seconds to an hour',
+        );
       const { json } = await api(
         'POST',
         `/${id}/viewer`,

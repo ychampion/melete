@@ -67,7 +67,7 @@ type FsNode =
 
 export class FsError extends Error {
   constructor(
-    readonly code: 'ENOENT' | 'EEXIST' | 'ENOTDIR' | 'EISDIR' | 'ELOOP' | 'EINVAL',
+    readonly code: 'ENOENT' | 'EEXIST' | 'ENOTDIR' | 'EISDIR' | 'ELOOP' | 'EINVAL' | 'EACCES',
     readonly path: string,
   ) {
     super(`${code}: ${path}`);
@@ -81,6 +81,21 @@ export class FakeFs {
   private readonly nodes = new Map<string, FsNode>();
   /** When each entry last changed, as `changes` counted it. */
   private readonly stamps = new Map<string, number>();
+  /**
+   * Directories owned by root, as on a computer whose one user is not root:
+   * nothing can be made, renamed or removed directly inside them.
+   */
+  private readonly sealed = new Set<string>();
+
+  /** Make dir root's: its entries can no longer be added, renamed or removed. */
+  seal(dir: string): void {
+    this.sealed.add(FakeFs.normalize(dir));
+  }
+
+  /** The parent of an entry about to be made, renamed or removed must not be root's. */
+  private writable(parent: string): void {
+    if (this.sealed.has(parent)) throw new FsError('EACCES', parent);
+  }
 
   private touch(target: string): void {
     changes += 1;
@@ -108,6 +123,7 @@ export class FakeFs {
         node.kind === 'file' ? { ...node, bytes: node.bytes.slice() } : { ...node },
       );
     for (const [key, stamp] of this.stamps) copy.stamps.set(key, stamp);
+    for (const dir of this.sealed) copy.sealed.add(dir);
     return copy;
   }
 
@@ -177,7 +193,7 @@ export class FakeFs {
     if (!parents) {
       const target = this.resolve(value, false);
       if (this.nodes.has(target)) throw new FsError('EEXIST', target);
-      this.parentOf(target);
+      this.writable(this.parentOf(target));
       this.nodes.set(target, { kind: 'dir', mode });
       this.touch(target);
       return;
@@ -190,7 +206,7 @@ export class FakeFs {
       const existing = this.nodes.get(target);
       if (existing?.kind === 'dir') continue;
       if (existing) throw new FsError('EEXIST', target);
-      this.parentOf(target);
+      this.writable(this.parentOf(target));
       // As `mkdir -p -m`: the mode is the last directory's; the ones made on the way get the default.
       this.nodes.set(target, { kind: 'dir', mode: index === parts.length - 1 ? mode : 0o755 });
       this.touch(target);
@@ -207,9 +223,10 @@ export class FakeFs {
       this.mkdir(normalized.slice(0, normalized.lastIndexOf('/')) || '/', true);
     }
     const target = this.resolve(value, true);
-    this.parentOf(target);
+    const parent = this.parentOf(target);
     const existing = this.nodes.get(target);
     if (existing?.kind === 'dir') throw new FsError('EISDIR', target);
+    if (!existing) this.writable(parent);
     const previous = existing?.kind === 'file' && options.append ? existing.bytes : EMPTY;
     const next = new Uint8Array(previous.byteLength + bytes.byteLength);
     next.set(previous);
@@ -233,7 +250,7 @@ export class FakeFs {
   symlink(targetText: string, value: string): void {
     const link = this.resolve(value, false);
     if (this.nodes.has(link)) throw new FsError('EEXIST', link);
-    this.parentOf(link);
+    this.writable(this.parentOf(link));
     this.nodes.set(link, { kind: 'symlink', target: targetText });
     this.touch(link);
   }
@@ -251,7 +268,8 @@ export class FakeFs {
     const target = this.resolve(to, false);
     const node = this.nodes.get(source);
     if (!node) throw new FsError('ENOENT', source);
-    this.parentOf(target);
+    this.writable(this.parentOf(source));
+    this.writable(this.parentOf(target));
     for (const [key, value] of [...this.nodes]) {
       if (key === source || key.startsWith(`${source}/`)) {
         this.nodes.delete(key);
@@ -266,6 +284,7 @@ export class FakeFs {
     const target = this.resolve(value, false);
     const node = this.nodes.get(target);
     if (!node) throw new FsError('ENOENT', target);
+    this.writable(this.parentOf(target));
     if (node.kind === 'dir') {
       const children = [...this.nodes.keys()].filter((key) => key.startsWith(`${target}/`));
       if (children.length && !recursive) throw new FsError('EISDIR', target);
@@ -882,6 +901,26 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     case 'setsid':
       // `-w` waits for the program, which is all the fake does anyway.
       return program(args[0] === '-w' ? args.slice(1) : args, shell, io);
+    case 'wc': {
+      const operands = args.filter((arg) => arg !== '--');
+      if (operands[0] !== '-c' || operands.length > 2)
+        return fail('only -c [FILE] is supported', 2);
+      const file = operands[1];
+      let count = 0;
+      if (file !== undefined) {
+        try {
+          count = fs.readFile(path(file)).byteLength;
+        } catch {
+          return fail(`${file}: No such file or directory`, 1);
+        }
+      } else if (io.read) {
+        for (let chunk = await io.read(); chunk; chunk = await io.read()) count += chunk.byteLength;
+      } else {
+        count = (await (io.in ? io.in() : shell.process.readStdin())).byteLength;
+      }
+      io.out(encode(file === undefined ? `${count}\n` : `${count} ${file}\n`));
+      return 0;
+    }
     case 'head': {
       const operands = args.filter((arg) => arg !== '--');
       if (operands[0] !== '-c' || operands[1] === undefined)
