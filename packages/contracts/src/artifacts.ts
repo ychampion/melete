@@ -378,8 +378,24 @@ export const personFile = z
   .meta({ id: 'PersonFile' });
 export type PersonFile = z.infer<typeof personFile>;
 
+/**
+ * How much the person keeps, across their spaces, against the most they may,
+ * where the installation sets one: files saved for them and files they sent.
+ */
+export const personStorage = z
+  .strictObject({
+    used_bytes: z.number().int().nonnegative(),
+    quota_bytes: z.number().int().positive(),
+  })
+  .meta({ id: 'PersonStorage' });
+export type PersonStorage = z.infer<typeof personStorage>;
+
 export const personFileList = z
-  .strictObject({ files: z.array(personFile) })
+  .strictObject({
+    files: z.array(personFile),
+    /** Present only where the installation limits how much each person keeps. */
+    storage: personStorage.nullable().optional(),
+  })
   .meta({ id: 'PersonFileList' });
 export type PersonFileList = z.infer<typeof personFileList>;
 

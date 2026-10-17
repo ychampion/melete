@@ -26,6 +26,7 @@ import type { Env } from '../env.ts';
 import type { AccountMailer } from '../experience/account-mail.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
+import { markSeen } from '../jobs/resting.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
 import { type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
@@ -314,6 +315,16 @@ export function mountAuth(
   const multiplayer = multiplayerEnabled(env);
   const signInKinds = multiplayer ? SIGN_IN_KINDS : ['person'];
   const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
+  // Each signed-in request, and each use through another assistant, is the
+  // person being seen. Failing to record it never refuses the request.
+  const seen = async (principalId: string) => {
+    if (!db) return;
+    await markSeen(db, principalId, env.MELETE_REST_ROUTINES_AFTER_DAYS).catch((error: unknown) =>
+      process.stderr.write(
+        `auth: last seen not recorded (${error instanceof Error ? error.message : 'error'})\n`,
+      ),
+    );
+  };
   const sessionBody = (c: Context, next: () => Promise<void>) =>
     c.req.method === 'POST' && c.req.path === '/attachments'
       ? uploadLimit(c, next)
@@ -386,6 +397,7 @@ export function mountAuth(
       if (!resolved) {
         return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
       }
+      await seen(person.id);
       c.set('owner', publicOwner(person));
       c.set('sessionSpace', resolved);
       c.set('experienceSpaceId', resolved.spaceId);
@@ -473,10 +485,12 @@ export function mountAuth(
           },
           403,
         );
+      await seen(active.owner.id);
       c.set('owner', { ...publicOwner(active.owner), kind: 'guest' });
       c.set('sessionDigest', tokenHash(token));
       return principalContext.run(active.owner.id, () => sessionBody(c, next));
     }
+    await seen(active.owner.id);
     c.set('owner', { ...publicOwner(active.owner), kind: 'person' });
     c.set('sessionDigest', tokenHash(token));
     // The space follows the authenticated principal; no request or other account can supply it.

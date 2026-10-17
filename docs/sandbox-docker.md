@@ -138,7 +138,11 @@ one, in both `open` and `connected_hosts_only`: a listed name or address is
 still tunnelled only on port 443, every answer must be public or in a listed
 range, and the tunnel goes to the address that was checked. A name that answers
 with a private address outside the listed ranges is refused as before, and cloud
-metadata stays refused. In `connected_hosts_only`, an internal host must also be
+metadata stays refused. Whatever is listed, the guard never tunnels into a
+network the service itself sits on (each computer's own network, the
+deployment's networks, loopback), into Melete's network pool, or to the address
+of any computer it lets out: one person's computer never reaches another's, nor
+the database and services behind Melete. In `connected_hosts_only`, an internal host must also be
 named in `MELETE_SANDBOX_EGRESS_EXTRA_HOSTS`, as any other host is; that list
 may now name hosts that resolve into a listed range. The browser worker keeps
 to public addresses.

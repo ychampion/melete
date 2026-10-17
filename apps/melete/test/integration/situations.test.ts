@@ -353,6 +353,46 @@ withDb('situations', () => {
     expect(String(told[0]?.reason)).not.toContain('not done');
   }, 60_000);
 
+  test('a deadline is named in the zone the person writes from until they confirm their own', async () => {
+    const di = await person('di', inDay());
+    const zone = 'America/Los_Angeles';
+    // Their profile still holds the zone the account was made with; their
+    // device reports Los Angeles, as their conversations are told.
+    const chat = await required(jobs).transaction((tx) =>
+      required(jobs).createInTransaction(
+        tx,
+        { space_id: di.spaceId, title: 'A note', objective: 'A note' },
+        { kind: 'chat' },
+      ),
+    );
+    await required(jobs).transaction((tx) =>
+      required(jobs).inputInTransaction(tx, chat.id, 'Hello', undefined, [], [], zone),
+    );
+    const docs = await account(di, 'test', 'Documents');
+    const doc = documentSource(docs, { signed: false });
+    doc.fail = true;
+    const due = clock + 30 * MINUTE;
+    await required(situations).setDeadline({
+      spaceId: di.spaceId,
+      principalId: di.id,
+      subjectKey: 'doc:lease',
+      connectionId: docs,
+      title: 'The lease is signed',
+      dueAt: new Date(due),
+      leadSeconds: 60,
+      atRisk: { all: [{ field: 'signed', op: 'eq', value: false }] },
+      personSet: true,
+    });
+    clock = due;
+    await required(situations).sweep();
+    const at = new Date(due).toISOString();
+    expect(spokenTime(at, zone)).not.toBe(spokenTime(at, 'UTC'));
+    const [told] = await live(di.id);
+    expect(told?.reason).toBe(
+      `Melete couldn't check this before it was due ${spokenTime(at, zone)}.`,
+    );
+  }, 60_000);
+
   test('an urgent deadline the person set pushes now, even in quiet hours; one they didn’t set waits', async () => {
     // Their day is placed after the test's clock: now is their quiet hours.
     const dee = await person('dee', quietNow());

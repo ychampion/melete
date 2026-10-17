@@ -6,6 +6,7 @@
  */
 import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { guardProcessLogs } from '../log-guard.ts';
 import { RolesRefusal, setUpDatabaseRoles } from './roles.ts';
 
 /** Writes `value` to `path` whole: a reader sees the old file or the new one, never part. */
@@ -18,6 +19,8 @@ function writeWhole(path: string, value: string) {
 }
 
 if (import.meta.main) {
+  // A Compose service like the others: its lines are kept and may be shipped.
+  guardProcessLogs();
   const operatorUrl = process.env.DATABASE_URL?.trim();
   const directory = process.env.MELETE_DATABASE_ACCESS_DIR?.trim();
   if (!operatorUrl || !directory) {

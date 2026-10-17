@@ -17,13 +17,14 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { resolveOriginWarnings } from '../../src/broker/trust.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { session } from '../../src/db/auth-schema.ts';
-import { connection, experienceProfile, job, owner, space } from '../../src/db/schema.ts';
+import { connection, experienceProfile, job, owner, runState, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { whenWords } from '../../src/intents/origins.ts';
 import { intent } from '../../src/intents/schema.ts';
 import { IntentService, type ReversalStep } from '../../src/intents/service.ts';
+import { localNow } from '../../src/jobs/local-now.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -160,15 +161,27 @@ async function capture(
   words: string,
   args: Record<string, unknown>,
   pasted?: { start: number; end: number }[],
+  /** Another space to say it in, and the zone the person's device reports. */
+  where: { space?: string; deviceZone?: string } = {},
 ) {
   const chat = await required(jobs).transaction((tx) =>
     required(jobs).createInTransaction(
       tx,
-      { space_id: spaceId, title: 'A request', objective: 'A request' },
+      { space_id: where.space ?? spaceId, title: 'A request', objective: 'A request' },
       { kind: 'chat' },
     ),
   );
-  await required(jobs).input(chat.id, words, pasted);
+  await required(jobs).transaction((tx) =>
+    required(jobs).inputInTransaction(
+      tx,
+      chat.id,
+      words,
+      undefined,
+      [],
+      pasted ?? [],
+      where.deviceZone,
+    ),
+  );
   const turn = await claim(chat.id);
   expect(turn.claims.scopes).toContain('intent.capture');
   const response = await required(brokerApp).request('/tools/call', {
@@ -274,6 +287,57 @@ withDb('intents', () => {
     const [work] = await required(handle).db.select().from(job).where(eq(job.id, run));
     expect(work?.kind).toBe('run');
     expect(['completed', 'failed', 'cancelled']).not.toContain(work?.state);
+  }, 60_000);
+
+  test('a reminder reads back in the zone the person wrote from, as their work is told', async () => {
+    // A new account: its profile still holds the zone it was made with, and
+    // the person writes from Los Angeles.
+    const pacific = newId('sp');
+    const h = required(handle);
+    await h.db.insert(space).values({ id: pacific, name: 'Personal', gitPath: `/s/${pacific}` });
+    await h.db.insert(experienceProfile).values({ spaceId: pacific, timeZone: 'UTC' });
+    const zone = 'America/Los_Angeles';
+    // 21:50 UTC is the afternoon in Los Angeles and the evening in UTC.
+    const due = `${dayAhead(3).iso}T21:50:00.000Z`;
+    const { result, row } = await capture(
+      'Remind me to call the bank at 2:50',
+      { title: 'Call the bank', kind: 'other', deadline_at: due },
+      undefined,
+      { space: pacific, deviceZone: zone },
+    );
+    const local = whenWords(due, zone);
+    expect(local).not.toBe(whenWords(due, 'UTC'));
+    expect(result.read_back).toContain(local);
+    expect(result.read_back).not.toContain(whenWords(due, 'UTC'));
+    // Home reads it back the same way.
+    const shown = await required(intents).view(row);
+    expect(shown.read_back.line).toContain(local);
+    expect(shown.read_back.line).not.toContain(whenWords(due, 'UTC'));
+    // The work carrying it out reads "2:50 PM" in its goal, and is told the
+    // same zone, so it is not taken for 2:50 PM in UTC.
+    const [work] = await h.db
+      .select({ goal: runState.goal })
+      .from(runState)
+      .where(eq(runState.jobId, required(row.runId)));
+    expect(work?.goal).toContain(local);
+    const shift = await claim(required(row.runId));
+    expect(required(shift.bundle.local_now).time_zone).toBe(zone);
+    // So is a part of that work handed to a step.
+    const stepZone = await required(jobs).transaction(async (tx) => {
+      const step = await required(jobs).createInTransaction(
+        tx,
+        { space_id: pacific, title: 'Find the number', objective: 'Find the number' },
+        { kind: 'run_step' },
+      );
+      await tx.insert(runState).values({
+        jobId: step.id,
+        spaceId: pacific,
+        parentRunId: required(row.runId),
+        goal: 'Find the number',
+      });
+      return (await localNow(tx, step, new Date())).time_zone;
+    });
+    expect(stepZone).toBe(zone);
   }, 60_000);
 
   test('a value the person never said shows as inferred', async () => {

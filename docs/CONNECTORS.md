@@ -993,6 +993,11 @@ How the entries work together:
   address.`
 - **Cloud metadata stays refused**, whatever range holds it
   (`169.254.169.254` and the others `MELETE_ALLOW_CLOUD_METADATA` describes).
+- **Melete's own network pool stays refused**, whatever range holds it
+  (`MELETE_NETWORK_POOL`, `10.215.0.0/16` by default). Every agent computer has
+  its network there, so listing `10.0.0.0/8` for a team's hosts never lets one
+  person's agent reach another person's computer. With the pool set to `off`,
+  computers take the engine's own ranges, so leave those out of the list.
 - **Agents' computers follow the same ranges.** The docker computer's egress
   guard tunnels HTTPS to an address in a listed range as it does to a public
   one; see [sandbox-docker.md](sandbox-docker.md#what-it-may-reach).

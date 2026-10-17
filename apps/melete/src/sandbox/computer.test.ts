@@ -82,7 +82,36 @@ function mount(service: SandboxComputerService, getOwner: () => Owner) {
   return call;
 }
 
-async function scene(options: { wrap?: (controls: ComputerControls) => ComputerControls } = {}) {
+/**
+ * Another person on the same installation: their own personal space, a job of
+ * theirs there, and that job's computer on their space's own connection.
+ */
+async function person() {
+  if (!database) throw new Error('Postgres unavailable');
+  const sql = database.sql;
+  const id = recordId('prn');
+  await sql`insert into principal (id, email) values (${id}, ${`${id}@example.test`})`;
+  const scope = await seedSessionScope(sql);
+  await sql`update space set kind = 'personal', owner_principal_id = ${id} where id = ${scope.spaceId}`;
+  await sql`update job set principal_id = ${id}, state = 'running' where id = ${scope.jobId}`;
+  const attemptId = await scope.attempt();
+  const sessionId = recordId('sbx');
+  const sandbox = `melete-sbx-test-${sessionId.toLowerCase()}`;
+  await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id, agent_id,
+      adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
+    values (${sessionId}, ${scope.connectionId}, ${scope.spaceId}, ${scope.jobId}, ${attemptId},
+      ${scope.agentId}, 'docker', ${sandbox}, 'melete-sandbox:local', '{"kind":"open"}'::jsonb,
+      'pause', 'ready', now() + interval '1 hour')`;
+  return { id, scope, sessionId, sandbox };
+}
+
+async function scene(
+  options: {
+    wrap?: (controls: ComputerControls) => ComputerControls;
+    /** Other connections this instance serves, with the same desktop. */
+    serves?: string[];
+  } = {},
+) {
   if (!database) throw new Error('Postgres unavailable');
   const sql = database.sql;
   const ownerId = recordId('own');
@@ -102,7 +131,13 @@ async function scene(options: { wrap?: (controls: ComputerControls) => ComputerC
   const { provider, inputs } = desktop();
   const stored = new PostgresComputerControls(sql);
   const controls = options.wrap ? options.wrap(stored) : stored;
-  const providers = () => new Map([[scope.connectionId, { adapter: 'docker' as const, provider }]]);
+  const providers = () =>
+    new Map(
+      [scope.connectionId, ...(options.serves ?? [])].map((id) => [
+        id,
+        { adapter: 'docker' as const, provider },
+      ]),
+    );
   const service = new SandboxComputerService(sql, providers, { controls });
   const parked: string[][] = [];
   service.onPark = (_job, attempts) => parked.push(attempts);
@@ -151,6 +186,78 @@ withDb('the computer a person steers', () => {
     expect((await s.call('GET', `/sandbox/computers?job_id=${s.scope.jobId}`)).status).toBe(404);
     expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`)).status).toBe(404);
     expect((await s.controls.state(s.sandbox)).control).toBe('agent');
+  });
+
+  test('another person with a computer of their own can list, take, watch or drive nothing of this one', async () => {
+    const other = await person();
+    const s = await scene({ serves: [other.scope.connectionId] });
+    const mine = s.owner().id;
+    const opened = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live`);
+    expect(opened.status).toBe(200);
+    const { live_id: liveId } = (await opened.json()) as { live_id: string };
+    const typed = { live_id: liveId, ack_through: 0, events: [{ k: 'text', text: 'hi' }] };
+
+    s.as(other.id);
+    // Their own computer answers them, so each refusal below is about whose computer it is.
+    const theirs = await s.call('GET', `/sandbox/computers?job_id=${other.scope.jobId}`);
+    expect(theirs.status).toBe(200);
+    expect(
+      ((await theirs.json()) as { computers: { session_id: string }[] }).computers.map(
+        (computer) => computer.session_id,
+      ),
+    ).toEqual([other.sessionId]);
+    // Nothing of this one, by its job, its session or the view its owner holds open, even from
+    // the same address the owner opened it from.
+    const attempts: [string, 'GET' | 'POST', string, unknown?][] = [
+      ['list', 'GET', `/sandbox/computers?job_id=${s.scope.jobId}`],
+      ['takeover', 'POST', `/sandbox/sessions/${s.sessionId}/takeover`],
+      ['handback', 'POST', `/sandbox/sessions/${s.sessionId}/handback`],
+      ['live', 'POST', `/sandbox/sessions/${s.sessionId}/live`],
+      ['frames', 'GET', `/sandbox/sessions/${s.sessionId}/live/frames?live_id=${liveId}`],
+      ['input', 'POST', `/sandbox/sessions/${s.sessionId}/live/input`, typed],
+      ['close', 'POST', `/sandbox/sessions/${s.sessionId}/live/close`, { live_id: liveId }],
+    ];
+    for (const [what, method, path, body] of attempts) {
+      const response = await s.call(method, path, body);
+      expect([what, response.status, await codeOf(response)]).toEqual([
+        what,
+        404,
+        'session_not_found',
+      ]);
+    }
+    // The owner's view, carried to their own computer's routes, is not theirs either.
+    for (const path of ['input', 'close']) {
+      const response = await s.call(
+        'POST',
+        `/sandbox/sessions/${other.sessionId}/live/${path}`,
+        path === 'input' ? typed : { live_id: liveId },
+      );
+      expect([path, response.status, await codeOf(response)]).toEqual([path, 410, 'live_closed']);
+    }
+    expect(s.inputs).toEqual([]);
+    expect(await s.controls.state(s.sandbox)).toEqual({ control: 'agent', epoch: 0 });
+    expect(s.parked).toEqual([]);
+    // They steer their own.
+    expect((await s.call('POST', `/sandbox/sessions/${other.sessionId}/takeover`)).status).toBe(
+      200,
+    );
+    expect((await s.controls.state(other.sandbox)).control).toBe('human');
+
+    s.as(mine);
+    // And the owner nothing of theirs, while their own view is still open and still theirs.
+    for (const [what, method, path] of [
+      ['list', 'GET', `/sandbox/computers?job_id=${other.scope.jobId}`],
+      ['handback', 'POST', `/sandbox/sessions/${other.sessionId}/handback`],
+      ['live', 'POST', `/sandbox/sessions/${other.sessionId}/live`],
+    ] as const) {
+      const response = await s.call(method, path);
+      expect([what, response.status]).toEqual([what, 404]);
+    }
+    expect((await s.controls.state(other.sandbox)).control).toBe('human');
+    const closed = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live/close`, {
+      live_id: liveId,
+    });
+    expect(await closed.json()).toEqual({ closed: true });
   });
 
   test('taking over parks the job and fences its attempt; handing back carries the work on', async () => {

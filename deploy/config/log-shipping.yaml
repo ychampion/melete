@@ -1,0 +1,83 @@
+# OpenTelemetry Collector configuration for deploy/docker-compose.log-shipping.yml.
+# It reads the json-file logs Docker keeps on this machine and sends the lines
+# of the Melete stack's services over OTLP/HTTP to the endpoint the operator
+# names in deploy/.env. Nothing here runs unless that file is started on its own.
+#
+# The service's lines carry ids, codes and short reasons, never what people
+# wrote or a model said, and known secret shapes are taken out before a line is
+# written (docs/DEPLOYMENT.md, "Shipping logs"). The containers attempts and
+# agents' computers run in print the agent's own work, so their lines, which
+# carry no Compose labels, are never sent; nor are other projects' lines.
+
+extensions:
+  # Where each log file was read up to, so a restart neither resends nor skips.
+  file_storage:
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
+
+receivers:
+  file_log:
+    include: [/var/lib/docker/containers/*/*-json.log]
+    # Lines written before the shipper first started stay on this machine.
+    start_at: end
+    include_file_path: true
+    storage: file_storage
+    operators:
+      - type: container
+        format: docker
+        add_metadata_from_filepath: false
+      # Only a line its container's logging labels as a Compose service's is
+      # kept: deploy/docker-compose.yml's x-logging adds the labels, and nothing
+      # the supervisor or a connection starts has them.
+      - type: filter
+        expr: 'attributes.attrs == nil or attributes.attrs["com.docker.compose.service"] == nil'
+      - type: regex_parser
+        parse_from: attributes["log.file.path"]
+        regex: '^/var/lib/docker/containers/(?P<container_id>[a-f0-9]{64})/'
+        parse_to: resource
+      - type: move
+        from: resource["container_id"]
+        to: resource["container.id"]
+      # The Compose project and service, from the labels the json-file driver
+      # adds to each line (deploy/docker-compose.yml, x-logging).
+      - type: move
+        if: 'attributes.attrs["com.docker.compose.project"] != nil'
+        from: attributes.attrs["com.docker.compose.project"]
+        to: resource["service.namespace"]
+      - type: move
+        from: attributes.attrs["com.docker.compose.service"]
+        to: resource["service.name"]
+      - type: remove
+        field: attributes.attrs
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  batch: {}
+
+exporters:
+  otlp_http:
+    endpoint: ${env:MELETE_LOG_SHIP_ENDPOINT}
+    headers:
+      Authorization: ${env:MELETE_LOG_SHIP_AUTHORIZATION}
+    # While the endpoint is unreachable, batches wait on disk and are retried
+    # for up to an hour each.
+    sending_queue:
+      enabled: true
+      storage: file_storage
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 1h
+
+service:
+  extensions: [file_storage]
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    logs:
+      receivers: [file_log]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http]

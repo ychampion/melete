@@ -767,11 +767,15 @@ export function createModelGateway(options: GatewayOptions): Server {
           const errorText =
             answer.status === 400 && schemaCarried && !schemaStripped ? rejectionText : '';
           settlement.status = 'failed';
-          // A signed-in provider's 401 is an expired token: it is refreshed
-          // here, and the engine's next try goes with the new one, so it is
-          // not named a refused key.
-          const refreshed = Boolean(signedIn) && answer.status === 401;
-          if (signedIn && refreshed) callProvider.signedIn?.rejected(signedIn.generation);
+          // A sign-in's 401 is an expired token: it is refreshed here, and the
+          // engine's next try goes with the new one, so it is not named a
+          // refused key. A token got by that very refresh, and a key typed in
+          // the app, have nothing newer to try: their 401 is a refused key,
+          // named as one like an install's own key.
+          const refreshable =
+            !!signedIn && !!callProvider.signedIn?.refreshes && answer.status === 401;
+          if (signedIn && refreshable) callProvider.signedIn?.rejected(signedIn.generation);
+          const refreshed = refreshable && !signedIn?.retried;
           // The refusal's class, read from its status and text, is all that
           // goes on: the engine gets a status and code that mean the same.
           const failed = refreshed ? null : classifyProviderFailure(answer.status, rejectionText);

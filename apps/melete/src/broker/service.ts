@@ -76,6 +76,7 @@ import {
   toolDenied,
   toolRefusal,
 } from '../spaces/policy.ts';
+import { storageRefusal } from '../storage/per-person.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import { ASK_PERSON_TOOL, requestPersonQuestion } from './ask-person.ts';
 import {
@@ -182,6 +183,12 @@ export type BrokerOptions = {
     tx: Query,
     input: { job: LockedJob; action: Action; receipt: Receipt },
   ) => Promise<void>;
+  /**
+   * The most one person may keep, in bytes (`MELETE_STORAGE_PER_PERSON_MB`).
+   * Left out or null, no step is refused for it; what each step keeps is
+   * recorded either way.
+   */
+  storagePerPerson?: number | null;
   /**
    * Where the values in a payload came from. Start-up passes the memory core's
    * resolver; without one the broker asks nobody and warns about nothing.
@@ -1866,6 +1873,16 @@ export class BrokerService implements BrokerOperations {
         // makes two live attempts take their turn rather than race.
         const [prior] = await tx`select * from action where intent_key = ${key} for update`;
         if (prior) return { action: actionFromRow(prior), key, repeated: true, pending: null };
+        // A new step that would save past what its person may keep is refused
+        // before anyone is asked, with what they use and how to free space. A
+        // repeat was handed the action it already made above, never refused.
+        const full = await storageRefusal(tx, this.options.storagePerPerson, {
+          kind: request.kind,
+          jobId: job.id,
+          spaceId: job.space_id,
+          payload: canonical.canonical,
+        });
+        if (full) throw new BrokerFault('payload_invalid', full);
         // Only a proposal that is new is checked against what was read ahead:
         // a repeat is handed the action it already made, never refused over it.
         await connector.checkAhead?.(

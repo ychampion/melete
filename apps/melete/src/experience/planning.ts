@@ -25,6 +25,7 @@ import {
   trigger,
 } from '../db/schema.ts';
 import { newId } from '../ids.ts';
+import { checkRoutineRoom } from '../jobs/resting.ts';
 import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import { ownJob } from '../principals/authority.ts';
@@ -654,6 +655,8 @@ export class ExperiencePlanning {
         },
         { kind: 'routine', agentId: routine.agentId, dormant: true },
       );
+      // An ended routine no longer counts, so starting it again is one more too.
+      await checkRoutineRoom(tx, row.principalId, jobs.standingWork.routinesPerPerson, row.id);
       const [registration] = await tx
         .insert(trigger)
         .values({ id: newId('trg'), jobId: row.id, kind: 'schedule', spec: routine.spec })

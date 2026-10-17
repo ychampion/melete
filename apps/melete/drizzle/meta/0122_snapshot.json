@@ -1,5 +1,5 @@
 {
-  "id": "5dd5f9e1-2dd4-46ce-8785-e1ebcb110fac",
+  "id": "da9e905a-b763-4102-ba0d-f2eefede77ea",
   "prevId": "410573b9-6d6a-4aa8-b662-503fc5eae0d6",
   "version": "7",
   "dialect": "postgresql",
@@ -4549,6 +4549,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "routines_resumed_at": {
+          "name": "routines_resumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -18800,79 +18813,6 @@
         "attachment_kind": {
           "name": "attachment_kind",
           "value": "\"attachment\".\"kind\" in ('image', 'pdf', 'docx', 'xlsx', 'csv', 'text')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.composio_usage": {
-      "name": "composio_usage",
-      "schema": "",
-      "columns": {
-        "period": {
-          "name": "period",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "dimension": {
-          "name": "dimension",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "used": {
-          "name": "used",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "reported": {
-          "name": "reported",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "used_at_report": {
-          "name": "used_at_report",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "composio_usage_period_dimension_pk": {
-          "name": "composio_usage_period_dimension_pk",
-          "columns": [
-            "period",
-            "dimension"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "composio_usage_period_check": {
-          "name": "composio_usage_period_check",
-          "value": "\"composio_usage\".\"period\" ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'"
-        },
-        "composio_usage_dimension_check": {
-          "name": "composio_usage_dimension_check",
-          "value": "\"composio_usage\".\"dimension\" ~ '^[a-z_]{1,40}$'"
-        },
-        "composio_usage_used_check": {
-          "name": "composio_usage_used_check",
-          "value": "\"composio_usage\".\"used\" >= 0"
         }
       },
       "isRLSEnabled": false

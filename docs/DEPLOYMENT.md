@@ -481,6 +481,10 @@ refuses sign-in there; an alert target (`MELETE_ALERT_WEBHOOK_URL`, or
 and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`. Say in your
 privacy terms how long backups keep what people remove; see
 [How long backups keep what was removed](#how-long-backups-keep-what-was-removed).
+The logs hold no one's messages, files or secrets
+([What the logs hold](#what-the-logs-hold)); to keep them past rotation, set
+`MELETE_LOG_SHIP_ENDPOINT` to your log collector and start the shipper in
+[Shipping logs](#shipping-logs). It stays off unless you start it.
 
 Mark such an installation with `"hosted": true` in `deploy/melete.deploy.json`.
 `check` and `status` then fail, under `hosted.public_url`, `hosted.web_origin`,
@@ -503,6 +507,67 @@ read -rs MELETE_OPERATOR_TOKEN && export MELETE_OPERATOR_TOKEN   # 24 or more ra
 bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOKEN
 bun run melete check
 ```
+
+A self-hosted installation limits nobody's storage. One that hosts other
+people should cap how much each person keeps, so one account cannot fill the
+disk or the bucket for everyone: `MELETE_STORAGE_PER_PERSON_MB=2048` is a
+reasonable start. See [How much each person keeps](#how-much-each-person-keeps).
+
+Each person's agent computer has a network of its own in `MELETE_NETWORK_POOL`.
+Leave that setting at its default (`10.215.0.0/16`) or another range, not
+`off`: requests the agents make through Melete never enter the pool, whatever
+`MELETE_PRIVATE_HOSTS` lists, so one person's agent can't reach another
+person's computer. With the pool `off`, computers take the engine's own ranges
+instead, and a range listed in `MELETE_PRIVATE_HOSTS` that covers them would
+open them.
+
+Two settings keep the background work of many people in proportion; both are
+empty, and so off, unless set. `MELETE_REST_ROUTINES_AFTER_DAYS` is how many
+days a person may go unseen (no sign-in, no use of the app, no message through
+a channel) before their routines, watches and other repeating work rest. A
+time that comes while they rest is let pass, not kept: the next time the
+person is seen, everything comes back on from that moment, nothing missed runs
+late, and Home tells them in one line that their routines rested and are back
+on. `MELETE_ROUTINES_PER_PERSON_MAX` is how many routines and pieces of
+repeating work one person may keep; one more is refused with a sentence the
+assistant passes on. For an installation that other people sign in to, `14`
+days and `20` routines are a good start:
+
+```bash
+bun run melete set MELETE_REST_ROUTINES_AFTER_DAYS=14 MELETE_ROUTINES_PER_PERSON_MAX=20
+```
+
+### How long call records are kept
+
+Every model call writes a row to `model_usage`, and every message, meeting,
+file change or process report a connected account sends writes one to `event`.
+With many people both grow every day. `MELETE_RETENTION_DAYS` bounds them; it
+is unset by default, and then nothing is removed. Use **90** on an
+installation that hosts other people:
+
+```bash
+bun run melete set MELETE_RETENTION_DAYS=90
+```
+
+Once an hour, one instance removes, a small batch at a time and oldest first:
+
+- model calls made before the start of the UTC day that many days back. Each
+  day's calls are summed into the daily usage roll-up (`usage_day`) before
+  they go, so the usage chart, background cost per day and spending by day
+  keep their history. This month's spending, the spending alerts and the
+  roll-up read the calls themselves, so the setting is at least 35.
+- connector events that no job took in and nothing still holds. A conversation
+  and everything its agent reads stay as long as the conversation does, and so
+  do the audit log, receipts, approvals and files. An event a job or something
+  Melete noticed cites, one a listening trigger has not read, one an open
+  "needs you" item points at, and mail an open wait on a reply may still be
+  checked against are kept. Each removed event leaves its delivery key, so the
+  same message is not delivered twice.
+
+Each batch is its own short transaction. It passes over model calls another
+transaction holds, and gives up after five seconds of waiting for anything
+else, to try again on the next pass; a large backlog goes over several passes. `MELETE_OBSERVATION_RETENTION_DAYS` (14 by default)
+still removes unused mail, calendar and document observations sooner.
 
 ## On a cloud VM
 
@@ -679,6 +744,26 @@ Each image carries these tags:
   tag moves on all five together, only after every one of them is published.
 - the commit's first seven characters, such as `023df46`: one build, kept.
 - a release's version, such as `v0.3.0`, when that tag is pushed.
+
+A tag belongs to the Docker engine, not to one installation: a pull of `main`
+by any installation on the same engine, or by hand, moves it for all of them.
+The `melete` service looks up the runtime image's ID once, when it starts, and
+starts every attempt's engine from that exact image. `melete-cells` records
+the image the service was given and keeps accepting it after the tag moves,
+also when `melete-cells` restarts on its own, so a moved tag never stops a
+running installation's engines. A newer runtime image is used from the next
+start of the `melete` service, which `melete deploy` does once the matching
+service image is in place: the service image expects the Hermes commit its
+own release's runtime carries, so the two change together, never when the tag
+happens to move. `melete deploy` also pins each installation to its commit's
+own tag, which keeps installations on one engine from moving each other's.
+
+If the image the service started with is removed from the engine, such as by
+`docker image prune` after the tag moved away from it, a new message ends
+with “I couldn’t start the engine that does the work … Restart Melete”, and the
+service log names the image. Restart the `melete` service to use the image the
+tag names now, or run `melete deploy` when that is a newer release than the
+service's.
 
 The images are built for `linux/amd64`. On another architecture, build from
 source as [Install on a Linux Docker host](#install-on-a-linux-docker-host)
@@ -1936,6 +2021,39 @@ nothing uses and that was stored more than seven days ago. Removing a space dele
 only that space used, and the removal finishes only when the store confirms
 they are gone.
 
+### How much each person keeps
+
+By default nobody is limited. To cap how much one person may keep, set
+`MELETE_STORAGE_PER_PERSON_MB` in `deploy/.env` and recreate the service.
+
+What counts, across all of a person's spaces: the files they sent in chat, and
+every file their work saved, in their Files or in a chat's own folder,
+generated recordings and published files among them. A file a member's request
+saved in a shared space counts against that member, not the space's owner, and
+so does a file a member copies into a room from their own work; work in a
+shared space that nobody asked for counts against its owner. Someone who leaves
+a shared space, or is removed from it, stops being charged for what they kept
+there, since they can no longer delete it. A file deleted into the trash stops
+counting, and counts again if it is put back. Deleting a chat frees what its
+folder held and the files sent in it. Files the agent's computer made in its
+own `/work` are not counted until they are moved or saved into Files.
+
+The amounts are read from what the service recorded as each file was saved,
+moved and deleted, never by walking the disk. They are recorded whether or not
+a limit is set, from the version that added this setting on; files saved
+before that upgrade are not counted. The limit is checked as each upload
+begins and as each step is proposed, so uploads sent at the same moment, or
+steps proposed before the others landed, can take a person past it; once they
+are past it, nothing more is saved until they free space.
+
+Once a person reaches the limit, an upload is refused with a sentence that says
+how much they use and that deleting files in Files, or chats with files sent in
+them, frees space. A step that would save a file past the limit is refused the
+same way, and the agent passes it on. A step whose size is known only once it
+runs, such as a generated recording, goes ahead until the limit is reached.
+The Files page shows how much the person uses against the limit, only when one
+is set.
+
 ## Company map
 
 A scan reads the connected mailbox with the installation's own model, once the
@@ -2424,7 +2542,7 @@ read-only, and `melete-cells` starts only these fixed profiles:
 
 | Profile | Image | Network | Storage |
 | --- | --- | --- | --- |
-| An attempt's engine | the runtime image the stack names | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
+| An attempt's engine | the runtime image the stack names, as it stood when the service started ([prebuilt images](#using-prebuilt-images)) | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
 | An agent's computer | `MELETE_SANDBOX_DOCKER_IMAGE` | none, or its own internal network | its two volumes |
 | A stdio MCP server | one pulled by digest from any registry that does not point back at the host ([CONNECTORS.md](CONNECTORS.md)), or the runner images below | none, or its own internal network | its own volumes |
 
@@ -2685,8 +2803,70 @@ A container that was removed when its work ended has no logs left.
 The limits live in the `x-logging` anchor at the top of
 `deploy/docker-compose.yml`; a changed limit applies when a container is
 recreated, not on restart. `bun run compose:check` and
-`bun run browser:compose:check` refuse a service without the bound. Logs that
-must outlive rotation belong in a log collector you run beside the stack.
+`bun run browser:compose:check` refuse a service without the bound. Each line
+also names its Compose project and service (the json-file driver's `labels`
+option), so a shipped line says where it came from.
+
+### What the logs hold
+
+The service and `melete-cells` write ids, codes, counts and short reasons:
+which job, attempt, connection or route failed, and why. They never write
+what someone wrote, a file's contents, a prompt, a model's answer, a password,
+a token or a sign-in secret. `apps/melete/src/log-content.test.ts` reads every
+place they write a line and fails on one that writes a value named like
+content or a secret. Error messages are written, cut short; before any line
+leaves the process, known secret shapes are taken out of it (an address's
+user and password, `Bearer` credentials, JWTs, provider keys, private keys,
+`password=`-style pairs, long random tokens) and email addresses become
+`[email]` (`apps/melete/src/log-guard.ts`). Ids, digests and container names
+stay, since the log is read by them. The bundled Postgres writes an error's
+reason alone, never the failing row or the statement that hit it.
+
+The containers attempts, agents' computers and connection installs run in are
+different: what they print is the agent's own work. Their logs stay on the
+machine (`melete logs --attempts`, `--computers`) and are never shipped.
+
+### Shipping logs
+
+Rotation keeps about 50 MB per container. To keep logs longer, or to search
+them in one place, send them to a log collector that accepts OTLP over HTTP:
+Grafana Loki 3 (its `/otlp` endpoint), Grafana Cloud, an OpenTelemetry
+Collector of your own, or any hosted service that takes OTLP logs.
+`deploy/docker-compose.log-shipping.yml` runs an OpenTelemetry Collector
+(`deploy/config/log-shipping.yaml`) that reads the json-file logs on the
+machine from the moment it first starts and sends the lines of the stack's
+Compose services, each with its `container.id`, `service.name` (the Compose
+service) and `service.namespace` (the Compose project). A line is sent only
+when its container's logging labels it with a Compose service, as `x-logging`
+in `deploy/docker-compose.yml` does; attempts, computers and other projects'
+containers carry no such label. It is a Compose project of its own,
+so `deploy`, `upgrade` and `logs` neither start nor need it, and nothing is
+sent anywhere until you start it:
+
+```bash
+bun run melete set MELETE_LOG_SHIP_ENDPOINT=https://otlp.example.net/otlp   # /v1/logs is added
+read -rs MELETE_LOG_SHIP_AUTHORIZATION && export MELETE_LOG_SHIP_AUTHORIZATION   # e.g. "Basic <base64 of user:key>"; leave unset if none
+bun run melete set --from-env MELETE_LOG_SHIP_AUTHORIZATION && unset MELETE_LOG_SHIP_AUTHORIZATION
+docker compose -p melete-logs --env-file deploy/.env \
+  -f deploy/docker-compose.log-shipping.yml up -d
+docker compose -p melete-logs --env-file deploy/.env -f deploy/docker-compose.log-shipping.yml logs --tail 20
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `MELETE_LOG_SHIP_ENDPOINT` | none (required) | The collector's OTLP/HTTP base address |
+| `MELETE_LOG_SHIP_AUTHORIZATION` | empty | The `Authorization` header it expects, if any |
+| `MELETE_LOG_SHIP_MEMORY_LIMIT` | `512m` | The shipper's memory cap |
+
+The shipper runs as root, because Docker's log files are readable by root
+alone, with no capabilities, no new privileges and a read-only filesystem; it
+mounts the log folder read-only and has no Docker socket. Where each file was
+read up to, and batches waiting while the endpoint is unreachable, are kept in
+its `log-shipping-state` volume, so a restart neither resends nor skips. A
+second installation on the machine is shipped too, under its own
+`service.namespace`. Stop it with the same `docker compose -p melete-logs --env-file
+deploy/.env -f deploy/docker-compose.log-shipping.yml` prefix and `down`,
+adding `--volumes` to forget where it was.
 
 ## Backup and restore
 
@@ -3078,6 +3258,10 @@ docker image rm melete-service:local melete-runtime:local melete-web:local \
   postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
 # With Tailscale, also remove:
 #   tailscale/tailscale@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+# With log shipping, first run
+#   docker compose -p melete-logs --env-file deploy/.env -f deploy/docker-compose.log-shipping.yml down --volumes
+# and also remove:
+#   otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
 # With prebuilt images, remove those instead of the :local ones:
 #   docker image ls --format '{{.Repository}}:{{.Tag}}' 'ghcr.io/ychampion/melete-*' | xargs -r docker image rm
 ```
