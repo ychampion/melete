@@ -96,6 +96,8 @@ export const CONNECTION_PROVIDERS = [
   'drive',
   /** Text messages through Twilio Programmable Messaging. */
   'twilio',
+  /** An app signed in through Composio, whose tools the agent finds and runs there. */
+  'composio',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;

@@ -200,6 +200,8 @@ const SIGNED_OUT_ROUTES = [
   // The telephony provider's webhooks, believed only for their signature.
   /^POST \/reach\/twilio\//,
   /^POST \/sms\/twilio\//,
+  // Composio's trigger deliveries, believed only for their signature.
+  /^POST \/composio\/events$/,
 ];
 
 async function makeRoom(name: string) {

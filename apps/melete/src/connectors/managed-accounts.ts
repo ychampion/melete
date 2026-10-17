@@ -12,6 +12,7 @@
  * connection is found acting for it; a failure only moves its next try later.
  */
 import type { Sql } from 'postgres';
+import { ACCOUNT_SLOT_PREFIX } from '../signals/managed-calls.ts';
 import { type ComposioClient, ComposioFault } from './composio.ts';
 
 /** Whether any live connection, other than `except`, still acts for a Composio account. */
@@ -68,6 +69,11 @@ export function managedRevocation(sql: Sql, client: ComposioClient) {
     const configuration = row?.configuration as Record<string, unknown> | undefined;
     const accountId = configuration?.connected_account_id;
     if (configuration?.via !== 'composio' || typeof accountId !== 'string') return;
+    // Its trigger goes with it; removing the account ends it too, so a failure here is only noted.
+    if (typeof configuration.trigger_id === 'string')
+      await client.deleteTrigger(configuration.trigger_id).catch(() => {
+        process.stderr.write('connections: a Composio trigger was not removed\n');
+      });
     if (await managedAccountInUse(sql, accountId, connection.id)) return;
     try {
       await client.removeAccount(accountId);
@@ -108,6 +114,11 @@ export async function sweepManagedRemovals(
       returning r.connected_account_id, r.attempts`;
   const result = { removed: [] as string[], kept: [] as string[], failed: [] as string[] };
   for (const { connected_account_id: id, attempts } of taken) {
+    // A place a sign-in held and never let go (it stopped mid-way): no account at Composio.
+    if (id.startsWith(ACCOUNT_SLOT_PREFIX)) {
+      await settleManagedRemoval(sql, id);
+      continue;
+    }
     if (await managedAccountInUse(sql, id)) {
       await settleManagedRemoval(sql, id);
       result.kept.push(id);

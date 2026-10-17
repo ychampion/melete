@@ -829,14 +829,27 @@ export const accountSignInStart = z.object({
  * consent. One sign-in connects Gmail and Google Calendar, one consent page
  * each; with `documents`, Google Drive alone.
  */
-export const managedSignInRequest = z
-  .object({
-    provider: z.literal('google'),
-    /** Left out, the space of the signed-in session. */
-    space_id: prefixedId(ID_PREFIXES.space).optional(),
-    documents: z.boolean().optional(),
-  })
-  .strict();
+/** A toolkit's slug at Composio, such as `slack`. */
+export const composioToolkit = z.string().regex(/^[a-z0-9][a-z0-9_]{0,63}$/);
+
+export const managedSignInRequest = z.discriminatedUnion('provider', [
+  z
+    .object({
+      provider: z.literal('google'),
+      /** Left out, the space of the signed-in session. */
+      space_id: prefixedId(ID_PREFIXES.space).optional(),
+      documents: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      /** Another app Composio signs in to, named by its toolkit. */
+      provider: z.literal('app'),
+      toolkit: composioToolkit,
+      space_id: prefixedId(ID_PREFIXES.space).optional(),
+    })
+    .strict(),
+]);
 export type ManagedSignInRequest = z.infer<typeof managedSignInRequest>;
 
 export const managedSignInStart = z.object({
@@ -847,9 +860,23 @@ export const managedSignInStart = z.object({
   /** Where the person signs in. */
   issuer: z.url(),
   via: z.literal('composio'),
-  /** What the sign-in connects, one consent page each, in order. */
-  connects: z.array(z.enum(['mail', 'calendar', 'documents'])),
+  /** What the sign-in connects, one consent page each, in order; `tools` for an app. */
+  connects: z.array(z.enum(['mail', 'calendar', 'documents', 'tools'])),
 });
+
+/** One app that can be connected through Composio. */
+export const composioApp = z
+  .object({
+    toolkit: composioToolkit,
+    title: z.string(),
+    description: z.string(),
+    logo: z.url().nullable(),
+    categories: z.array(z.string()),
+  })
+  .meta({ id: 'ComposioApp' });
+
+export const composioAppSearchResponse = z.object({ apps: z.array(composioApp) });
+export type ComposioAppSearchResponse = z.infer<typeof composioAppSearchResponse>;
 
 export const accountSignInStatus = z.discriminatedUnion('state', [
   z.object({ state: z.literal('pending'), expires_at: timestamp }),
@@ -957,10 +984,12 @@ export const connectionCatalogEntry = z
       }),
       z.object({
         method: z.literal('managed_sign_in'),
-        provider: z.enum(['google']),
+        provider: z.enum(['google', 'app']),
+        /** For an app, its toolkit, sent back in the request that starts the sign-in. */
+        toolkit: composioToolkit.optional(),
         /** Who handles the sign-in and keeps the account's tokens. */
         via: z.literal('composio'),
-        /** `POST` here with `{ provider }` to start; the answer is the address to open. */
+        /** `POST` here with `{ provider }` (and `toolkit` for an app) to start; the answer is the address to open. */
         start: z.string(),
         /** What the person reads about who signs them in, in plain words. */
         note: z.string(),

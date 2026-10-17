@@ -1053,6 +1053,93 @@ name. Gmail, Google Calendar and Google Drive signed in through Composio keep
 Melete's own `email.*`, `calendar.*` and `documents.*` tools; see
 [Signing in with Google through Composio](mail-calendar.md#signing-in-with-google-through-composio).
 
+#### Connecting an app through Composio
+
+With `COMPOSIO_API_KEY` set, the catalog also lists popular apps that
+Composio signs in to with its own OAuth app (Slack, Google Docs and Sheets,
+Outlook, Teams, Asana, HubSpot, Salesforce and others; `POPULAR_APPS` in
+`apps/melete/src/connectors/composio-catalog.ts`), each as `app-<toolkit>`.
+`GET /composio/apps?query=` searches everything else Composio offers; an app
+is found only when Composio has a managed sign-in for it, or when the operator
+set an auth config of their own for it in `COMPOSIO_AUTH_CONFIGS`
+(`toolkit=ac_id,...`). Answers are kept for ten minutes.
+
+An app the remote MCP catalog above already offers is not offered again
+through Composio: its own server's entry wins, so each app appears once. The
+overlap comes from the MCP catalog itself (`mcpCatalogCovers` in
+`packages/contracts/src/mcp-catalog.ts`): an entry's id, and the `products`
+it names when they go by other names (Atlassian covers Composio's `jira` and
+`confluence`). Today that hides Notion, Linear, Jira, Confluence, Sentry,
+Stripe and GitHub from the popular list, from search and from a new sign-in,
+and a new MCP entry hides its Composio twin by itself. A connection already
+made through Composio for one of them keeps working. Composio's own toolkits
+and its meta tools (`COMPOSIO_*`) are never offered or run.
+
+`POST /managed-sign-ins` with `{ "provider": "app", "toolkit": "slack" }`
+signs in the same way as the Google sign-in, and installs one connection per
+app in the space, with three tools:
+
+- `app_<toolkit>.find_tools` (`read`): lists the app's tools that match what
+  the agent is looking for, a few at a time, so the agent's tool list stays
+  small;
+- `app_<toolkit>.read` (`read`): runs one of the app's tools that Composio
+  marks read-only;
+- `app_<toolkit>.act` (`write_external`): runs any other tool of the app; it
+  always asks first.
+
+Each runs in a Composio session pinned to the connection's own account, with
+Composio's workbench, proxy and connection tools switched off, and an argument
+that names another account is refused. Disconnecting revokes and removes the
+Composio account. Evidence: `an app connected through Composio` and `the app
+catalog` in [composio.test.ts](../apps/melete/src/connectors/composio.test.ts) and
+[managed-sign-in.test.ts](../apps/melete/test/integration/managed-sign-in.test.ts).
+
+#### Limits on use through Composio
+
+Every limit is an operator setting and is unset by default, which means no
+limit. They are counted for the whole install, per billing month:
+
+| Setting | Limits |
+|---|---|
+| `MELETE_COMPOSIO_TOOL_CALLS_MONTHLY_CAP` | tool calls run through Composio (reads for watching, the agent's tools, sends) |
+| `MELETE_COMPOSIO_TRIGGER_EVENTS_MONTHLY_CAP` | trigger events Composio delivers |
+| `MELETE_COMPOSIO_ACCOUNTS_CAP` | connected accounts at Composio at once |
+| `MELETE_COMPOSIO_MONTHLY_CREDIT_USD` | an amount the month may spend past the free counts above |
+| `MELETE_COMPOSIO_TOOL_CALL_USD`, `MELETE_COMPOSIO_TRIGGER_EVENT_USD` | the price of each one past its count, used with the credit |
+| `MELETE_COMPOSIO_BILLING_DAY` | the day of the month (1–28, UTC) the month starts on; 1 by default |
+
+`MELETE_MANAGED_CALLS_MONTHLY_CAP`, the older name, still sets the tool-call
+limit when the new one is unset.
+
+- A limit is hard. A call that would pass it is refused before it reaches
+  Composio, approved sends included, and the person is told the app is paused
+  until the month resets.
+- With a credit, the counts above become free counts: use may go past them
+  only while the estimated cost of everything past them, across tool calls and
+  trigger events, stays within the credit.
+- A call takes its place in the count before it is sent and gives it back only
+  when it surely did not run; a call that timed out stays counted. The count is
+  kept in Postgres under a lock, so several Melete processes share it.
+- Trigger events are counted as they arrive. A delivery is taken only when its
+  signature, made with `COMPOSIO_WEBHOOK_SECRET` over the exact bytes sent, is
+  less than five minutes old, and each `webhook-id` is taken once, so a retry
+  or a replay is neither counted nor acted on twice. A delivery larger than
+  1 MiB is refused unread. Without the secret the address answers 404. Past
+  their limit, Melete switches
+  every trigger off at Composio and reads accounts on the fallback schedule; it
+  switches them back on in the next month.
+- Every ten minutes Melete asks Composio for its own counts for the month and
+  uses whichever is larger, its own or Composio's plus what it ran since.
+  Composio's usage numbers cover tool calls, not trigger events, so the event
+  count is Melete's own.
+- A new sign-in past the accounts limit is refused before Composio makes an
+  account.
+
+`GET /health/detail` (with the operator's token) shows the month's standing under `composio` (each
+count, its limit and `ok`, `near` or `reached`, the accounts, and the estimated
+spend past the free counts), and the same is logged every ten minutes.
+Evidence: [managed-calls.test.ts](../apps/melete/src/signals/managed-calls.test.ts).
+
 #### Connecting GitHub
 
 GitHub's MCP server (`https://api.githubcopilot.com/mcp/`) accepts only an OAuth

@@ -8,6 +8,7 @@ import {
 import { eq } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import { INVITE_PUBLIC_PATHS } from '../api/auth.ts';
+import { COMPOSIO_EVENTS_PATH } from '../api/composio.ts';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import {
@@ -60,6 +61,9 @@ export function mountPrincipals(
     if (previewPath(c.req.method, c.req.path) && !c.get('owner')) return next();
     // A text to a person's own Twilio connection has none either; sms/routes.ts checks its signature.
     if (c.req.method === 'POST' && SMS_WEBHOOK_PATH.test(c.req.path) && !c.get('owner'))
+      return next();
+    // So does a trigger delivery from Composio; api/composio.ts checks its signature.
+    if (c.req.method === 'POST' && c.req.path === COMPOSIO_EVENTS_PATH && !c.get('owner'))
       return next();
     const actor = c.get('owner').id;
     const path = c.req.path;
