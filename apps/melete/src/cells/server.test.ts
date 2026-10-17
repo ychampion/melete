@@ -105,9 +105,11 @@ describe('the cell service', () => {
   test('records the image the runtime name stands for when the service looks it up', async () => {
     const RUNTIME = `sha256:${'b'.repeat(64)}`;
     const SANDBOX = `sha256:${'c'.repeat(64)}`;
-    const runtimeImages = new RuntimeImages('melete-runtime:local');
+    // Named as an installation names it: a registry path and a tag.
+    const NAME = 'ghcr.io/ychampion/melete-runtime:main';
+    const runtimeImages = new RuntimeImages(NAME);
     const engine = async (path: string) => {
-      if (path.endsWith(`/images/${encodeURIComponent('melete-runtime:local')}/json`))
+      if (path.endsWith(`/images/${encodeURIComponent(NAME)}/json`))
         return Response.json({ Id: RUNTIME, Config: { Labels: {} } });
       if (path.endsWith(`/images/${encodeURIComponent('melete-sandbox:local')}/json`))
         return Response.json({ Id: SANDBOX, Config: { Labels: {} } });
@@ -119,7 +121,7 @@ describe('the cell service', () => {
       hostname: '127.0.0.1',
       port: 0,
       project: 'melete',
-      runtimeImage: 'melete-runtime:local',
+      runtimeImage: NAME,
       runtimeImages,
       sandboxImage: 'melete-sandbox:local',
       mcpImages: [],
@@ -128,10 +130,9 @@ describe('the cell service', () => {
     });
     servers.push(server);
     const api = new DockerSocketApi({ url: `http://127.0.0.1:${server.port}`, key: KEY });
-    const answer = (await api.request(
-      'GET',
-      `/images/${encodeURIComponent('melete-runtime:local')}/json`,
-    )) as { Id: string };
+    const answer = (await api.request('GET', `/images/${encodeURIComponent(NAME)}/json`)) as {
+      Id: string;
+    };
     expect(answer.Id).toBe(RUNTIME);
     expect(runtimeImages.has(RUNTIME)).toBe(true);
     await api.request('GET', `/images/${encodeURIComponent('melete-sandbox:local')}/json`);

@@ -47,7 +47,10 @@ export class DockerError extends Error {
     readonly status: number,
     method: Method,
     path: string,
-    /** The engine's own reason, kept only for networks, whose requests carry no Env. */
+    /**
+     * The engine's reason, kept only where it cannot hold an Env: for networks,
+     * whose requests carry none, and for a 403, the cell service's refusal.
+     */
     readonly reason?: string,
   ) {
     // Docker errors can include the submitted configuration. Never log its Env.
@@ -120,7 +123,8 @@ export class DockerSocketApi implements DockerApi, DockerVersionSource {
         response.status,
         method,
         path,
-        // A 403 is the cell service's refusal, which names a rule, never a value sent.
+        // A 403 is the cell service's refusal: it names a rule, and at most an
+        // option key or a resource name, never an environment value.
         path.startsWith('/networks') || response.status === 403
           ? await engineReason(response)
           : undefined,

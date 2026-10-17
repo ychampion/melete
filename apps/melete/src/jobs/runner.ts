@@ -115,6 +115,12 @@ export const LEASE_MS = 45_000;
  */
 export const ENGINE_IMAGE_NOTE =
   'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then send your message again.';
+/** What long work asks the person when its engine could not start that way. */
+export const ENGINE_IMAGE_QUESTION =
+  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then say "continue" to try again.';
+/** Why long work or a helper stopped that way, in its record. */
+const ENGINE_IMAGE_WHY =
+  'Its engine could not start: the engine image Melete started with is no longer available.';
 /** The reason an attempt lost that way is recorded with. */
 export const ENGINE_IMAGE_REASON = 'engine_image_unavailable';
 /** What a conversation's turn ends with when its work was cut off and could not be resumed. */
@@ -1621,7 +1627,9 @@ export class AttemptRunner {
                 wait: {
                   kind: 'user_input',
                   question:
-                    'My work on this keeps getting interrupted. Say "continue" to try again.',
+                    reason === ENGINE_IMAGE_REASON
+                      ? ENGINE_IMAGE_QUESTION
+                      : 'My work on this keeps getting interrupted. Say "continue" to try again.',
                 },
                 reason: 'recovery',
               },
@@ -1639,6 +1647,8 @@ export class AttemptRunner {
                 { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
                 { attemptId, reason: 'recovery', ...(setAside ? { wait: setAside } : {}) },
               );
+    const why =
+      reason === ENGINE_IMAGE_REASON ? ENGINE_IMAGE_WHY : 'Its work kept getting interrupted.';
     // Long work that stops to ask gives the person what it has first.
     if (
       run &&
@@ -1646,13 +1656,9 @@ export class AttemptRunner {
       moved.kind === 'run' &&
       moved.state === 'waiting_for_input'
     )
-      await run.giveSoFar(tx, moved, attemptId, 'Its work kept getting interrupted.');
+      await run.giveSoFar(tx, moved, attemptId, why);
     if (run && moved.kind === 'run_step' && moved.state === 'failed')
-      await run.stepEnded(tx, moved, {
-        kind: 'failed',
-        retryable: false,
-        reason: 'Its work kept getting interrupted.',
-      });
+      await run.stepEnded(tx, moved, { kind: 'failed', retryable: false, reason: why });
     // A conversation whose last attempt was lost has ended: its turn says so,
     // in the saved copy and on the stream, instead of looking busy for ever.
     // So has a routine's run that went back to its schedule.

@@ -27,7 +27,11 @@ import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
-import { AttemptRunner } from '../../src/jobs/runner.ts';
+import {
+  AttemptRunner,
+  ENGINE_IMAGE_QUESTION,
+  ENGINE_IMAGE_REASON,
+} from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { pendingSteers } from '../../src/jobs/steer.ts';
 import { bestExperiment, textOf, valueShown } from '../../src/runs/record.ts';
@@ -473,6 +477,41 @@ withDb('long work in shifts', () => {
     await tool(next.claims, 'run.finish', { summary: 'No supplier could be priced.' });
     await required(runner).commitOutcome(next.claims, done());
     expect((await view(run.id)).status).toBe('done');
+  });
+
+  test('without its engine image, work stops to ask at once and says why; a helper ends', async () => {
+    const run = await start({ goal: 'Summarise the quarter' });
+    const lead = await claim(run.id);
+    const helper = (
+      (await tool(lead.claims, 'run.delegate', {
+        task: 'Read the March report',
+        title: 'March',
+      })) as { helper_id: string }
+    ).helper_id;
+    await tool(lead.claims, 'run.checkpoint', {
+      summary: 'Asked a helper.',
+      next: 'Read what it found.',
+      next_shift: 'when_helpers_finish',
+    });
+    await required(runner).commitOutcome(lead.claims, done());
+
+    // The helper's engine cannot start: it ends after one try and says why.
+    const h = await claim(helper);
+    expect(await required(runner).loseAttempt(h.claims.attempt_id, ENGINE_IMAGE_REASON)).toBe(true);
+    expect((await row(helper)).state).toBe('failed');
+    expect((await row(run.id)).state).toBe('queued');
+
+    // Nor can the run's: it stops to ask after one try, saying what to do.
+    const next = await claim(run.id);
+    expect(next.bundle.job.objective).toContain('March: failed');
+    expect(next.bundle.job.objective).toContain('the engine image Melete started with');
+    expect(await required(runner).loseAttempt(next.claims.attempt_id, ENGINE_IMAGE_REASON)).toBe(
+      true,
+    );
+    const asking = await view(run.id);
+    expect(asking.status).toBe('needs_you');
+    expect(asking.question).toBe(ENGINE_IMAGE_QUESTION);
+    await request(`/runs/${run.id}/stop`, 'POST');
   });
 
   test('handing off to go on now and nothing else is idle; resting on helpers is not', async () => {
