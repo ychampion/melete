@@ -465,15 +465,18 @@ describe('the check catches the mistakes that would matter', () => {
     for (const [, service] of services)
       expect(service.logging).toEqual({
         driver: 'json-file',
-        options: { 'max-size': '10m', 'max-file': '5' },
+        options: {
+          'max-size': '10m',
+          'max-file': '5',
+          labels: 'com.docker.compose.project,com.docker.compose.service',
+        },
       });
   });
 
   test('attempt containers get the same limits as the services', () => {
-    expect(compose.services?.runtime?.logging).toEqual({
-      driver: ATTEMPT_LOG_CONFIG.Type,
-      options: { ...ATTEMPT_LOG_CONFIG.Config },
-    });
+    // The same size and file count; the Compose labels name services alone.
+    expect(compose.services?.runtime?.logging?.driver).toBe(ATTEMPT_LOG_CONFIG.Type);
+    expect(compose.services?.runtime?.logging?.options).toMatchObject(ATTEMPT_LOG_CONFIG.Config);
   });
 
   test.each(['postgres', 'melete', 'runtime-image', 'runtime', 'web'])(

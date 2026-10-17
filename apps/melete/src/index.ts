@@ -163,6 +163,7 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes, startEpisodeRetention } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { guardProcessLogs } from './log-guard.ts';
 import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
@@ -2150,6 +2151,7 @@ function startBlobs(sql: Sql, env: Env, workers: boolean, leads: () => boolean |
 }
 
 if (import.meta.main) {
+  guardProcessLogs();
   const apiNetwork = await resolveApiNetwork(loadEnv());
   const service = await bootstrap({ effects: true });
   const { app, env, effectBoundary } = service;
