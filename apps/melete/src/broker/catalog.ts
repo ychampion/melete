@@ -622,7 +622,12 @@ export class ToolCatalog {
         });
       }
     }
+    // A skill this attempt was given in full is already in its instructions.
+    // Offering its own tool as well had the model call it to read the same
+    // words again: a round trip before the work began, with nothing new in it.
+    const given = await givenInFull(tx, claims.attempt_id);
     for (const skill of skills) {
+      if (given.has(skill.frontmatter.name)) continue;
       const tool: ToolSpec = {
         name: `skills.${skill.frontmatter.name.replaceAll('-', '_')}`,
         description: skill.frontmatter.description,
@@ -1046,6 +1051,24 @@ const COMMAND_LINE_WORDS: Record<string, { words: string[]; commands: string }> 
   aws: { words: ['aws', 'amazon', 's3', 'ec2', 'lambda'], commands: 'aws' },
   npm: { words: ['npm', 'package', 'registry'], commands: 'npm' },
 };
+
+/**
+ * The names of the skills an attempt was given in full, as recorded when it
+ * started. Read through the caller's transaction; an attempt with no record
+ * was given none.
+ */
+async function givenInFull(tx: Query, attemptId: string): Promise<Set<string>> {
+  const [row] = await tx`select versions->'skills' as skills from learning_attempt
+    where attempt_id = ${attemptId}`;
+  const skills = Array.isArray(row?.skills) ? (row.skills as unknown[]) : [];
+  return new Set(
+    skills.flatMap((skill) =>
+      skill && typeof skill === 'object' && typeof (skill as { name?: unknown }).name === 'string'
+        ? [(skill as { name: string }).name]
+        : [],
+    ),
+  );
+}
 
 /**
  * The command-line accounts (GitHub, for one) this job may use: active in its
