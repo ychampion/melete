@@ -245,8 +245,23 @@ export interface GatewayProvider {
  * service. It is used instead of `apiKey`, and neither ever reaches the cell.
  */
 export interface SignedInCredential {
-  /** The access token to send now. Throws a GatewayError when there is none to send. */
-  current(): Promise<{ token: string; generation: number; headers: Record<string, string> }>;
+  /**
+   * The access token to send now. Throws a GatewayError when there is none to
+   * send. `retried` is set when this call refreshed a token the provider
+   * refused, so a refusal of the new one is final.
+   */
+  current(): Promise<{
+    token: string;
+    generation: number;
+    headers: Record<string, string>;
+    retried?: boolean;
+  }>;
   /** The provider refused the token of this generation; the next use refreshes first. */
   rejected(generation: number): void;
+  /**
+   * Set for a sign-in whose token can be refreshed, so a 401 is tried again
+   * with a new one. A key typed in the app leaves it unset: its 401 is a
+   * refused key, named as one.
+   */
+  refreshes?: boolean;
 }

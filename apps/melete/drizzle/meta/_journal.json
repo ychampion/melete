@@ -860,7 +860,21 @@
       "idx": 122,
       "version": "7",
       "when": 1789232400102,
-      "tag": "0122_sandbox_provider_caps",
+      "tag": "0122_principal_last_seen",
+      "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1789232400103,
+      "tag": "0123_stored_file",
+      "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1789232400104,
+      "tag": "0124_sandbox_provider_caps",
       "breakpoints": true
     }
   ]

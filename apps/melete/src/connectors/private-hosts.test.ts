@@ -4,6 +4,7 @@ import {
   formatRange,
   inPrivateRange,
   NO_PRIVATE_HOSTS,
+  onNetworks,
   parsePrivateHosts,
   privateHostListed,
   privateHostsFromEnv,
@@ -105,6 +106,25 @@ describe('the operator’s list of internal hosts', () => {
     expect(privateHostsFromEnv({}).ranges).toEqual([]);
     expect(privateHostsFromEnv({ MELETE_PRIVATE_HOSTS: '10.20.0.0/16' }).ranges).toHaveLength(1);
     expect(privateHostsFromEnv({ MELETE_PRIVATE_HOSTS: '10.20.0.0/16, *' })).toBe(NO_PRIVATE_HOSTS);
+  });
+
+  test('a network as an interface reports it holds its own addresses and nothing beside them', () => {
+    const networks = ['172.18.0.5/16', '10.215.3.17/28', 'fd00:1::7/64', '::ffff:192.168.5.0/120'];
+    for (const address of [
+      '172.18.200.1',
+      '::ffff:172.18.0.9',
+      '10.215.3.16',
+      '10.215.3.31',
+      'fd00:1::abcd',
+      '192.168.5.77',
+    ])
+      expect([address, onNetworks(address, networks)]).toEqual([address, true]);
+    for (const address of ['172.19.0.1', '10.215.3.32', '10.215.3.15', 'fd00:2::1', '192.168.6.1'])
+      expect([address, onNetworks(address, networks)]).toEqual([address, false]);
+    // An entry that does not read as a network matches nothing.
+    for (const bad of ['10.0.0.0', '10.0.0.0/33', '10.0.0.0/x', 'corp.internal/8', '10.0.0.0/8/1'])
+      expect([bad, onNetworks('10.0.0.1', [bad])]).toEqual([bad, false]);
+    expect(onNetworks('not an address', networks)).toBe(false);
   });
 });
 

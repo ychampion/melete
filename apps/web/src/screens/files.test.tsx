@@ -8,7 +8,15 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { servesBrowser } from '../experience/adapter.ts';
 import { AppContext, type AppContextValue } from '../experience/hooks.ts';
 import type { PersonFile } from '../experience/types.ts';
-import { deletedNote, FileRow, opensHere, whereLine } from './Files.tsx';
+import {
+  deletedNote,
+  FileRow,
+  opensHere,
+  StorageUse,
+  storageAmount,
+  storageLine,
+  whereLine,
+} from './Files.tsx';
 import { lastUsed, SignedInSites } from './Privacy.tsx';
 
 const NOW = Date.parse('2026-10-10T15:00:00.000Z');
@@ -138,4 +146,20 @@ test('a browser out of reach for a moment keeps the sites section; no browser ro
   ).toBe(false);
   expect(servesBrowser({ data: null, error: 'Offline', unavailable: null })).toBe(false);
   expect(servesBrowser({ data: null, error: null, unavailable: 'Not here' })).toBe(false);
+});
+
+const GB = 1024 * 1024 * 1024;
+
+test('storage use reads plainly against the limit, and says how to free space once full', () => {
+  expect(storageAmount(300 * 1024 * 1024)).toBe('300 MB');
+  expect(storageAmount(1.5 * GB)).toBe('1.5 GB');
+  expect(storageLine({ used_bytes: 1.5 * GB, quota_bytes: 2 * GB })).toBe('Using 1.5 GB of 2 GB');
+  const full = storageLine({ used_bytes: 2 * GB, quota_bytes: 2 * GB });
+  expect(full).toContain('Your storage is full');
+  expect(full).toContain('delete files you no longer need');
+  const shown = renderToStaticMarkup(
+    <StorageUse storage={{ used_bytes: 3 * GB, quota_bytes: 2 * GB }} />,
+  );
+  expect(shown).toContain('data-full="true"');
+  expect(shown).toContain('width:100.0%');
 });

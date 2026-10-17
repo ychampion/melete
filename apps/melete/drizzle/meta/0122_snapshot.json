@@ -1,5 +1,5 @@
 {
-  "id": "b61b339e-d016-4e98-8e3d-9e531dfa5288",
+  "id": "da9e905a-b763-4102-ba0d-f2eefede77ea",
   "prevId": "410573b9-6d6a-4aa8-b662-503fc5eae0d6",
   "version": "7",
   "dialect": "postgresql",
@@ -4549,6 +4549,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "routines_resumed_at": {
+          "name": "routines_resumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -14714,118 +14727,6 @@
           "value": "\"sandbox_process\".\"state\" in ('starting', 'running', 'exited', 'stopped', 'expired', 'lost')"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.sandbox_provider_computer": {
-      "name": "sandbox_provider_computer",
-      "schema": "",
-      "columns": {
-        "adapter": {
-          "name": "adapter",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "computer_id": {
-          "name": "computer_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "asleep": {
-          "name": "asleep",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "active_at": {
-          "name": "active_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "sandbox_provider_computer_adapter_computer_id_pk": {
-          "name": "sandbox_provider_computer_adapter_computer_id_pk",
-          "columns": [
-            "adapter",
-            "computer_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.sandbox_provider_lease": {
-      "name": "sandbox_provider_lease",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "adapter": {
-          "name": "adapter",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "computer_id": {
-          "name": "computer_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "until": {
-          "name": "until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "sandbox_provider_lease_computer_idx": {
-          "name": "sandbox_provider_lease_computer_idx",
-          "columns": [
-            {
-              "expression": "adapter",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "computer_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.sandbox_session": {

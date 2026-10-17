@@ -137,6 +137,7 @@ import { QuestionService } from './jobs/questions.ts';
 import { QUEUES, queueCreatesSchema, startQueue } from './jobs/queue.ts';
 import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
+import { markSeen } from './jobs/resting.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { connectionScopesForJob } from './jobs/scopes.ts';
 import { CONVERSATION_BUDGET, JobService } from './jobs/service.ts';
@@ -162,6 +163,7 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes, startEpisodeRetention } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { guardProcessLogs } from './log-guard.ts';
 import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
@@ -178,6 +180,7 @@ import { InstanceRegistry, instanceId } from './ops/instance.ts';
 import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
+import { startRetention } from './ops/retention.ts';
 import {
   ownsSpace,
   refusedForRemoval,
@@ -245,6 +248,7 @@ import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
 import { BlobCollector } from './storage/gc.ts';
+import { storagePerPersonBytes } from './storage/per-person.ts';
 import { configuredTriageGateway, type TriageClassifier } from './triage/classifier.ts';
 import { mountNeedsYou } from './triage/routes.ts';
 import { TriageService } from './triage/service.ts';
@@ -445,6 +449,7 @@ export function createApp(deps: AppDeps) {
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
       { days: deps.env.MELETE_TRASH_DAYS, maxBytes: deps.env.MELETE_TRASH_MAX_MB * 1024 * 1024 },
+      deps.sql ? { sql: deps.sql, quota: storagePerPersonBytes(deps.env) } : undefined,
     );
   // Apps a person can open, and the changes they make to their own.
   if (deps.sql)
@@ -593,13 +598,16 @@ export function createApp(deps: AppDeps) {
     intents.deps.reverse = undoThrough((spaceId, actionId) => undoing.undo(spaceId, actionId));
   }
   if (intents) mountIntents(app, intents);
+  const reachDb = deps.db;
   const reaching =
     deps.reach ??
-    (deps.db
+    (reachDb
       ? new ReachService({
-          db: deps.db,
+          db: reachDb,
           config: reachConfigFromEnv(deps.env),
           ...(noticing ? { ack: (principalId, id) => noticing.ack(principalId, id) } : {}),
+          seen: (principalId) =>
+            markSeen(reachDb, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
         })
       : undefined);
   if (reaching) mountReach(app, reaching);
@@ -697,6 +705,8 @@ export function createApp(deps: AppDeps) {
       publicUrl: deps.env.MELETE_PUBLIC_URL,
       twilio: factory.options.twilio,
       experience: experience ?? undefined,
+      seen: (principalId) =>
+        markSeen(connections.db, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
     });
   }
   if (deps.db)
@@ -937,6 +947,7 @@ export async function bootstrap(
   let stopObservationRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
+  let stopRetention: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
   let stopStagedWriteSweep: (() => void) | undefined;
   let stopAccessSweep: (() => void) | undefined;
@@ -994,6 +1005,7 @@ export async function bootstrap(
     stopObservationRetention?.();
     stopEgressRetention?.();
     stopUsageRollup?.();
+    stopRetention?.();
     stopTrashSweep?.();
     stopStagedWriteSweep?.();
     stopAccessSweep?.();
@@ -1117,6 +1129,10 @@ export async function bootstrap(
       );
       // Each finished day of model calls is rolled up for reports, by one instance.
       stopUsageRollup = startUsageRollup(handle.sql, () => leading(leases, 'usage-rollup'));
+      // Model calls and unused connector events older than MELETE_RETENTION_DAYS go, when set.
+      stopRetention = startRetention(handle.sql, env.MELETE_RETENTION_DAYS, () =>
+        leading(leases, 'retention'),
+      );
       // Sessions, links and codes that expired go, so the tables do not grow for ever.
       stopAccessSweep = startAccessSweep(handle.sql, () => leading(leases, 'access-sweep'));
       // Sealed tokens that refreshes and disconnections left behind go now and once a day.
@@ -1262,7 +1278,13 @@ export async function bootstrap(
     if (env.DATABASE_URL)
       queue = await startQueue(env.DATABASE_URL, { createSchema: queueCreatesSchema(env) });
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
-    if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
+    if (jobs) {
+      jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
+      jobs.standingWork = {
+        restAfterDays: env.MELETE_REST_ROUTINES_AFTER_DAYS,
+        routinesPerPerson: env.MELETE_ROUTINES_PER_PERSON_MAX,
+      };
+    }
     runs = jobs ? new RunService(jobs) : undefined;
     intents = jobs && runs ? new IntentService({ jobs, runs }) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues
@@ -1976,6 +1998,8 @@ export async function bootstrap(
             db: handle.db,
             config: reachConfigFromEnv(env),
             ack: (principalId, id) => noticing.ack(principalId, id),
+            seen: (principalId) =>
+              markSeen(handle.db, principalId, env.MELETE_REST_ROUTINES_AFTER_DAYS),
           });
           const climbing = reach;
           noticing.deps.escalate = (tx, row, pushed) => climbing.escalate(tx, row, pushed);
@@ -2129,6 +2153,7 @@ function startBlobs(sql: Sql, env: Env, workers: boolean, leads: () => boolean |
 }
 
 if (import.meta.main) {
+  guardProcessLogs();
   const apiNetwork = await resolveApiNetwork(loadEnv());
   const service = await bootstrap({ effects: true });
   const { app, env, effectBoundary } = service;

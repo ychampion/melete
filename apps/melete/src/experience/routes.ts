@@ -24,6 +24,7 @@ import { saveWebReadSetting, webReadSetting } from '../connectors/web.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, connection, experienceDraftSend } from '../db/schema.ts';
 import type { QuestionService } from '../jobs/questions.ts';
+import { routinesBackLine } from '../jobs/resting.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
@@ -211,9 +212,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       return { profile };
     },
     'GET /home': async (spaceId, c) => {
-      const waiting = handoffs
-        ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) }
-        : {};
+      const back = await routinesBackLine(deps.db, c.get('owner').id);
+      const waiting = {
+        ...(handoffs ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) } : {}),
+        ...(back ? { routines_back: back } : {}),
+      };
       // A member sees their own day: nothing of the owner's calendar, tasks or routines.
       if (!ownsSessionSpace(c.get('sessionSpace')))
         return {

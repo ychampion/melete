@@ -31,6 +31,7 @@ import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import type { BlobStore } from '../storage/blob.ts';
+import { storagePerPersonBytes } from '../storage/per-person.ts';
 import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
@@ -199,6 +200,7 @@ export async function startEffectBoundary(
         hourlyLimit: env.MELETE_REVIEW_HOURLY_LIMIT,
       },
       sendHoldMs: env.MELETE_SEND_HOLD_SECONDS * 1000,
+      storagePerPerson: storagePerPersonBytes(env),
       broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,
       catalog: {

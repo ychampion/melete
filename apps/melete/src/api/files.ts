@@ -21,6 +21,7 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
+import type { Sql } from 'postgres';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { FILE_TOOLS, mimeForName, savedFile } from '../artifact/shown.ts';
 import { attachment } from '../attachments/schema.ts';
@@ -46,6 +47,7 @@ import type { Database } from '../db/client.ts';
 import { action, artifact, job } from '../db/schema.ts';
 import { ownJob, spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
+import { restoreStoredFiles, storageUsed, trashStoredFile } from '../storage/per-person.ts';
 import {
   artifactLocation,
   MAX_SERVED_BYTES,
@@ -324,7 +326,19 @@ export function mountFiles(
   roots: ArtifactRoots,
   resolveSpace: SpaceResolver,
   trash: { days: number; maxBytes: number },
+  /**
+   * Where what each person keeps is recorded, and the most they may keep
+   * (storage/per-person.ts). Left out, deletes here are not recorded there.
+   */
+  storage?: { sql: Sql; quota: number | null },
 ): void {
+  /** What this person keeps against their limit, where the installation sets one. */
+  const storageOf = async (scope: Scope) => {
+    if (!storage?.quota || !scope.principalId) return null;
+    const used = await storageUsed(storage.sql, scope.principalId);
+    return { used_bytes: Math.round(used), quota_bytes: storage.quota };
+  };
+
   app.get('/files', async (c) => {
     const scope = await scopeOf(c, resolveSpace);
     const [artifacts, actions, sent] = await Promise.all([
@@ -414,7 +428,7 @@ export function mountFiles(
     ]
       .sort((a, b) => Date.parse(b.saved_at) - Date.parse(a.saved_at))
       .slice(0, LIST_LIMIT);
-    return c.json(personFileList.parse({ files }));
+    return c.json(personFileList.parse({ files, storage: await storageOf(scope) }));
   });
 
   /**
@@ -509,6 +523,14 @@ export function mountFiles(
         409,
       );
     }
+    // What it held is no longer counted against anyone while it is in the trash.
+    if (storage)
+      await trashStoredFile(
+        storage.sql,
+        scope.spaceId,
+        { place: placeOf(roots, scope.spaceId, found.row).key },
+        trashed.trash_id,
+      );
     return c.json(
       personFileDeleted.parse({
         id: found.id,
@@ -555,6 +577,7 @@ export function mountFiles(
         `The file was not put back${restored.kept[0] ? `: ${restored.kept[0].reason}` : ''}.`,
         409,
       );
+    if (storage) await restoreStoredFiles(storage.sql, scope.spaceId, body.data.trash_id);
     return c.json(personFileRestored.parse({ id: found.id, restored: true }));
   });
 }

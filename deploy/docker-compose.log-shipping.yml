@@ -1,0 +1,39 @@
+# Optional: send this machine's container logs to a log collector you choose,
+# over OTLP/HTTP. It is a Compose project of its own, started apart from the
+# stack, so `melete deploy` and upgrades never start, stop or need it:
+#
+#   docker compose -p melete-logs --env-file deploy/.env \
+#     -f deploy/docker-compose.log-shipping.yml up -d
+#
+# deploy/.env names the endpoint (MELETE_LOG_SHIP_ENDPOINT) and, if it needs
+# one, the Authorization header (MELETE_LOG_SHIP_AUTHORIZATION). See
+# docs/DEPLOYMENT.md, "Shipping logs".
+name: melete-logs
+
+services:
+  log-shipping:
+    image: otel/opentelemetry-collector-contrib:0.161.0@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/log-shipping.yaml"]
+    # Docker's log files are readable by root alone. Root here holds no
+    # capability, no new privilege and a read-only filesystem.
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: ${MELETE_LOG_SHIP_MEMORY_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      MELETE_LOG_SHIP_ENDPOINT: ${MELETE_LOG_SHIP_ENDPOINT:?set MELETE_LOG_SHIP_ENDPOINT in deploy/.env}
+      MELETE_LOG_SHIP_AUTHORIZATION: ${MELETE_LOG_SHIP_AUTHORIZATION:-}
+    volumes:
+      - ./config/log-shipping.yaml:/etc/otelcol/log-shipping.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - log-shipping-state:/var/lib/otelcol/file_storage
+
+volumes:
+  log-shipping-state:

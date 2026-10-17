@@ -43,6 +43,7 @@ import {
 import { personSetSchedule } from './attention.ts';
 import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
+import type { StandingWorkSettings } from './resting.ts';
 import { opensWithMention, recordSteer } from './steer.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
 
@@ -172,6 +173,8 @@ export class JobService {
   stopTurn?: (tx: Transaction, row: JobRow) => Promise<boolean>;
   /** The most files one message may carry, as the operator sets it. */
   attachmentsPerMessage: number = ATTACHMENT_LIMITS.per_message;
+  /** When standing work rests for someone away, and how much one person may keep, as the operator sets it. */
+  standingWork: StandingWorkSettings = {};
   constructor(
     readonly db: Database,
     readonly boss: PgBoss,

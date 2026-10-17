@@ -1785,6 +1785,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const source = await resolveFile(ctx, area, from);
         if (area === 'work') await notLeftOnComputer(ctx, source);
         const target = await resolveFile(ctx, toArea, to);
+        let movedBytes: number | null = null;
         // The file checked is the file moved: in or out of the space's Files,
         // nothing else saves over or replaces it from the check to the move.
         hash = await changing(
@@ -1818,6 +1819,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
                   },
                 );
                 const moved = digest(content);
+                movedBytes = content.byteLength;
                 if (!mayChange(rule, from, moved)) throw new Error(notTheirs('files.move', from));
                 if (payload.content_hash !== undefined && payload.content_hash !== moved) {
                   // Nothing was moved. The file on disk is not the content this action
@@ -1862,6 +1864,8 @@ export function createFilesConnector(options: FilesOptions): Connector {
           },
         );
         detail = { from, to, area, to_area: toArea, content_hash: hash };
+        // What the file holds, so what each person keeps follows it (storage/per-person.ts).
+        if (movedBytes !== null) detail.bytes = movedBytes;
         if (area === 'work' && toArea === 'artifacts')
           detail = { ...detail, ...(await removeFromComputer(action, ctx, source, target, hash)) };
       } else {
