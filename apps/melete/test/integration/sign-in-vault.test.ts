@@ -564,6 +564,42 @@ suite('saved sign-ins', () => {
     );
     expect((await dispatch(member)).outcome).toBe('failed');
 
+    // A routine of the member's, proposed while their account was on, uses
+    // nothing once the owner turns the account off: not at the approval's
+    // re-check, and not at dispatch.
+    const theirRoutine = await jobOf(memberId, 'routine');
+    const proposed = await prepareSignIn(vault, { site: 'example.com' }, theirRoutine, sql);
+    const theirAction = {
+      id: 'act_member_routine',
+      kind: 'browser.sign_in',
+      canonical_payload: proposed,
+    } as unknown as Action;
+    await validateSignIn(vault, theirAction, theirRoutine, sql);
+    await sql`update principal set disabled_at = now() where id = ${memberId}`;
+    try {
+      expect(await failure(validateSignIn(vault, theirAction, theirRoutine, sql))).toContain(
+        OWN_WORK_ONLY,
+      );
+      const offResult = await runSignIn({
+        vault,
+        action: theirAction,
+        ctx: theirRoutine,
+        lease: async () => {
+          leased += 1;
+          throw new Error('the browser must not be reached');
+        },
+        handOff: async () => {},
+      });
+      expect(offResult.outcome).toBe('failed');
+      expect(offResult.outcome === 'failed' ? offResult.reason : '').toContain(OWN_WORK_ONLY);
+      expect(
+        await failure(prepareSignIn(vault, { site: 'example.com' }, theirRoutine, sql)),
+      ).toContain(OWN_WORK_ONLY);
+    } finally {
+      await sql`update principal set disabled_at = null where id = ${memberId}`;
+    }
+    await validateSignIn(vault, theirAction, theirRoutine, sql);
+
     // Once the member has left the space, their work there uses nothing, their own included.
     await sql`update space_membership set revoked_at = now()
       where space_id = ${spaceId} and principal_id = ${memberId}`;

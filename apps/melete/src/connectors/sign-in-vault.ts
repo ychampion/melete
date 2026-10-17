@@ -344,13 +344,17 @@ export class SignInVault {
    * Whose saved sign-ins a job may use: only those of the job's own person,
    * while that person can still reach the job's space. A job with no person of
    * its own uses nobody's, and is never taken for the installation owner's:
-   * whatever started it, the owner did not.
+   * whatever started it, the owner did not. Nor does the work of a person
+   * whose account the owner turned off, their own routines included, until
+   * it is turned back on.
    */
   async principalOf(spaceId: string, jobId: string, tx: Query = this.sql): Promise<string | null> {
     const [row] = await tx<{ principal: string }[]>`select j.principal_id as principal
       from job j join space s on s.id = j.space_id
       where j.id = ${jobId} and j.space_id = ${spaceId} and j.principal_id is not null
         and s.removed_at is null
+        and not exists (select 1 from principal p
+          where p.id = j.principal_id and p.disabled_at is not null)
         and ((s.kind = 'personal'
             and coalesce(s.owner_principal_id, (select id from owner limit 1)) = j.principal_id)
           or exists (select 1 from space_membership m

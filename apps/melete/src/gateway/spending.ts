@@ -240,20 +240,40 @@ const HOLD_TTL_MS = 10 * 60_000;
 /**
  * The person who caused a job's calls: whoever spoke last in its conversation;
  * for a job nobody has written in (a routine, a background job), whoever
- * created it; else the space's owner.
+ * created it; else the space's owner. `disabled` is whether the installation's
+ * owner has turned that person's account off.
  */
-const PERSON_FOR_JOB = (sql: Sql, jobId: string) => sql`select j.space_id, coalesce(
-    (select e.payload->>'principal_id' from event e
-      where e.job_id = j.id and e.type = 'notice' and e.payload->>'kind' = 'user_message'
-        and e.payload->>'principal_id' is not null
-      order by e.seq desc limit 1),
-    j.principal_id, s.owner_principal_id) as person_id
-  from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+const PERSON_FOR_JOB = (sql: Sql, jobId: string) => sql`select w.space_id, w.person_id,
+    exists (select 1 from principal p where p.id = w.person_id and p.disabled_at is not null)
+      as disabled
+  from (select j.space_id, coalesce(
+      (select e.payload->>'principal_id' from event e
+        where e.job_id = j.id and e.type = 'notice' and e.payload->>'kind' = 'user_message'
+          and e.payload->>'principal_id' is not null
+        order by e.seq desc limit 1),
+      j.principal_id, s.owner_principal_id) as person_id
+    from job j join space s on s.id = j.space_id where j.id = ${jobId}) w`;
+
+/** The sentence work reads when its person's account is turned off. */
+export const ACCOUNT_OFF_MESSAGE =
+  "This account is turned off, so its work doesn't run until the installation's owner turns it back on.";
+
+/**
+ * A turned-off account's work, as a reached limit: it is looked at again the
+ * next UTC day, so background work that rests until then starts again once
+ * the account is back on.
+ */
+const accountOff = (now: Date): LimitReached => ({
+  message: ACCOUNT_OFF_MESSAGE,
+  resetsAt: periodBounds(now).nextDay,
+});
 
 export class SpendingGuard implements GatewaySpending {
   private readonly scopes = new WeakMap<GatewayPrincipal, Promise<SpendingScope>>();
   private readonly holds = new Map<GatewayPrincipal, Hold[]>();
   private readonly cached = new Map<string, { at: number; totals: Totals }>();
+  /** Whether each person's account is turned off, as read a moment ago. */
+  private readonly off = new Map<string, { at: number; off: boolean }>();
   /** The admission now being judged; the next waits for it. */
   private admitting: Promise<void> = Promise.resolve();
   /** Told when a job's call is refused, so its attempt can end at once. */
@@ -421,6 +441,19 @@ export class SpendingGuard implements GatewaySpending {
     return totals;
   }
 
+  /** Whether the installation's owner has turned this person's account off. */
+  async isOff(personId: string | null): Promise<boolean> {
+    if (!personId) return false;
+    const now = this.now().getTime();
+    const hit = this.off.get(personId);
+    if (hit && now - hit.at < TOTALS_TTL_MS) return hit.off;
+    const [row] = await this.sql`select disabled_at from principal where id = ${personId}`;
+    const off = Boolean(row?.disabled_at);
+    if (this.off.size > 1000) this.off.clear();
+    this.off.set(personId, { at: now, off });
+    return off;
+  }
+
   /** The totals with the calls still running in this process added. */
   private withHolds(totals: Totals, personId: string | null, now: number): Totals {
     let all = { usd: 0, tokens: 0 };
@@ -573,8 +606,10 @@ export class SpendingGuard implements GatewaySpending {
     jobId: string,
     usageClass: UsageClass = 'interactive',
   ): Promise<LimitReached | null> {
-    if (!(await this.mayLimit(usageClass))) return null;
     const [row] = await PERSON_FOR_JOB(this.sql, jobId);
+    // A turned-off account's work does not run, whatever limits are set.
+    if (row?.disabled) return accountOff(this.now());
+    if (!(await this.mayLimit(usageClass))) return null;
     return this.reachedLimit(row?.person_id ? String(row.person_id) : null, usageClass);
   }
 
@@ -593,7 +628,9 @@ export class SpendingGuard implements GatewaySpending {
     // in this process take their turn, so calls started side by side are
     // judged one after another, each with the ones before it held.
     const message = await this.inTurn(async () => {
-      const reached = await this.reached(scope.personId, scope.usageClass);
+      const reached = (await this.isOff(scope.personId))
+        ? ACCOUNT_OFF_MESSAGE
+        : await this.reached(scope.personId, scope.usageClass);
       // While it runs, the call's most it can cost is held against the limits,
       // so calls running side by side cannot all slip in under one.
       if (!reached && call) {

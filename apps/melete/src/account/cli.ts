@@ -78,7 +78,8 @@ export async function inviteAccount(sql: Sql, email: string): Promise<Invited> {
 /**
  * Stops an account signing in and ends every way it was signed in: sessions,
  * links, connected apps, notifications and paired computers, whose
- * connections close as a revoke closes them. Its routines and data are kept.
+ * connections close as a revoke closes them. Its routines and data are kept,
+ * though its work does not run, nor use its saved sign-ins, while it is off.
  * Returns the computers it disconnected, so a running service can also close
  * their live connections.
  */
@@ -225,7 +226,7 @@ export async function setDisabled(
     : '';
   return {
     ok: true,
-    text: `${account.email} is disabled: it cannot sign in, and its sessions, ${devices.length} paired computer(s), connected apps and notifications have ended. Its routines and data are kept.${note}\nUndo with: bun run melete account enable ${account.email}\n`,
+    text: `${account.email} is disabled: it cannot sign in, and its sessions, ${devices.length} paired computer(s), connected apps and notifications have ended. Its routines and data are kept, but its work does not run until it is enabled again.${note}\nUndo with: bun run melete account enable ${account.email}\n`,
     json: { ok: true, email: account.email, disabled: true, computers: devices.length },
   };
 }

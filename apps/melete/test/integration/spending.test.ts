@@ -7,7 +7,13 @@ import { attempt, job, principal, space } from '../../src/db/schema.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import { createModelGateway, providersFromEnv } from '../../src/gateway/index.ts';
 import { PriceTable } from '../../src/gateway/prices.ts';
-import { NO_LIMIT, SpendingGuard, type SpendingLimits } from '../../src/gateway/spending.ts';
+import {
+  ACCOUNT_OFF_MESSAGE,
+  NO_LIMIT,
+  SpendingGuard,
+  type SpendingLimits,
+} from '../../src/gateway/spending.ts';
+
 import type { GatewayPrincipal, GatewaySettlement } from '../../src/gateway/types.ts';
 import { healthDetail } from '../../src/health/monitor.ts';
 import { newId } from '../../src/ids.ts';
@@ -449,6 +455,43 @@ withDb('spending caps', () => {
     await guard.record(first, settlement(5));
     await guard.record(second, settlement(5));
     await guard.admit(servicePrincipal(), call);
+  });
+
+  test("a turned-off account's work starts nothing and spends nothing", async () => {
+    const { handle } = fixture();
+    const routine = await createJob('Morning digest', 'routine');
+    // No limits are set: only the account being off holds the work back.
+    const open = new SpendingGuard(handle.sql, limits(), prices, () => NOW);
+    expect(await open.limitForJob(routine.id, 'background')).toBeNull();
+    await handle.sql`update principal set disabled_at = now() where id = ${personId}`;
+    const off = new SpendingGuard(handle.sql, limits(), prices, () => NOW);
+    for (const usageClass of ['background', 'interactive'] as const)
+      expect(await off.limitForJob(routine.id, usageClass)).toEqual({
+        message: ACCOUNT_OFF_MESSAGE,
+        resetsAt: new Date('2026-10-16T00:00:00Z'),
+      });
+    // Where limits are set, the gateway refuses the account's calls as well.
+    const capped = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 100, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    let refused: unknown;
+    await capped.admit(jobPrincipal(routine.id)).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached', detail: ACCOUNT_OFF_MESSAGE });
+    // Turned back on, its work runs again.
+    await handle.sql`update principal set disabled_at = null where id = ${personId}`;
+    const back = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 100, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    expect(await back.limitForJob(routine.id, 'background')).toBeNull();
+    await back.admit(jobPrincipal(routine.id));
   });
 
   test('the health detail is ok when healthy and names a stuck job queue', async () => {

@@ -502,7 +502,7 @@ function TurnOffDialog({
       icon="lock"
       tone="danger"
       title={`Turn off ${person.email ?? 'this account'}?`}
-      sub="They are signed out everywhere at once and can’t sign in until you turn the account back on. Nothing of theirs is deleted."
+      sub="They are signed out everywhere at once. Until you turn the account back on, they can’t sign in and their routines and other work don’t run. Nothing of theirs is deleted."
       footer={
         <>
           <Button variant="outline" disabled={busy} onClick={onClose}>
