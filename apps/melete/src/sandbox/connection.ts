@@ -347,7 +347,7 @@ export function sandboxCredentialValue(
     throw new Error(NOT_A_SANDBOX_KEY);
   }
   if (sandboxCredentialRefusal(adapter, api_key)) throw new Error(NOT_A_SANDBOX_KEY);
-  if (adapter === 'e2b' || adapter === 'daytona') return { api_key };
+  if (adapter === 'e2b' || adapter === 'daytona' || adapter === 'maritime') return { api_key };
   const parts = modalTokenParts(api_key);
   if (!parts) throw new Error(NOT_A_SANDBOX_KEY);
   return parts;

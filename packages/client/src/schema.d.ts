@@ -3771,7 +3771,7 @@ export interface paths {
                         provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox" | "device" | "command_line" | "apps" | "room" | "notes" | "skills" | "drive" | "twilio";
                         sandbox?: {
                             /** @enum {string} */
-                            adapter: "e2b" | "daytona" | "modal" | "docker";
+                            adapter: "e2b" | "daytona" | "modal" | "docker" | "maritime";
                             cidrs?: components["schemas"]["__schema141"][];
                             /** @enum {string} */
                             egress: "deny_all" | "cidr_allowlist" | "connected_hosts_only" | "open";

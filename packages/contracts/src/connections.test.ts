@@ -793,11 +793,16 @@ describe('the one sandbox credential field', () => {
     expect(sandboxCredentialRefusal('daytona', 'ak-token-id:as-token-secret')).toContain(
       'has no colon in it',
     );
+    expect(sandboxCredentialRefusal('maritime', 'mk_0123456789')).toBeNull();
+    expect(sandboxCredentialRefusal('maritime', 'ak-token-id:as-token-secret')).toContain(
+      'computers scope',
+    );
     // One closed code, whichever adapter refused.
     for (const [adapter, key] of [
       ['modal', 'ak-token-id'],
       ['e2b', 'a:b'],
       ['daytona', 'a:b'],
+      ['maritime', 'a:b'],
     ] as const)
       expect(sandboxCredentialRefusal(adapter, key)).toStartWith('credential_invalid:');
   });
@@ -840,6 +845,7 @@ describe('a sandbox on this service Docker engine', () => {
     for (const [adapter, key] of [
       ['e2b', 'e2b_0123456789'],
       ['daytona', 'dtn_0123456789'],
+      ['maritime', 'mk_0123456789'],
       ['modal', 'ak-token-id:as-token-secret'],
     ] as const) {
       const installed = sandbox(adapter, { api_key: key });

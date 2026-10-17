@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { sandboxConformance } from './conformance.ts';
-import { FakeSandboxProvider, fakeEgress } from './fake.ts';
+import { FakeSandboxEngine, FakeSandboxProvider, fakeEgress } from './fake.ts';
 import { runCommand } from './marker.ts';
 
 sandboxConformance('fake', async () => {
@@ -64,6 +64,42 @@ test('the fake refuses an egress policy outside its declared capabilities', asyn
       AbortSignal.timeout(1_000),
     ),
   ).rejects.toThrow('cannot enforce deny_all');
+});
+
+test('a background job outlives its shell and is reached by the pid in $!', async () => {
+  const engine = new FakeSandboxEngine();
+  const sandbox = engine.create({
+    image: 'base',
+    egress: { kind: 'open' },
+    labels: {},
+    env: {},
+    lifetimeSeconds: 60,
+  });
+  const output: Uint8Array[] = [];
+  const started = performance.now();
+  const shell = engine.spawn(
+    sandbox,
+    ['sh', '-c', 'sleep 0.3 && printf late > /tmp/late & echo "pid=$!"'],
+    { cwd: '/', onOutput: (bytes) => output.push(bytes) },
+  );
+  expect(await shell.done).toEqual({ exitCode: 0, killed: false });
+  expect(performance.now() - started).toBeLessThan(250);
+  const pid = Number(/pid=(\d+)/.exec(new TextDecoder().decode(output[0]))?.[1]);
+  expect(sandbox.processes.has(pid)).toBe(true);
+  await sandbox.processes.get(pid)?.done;
+  expect(new TextDecoder().decode(sandbox.fs.readFile('/tmp/late'))).toBe('late');
+  // And a job killed by its pid never finishes.
+  const second = engine.spawn(
+    sandbox,
+    ['sh', '-c', 'sleep 0.3 && printf again > /tmp/again & kill "$!"'],
+    {
+      cwd: '/',
+      onOutput: () => {},
+    },
+  );
+  expect((await second.done).exitCode).toBe(0);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  expect(sandbox.fs.stat('/tmp/again')).toBeUndefined();
 });
 
 test('the fake allow-lists names on web ports only and addresses by CIDR', () => {

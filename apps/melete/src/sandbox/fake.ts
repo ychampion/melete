@@ -11,8 +11,9 @@
  * not finished writing stays unfinished.
  *
  * What it does not model is said here: there is one user, no resource limits,
- * no pipes, no background jobs, and the network answers without leaving the
- * process. A command it does not know exits 127, the way a shell would.
+ * no job control (a background job started with `&` is a process of its own,
+ * reached by its pid, and nothing more), and the network answers without
+ * leaving the process. A command it does not know exits 127, the way a shell would.
  */
 import { isIP } from 'node:net';
 import { LABEL_SESSION, ownedLabels } from './manifest.ts';
@@ -390,7 +391,8 @@ type Command =
   | { kind: 'subshell'; body: List; redirects: Redirect[] }
   | { kind: 'group'; body: List; redirects: Redirect[] }
   | { kind: 'pipeline'; left: Command; right: Command; redirects: Redirect[] };
-type List = { command: Command; next: ';' | '&&' | '||' }[];
+/** `&` runs the command as a background job and goes on at once. */
+type List = { command: Command; next: ';' | '&&' | '||' | '&' }[];
 
 class ShellSyntaxError extends Error {}
 
@@ -450,7 +452,8 @@ function tokenize(script: string): Token[] {
       endWord();
       tokens.push({ type: 'op', value: '|' });
     } else if (char === '&') {
-      throw new ShellSyntaxError(`${char} is not supported`);
+      endWord();
+      tokens.push({ type: 'op', value: '&' });
     } else if (char === '(' || char === ')') {
       endWord();
       tokens.push({ type: 'op', value: char });
@@ -578,8 +581,11 @@ function parse(tokens: Token[]): List {
         parsed = { kind: 'pipeline', left: parsed, right, redirects: [] };
       }
       const separator = tokens[position];
-      let next: ';' | '&&' | '||' = ';';
-      if (separator?.type === 'op' && (separator.value === '&&' || separator.value === '||')) {
+      let next: ';' | '&&' | '||' | '&' = ';';
+      if (
+        separator?.type === 'op' &&
+        (separator.value === '&&' || separator.value === '||' || separator.value === '&')
+      ) {
         next = separator.value;
         position += 1;
       }
@@ -656,9 +662,10 @@ function expand(word: Word, shell: Shell): string {
       part.quoted === 'single'
         ? part.text
         : part.text.replace(
-            /\$(\?|#|@|[0-9]|\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/g,
+            /\$(\?|#|@|!|[0-9]|\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/g,
             (_, name: string) => {
               if (name === '?') return String(shell.status);
+              if (name === '!') return shell.vars.get('!') ?? '';
               if (name === '#') return String(Math.max(0, shell.positional.length - 1));
               if (name === '@') return shell.positional.slice(1).join(' ');
               if (/^[0-9]$/.test(name)) return shell.positional[Number(name)] ?? '';
@@ -716,6 +723,7 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
   const path = (value: string) => fs.absolute(shell.cwd, value);
   switch (name) {
     case 'true':
+    case ':':
       return 0;
     case 'false':
       return 1;
@@ -1160,15 +1168,63 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
 
 async function runList(list: List, shell: Shell, io: Io): Promise<number> {
   let skip: '&&' | '||' | null = null;
-  for (const item of list) {
+  for (let index = 0; index < list.length; index += 1) {
+    // `a && b &` sends the whole and-or list to the background, as sh does.
+    const end = list.findIndex(
+      (item, at) => at >= index && (item.next === ';' || item.next === '&'),
+    );
+    if (skip === null && end >= 0 && list[end]?.next === '&') {
+      const chain = list
+        .slice(index, end + 1)
+        .map((item, at, all) => (at === all.length - 1 ? { ...item, next: ';' as const } : item));
+      shell.vars.set('!', String(background(chain, shell, io)));
+      shell.status = 0;
+      index = end;
+      continue;
+    }
+    const item = list[index] as List[number];
     const run =
       skip === null ||
       (skip === '&&' && shell.status === 0) ||
       (skip === '||' && shell.status !== 0);
     if (run) shell.status = await runCommand(item.command, shell, io);
-    skip = item.next === ';' ? null : item.next;
+    skip = item.next === ';' || item.next === '&' ? null : item.next;
   }
   return shell.status;
+}
+
+/**
+ * A background job: a process of its own in the sandbox, with its own pid, that
+ * outlives the shell that started it and is ended only by its own end, a kill
+ * sent to its pid, or the sandbox going. Returns the pid, as `$!` reads it.
+ */
+function background(list: List, shell: Shell, io: Io): number {
+  const { sandbox } = shell;
+  sandbox.nextPid += 1;
+  const pid = sandbox.nextPid;
+  let settle: (value: { exitCode: number | null; killed: boolean }) => void = () => {};
+  const job = new FakeProcess(
+    pid,
+    new Promise((resolve) => {
+      settle = resolve;
+    }),
+  );
+  job.closeStdin();
+  sandbox.processes.set(pid, job);
+  const child: Shell = { ...shell, process: job, vars: new Map(shell.vars) };
+  void (async () => {
+    let result: { exitCode: number | null; killed: boolean };
+    try {
+      result = { exitCode: await runList(list, child, io), killed: false };
+    } catch (error) {
+      if (error instanceof ExitSignal) result = { exitCode: error.code, killed: false };
+      else result = { exitCode: null, killed: true };
+    }
+    job.finished = true;
+    sandbox.processes.delete(pid);
+    settle(result);
+  })();
+  return pid;
 }
 
 async function runScript(
