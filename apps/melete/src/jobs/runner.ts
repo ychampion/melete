@@ -53,9 +53,10 @@ import {
 import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import type { AckWriter } from '../experience/ack.ts';
 import { checkCitations, sourcesRead } from '../experience/citations.ts';
 import { withDeliveryNote } from '../experience/delivery-claims.ts';
-import { STOPPED_NOTE } from '../experience/projectors.ts';
+import { plainText, STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
 import {
   pagesVisited,
@@ -64,6 +65,7 @@ import {
 } from '../experience/visited-links.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
 import type { LimitReached } from '../gateway/spending.ts';
+import { turnAcknowledged, turnEnded, turnSpoke, turnStarted } from '../gateway/turn-notes.ts';
 import type { UsageClass } from '../gateway/usage-class.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
@@ -187,6 +189,12 @@ export type RunnerOptions = {
    * busy or limited runs again; each later one doubles, up to four times it.
    */
   retryBackoffMs?: number;
+  /**
+   * A one-line acknowledgement for a conversation turn the person is waiting
+   * on, shown when the agent has said nothing `afterMs` after it started.
+   * Left out, or `afterMs` 0, there is none.
+   */
+  acknowledge?: { afterMs: number; writer: AckWriter };
 };
 
 /** The spending limit a job's person has reached, for each class of work. */
@@ -240,6 +248,52 @@ async function namedFailure(
   };
 }
 
+/** What a turn that stopped without a question asks, when no step failed. */
+export const STOPPED_QUESTION = 'I stopped before finishing. What should I do next?';
+
+/** The words a failed step gave for failing, as the person may read them. */
+function failureWords(result: JsonObject): string {
+  const error = result.error;
+  const said =
+    typeof error === 'string'
+      ? error
+      : error && typeof error === 'object' && !Array.isArray(error)
+        ? (error as JsonObject).message
+        : (result.message ?? result.reason);
+  const text = plainText(said, '', 400).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= 160) return text.replace(/[.!?]+$/, '');
+  return `${text.slice(0, 159).trimEnd()}…`;
+}
+
+/**
+ * The question for a turn that stopped without one: why it stopped, from the
+ * last step of the attempt that failed, and what the person wants done.
+ */
+async function stoppedQuestion(tx: Transaction, attemptId: string): Promise<string> {
+  const [failed] = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(
+      and(
+        eq(event.attemptId, attemptId),
+        eq(event.type, 'tool_result'),
+        sql`${event.payload}->>'ok' = 'false'`,
+      ),
+    )
+    .orderBy(desc(event.seq))
+    .limit(1);
+  const payload = (failed?.payload ?? {}) as JsonObject;
+  const result = payload.result;
+  const why =
+    result && typeof result === 'object' && !Array.isArray(result)
+      ? failureWords(result as JsonObject)
+      : '';
+  return failed
+    ? `I stopped because a step failed${why ? `: ${why}` : ''}. What should I do?`
+    : STOPPED_QUESTION;
+}
+
 /**
  * Past the broker's longest dispatch budget and its recovery sweep, so every
  * dispatch that still has a sender has settled by then.
@@ -267,7 +321,20 @@ const PROGRESS_EVENTS = new Set<RuntimeEvent['type']>([
 /** The question a turn rests on when something it started has not reported back. */
 export const STILL_RUNNING_NOTE =
   'Something this turn started has not reported back yet. Its result will show here once it does, so nothing was run again.';
-export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
+export type ClaimedAttempt = {
+  bundle: ResponsibilityAttemptBundle;
+  claims: CapabilityClaims;
+  /** Set when the attempt answers a turn of a person's conversation. */
+  turn?: ConversationTurn;
+};
+/** The conversation turn an attempt answers. */
+type ConversationTurn = {
+  turnId: string;
+  spaceId: string;
+  principalId?: string;
+  /** The person is waiting on it: their message started it. */
+  interactive: boolean;
+};
 /** What the attempt raised besides its outcome, handed to every finish handler. */
 export type OutcomeContext = {
   questions: readonly QuestionSpec[];
@@ -637,7 +704,16 @@ export class AttemptRunner {
           .where(eq(experienceTurn.id, row.currentTurnId));
       // Words sent while the job waited to start are this attempt's new messages.
       await steersRead(tx, row.id, attemptId, Number(latest?.seq ?? 0));
-      return { bundle, claims };
+      const turn: ConversationTurn | undefined =
+        row.kind === 'chat' && row.currentTurnId
+          ? {
+              turnId: row.currentTurnId,
+              spaceId: row.spaceId,
+              ...(access.principalId ? { principalId: access.principalId } : {}),
+              interactive: cause.usageClass === 'interactive',
+            }
+          : undefined;
+      return { bundle, claims, ...(turn ? { turn } : {}) };
     });
   }
 
@@ -1274,6 +1350,10 @@ export class AttemptRunner {
         kind: 'user_input',
         question: `A declared artifact check did not pass: ${artifactFailures.join('; ')}. Fix the file and finish, or say what should happen instead.`,
       };
+    // A conversation never waits on the person without saying what for: a turn
+    // that stopped with no question asks one, naming the step that failed.
+    if (row.kind === 'chat' && !parked && wait.kind === 'user_input' && !wait.question.trim())
+      wait = { kind: 'user_input', question: await stoppedQuestion(tx, attemptId) };
     // Deciding the question before the move lets the wait name the one asked.
     const resolution = await resolveQuestions(tx, row, {
       attemptId,
@@ -1966,6 +2046,11 @@ export class AttemptRunner {
           heartbeatBusy = false;
         });
     }, this.options.heartbeatMs ?? HEARTBEAT_MS);
+    // The gateway keeps the turn's notes while it runs (gateway/turn-notes.ts).
+    if (claim.turn) turnStarted(claims.attempt_id);
+    const acknowledgement = claim.turn?.interactive
+      ? this.acknowledgeLater(claims, claim.turn, bundle)
+      : null;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let completed: Extract<AttemptOutcome, { kind: 'completed' }> | null = null;
     let abortListener = () => {};
@@ -1985,7 +2070,16 @@ export class AttemptRunner {
       });
       const call = this.runtime.start(
         bundle,
-        { emit: (event) => this.emit(claims, event) },
+        {
+          emit: (event) => {
+            if (claim.turn && event.type === 'text_delta' && event.text.trim()) {
+              // The agent's own words come first: no acknowledgement is needed.
+              acknowledgement?.cancel();
+              turnSpoke(claims.attempt_id);
+            }
+            return this.emit(claims, event);
+          },
+        },
         controller.signal,
       );
       // Words sent after this attempt was claimed and before it started reach it now.
@@ -2062,6 +2156,8 @@ export class AttemptRunner {
     } finally {
       clearInterval(heartbeat);
       if (timeout) clearTimeout(timeout);
+      acknowledgement?.cancel();
+      if (claim.turn) turnEnded(claims.attempt_id);
       controller.signal.removeEventListener('abort', abortListener);
       if (this.active.get(claims.attempt_id)?.controller === controller)
         this.active.delete(claims.attempt_id);
@@ -2075,6 +2171,73 @@ export class AttemptRunner {
       }
       finished();
     }
+  }
+
+  /**
+   * Shows the person a one-line acknowledgement if the agent is still silent
+   * `acknowledge.afterMs` after the attempt started. The line is written from
+   * the person's new message alone; it is dropped if the agent spoke while it
+   * was being written, and a turn gets at most one. The agent is told what was
+   * said, so it does not say it again. `cancel` stops it, the call included.
+   */
+  private acknowledgeLater(
+    claims: CapabilityClaims,
+    turn: ConversationTurn,
+    bundle: ResponsibilityAttemptBundle,
+  ): { cancel(): void } | null {
+    const options = this.options.acknowledge;
+    const message = [...bundle.inputs.new_user_messages]
+      .reverse()
+      .find((entry) => entry.role === 'user');
+    if (!options || options.afterMs <= 0 || !message?.content.trim()) return null;
+    const stop = new AbortController();
+    const timer = setTimeout(() => {
+      void (async () => {
+        const said = await options.writer.write({
+          spaceId: turn.spaceId,
+          conversationId: claims.job_id,
+          ...(turn.principalId ? { principalId: turn.principalId } : {}),
+          message: message.content,
+          signal: stop.signal,
+        });
+        if (!said || stop.signal.aborted) return;
+        const shown = await this.jobs.transaction(async (tx) => {
+          const row = await this.jobs.lock(tx, claims.job_id);
+          if (!row || row.currentTurnId !== turn.turnId) return false;
+          await requireCurrentAttempt(tx, claims, { settling: true });
+          // Words that reached the record while the line was written win.
+          const [spoken] = await tx
+            .select({ seq: event.seq })
+            .from(event)
+            .where(and(eq(event.attemptId, claims.attempt_id), eq(event.type, 'text_delta')))
+            .limit(1);
+          if (spoken || stop.signal.aborted) return false;
+          const added = await appendEvent(tx, {
+            jobId: row.id,
+            attemptId: claims.attempt_id,
+            type: 'notice',
+            payload: { kind: 'experience_say', text: said, acknowledgement: true },
+            dedupKey: `ack:${turn.turnId}`,
+          });
+          return Boolean(added);
+        });
+        if (shown) turnAcknowledged(claims.attempt_id, said);
+      })().catch((error: unknown) => {
+        // An acknowledgement that could not be shown is no loss: the agent's
+        // own words follow, and the attempt goes on regardless. An attempt
+        // that has already ended is the expected case and is not reported.
+        if (error instanceof ServiceError) return;
+        process.stderr.write(
+          `acknowledgement not shown for ${claims.attempt_id}: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+        );
+      });
+    }, options.afterMs);
+    return {
+      cancel() {
+        clearTimeout(timer);
+        stop.abort();
+      },
+    };
   }
 
   /** How this attempt's answer text joins the turn's, for its first piece only. */

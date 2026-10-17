@@ -1,0 +1,140 @@
+import { afterEach, describe, expect, test } from 'bun:test';
+import {
+  followsTurn,
+  PROGRESS_AFTER_MS,
+  turnAcknowledged,
+  turnEnded,
+  turnSpoke,
+  turnStarted,
+  withTurnNotes,
+} from './turn-notes.ts';
+
+const ATTEMPT = 'att_turn_notes';
+const T0 = 1_000_000;
+
+/** A chat/completions request that ends on `results` tool results. */
+const chat = (results: number) => ({
+  messages: [
+    { role: 'system', content: 'You are Melete.' },
+    { role: 'user', content: 'Compare three monitors' },
+    ...Array.from({ length: results }, (_, n) => [
+      { role: 'assistant', tool_calls: [{ id: `call${n}` }] },
+      { role: 'tool', tool_call_id: `call${n}`, content: `result ${n}` },
+    ]).flat(),
+  ],
+});
+
+const notes = (body: Record<string, unknown>) =>
+  (body.messages as { role: string; content: unknown }[])
+    .filter((message) => message.role === 'system')
+    .slice(1)
+    .map((message) => String(message.content));
+
+afterEach(() => turnEnded(ATTEMPT));
+
+describe('turn notes', () => {
+  test('an attempt the runner did not start gets nothing', () => {
+    const body = chat(1);
+    expect(withTurnNotes(body, 'chat/completions', 'att_unknown', T0)).toBe(body);
+  });
+
+  test('the acknowledgement note waits for a tool result, then stays pinned there', () => {
+    turnStarted(ATTEMPT, T0);
+    turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0 + 1_000);
+    // No step yet: the request is the model's first, and is left alone.
+    expect(notes(withTurnNotes(chat(0), 'chat/completions', ATTEMPT, T0 + 1_100))).toEqual([]);
+    const first = withTurnNotes(chat(1), 'chat/completions', ATTEMPT, T0 + 2_000);
+    const messages = first.messages as { role: string; content: string }[];
+    expect(messages[4]).toMatchObject({ role: 'system' });
+    expect(messages[4]?.content).toContain('"Looking at monitors now."');
+    // A later request carries it in the same place, and nothing new.
+    const later = withTurnNotes(chat(2), 'chat/completions', ATTEMPT, T0 + 3_000);
+    const after = later.messages as { role: string; content: string }[];
+    expect(after[4]?.content).toBe(messages[4]?.content);
+    expect(notes(later)).toHaveLength(1);
+  });
+
+  test('a quiet stretch past the limit asks for one line, once', () => {
+    turnStarted(ATTEMPT, T0);
+    expect(notes(withTurnNotes(chat(1), 'chat/completions', ATTEMPT, T0 + 5_000))).toEqual([]);
+    const asked = notes(
+      withTurnNotes(chat(2), 'chat/completions', ATTEMPT, T0 + PROGRESS_AFTER_MS + 1_000),
+    );
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('About 21 seconds have passed');
+    // The same quiet stretch is not asked about twice.
+    const again = notes(
+      withTurnNotes(chat(3), 'chat/completions', ATTEMPT, T0 + PROGRESS_AFTER_MS * 2),
+    );
+    expect(again).toEqual(asked);
+  });
+
+  test('words to the person start a new quiet stretch', () => {
+    turnStarted(ATTEMPT, T0);
+    withTurnNotes(chat(1), 'chat/completions', ATTEMPT, T0 + PROGRESS_AFTER_MS);
+    turnSpoke(ATTEMPT, T0 + PROGRESS_AFTER_MS + 500);
+    expect(
+      notes(withTurnNotes(chat(2), 'chat/completions', ATTEMPT, T0 + PROGRESS_AFTER_MS + 5_000)),
+    ).toHaveLength(1);
+    const next = notes(
+      withTurnNotes(chat(3), 'chat/completions', ATTEMPT, T0 + PROGRESS_AFTER_MS * 2 + 1_000),
+    );
+    expect(next).toHaveLength(2);
+  });
+
+  test('a request that does not end on a tool result is never asked for a line', () => {
+    turnStarted(ATTEMPT, T0);
+    const body = chat(1);
+    (body.messages as unknown[]).push({ role: 'user', content: 'also check prices' });
+    expect(notes(withTurnNotes(body, 'chat/completions', ATTEMPT, T0 + 60_000))).toEqual([]);
+  });
+
+  test('messages: the note is a text block beside the tool result, never inside it', () => {
+    turnStarted(ATTEMPT, T0);
+    turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0);
+    const body = {
+      system: 'You are Melete.',
+      messages: [
+        { role: 'user', content: 'Compare three monitors' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'web', input: {} }] },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'three results' }],
+        },
+      ],
+    };
+    const out = withTurnNotes(body, 'messages', ATTEMPT, T0 + 1_000);
+    const last = (out.messages as { content: { type: string; text?: string }[] }[])[2];
+    expect(last?.content[0]).toEqual(body.messages[2]?.content[0] as never);
+    expect(last?.content[1]?.type).toBe('text');
+    expect(last?.content[1]?.text).toContain('Looking at monitors now.');
+    // The original request is not changed.
+    expect(body.messages[2]?.content).toHaveLength(1);
+  });
+
+  test('responses: the note follows the group of function call outputs', () => {
+    turnStarted(ATTEMPT, T0);
+    turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0);
+    const body = {
+      input: [
+        { role: 'user', content: 'Compare three monitors' },
+        { type: 'function_call', call_id: 'f1' },
+        { type: 'function_call', call_id: 'f2' },
+        { type: 'function_call_output', call_id: 'f1', output: 'a' },
+        { type: 'function_call_output', call_id: 'f2', output: 'b' },
+      ],
+    };
+    const out = withTurnNotes(body, 'responses', ATTEMPT, T0 + 1_000);
+    const input = out.input as Record<string, unknown>[];
+    expect(input).toHaveLength(6);
+    expect(input[4]).toMatchObject({ type: 'function_call_output', call_id: 'f2' });
+    expect(input[5]).toMatchObject({ role: 'system' });
+  });
+
+  test('an ended attempt leaves nothing behind', () => {
+    turnStarted(ATTEMPT, T0);
+    expect(followsTurn(ATTEMPT)).toBe(true);
+    turnEnded(ATTEMPT);
+    expect(followsTurn(ATTEMPT)).toBe(false);
+  });
+});

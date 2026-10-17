@@ -1327,7 +1327,8 @@ export type SideCallKind =
   | 'voice'
   | 'review'
   | 'companies'
-  | 'learning';
+  | 'learning'
+  | 'acknowledgement';
 
 /**
  * The model source for one kind of side call. Every side call the service

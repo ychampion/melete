@@ -2374,7 +2374,7 @@ Melete pick a better model per call:
 
 | Setting | Used for |
 | --- | --- |
-| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier, the companies scan, conversation summaries and learning from corrections |
+| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier, the companies scan, conversation summaries, learning from corrections and the first-line acknowledgement |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
 | `MELETE_MODEL_TRIAGE` | Sorting new mail and calendar changes for Home's "Needs you" list, or `off`. Unset, the owner's secondary model for scheduled work, else `MELETE_MODEL_FAST`, else the default. See [Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in) |
@@ -2386,6 +2386,13 @@ MELETE_MODEL_FAST=fireworks/accounts/fireworks/models/llama-v3p1-8b-instruct
 MELETE_MODEL_VISION=fireworks/accounts/fireworks/models/qwen2p5-vl-32b-instruct
 MELETE_MODEL_FALLBACK=fireworks/accounts/fireworks/models/deepseek-v3
 ```
+
+`MELETE_ACK_AFTER_MS` (default `0`, off) is how long a chat turn may stay
+silent before the fast model writes the person one line saying what the agent
+is about to do, from their message alone, with no tools and no memory. It is
+cancelled as soon as the agent's own words arrive, and the agent is told what
+was said so it never says it twice. `1200` is a good value when the fast model
+answers quickly.
 
 The rules, in order:
 
