@@ -428,8 +428,12 @@ describe('the words a failed step gave', () => {
     expect(
       failureWords({ error: { message: 'Bearer abcdefghijklmnopqrstuvwxyz0123 was refused' } }),
     ).not.toContain('abcdefghijklmnopqrstuvwxyz0123');
-    expect(failureWords({ error: 'ghp_abcdefghijklmnop1234 has no access' })).not.toContain('ghp_');
+    const hidden = failureWords({ error: 'ghp_abcdefghijklmnop1234 has no access' });
+    expect(hidden).not.toContain('ghp_');
+    // What was said around a hidden key stays.
+    expect(hidden).toContain('has no access');
     // A raw provider body is not words for the person.
+    expect(failureWords({ error: '[{"error":"rate limited"}]' })).toBe('');
     expect(failureWords({ error: '{"type":"error","error":{"message":"overloaded"}}' })).toBe('');
     expect(failureWords({ error: '<!DOCTYPE html><html>Bad gateway</html>' })).toBe('');
     expect(

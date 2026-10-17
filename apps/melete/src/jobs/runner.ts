@@ -268,10 +268,13 @@ export function failureWords(result: JsonObject): string {
       : error && typeof error === 'object' && !Array.isArray(error)
         ? (error as JsonObject).message
         : (result.message ?? result.reason);
-  const line = (plainText(said, '', 400).split(/\r?\n/, 1)[0] ?? '')
-    .split(/[{[<]/, 1)[0]
-    ?.replace(/(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/gi, '$1');
-  const text = redactSecrets(line ?? '', 400)
+  const first = (plainText(said, '', 400).split(/\r?\n/, 1)[0] ?? '').replace(
+    /(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/gi,
+    '$1',
+  );
+  // A body is cut where it starts; the "[hidden]" left for a secret is not one.
+  const line = /^\s*\[(?!hidden\])/.test(first) ? '' : (first.split(/[{<]/, 1)[0] ?? '');
+  const text = redactSecrets(line, 400)
     .replace(/\s+/g, ' ')
     .replace(/[\s:;,-]+$/, '')
     .trim();
