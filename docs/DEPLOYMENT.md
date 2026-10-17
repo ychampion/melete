@@ -504,6 +504,38 @@ bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOK
 bun run melete check
 ```
 
+### How long call records are kept
+
+Every model call writes a row to `model_usage`, and every message, meeting,
+file change or process report a connected account sends writes one to `event`.
+With many people both grow every day. `MELETE_RETENTION_DAYS` bounds them; it
+is unset by default, and then nothing is removed. Use **90** on an
+installation that hosts other people:
+
+```bash
+bun run melete set MELETE_RETENTION_DAYS=90
+```
+
+Once an hour, one instance removes, a small batch at a time and oldest first:
+
+- model calls made before the start of the UTC day that many days back. Each
+  day's calls are summed into the daily usage roll-up (`usage_day`) before
+  they go, so the usage chart, background cost per day and spending by day
+  keep their history. This month's spending, the spending alerts and the
+  roll-up read the calls themselves, so the setting is at least 35.
+- connector events that no job took in and nothing still holds. A conversation
+  and everything its agent reads stay as long as the conversation does, and so
+  do the audit log, receipts, approvals and files. An event a job or something
+  Melete noticed cites, one a listening trigger has not read, one an open
+  "needs you" item points at, and mail an open wait on a reply may still be
+  checked against are kept. Each removed event leaves its delivery key, so the
+  same message is not delivered twice.
+
+Each batch is its own short transaction. It passes over model calls another
+transaction holds, and gives up after five seconds of waiting for anything
+else, to try again on the next pass; a large backlog goes over several passes. `MELETE_OBSERVATION_RETENTION_DAYS` (14 by default)
+still removes unused mail, calendar and document observations sooner.
+
 ## On a cloud VM
 
 Any Linux virtual machine you reach over SSH can run Melete, and the melete

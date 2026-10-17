@@ -147,6 +147,17 @@ describe('the model defaults', () => {
     );
   });
 
+  test('model calls and connector events are kept for ever unless the operator sets a retention', () => {
+    expect(loadEnv({}).MELETE_RETENTION_DAYS).toBeUndefined();
+    expect(loadEnv({ MELETE_RETENTION_DAYS: '' }).MELETE_RETENTION_DAYS).toBeUndefined();
+    expect(loadEnv({ MELETE_RETENTION_DAYS: '90' }).MELETE_RETENTION_DAYS).toBe(90);
+    for (const value of ['34', '0', '-1', '90.5', 'many'])
+      expect(readEnv({ MELETE_RETENTION_DAYS: value }).ok).toBe(false);
+    expect(composeServiceEnvironment().MELETE_RETENTION_DAYS ?? '').toBe('');
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    expect(example).toContain('\nMELETE_RETENTION_DAYS=\n');
+  });
+
   test('the first visitor is let in without a setup code only when the operator says true', () => {
     expect(loadEnv({}).MELETE_SETUP_OPEN).toBe(false);
     expect(loadEnv({ MELETE_SETUP_OPEN: '' }).MELETE_SETUP_OPEN).toBe(false);
