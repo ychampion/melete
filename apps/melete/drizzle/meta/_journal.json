@@ -897,6 +897,13 @@
       "when": 1789232400107,
       "tag": "0127_spend_counter",
       "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1789232400108,
+      "tag": "0128_person_computers_and_indexes",
+      "breakpoints": true
     }
   ]
 }

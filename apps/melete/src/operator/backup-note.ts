@@ -23,10 +23,14 @@ export function backupNoteStatement(name: string, at: Date): string {
   return `insert into event (type, payload, dedup_key) values ('notice', jsonb_build_object('kind', '${BACKUP_NOTE_KIND}', 'at', '${time}', 'name', '${name}'), 'backup:${name}') on conflict (dedup_key) do nothing`;
 }
 
-/** When the newest noted backup was taken, or null when none was noted. */
+/**
+ * When the newest noted backup was taken, or null when none was noted. The
+ * kind is written out rather than passed, so a prepared plan still matches
+ * `event_backup_note_idx` and reads the notes alone, not every event.
+ */
 export async function newestBackupAt(sql: Sql): Promise<Date | null> {
   const [row] = await sql<{ at: Date | string | null }[]>`
     select max((payload->>'at')::timestamptz) as at from event
-    where job_id is null and type = 'notice' and payload->>'kind' = ${BACKUP_NOTE_KIND}`;
+    where job_id is null and type = 'notice' and payload->>'kind' = 'backup_taken'`;
   return row?.at ? new Date(row.at) : null;
 }

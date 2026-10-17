@@ -48,6 +48,28 @@ export function startersFromSetting(raw: string | undefined): readonly StarterTa
  */
 export type SpaceOnboarded = (spaceId: string, recorded: boolean) => Promise<boolean>;
 
+/**
+ * How many chats of their own a person has in any space, counted only as far
+ * as the starters' limit. A chat with no principal is the installation
+ * owner's. The two cases are separate arms, not an OR: as an OR, the owner's
+ * many unattributed chats lead Postgres to read the whole job table for
+ * everyone, where each arm alone is served by job_chat_principal_idx and the
+ * owner's arm is skipped outright for anyone else.
+ */
+export async function ownChats(sql: Sql, personId: string): Promise<number> {
+  // Each arm carries the limit too: under the outer limit alone, the owner's
+  // arm's many rows make Postgres expect the first few at once and scan the
+  // table for the person's arm.
+  const rows = await sql`(select 1 from job where kind = 'chat' and principal_id = ${personId}
+      limit ${STARTER_CHAT_LIMIT})
+    union all
+    (select 1 from job where kind = 'chat' and principal_id is null
+      and ${personId} = (select id from owner limit 1)
+      limit ${STARTER_CHAT_LIMIT})
+    limit ${STARTER_CHAT_LIMIT}`;
+  return rows.length;
+}
+
 export class StarterService {
   constructor(
     private readonly sql: Sql,
@@ -65,15 +87,8 @@ export class StarterService {
     // Nothing is offered before setup or once put away, so the chats are not counted then.
     const before = starterVisibility({ onboarded, dismissed: Boolean(dismissed), chats: 0 });
     if (!before.show) return { ...before, starters: [] };
-    // Their own chats in any space, counted only as far as the limit. A chat
-    // with no principal is the installation owner's. Written as an OR, not a
-    // coalesce, so an index on job (principal_id) where kind = 'chat' serves it.
-    const chats = await this.sql`select 1 from job j
-      where j.kind = 'chat'
-        and (j.principal_id = ${personId}
-          or (j.principal_id is null and ${personId} = (select id from owner limit 1)))
-      limit ${STARTER_CHAT_LIMIT}`;
-    const visibility = starterVisibility({ onboarded, dismissed: false, chats: chats.length });
+    const chats = await ownChats(this.sql, personId);
+    const visibility = starterVisibility({ onboarded, dismissed: false, chats });
     if (!visibility.show) return { ...visibility, starters: [] };
     const city = cityFromTimeZone(profile?.time_zone ? String(profile.time_zone) : null);
     return { ...visibility, starters: this.starters.map((starter) => fillStarter(starter, city)) };

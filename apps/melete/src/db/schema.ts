@@ -196,7 +196,11 @@ export const savedSignInUse = pgTable(
     outcome: text('outcome').notNull(),
     createdAt: created(),
   },
-  (t) => [index('saved_sign_in_use_sign_in_idx').on(t.signInId, t.createdAt)],
+  (t) => [
+    index('saved_sign_in_use_sign_in_idx').on(t.signInId, t.createdAt),
+    // Removing a space removes its uses by this column.
+    index('saved_sign_in_use_space_idx').on(t.spaceId),
+  ],
 );
 
 /**
@@ -719,6 +723,13 @@ export const event = pgTable(
       .on(t.seq)
       .where(
         sql`${t.jobId} is null and ${t.type} = 'notice' and ${t.payload}->>'kind' = 'operator_action'`,
+      ),
+    // The notes `melete backup` leaves (`operator/backup-note.ts`), read for
+    // the newest backup on every operator overview.
+    index('event_backup_note_idx')
+      .on(t.seq)
+      .where(
+        sql`${t.jobId} is null and ${t.type} = 'notice' and ${t.payload}->>'kind' = 'backup_taken'`,
       ),
   ],
 );
