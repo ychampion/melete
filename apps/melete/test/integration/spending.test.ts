@@ -609,6 +609,46 @@ withDb('spending caps', () => {
     expect(await handle.sql`select 1 from spend_counter`).toHaveLength(0);
   });
 
+  test("admitting and recording calls reads the running totals, never the month's calls", async () => {
+    const { handle } = fixture();
+    // Every statement the guard sends, as written: a sum over the month's calls
+    // would run on every model call and grow with the month.
+    const sent: string[] = [];
+    const watched = new Proxy(handle.sql, {
+      apply(target, self, args) {
+        const [strings] = args;
+        if (Array.isArray(strings) && 'raw' in strings) sent.push(strings.join('$'));
+        return Reflect.apply(target, self, args);
+      },
+    });
+    const guard = new SpendingGuard(
+      watched,
+      limits({ month: { usd: 100, tokens: null }, day: { usd: 50, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    const row = await createJob('Read the counters');
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 50,
+      local: false,
+    };
+    for (let index = 0; index < 3; index++) {
+      const principal = jobPrincipal(row.id);
+      await guard.admit(principal, call);
+      await guard.record(principal, settlement(40));
+    }
+    expect(await guard.limitForJob(row.id)).toBeNull();
+    expect((await guard.totals(personId, NOW, true)).person?.month.usd).toBe(1.2);
+    const reads = sent.filter(
+      (text) => /\bmodel_usage\b/.test(text) && !/^\s*insert into model_usage\b/.test(text),
+    );
+    expect(reads).toEqual([]);
+    expect(sent.some((text) => /\bfrom spend_counter\b/.test(text))).toBe(true);
+  });
+
   test("a turned-off account's work starts nothing and spends nothing", async () => {
     const { handle } = fixture();
     const routine = await createJob('Morning digest', 'routine');
