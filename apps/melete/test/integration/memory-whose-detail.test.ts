@@ -167,7 +167,9 @@ withDb('a detail is kept with the someone it is about', () => {
         store.sql,
         scope,
         { ...again, claims: [] },
-        { proposals: [add(again, 'food.allergy', 'allergic to peanuts', 'Allergic to peanuts')] },
+        {
+          proposals: [add(again, 'food.allergy', 'allergic to peanuts', 'Allergic to peanuts')],
+        },
       ),
     ).toMatchObject({ status: 'committed' });
     // The same detail in other words, merged with what extraction was shown.
@@ -946,7 +948,10 @@ withDb('a detail is kept with the someone it is about', () => {
                   brother: brother && [brother[1], brother[4]],
                   lagos: true,
                 }
-              : { relative: [content, 2], brother: ['Brother Sam lives in Madrid', 1] },
+              : {
+                  relative: [content, 2],
+                  brother: ['Brother Sam lives in Madrid', 1],
+                },
           ]);
         }
     expect(got).toEqual(want);
@@ -1009,6 +1014,515 @@ withDb('a detail is kept with the someone it is about', () => {
     expect(await heldNow(scope)).toEqual([
       ['person.sam.brother.city', 'Brother Sam lives in Lagos', 'owner', 1, 2],
     ]);
+  });
+
+  /**
+   * Each detail held after one is kept under `held` from the person's
+   * sentence `first` (worded `heldWords`), and one change is proposed to it.
+   */
+  const heldThenChanged = async (
+    held: string,
+    first: string,
+    heldWords: string,
+    message: string,
+    quote: string,
+    content: string,
+    op: 'add' | 'supersede' = 'supersede',
+  ) => {
+    const scope = await createScope(store);
+    const before = await said(scope, first);
+    await commitExtraction(store.sql, scope, before, {
+      proposals: [add(before, held, first.slice(0, -1), heldWords)],
+    });
+    const batch = await said(scope, message);
+    await commitExtraction(store.sql, scope, batch, {
+      proposals: [
+        op === 'add' ? add(batch, held, quote, content) : supersede(batch, held, quote, content),
+      ],
+    });
+    return heldNow(scope);
+  };
+
+  test('a short word for a relation is that relation: "my bro Sam" is Brother Sam, "Sam\'s sis" his sister', async () => {
+    const got: unknown[] = [];
+    const want: unknown[] = [];
+    const friendSam = ['My friend Sam lives in Madrid.', 'Friend Sam lives in Madrid'] as const;
+    const friendMaya = ['My friend Maya lives in Madrid.', 'Friend Maya lives in Madrid'] as const;
+    const brotherSam = ['My brother Sam lives in Madrid.', 'Brother Sam lives in Madrid'] as const;
+    const byKey = (a: unknown[], b: unknown[]) => (String(a[0]) < String(b[0]) ? -1 : 1);
+    for (const [held, [first, heldWords], message, content, subject] of [
+      [
+        'person.friend.sam.city',
+        friendSam,
+        'My bro Sam moved to Faro.',
+        'Sam lives in Faro',
+        'person.brother.sam.city',
+      ],
+      [
+        'person.friend.sam.city',
+        friendSam,
+        'My bro Sam moved to Faro.',
+        'Bro Sam lives in Faro',
+        'person.brother.sam.city',
+      ],
+      [
+        'person.sam.city',
+        friendSam,
+        'My bro Sam moved to Faro.',
+        'Bro Sam lives in Faro',
+        'person.brother.sam.city',
+      ],
+      [
+        'person.friend.maya.city',
+        friendMaya,
+        'My sis Maya moved to Faro.',
+        'Sis Maya lives in Faro',
+        'person.sister.maya.city',
+      ],
+      [
+        'person.sam.city',
+        brotherSam,
+        "Sam's bro moved to Faro.",
+        "Sam's bro lives in Faro",
+        'person.sam.brother.city',
+      ],
+      [
+        'person.brother.sam.city',
+        brotherSam,
+        "Sam's bro moved to Faro.",
+        "Sam's bro lives in Faro",
+        'person.sam.brother.city',
+      ],
+      [
+        'person.sam.city',
+        brotherSam,
+        'My friend Sam’s sis lives in Faro.',
+        'Sam’s sis lives in Faro',
+        'person.friend.sam.sister.city',
+      ],
+      [
+        'person.brother.sam.city',
+        brotherSam,
+        'My friend Sam’s sis lives in Faro.',
+        'Sam’s sis lives in Faro',
+        'person.friend.sam.sister.city',
+      ],
+    ] as const) {
+      const rows = await heldThenChanged(
+        held,
+        first,
+        heldWords,
+        message,
+        message.slice(0, -1),
+        content,
+      );
+      got.push([held, message, content, rows]);
+      want.push([
+        held,
+        message,
+        content,
+        [
+          [held, heldWords, 'owner', 1, 1],
+          [subject, content, 'owner', 1, 1],
+        ].sort(byKey),
+      ]);
+    }
+    // Said of the brother held, it changes him.
+    for (const held of ['person.sam.city', 'person.brother.sam.city']) {
+      const [first, heldWords] = brotherSam;
+      const message = 'My bro Sam moved to Faro.';
+      const rows = await heldThenChanged(
+        held,
+        first,
+        heldWords,
+        message,
+        message.slice(0, -1),
+        'Bro Sam lives in Faro',
+      );
+      got.push([held, message, rows]);
+      want.push([held, message, [[held, 'Bro Sam lives in Faro', 'owner', 1, 2]]]);
+    }
+    // Said to anyone, it says nothing of who Sam is.
+    const thanks = await heldThenChanged(
+      'person.friend.sam.city',
+      ...friendSam,
+      'Thanks bro, Sam moved to Faro.',
+      'Thanks bro, Sam moved to Faro',
+      'Sam lives in Faro',
+    );
+    got.push(thanks);
+    want.push([['person.friend.sam.city', 'Sam lives in Faro', 'owner', 1, 2]]);
+    // "Sam's bro" is the brother kept as "Sam's brother", so his later move lands on that detail.
+    const rows = await heldThenChanged(
+      'person.friend.sam.brother.city',
+      "My friend Sam's brother lives in Faro.",
+      "Sam's brother lives in Faro",
+      "Sam's bro moved to Lagos.",
+      "Sam's bro moved to Lagos",
+      "Sam's bro lives in Lagos",
+    );
+    got.push(rows);
+    want.push([['person.friend.sam.brother.city', "Sam's bro lives in Lagos", 'owner', 1, 2]]);
+    expect(got).toEqual(want);
+  });
+
+  test("someone else's relative of the same name is theirs: Alex's brother Sam never changes Brother Sam", async () => {
+    const got: unknown[] = [];
+    const want: unknown[] = [];
+    const first = 'My brother Sam lives in Madrid.';
+    const byKey = (a: unknown[], b: unknown[]) => (String(a[0]) < String(b[0]) ? -1 : 1);
+    const alexs = "Alex's brother Sam moved to Faro";
+    for (const held of ['person.sam.city', 'person.brother.sam.city']) {
+      const brother = [held, 'Brother Sam lives in Madrid', 'owner', 1, 1];
+      for (const [message, quote, content, subject, op] of [
+        [`${alexs}.`, alexs, "Alex's brother Sam lives in Faro", 'person.alex.brother.city'],
+        [`${alexs}.`, alexs, 'Sam lives in Faro', 'person.alex.brother.city'],
+        // The change took Alex's brother for the person's; the words it cites say whose.
+        [`${alexs}.`, alexs, 'Brother Sam lives in Faro', 'person.alex.brother.city'],
+        [`${alexs}.`, alexs, "Alex's brother Sam lives in Faro", 'person.alex.brother.city', 'add'],
+        [
+          "My friend Alex's brother Sam moved to Faro.",
+          "My friend Alex's brother Sam moved to Faro",
+          "Alex's brother Sam lives in Faro",
+          'person.friend.alex.brother.city',
+        ],
+        [
+          'Alex’s little brother Sam lives in Faro now.',
+          'Alex’s little brother Sam lives in Faro now',
+          'Alex’s brother Sam lives in Faro',
+          'person.alex.brother.city',
+        ],
+      ] as const) {
+        const rows = await heldThenChanged(
+          held,
+          first,
+          'Brother Sam lives in Madrid',
+          message,
+          quote,
+          content,
+          op,
+        );
+        got.push([held, quote, content, rows]);
+        want.push([held, quote, content, [brother, [subject, content, 'owner', 1, 1]].sort(byKey)]);
+      }
+      // Words that do not name Sam as someone else's still change the brother.
+      for (const [message, content] of [
+        ['Alex says my brother Sam moved to Faro.', 'Brother Sam lives in Faro'],
+        ['Alex told me Sam moved to Faro.', 'Sam lives in Faro'],
+      ] as const) {
+        const rows = await heldThenChanged(
+          held,
+          first,
+          'Brother Sam lives in Madrid',
+          message,
+          message.slice(0, -1),
+          content,
+        );
+        got.push([held, message, content, rows]);
+        want.push([held, message, content, [[held, content, 'owner', 1, 2]]]);
+      }
+    }
+    // A Sam the person never said how they know may be Alex's brother.
+    const unknown = await heldThenChanged(
+      'person.sam.city',
+      'Sam lives in Madrid.',
+      'Sam lives in Madrid',
+      `${alexs}.`,
+      alexs,
+      "Alex's brother Sam lives in Faro",
+    );
+    got.push(unknown);
+    want.push([['person.sam.city', "Alex's brother Sam lives in Faro", 'owner', 1, 2]]);
+    expect(got).toEqual(want);
+
+    // Kept apart once, Alex's brother takes his own later move.
+    const scope = await createScope(store);
+    const before = await said(scope, first);
+    await commitExtraction(store.sql, scope, before, {
+      proposals: [
+        add(before, 'person.sam.city', first.slice(0, -1), 'Brother Sam lives in Madrid'),
+      ],
+    });
+    const moved = await said(scope, `${alexs}.`);
+    await commitExtraction(store.sql, scope, moved, {
+      proposals: [supersede(moved, 'person.sam.city', alexs, "Alex's brother Sam lives in Faro")],
+    });
+    const later = await said(scope, "Alex's brother Sam has moved on to Lagos.");
+    await commitExtraction(store.sql, scope, later, {
+      proposals: [
+        supersede(
+          later,
+          'person.alex.brother.city',
+          "Alex's brother Sam has moved on to Lagos",
+          "Alex's brother Sam lives in Lagos",
+        ),
+      ],
+    });
+    expect(await heldNow(scope)).toEqual([
+      ['person.alex.brother.city', "Alex's brother Sam lives in Lagos", 'owner', 1, 2],
+      ['person.sam.city', 'Brother Sam lives in Madrid', 'owner', 1, 1],
+    ]);
+  });
+
+  test("Brother Sam, proposed as a change to Alex's brother Sam's detail, never changes Alex's brother's", async () => {
+    const got: unknown[] = [];
+    const want: unknown[] = [];
+    const alexs = ['person.alex.brother.city', "Alex's brother Sam lives in Faro", 'owner', 1, 1];
+    const byKey = (a: unknown[], b: unknown[]) => (String(a[0]) < String(b[0]) ? -1 : 1);
+    for (const held of ['person.sam.city', 'person.brother.sam.city'])
+      for (const [message, quote, content, about] of [
+        [
+          'My brother Sam moved to Lagos.',
+          'My brother Sam moved to Lagos',
+          'Brother Sam lives in Lagos',
+          'him',
+        ],
+        [
+          'My brother Sam moved to Lagos.',
+          'My brother Sam moved to Lagos',
+          'Sam lives in Lagos',
+          'him',
+        ],
+        // The change took Brother Sam for Alex's; the words it cites say whose.
+        [
+          'My brother Sam moved to Lagos.',
+          'My brother Sam moved to Lagos',
+          "Alex's brother Sam lives in Lagos",
+          'him',
+        ],
+        // Words about Alex's brother, or that do not say which Sam, change Alex's brother's.
+        [
+          "Alex's brother Sam moved to Lagos.",
+          "Alex's brother Sam moved to Lagos",
+          "Alex's brother Sam lives in Lagos",
+          'relative',
+        ],
+        [
+          'Alex says his brother Sam moved to Lagos.',
+          'Alex says his brother Sam moved to Lagos',
+          "Alex's brother Sam lives in Lagos",
+          'relative',
+        ],
+        ['Sam moved to Lagos.', 'Sam moved to Lagos', 'Sam lives in Lagos', 'relative'],
+      ] as const) {
+        const scope = await createScope(store);
+        const first = await said(scope, 'My brother Sam lives in Madrid.');
+        await commitExtraction(store.sql, scope, first, {
+          proposals: [
+            add(first, held, 'My brother Sam lives in Madrid', 'Brother Sam lives in Madrid'),
+          ],
+        });
+        const theirs = await said(scope, "Alex's brother Sam lives in Faro.");
+        await commitExtraction(store.sql, scope, theirs, {
+          proposals: [
+            add(
+              theirs,
+              'person.alex.brother.city',
+              "Alex's brother Sam lives in Faro",
+              "Alex's brother Sam lives in Faro",
+            ),
+          ],
+        });
+        const batch = await said(scope, message);
+        await commitExtraction(store.sql, scope, batch, {
+          proposals: [supersede(batch, 'person.alex.brother.city', quote, content)],
+        });
+        got.push([held, quote, content, await heldNow(scope)]);
+        const brother = [held, 'Brother Sam lives in Madrid', 'owner', 1, 1];
+        want.push([
+          held,
+          quote,
+          content,
+          about === 'relative'
+            ? [['person.alex.brother.city', content, 'owner', 1, 2], brother].sort(byKey)
+            : held === 'person.brother.sam.city'
+              ? [alexs, [held, content, 'owner', 1, 2]]
+              : [alexs, ['person.brother.sam.city', content, 'owner', 1, 1], brother],
+        ]);
+      }
+    expect(got).toEqual(want);
+  });
+
+  test("a name with an apostrophe is read as the name: Friend O'Brien never changes Brother O'Brien", async () => {
+    const got: unknown[] = [];
+    const want: unknown[] = [];
+    const first = "My brother O'Brien lives in Madrid.";
+    const heldWords = "Brother O'Brien lives in Madrid";
+    const byKey = (a: unknown[], b: unknown[]) => (String(a[0]) < String(b[0]) ? -1 : 1);
+    for (const [held, name] of [
+      ['person.o_brien.city', 'o_brien'],
+      ['person.brother.o_brien.city', 'o_brien'],
+      ['person.obrien.city', 'obrien'],
+    ] as const) {
+      for (const [message, content, subject] of [
+        [
+          "My friend O'Brien just moved to Faro.",
+          "Friend O'Brien lives in Faro",
+          `person.friend.${name}.city`,
+        ],
+        [
+          "My friend O'Brien's sister moved to Faro.",
+          "O'Brien's sister lives in Faro",
+          `person.friend.${name}.sister.city`,
+        ],
+      ] as const) {
+        const rows = await heldThenChanged(
+          held,
+          first,
+          heldWords,
+          message,
+          message.slice(0, -1),
+          content,
+        );
+        got.push([held, message, rows]);
+        want.push([
+          held,
+          message,
+          [
+            [held, heldWords, 'owner', 1, 1],
+            [subject, content, 'owner', 1, 1],
+          ].sort(byKey),
+        ]);
+      }
+      for (const [message, content] of [
+        ["My brother O'Brien moved to Faro.", "Brother O'Brien lives in Faro"],
+        ["O'Brien moved to Faro.", "O'Brien lives in Faro"],
+      ] as const) {
+        const rows = await heldThenChanged(
+          held,
+          first,
+          heldWords,
+          message,
+          message.slice(0, -1),
+          content,
+        );
+        got.push([held, message, rows]);
+        want.push([held, message, [[held, content, 'owner', 1, 2]]]);
+      }
+    }
+    const rows = await heldThenChanged(
+      'person.d_angelo.city',
+      "My cousin D'Angelo lives in Rome.",
+      "Cousin D'Angelo lives in Rome",
+      "My colleague D'Angelo moved to Milan.",
+      "My colleague D'Angelo moved to Milan",
+      "Colleague D'Angelo lives in Milan",
+    );
+    got.push(rows);
+    want.push([
+      ['person.colleague.d_angelo.city', "Colleague D'Angelo lives in Milan", 'owner', 1, 1],
+      ['person.d_angelo.city', "Cousin D'Angelo lives in Rome", 'owner', 1, 1],
+    ]);
+    expect(got).toEqual(want);
+  });
+
+  test('a name that starts with an initial is that name: Friend D Smith never changes Brother D Smith', async () => {
+    const got: unknown[] = [];
+    const want: unknown[] = [];
+    const byKey = (a: unknown[], b: unknown[]) => (String(a[0]) < String(b[0]) ? -1 : 1);
+    for (const [held, name, subject] of [
+      ['person.d_smith.city', 'D Smith', 'd_smith'],
+      ['person.l_smith.city', 'L Smith', 'l_smith'],
+      ['person.brother.o_smith.city', 'O Smith', 'o_smith'],
+    ] as const) {
+      const first = `My brother ${name} lives in Madrid.`;
+      const heldWords = `Brother ${name} lives in Madrid`;
+      for (const [message, content, kept] of [
+        [
+          `My friend ${name} moved to Faro.`,
+          `Friend ${name} lives in Faro`,
+          `person.friend.${subject}.city`,
+        ],
+        [
+          `${name}'s sister moved to Faro.`,
+          `${name}'s sister lives in Faro`,
+          `person.${subject}.sister.city`,
+        ],
+      ] as const) {
+        const rows = await heldThenChanged(
+          held,
+          first,
+          heldWords,
+          message,
+          message.slice(0, -1),
+          content,
+        );
+        got.push([held, message, rows]);
+        want.push([
+          held,
+          message,
+          [
+            [held, heldWords, 'owner', 1, 1],
+            [kept, content, 'owner', 1, 1],
+          ].sort(byKey),
+        ]);
+      }
+      const message = `My brother ${name} moved to Faro.`;
+      const content = `Brother ${name} lives in Faro`;
+      const rows = await heldThenChanged(
+        held,
+        first,
+        heldWords,
+        message,
+        message.slice(0, -1),
+        content,
+      );
+      got.push([held, message, rows]);
+      want.push([held, message, [[held, content, 'owner', 1, 2]]]);
+    }
+    expect(got).toEqual(want);
+  });
+
+  test("Brother Sam's wife, proposed as a change to Alex's brother Sam's detail, is kept as his wife's", async () => {
+    const got: unknown[] = [];
+    const want: unknown[] = [];
+    const byKey = (a: unknown[], b: unknown[]) => (String(a[0]) < String(b[0]) ? -1 : 1);
+    const alexs = ['person.alex.brother.city', "Alex's brother Sam lives in Faro", 'owner', 1, 1];
+    for (const held of ['person.sam.city', 'person.brother.sam.city', null])
+      for (const content of ["Brother Sam's wife lives in Lagos", "Sam's wife lives in Lagos"]) {
+        const scope = await createScope(store);
+        if (held) {
+          const first = await said(scope, 'My brother Sam lives in Madrid.');
+          await commitExtraction(store.sql, scope, first, {
+            proposals: [
+              add(first, held, 'My brother Sam lives in Madrid', 'Brother Sam lives in Madrid'),
+            ],
+          });
+        }
+        const theirs = await said(scope, "Alex's brother Sam lives in Faro.");
+        await commitExtraction(store.sql, scope, theirs, {
+          proposals: [
+            add(
+              theirs,
+              'person.alex.brother.city',
+              "Alex's brother Sam lives in Faro",
+              "Alex's brother Sam lives in Faro",
+            ),
+          ],
+        });
+        const batch = await said(scope, "My brother Sam's wife moved to Lagos.");
+        await commitExtraction(store.sql, scope, batch, {
+          proposals: [
+            supersede(
+              batch,
+              'person.alex.brother.city',
+              "My brother Sam's wife moved to Lagos",
+              content,
+            ),
+          ],
+        });
+        got.push([held, content, await heldNow(scope)]);
+        want.push([
+          held,
+          content,
+          [
+            alexs,
+            ['person.brother.sam.partner.city', content, 'owner', 1, 1],
+            ...(held ? [[held, 'Brother Sam lives in Madrid', 'owner', 1, 1]] : []),
+          ].sort(byKey),
+        ]);
+      }
+    expect(got).toEqual(want);
   });
 
   test("in a room, a member's change left without their part is kept apart from another of that name", async () => {
@@ -1270,7 +1784,10 @@ withDb('a detail is kept with the someone it is about', () => {
     const faro = await said(scope, 'I moved to Faro.');
     await commitExtraction(store.sql, scope, faro, {
       proposals: [supersede(faro, 'person.owner.city', 'I moved to Faro', 'Lives in Faro')].map(
-        (change) => ({ ...change, domain_key: 'home.city' }),
+        (change) => ({
+          ...change,
+          domain_key: 'home.city',
+        }),
       ) as ExtractionProposal[],
     });
     expect(await heldNow(scope)).toEqual([
@@ -1318,7 +1835,9 @@ withDb('a detail is kept with the someone it is about', () => {
       ['I work nights.', 'Works nights'],
       ['I usually work at night.', 'Usually works at night'],
     ] as const)
-      expect(await aboutThem(scope, text, [content])).toMatchObject({ status: 'committed' });
+      expect(await aboutThem(scope, text, [content])).toMatchObject({
+        status: 'committed',
+      });
     // A detail an older extraction kept under "self", said again in other words.
     const cats = await said(scope, 'I have two cats.');
     await commitExtraction(store.sql, scope, cats, {
@@ -1463,7 +1982,9 @@ withDb('a detail is kept with the someone it is about', () => {
       store.sql,
       scope,
       { ...braga, claims: [] },
-      { proposals: [add(braga, 'home.city', 'I live in Braga now', 'Lives in Braga')] },
+      {
+        proposals: [add(braga, 'home.city', 'I live in Braga now', 'Lives in Braga')],
+      },
     );
     // A change to the city held, proposed under the other name.
     const evora = await said(scope, 'I moved to Evora.');
@@ -1483,7 +2004,9 @@ withDb('a detail is kept with the someone it is about', () => {
       store.sql,
       scope,
       { ...seville, claims: [] },
-      { proposals: [add(seville, 'self.work.city', 'I work in Seville now', 'Works in Seville')] },
+      {
+        proposals: [add(seville, 'self.work.city', 'I work in Seville now', 'Works in Seville')],
+      },
     );
     expect(await heldNow(scope)).toEqual([
       ['person.owner.city', 'The owner of my flat lives in Porto', 'owner', 1, 1],
@@ -1502,7 +2025,9 @@ withDb('a detail is kept with the someone it is about', () => {
       store.sql,
       other,
       { ...coimbra, claims: [] },
-      { proposals: [add(coimbra, 'self.city', 'I moved to Coimbra', 'Lives in Coimbra')] },
+      {
+        proposals: [add(coimbra, 'self.city', 'I moved to Coimbra', 'Lives in Coimbra')],
+      },
     );
     expect(await heldNow(other)).toEqual([['home.city', 'Lives in Coimbra', 'owner', 1, 2]]);
     // In a room, one member's city is never another's.
@@ -1516,7 +2041,9 @@ withDb('a detail is kept with the someone it is about', () => {
       store.sql,
       shared,
       { ...bob, claims: [] },
-      { proposals: [add(bob, 'self.city', 'I live in Porto', 'Bob lives in Porto')] },
+      {
+        proposals: [add(bob, 'self.city', 'I live in Porto', 'Bob lives in Porto')],
+      },
     );
     expect((await heldNow(shared)).map(([subject, content, by]) => [subject, content, by])).toEqual(
       [

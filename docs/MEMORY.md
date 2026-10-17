@@ -63,8 +63,14 @@ What it proposes is held to that bar before it is kept:
   sister says Sam lives in Faro" is about the Sam memory already holds. A
   relative of someone is not them: "My friend Sam's brother moved to Faro" is
   kept as Sam's brother's ("Sam's brother's city"), never on "Brother Sam",
-  and a later word about Sam himself never lands on his brother's detail. A
-  change is proposed under the subject of the detail it changes, so a
+  and a later word about Sam himself never lands on his brother's detail.
+  Someone named only as another's relative is theirs: "Alex's brother Sam"
+  is kept as Alex's brother's, apart from a Brother Sam memory holds, and "My
+  brother Sam" never lands on Alex's brother's detail. A short
+  word for a relation ("bro", "sis") is that relation when it is the person's
+  ("my bro Sam") or follows a name ("Sam's sis"), never when it is said to
+  anyone ("Thanks bro"), and a name with an apostrophe ("O'Brien") is one
+  name. A change is proposed under the subject of the detail it changes, so a
   relation that subject names is the held detail's, not the change's. A word
   that only starts a sentence ("Coffee is a must", "Monday is gym day") is not
   someone, but a name that goes on to say who someone is ("Sam is the
@@ -76,7 +82,8 @@ What it proposes is held to that bar before it is kept:
   English" and "Translates English into Portuguese"). The city the person
   lives in is one detail whether it was filed as home.city or self.city; where
   they work, a city they used to live in, and someone else's city are others
-  (`whoseDetail`, `ownDetailNow`, `relationsIn`, `relativeOf` and `twoPeople` in
+  (`whoseDetail`, `ownDetailNow`, `relationsIn`, `relativeOf`, `relativeNamed`
+  and `twoPeople` in
   [labels.ts](../apps/melete/src/memory/labels.ts), `aboutSubject` in
   [extract.ts](../apps/melete/src/memory/extract.ts)).
 
