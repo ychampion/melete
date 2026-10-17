@@ -504,6 +504,22 @@ bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOK
 bun run melete check
 ```
 
+Two settings keep the background work of many people in proportion; both are
+empty, and so off, unless set. `MELETE_REST_ROUTINES_AFTER_DAYS` is how many
+days a person may go unseen (no sign-in, no use of the app, no message through
+a channel) before their routines, watches and other repeating work rest. A
+time that comes while they rest is let pass, not kept: the next time the
+person is seen, everything comes back on from that moment, nothing missed runs
+late, and Home tells them in one line that their routines rested and are back
+on. `MELETE_ROUTINES_PER_PERSON_MAX` is how many routines and pieces of
+repeating work one person may keep; one more is refused with a sentence the
+assistant passes on. For an installation that other people sign in to, `14`
+days and `20` routines are a good start:
+
+```bash
+bun run melete set MELETE_REST_ROUTINES_AFTER_DAYS=14 MELETE_ROUTINES_PER_PERSON_MAX=20
+```
+
 ### How long call records are kept
 
 Every model call writes a row to `model_usage`, and every message, meeting,

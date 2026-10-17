@@ -8279,6 +8279,10 @@
                           "items": {
                             "$ref": "#/components/schemas/__schema366"
                           }
+                        },
+                        "routines_back": {
+                          "type": "string",
+                          "maxLength": 300
                         }
                       },
                       "required": [

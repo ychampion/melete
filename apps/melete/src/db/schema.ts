@@ -64,6 +64,15 @@ export const principal = pgTable(
      * person holds it, and only the setup owner grants or takes it away.
      */
     admin: boolean('admin').notNull().default(false),
+    /**
+     * The last time the person signed in, used the app or reached their
+     * assistant through a channel, to within a few minutes. When the operator
+     * sets MELETE_REST_ROUTINES_AFTER_DAYS, standing work rests once this is
+     * older than that.
+     */
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    /** When the person's routines last came back on after resting while they were away. */
+    routinesResumedAt: timestamp('routines_resumed_at', { withTimezone: true }),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );

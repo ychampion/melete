@@ -126,6 +126,20 @@ describe('the model defaults', () => {
     expect(example).toContain('\nMELETE_MEMORY_DAILY_CALLS=\n');
   });
 
+  test('standing work never rests and routines are not limited unless the operator sets it', () => {
+    const settings = ['MELETE_REST_ROUTINES_AFTER_DAYS', 'MELETE_ROUTINES_PER_PERSON_MAX'] as const;
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    for (const name of settings) {
+      expect(loadEnv({})[name]).toBeUndefined();
+      expect(loadEnv({ [name]: '' })[name]).toBeUndefined();
+      expect(loadEnv({ [name]: '14' })[name]).toBe(14);
+      for (const value of ['0', '-1', '1.5', 'many'])
+        expect(readEnv({ [name]: value }).ok).toBe(false);
+      expect(composeServiceEnvironment()[name] ?? '').toBe('');
+      expect(example).toContain(`\n${name}=\n`);
+    }
+  });
+
   test('Compose falls back to the same provider and model as the service and the example', () => {
     // Only a deploy/.env without these lines meets the fallback; it must not
     // select a provider the service then refuses to start with.
