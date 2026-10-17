@@ -137,6 +137,7 @@ import { QuestionService } from './jobs/questions.ts';
 import { QUEUES, queueCreatesSchema, startQueue } from './jobs/queue.ts';
 import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
+import { markSeen } from './jobs/resting.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { connectionScopesForJob } from './jobs/scopes.ts';
 import { CONVERSATION_BUDGET, JobService } from './jobs/service.ts';
@@ -697,6 +698,8 @@ export function createApp(deps: AppDeps) {
       publicUrl: deps.env.MELETE_PUBLIC_URL,
       twilio: factory.options.twilio,
       experience: experience ?? undefined,
+      seen: (principalId) =>
+        markSeen(connections.db, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
     });
   }
   if (deps.db)
@@ -1262,7 +1265,13 @@ export async function bootstrap(
     if (env.DATABASE_URL)
       queue = await startQueue(env.DATABASE_URL, { createSchema: queueCreatesSchema(env) });
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
-    if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
+    if (jobs) {
+      jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
+      jobs.standingWork = {
+        restAfterDays: env.MELETE_REST_ROUTINES_AFTER_DAYS,
+        routinesPerPerson: env.MELETE_ROUTINES_PER_PERSON_MAX,
+      };
+    }
     runs = jobs ? new RunService(jobs) : undefined;
     intents = jobs && runs ? new IntentService({ jobs, runs }) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues

@@ -33,6 +33,8 @@ export type SmsInboxDeps = {
   twilio?: TwilioOptions;
   /** Present where conversations are served; without it a text from the person is only kept. */
   experience?: ExperienceService;
+  /** A text from the person's own number is the person being seen. */
+  seen?: (principalId: string) => Promise<unknown>;
 };
 
 /** The service route Twilio calls, behind the web app's `/api` prefix. */
@@ -150,6 +152,7 @@ export class SmsInbox {
     if (!experience) return;
     const owner = await this.owner(connection.id);
     if (!owner) return;
+    await this.deps.seen?.(owner).catch(() => undefined);
     await principalContext.run(owner, async () => {
       let conversation: string | null;
       try {

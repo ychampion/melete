@@ -678,6 +678,22 @@ const variables = z.object({
     z.coerce.number().int().positive().optional(),
   ),
   /**
+   * Days a person may go unseen (no sign-in, no use of the app or of a
+   * channel) before their routines, watches and other standing work rest.
+   * They come back on the next time the person is seen, without running the
+   * times they missed. Unset or blank: standing work never rests.
+   */
+  MELETE_REST_ROUTINES_AFTER_DAYS: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(3650).optional(),
+  ),
+  /**
+   * How many routines and pieces of repeating work one person may keep at
+   * once. Unset or blank: no limit.
+   */
+  MELETE_ROUTINES_PER_PERSON_MAX: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(100_000).optional(),
+  ),
+  /**
    * When true, a job's model calls count against its dollar limit
    * (`max_usd_est`) as well as its actions do. Off, only actions and search
    * fees count there.

@@ -37,6 +37,7 @@ import { ItemFailures } from '../ops/item-failures.ts';
 import { personSetSchedule } from './attention.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
+import { personResting } from './resting.ts';
 import type { AttemptRunner } from './runner.ts';
 import { jobMayUseConnection } from './scopes.ts';
 import type { JobRow, JobService } from './service.ts';
@@ -462,6 +463,11 @@ export class TriggerService {
     runner.afterRecovery = () => this.syncSchedules();
   }
 
+  /** Whether this job's standing work rests because its person has been away. */
+  private resting(tx: Transaction, row: JobRow): Promise<boolean> {
+    return personResting(tx, row.principalId, this.jobs.standingWork?.restAfterDays);
+  }
+
   async create(jobId: string, input: TriggerSpec): Promise<TriggerRow> {
     const spec = triggerSpec.parse(input);
     checkTriggerSpec(this.jobs, spec);
@@ -589,6 +595,9 @@ export class TriggerService {
       return row;
     if (!registration?.enabled)
       throw new ServiceError('invalid_wait', 'Wait trigger is missing or disabled.');
+    // The person has been away long enough that their standing work rests:
+    // what arrives is let pass, and coming back counts from then.
+    if (watchedProcess(registration.spec) === null && (await this.resting(tx, row))) return row;
     const spec = triggerSpec.parse(registration.spec);
     // A trigger made before its connection stopped serving this job, or before
     // the rule existed, hears nothing more from it.
@@ -916,6 +925,8 @@ export class TriggerService {
       }
       const row = await this.jobs.lock(tx, registration.jobId);
       if (!row || isTerminal(jobState.parse(row.state))) return;
+      // An occurrence while the person is away is let pass, not kept for later.
+      if (!byPerson && (await this.resting(tx, row))) return;
       const received = await appendEvent(tx, {
         type: 'notice',
         payload: {

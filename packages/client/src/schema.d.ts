@@ -7583,6 +7583,7 @@ export interface paths {
                                 run: components["schemas"]["__schema413"];
                                 title: components["schemas"]["__schema334"];
                             }[];
+                            routines_back?: string;
                             tasks: components["schemas"]["__schema412"][];
                             time_zone: components["schemas"]["__schema334"];
                             upcoming: {

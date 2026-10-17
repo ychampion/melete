@@ -1,0 +1,2 @@
+ALTER TABLE "principal" ADD COLUMN "last_seen_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
+ALTER TABLE "principal" ADD COLUMN "routines_resumed_at" timestamp with time zone;

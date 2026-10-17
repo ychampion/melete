@@ -21,6 +21,7 @@ export type SmsRouteDeps = {
   publicUrl?: string;
   twilio?: TwilioOptions;
   experience?: ExperienceService;
+  seen?: (principalId: string) => Promise<unknown>;
 };
 
 /**
