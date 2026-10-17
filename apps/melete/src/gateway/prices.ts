@@ -90,9 +90,24 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'fireworks/*deepseek*': { input: 0.6, output: 2.2 },
   'fireworks/*qwen*': { input: 0.5, output: 1.5 },
   'fireworks/*llama*': { input: 0.2, output: 0.6 },
-  'anthropic/*': { input: 3, output: 15, cached_input: 0.3 },
+  // A Claude model nothing below names is charged as the most expensive tier,
+  // so a cap is never reached late on a new model.
+  'anthropic/*': { input: 10, output: 50, cached_input: 1 },
+  // Fable and Mythos at their list prices; the 5.1 releases read the cache at
+  // a fortieth of the input price.
+  'anthropic/*fable*': { input: 10, output: 50, cached_input: 1 },
+  'anthropic/*mythos*': { input: 10, output: 50, cached_input: 1 },
+  'anthropic/*fable-5-1*': { input: 10, output: 50, cached_input: 0.25 },
+  'anthropic/*mythos-5-1*': { input: 10, output: 50, cached_input: 0.25 },
+  // Opus 4 and 4.1, and older Opus models; Opus 4.5 and later at their own prices.
   'anthropic/*opus*': { input: 15, output: 75, cached_input: 1.5 },
+  'anthropic/*opus-5*': { input: 5, output: 25, cached_input: 0.5 },
+  'anthropic/*opus-4-5*': { input: 5, output: 25, cached_input: 0.5 },
+  'anthropic/*opus-4-6*': { input: 5, output: 25, cached_input: 0.5 },
+  'anthropic/*opus-4-7*': { input: 5, output: 25, cached_input: 0.5 },
+  'anthropic/*opus-4-8*': { input: 5, output: 25, cached_input: 0.5 },
   'anthropic/*sonnet*': { input: 3, output: 15, cached_input: 0.3 },
+  'anthropic/*sonnet-5*': { input: 2, output: 10, cached_input: 0.2 },
   'anthropic/*haiku*': { input: 1, output: 5, cached_input: 0.1 },
   // The Claude 5.5 models at their list prices. A cache read is a tenth of the
   // input price, except on Opus 5.5, where it is a twentieth; a five-minute

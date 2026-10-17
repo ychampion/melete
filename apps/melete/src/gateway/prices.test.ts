@@ -30,6 +30,41 @@ test('Haiku 5.5 is charged five times as much for a prompt above 100,000 tokens'
   expect(prices.chargedInputTokens('anthropic', model, usage(200_000, 0, 100_000))).toBe(110_000);
 });
 
+test('each Claude model is charged its own list price, and an unlisted one the highest', () => {
+  const prices = new PriceTable();
+  const listed: [string, number, number, number][] = [
+    ['claude-fable-5-1', 10, 50, 0.25],
+    ['claude-mythos-5-1', 10, 50, 0.25],
+    ['claude-fable-5', 10, 50, 1],
+    ['claude-mythos-5', 10, 50, 1],
+    ['claude-opus-5-5', 4, 20, 0.2],
+    ['claude-opus-5', 5, 25, 0.5],
+    ['claude-opus-4-8', 5, 25, 0.5],
+    ['claude-opus-4-7', 5, 25, 0.5],
+    ['claude-opus-4-6', 5, 25, 0.5],
+    ['claude-opus-4-5-20251101', 5, 25, 0.5],
+    ['claude-opus-4-1-20250805', 15, 75, 1.5],
+    ['claude-opus-4-20250514', 15, 75, 1.5],
+    ['claude-sonnet-5-5', 2, 10, 0.2],
+    ['claude-sonnet-5', 2, 10, 0.2],
+    ['claude-sonnet-4-6', 3, 15, 0.3],
+    ['claude-sonnet-4-5-20250929', 3, 15, 0.3],
+    ['claude-haiku-5-5', 0.1, 0.5, 0.01],
+    ['claude-haiku-4-5', 1, 5, 0.1],
+    // A Claude model this table has never heard of.
+    ['claude-new-tier-9', 10, 50, 1],
+  ];
+  for (const [model, input, output, cached] of listed) {
+    const price = prices.priceFor('anthropic', model);
+    expect([model, price.input, price.output, price.cached_input]).toEqual([
+      model,
+      input,
+      output,
+      cached,
+    ]);
+  }
+});
+
 test('an operator price may name a long-prompt price of its own', () => {
   const overrides = parseModelPrices(
     JSON.stringify({
