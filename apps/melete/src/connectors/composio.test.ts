@@ -1,22 +1,30 @@
 /**
  * The managed path under Melete's own Google connectors: the Composio client,
- * the proxy fetcher and what it refuses, the answers it maps, and the same
- * recorded Google answers read natively and through Composio giving the same
- * observations and dedup keys.
+ * the tool fetcher and what it refuses, the answers it maps, and the same
+ * recorded Google answers read natively and through Composio's tools giving
+ * the same observations and dedup keys. Nothing goes through Composio's proxy.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { createHmac } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { CAP_WORDS, ComposioCapReached, type ComposioMeter } from '../signals/managed-calls.ts';
 import { mailObservation } from '../signals/observations.ts';
 import { ComposioClient, ComposioFault, type ComposioToolkit } from './composio.ts';
+import { ComposioAppConnector } from './composio-app.ts';
+import { ComposioCatalog, POPULAR_APPS } from './composio-catalog.ts';
 import {
-  composioProxyFetch,
+  composioToolFetch,
   MANAGED_GOOGLE_BASES,
   MANAGED_READS,
+  MANAGED_TOOLKITS,
   MANAGED_WRITES,
   ManagedRequestRefused,
+  type ManagedRule,
   managedAccess,
   namesManagedAuthority,
 } from './composio-fetch.ts';
+import { ComposioRunner } from './composio-sessions.ts';
+import { signedByComposio } from './composio-triggers.ts';
 import { ConnectorFactory } from './configured.ts';
 import type { EmailConnector } from './email.ts';
 import { ConnectorFaultError } from './faults.ts';
@@ -71,8 +79,21 @@ async function activeAccount(upstream: Upstream, toolkit: ComposioToolkit = 'gma
   return linked.connectedAccountId;
 }
 
-const proxied = (accountId: string, rules: Parameters<typeof composioProxyFetch>[0]['rules']) =>
-  composioProxyFetch({ client, connectedAccountId: accountId, rules });
+const runner = new ComposioRunner(client);
+afterAll(() => expect(fake.proxyCalls).toEqual([]));
+
+/** A fetcher that runs one of the part's tools for each request it allows. */
+const proxied = (
+  accountId: string,
+  rules: readonly ManagedRule[],
+  part: keyof typeof MANAGED_TOOLKITS = 'mail',
+) =>
+  composioToolFetch({
+    runner,
+    connectedAccountId: accountId,
+    toolkit: MANAGED_TOOLKITS[part],
+    rules,
+  });
 
 describe('the Composio client', () => {
   test('a refused key, a missing account and a malformed id are typed faults, with no body in them', async () => {
@@ -106,11 +127,11 @@ describe('the Composio client', () => {
   });
 });
 
-describe('the proxy fetcher', () => {
+describe('the tool fetcher', () => {
   test('the read fetcher refuses a send, and nothing reaches Composio', async () => {
     const google = recorded(() => ({ body: { id: 'sent', labelIds: ['SENT'] } }));
     const id = await activeAccount(google.upstream);
-    const before = fake.proxyCalls.length;
+    const before = fake.executions.length;
     const read = proxied(id, MANAGED_READS.mail);
     await expect(
       read(`${MANAGED_GOOGLE_BASES.gmail}/messages/send`, {
@@ -118,15 +139,58 @@ describe('the proxy fetcher', () => {
         body: JSON.stringify({ raw: 'eA' }),
       }),
     ).rejects.toBeInstanceOf(ManagedRequestRefused);
-    expect(fake.proxyCalls.length).toBe(before);
-    // The same send through the agent's fetcher goes, as a POST with its body.
+    expect(fake.executions.length).toBe(before);
+    // The same send through the agent's fetcher goes, as Gmail's send tool with the message's fields.
     const write = proxied(id, MANAGED_WRITES.mail);
+    const raw = Buffer.from(
+      'To: Ann <ann@example.test>, bo@example.test\r\nCc: cy@example.test\r\nSubject: Hi\r\n\r\nHello there\r\n',
+    ).toString('base64url');
     const sent = await write(`${MANAGED_GOOGLE_BASES.gmail}/messages/send`, {
       method: 'POST',
-      body: JSON.stringify({ raw: 'eA' }),
+      body: JSON.stringify({ raw }),
     });
     expect(sent.status).toBe(200);
-    expect(fake.proxyCalls.at(-1)).toMatchObject({ account: id, method: 'POST' });
+    expect(await sent.json()).toMatchObject({ id: 'sent', labelIds: ['SENT'] });
+    expect(fake.executions.at(-1)).toMatchObject({
+      account: id,
+      tool: 'GMAIL_SEND_EMAIL',
+      args: {
+        recipient_email: 'ann@example.test',
+        extra_recipients: ['bo@example.test'],
+        cc: ['cy@example.test'],
+        subject: 'Hi',
+        is_html: false,
+      },
+    });
+    // A message with an attachment is refused: Composio's send tool takes files only from its own storage.
+    const attached = Buffer.from(
+      [
+        'To: ann@example.test',
+        'Subject: File',
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary=b',
+        '',
+        '--b',
+        'Content-Type: text/plain',
+        '',
+        'See attached',
+        '--b',
+        'Content-Type: text/plain; name=a.txt',
+        'Content-Disposition: attachment; filename=a.txt',
+        '',
+        'file',
+        '--b--',
+        '',
+      ].join('\r\n'),
+    ).toString('base64url');
+    const count = fake.executions.length;
+    await expect(
+      write(`${MANAGED_GOOGLE_BASES.gmail}/messages/send`, {
+        method: 'POST',
+        body: JSON.stringify({ raw: attached }),
+      }),
+    ).rejects.toBeInstanceOf(ManagedRequestRefused);
+    expect(fake.executions.length).toBe(count);
   });
 
   test('only the listed hosts and paths go, the person’s token is never sent, and queries travel as parameters', async () => {
@@ -167,15 +231,18 @@ describe('the proxy fetcher', () => {
     expect(await managedAccess(client, id).renew('managed')).toBe('managed');
   });
 
-  test('Google asking for time keeps its Retry-After, and Composio refusing the key reads as an outage', async () => {
+  test('Google asking for time reads as slowed, and Composio refusing the key reads as an outage', async () => {
     const id = await activeAccount(
       recorded(() => ({ status: 429, body: { error: { code: 429 } } })).upstream,
     );
     const slowed = await proxied(id, MANAGED_READS.mail)(`${MANAGED_GOOGLE_BASES.gmail}/profile`);
     expect(slowed.status).toBe(429);
-    const wrong = composioProxyFetch({
-      client: new ComposioClient({ apiKey: 'not-the-key', baseUrl: fake.baseUrl }),
+    const wrong = composioToolFetch({
+      runner: new ComposioRunner(
+        new ComposioClient({ apiKey: 'not-the-key', baseUrl: fake.baseUrl }),
+      ),
       connectedAccountId: id,
+      toolkit: 'gmail',
       rules: MANAGED_READS.mail,
     });
     expect((await wrong(`${MANAGED_GOOGLE_BASES.gmail}/profile`)).status).toBe(503);
@@ -253,7 +320,7 @@ describe('the same recorded answers, natively and through Composio', () => {
     const managed = await read(proxied(id, MANAGED_READS.mail), managedAccess(client, id));
     expect(managed).toEqual(direct);
     expect(direct.observations.map((o) => o.dedup_key)).toHaveLength(2);
-    // The headers situations need come through the proxy unchanged.
+    // The headers situations need come through Composio's tools unchanged.
     expect(JSON.stringify(managed.observations)).toContain('thread@shop.example');
   });
 
@@ -296,7 +363,7 @@ describe('the same recorded answers, natively and through Composio', () => {
     const direct = await occurrences(google.fetcher, native);
     expect(direct.items).toHaveLength(1);
     expect(
-      await occurrences(proxied(id, MANAGED_READS.calendar), managedAccess(client, id)),
+      await occurrences(proxied(id, MANAGED_READS.calendar, 'calendar'), managedAccess(client, id)),
     ).toEqual(direct);
   });
 
@@ -344,9 +411,9 @@ describe('the same recorded answers, natively and through Composio', () => {
     };
     const direct = await changes(google.fetcher, native);
     expect(direct[1]?.changes).toHaveLength(1);
-    expect(await changes(proxied(id, MANAGED_READS.documents), managedAccess(client, id))).toEqual(
-      direct,
-    );
+    expect(
+      await changes(proxied(id, MANAGED_READS.documents, 'documents'), managedAccess(client, id)),
+    ).toEqual(direct);
   });
 
   test('a calendar page as large as the connector itself reads is read the same', async () => {
@@ -379,7 +446,7 @@ describe('the same recorded answers, natively and through Composio', () => {
     const direct = await occurrences(google.fetcher, native);
     expect(direct.items).toHaveLength(3);
     expect(
-      await occurrences(proxied(id, MANAGED_READS.calendar), managedAccess(client, id)),
+      await occurrences(proxied(id, MANAGED_READS.calendar, 'calendar'), managedAccess(client, id)),
     ).toEqual(direct);
   });
 
@@ -437,7 +504,7 @@ describe('a connection signed in through Composio', () => {
       },
     })) as EmailConnector;
     expect(connector).toBeDefined();
-    const before = fake.proxyCalls.length;
+    const before = fake.executions.length;
     const refused = await connector
       .execute(
         mailAction('email.search', { query: '', limit: 5, connected_account_id: 'ca_someone' }),
@@ -445,14 +512,15 @@ describe('a connection signed in through Composio', () => {
       )
       .catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(ConnectorFaultError);
-    expect(fake.proxyCalls.length).toBe(before);
+    expect(fake.executions.length).toBe(before);
     // The same search without it goes through the row's own account.
     const found = await connector.execute(
       mailAction('email.search', { query: '', limit: 5 }),
       mailContext(),
     );
     expect(found.outcome).toBe('succeeded');
-    expect(fake.proxyCalls.slice(before).every((call) => call.account === id)).toBe(true);
+    expect(fake.executions.length).toBeGreaterThan(before);
+    expect(fake.executions.slice(before).every((call) => call.account === id)).toBe(true);
     // Its receipt says it went through Composio, and never names the account or the key.
     if (found.outcome !== 'succeeded') throw new Error('expected a receipt');
     expect(found.receipt.detail.via).toBe('composio');
@@ -545,5 +613,316 @@ describe('Composio’s meta tools', () => {
     } finally {
       await server.stop(true);
     }
+  });
+});
+
+/** A meter that only records what it was asked, refusing once `cap` calls are held. */
+function countingMeter(cap = Number.POSITIVE_INFINITY) {
+  const held = { count: 0, released: 0 };
+  const meter = {
+    async reserve(dimension: 'tool_calls') {
+      if (held.count >= cap) throw new ComposioCapReached(dimension);
+      held.count += 1;
+      return { period: '2026-10-01', dimension, units: 1 };
+    },
+    async release() {
+      held.count -= 1;
+      held.released += 1;
+    },
+  } as unknown as ComposioMeter;
+  return { meter, held };
+}
+
+describe('running a tool for one account', () => {
+  test('each run is one session tool call, sessions are opened once per account and reopened when Composio drops them', async () => {
+    const id = await activeAccount(recorded(gmailRoute).upstream);
+    const own = new ComposioRunner(client);
+    const opened = fake.sessions.size;
+    for (let i = 0; i < 3; i++)
+      expect(
+        await own.run({
+          connectedAccountId: id,
+          toolkit: 'gmail',
+          tool: 'GMAIL_GET_PROFILE',
+          args: {},
+        }),
+      ).toMatchObject({ ok: true, data: { historyId: '5000' } });
+    expect(fake.sessions.size).toBe(opened + 1);
+    const [session] = [...fake.sessions.values()].slice(-1);
+    expect(session).toMatchObject({ toolkit: 'gmail', account: id });
+    fake.dropSessions();
+    expect(
+      await own.run({
+        connectedAccountId: id,
+        toolkit: 'gmail',
+        tool: 'GMAIL_GET_PROFILE',
+        args: {},
+      }),
+    ).toMatchObject({ ok: true });
+    // A session for another toolkit than the account's is never opened.
+    await expect(
+      own.run({ connectedAccountId: id, toolkit: 'slack', tool: 'SLACK_LIST_CHANNELS', args: {} }),
+    ).rejects.toBeInstanceOf(ComposioFault);
+  });
+
+  test('a call refused before it ran is given back; one that may have run, or timed out, stays counted', async () => {
+    const id = await activeAccount(recorded(gmailRoute).upstream);
+    const { meter, held } = countingMeter();
+    const own = new ComposioRunner(client, meter);
+    const run = () =>
+      own.run({ connectedAccountId: id, toolkit: 'gmail', tool: 'GMAIL_GET_PROFILE', args: {} });
+    await run();
+    expect(held).toEqual({ count: 1, released: 0 });
+    fake.failNext.push(400);
+    await expect(run()).rejects.toBeInstanceOf(ComposioFault);
+    expect(held).toEqual({ count: 1, released: 1 });
+    fake.failNext.push(502);
+    await expect(run()).rejects.toBeInstanceOf(ComposioFault);
+    expect(held.count).toBe(2);
+    // A timeout: Composio may have run it, so it is spent.
+    const slow = new ComposioRunner(
+      new ComposioClient({ apiKey: fake.apiKey, baseUrl: fake.baseUrl, timeoutMs: 300 }),
+      meter,
+    );
+    await slow.run({
+      connectedAccountId: id,
+      toolkit: 'gmail',
+      tool: 'GMAIL_GET_PROFILE',
+      args: {},
+    });
+    fake.failNext.push('hang');
+    const timedOut = await slow
+      .run({ connectedAccountId: id, toolkit: 'gmail', tool: 'GMAIL_GET_PROFILE', args: {} })
+      .catch((error: unknown) => error);
+    expect(timedOut).toBeInstanceOf(ComposioFault);
+    expect((timedOut as ComposioFault).mayHaveRun).toBe(true);
+    expect(held.count).toBe(4);
+  });
+
+  test('a spent limit refuses the call before anything reaches Composio, an approved send included', async () => {
+    const google = recorded(gmailRoute);
+    const id = await activeAccount(google.upstream);
+    const { meter } = countingMeter(0);
+    const spent = new ComposioFactoryHarness(meter);
+    const connector = (await spent.factory.open({
+      id: 'con_capped',
+      spaceId: 'spc_test',
+      provider: 'imap',
+      secretRef: null,
+      configuration: {
+        kind: 'gmail',
+        account: 'me@example.test',
+        via: 'composio',
+        connected_account_id: id,
+      },
+    })) as EmailConnector;
+    const before = fake.executions.length;
+    const sent = await connector.execute(
+      mailAction(
+        'email.send',
+        { to: ['a@example.test'], subject: 'Hi', body: 'Hello' },
+        'act_capped01',
+      ),
+      mailContext('act_capped01'),
+    );
+    expect(sent).toEqual({ outcome: 'failed', reason: CAP_WORDS.tool_calls, retryable: false });
+    expect(fake.executions.length).toBe(before);
+  });
+});
+
+/** A connector factory whose Composio calls are held to `meter`, as configured from the environment. */
+class ComposioFactoryHarness {
+  readonly factory: ConnectorFactory;
+  constructor(meter: ComposioMeter) {
+    const spent = Object.assign(meter, {
+      spent: async () => {
+        try {
+          const held = await meter.reserve('tool_calls');
+          await meter.release(held);
+          return false;
+        } catch {
+          return true;
+        }
+      },
+    });
+    this.factory = new ConnectorFactory({
+      sql: {} as Sql,
+      workRoot: 'unused',
+      spacesRoot: 'unused',
+      composio: { client, meter: spent },
+    });
+  }
+}
+
+describe('an app connected through Composio', () => {
+  const action = (kind: string, payload: Record<string, unknown>) => ({
+    ...mailAction(kind, payload),
+    kind,
+    connection_id: 'con_slack',
+  });
+  const open = async (meter?: ComposioMeter) => {
+    const id = await activeAccount(recorded(() => undefined).upstream, 'slack' as ComposioToolkit);
+    const connector = (await new ConnectorFactory({
+      sql: {} as Sql,
+      workRoot: 'unused',
+      spacesRoot: 'unused',
+      composio: { client, ...(meter ? { meter, runner: new ComposioRunner(client, meter) } : {}) },
+    }).open({
+      id: 'con_slack',
+      spaceId: 'spc_test',
+      provider: 'composio',
+      secretRef: null,
+      configuration: {
+        kind: 'composio_app',
+        account: 'slack',
+        toolkit: 'slack',
+        title: 'Slack',
+        via: 'composio',
+        connected_account_id: id,
+      },
+    })) as ComposioAppConnector;
+    return { id, connector };
+  };
+
+  test('offers three tools: finding, reading without asking, and acting after approval', async () => {
+    const { connector } = await open();
+    expect(connector).toBeInstanceOf(ComposioAppConnector);
+    expect(connector.manifest.provider).toBe('composio');
+    expect(
+      connector.manifest.tools.map((tool) => [
+        tool.name,
+        tool.effect_class,
+        tool.requires_approval,
+      ]),
+    ).toEqual([
+      ['app_slack.find_tools', 'read', false],
+      ['app_slack.read', 'read', false],
+      ['app_slack.act', 'write_external', true],
+    ]);
+    // Searched for, never all in the prompt; reads are declared as reads.
+    expect(connector.catalog.source).toBe('mcp');
+    expect(connector.readOnlyDeclared('app_slack.read')).toBe(true);
+    expect(connector.readOnlyDeclared('app_slack.act')).toBe(false);
+  });
+
+  test('finds tools for free, runs a reading tool, refuses a changing one through read, and runs it through act', async () => {
+    const { id, connector } = await open();
+    const before = fake.executions.length;
+    const found = await connector.execute(
+      action('app_slack.find_tools', { query: 'send message' }),
+      mailContext(),
+    );
+    if (found.outcome !== 'succeeded') throw new Error('expected tools');
+    expect(JSON.stringify(found.receipt.detail)).toContain('SLACK_SEND_MESSAGE');
+    expect(found.receipt.detail).toMatchObject({
+      via: 'composio',
+      origin_trust: 'external_content',
+    });
+    // Finding tools is a listing, not a tool call.
+    expect(fake.executions.length).toBe(before);
+    const listed = await connector.execute(
+      action('app_slack.read', { tool: 'SLACK_LIST_CHANNELS', arguments: {} }),
+      mailContext(),
+    );
+    expect(listed.outcome).toBe('succeeded');
+    expect(JSON.stringify(listed)).toContain('general');
+    const sneaked = await connector.execute(
+      action('app_slack.read', { tool: 'SLACK_SEND_MESSAGE', arguments: { channel: 'C1' } }),
+      mailContext(),
+    );
+    expect(sneaked).toMatchObject({ outcome: 'failed' });
+    const sent = await connector.execute(
+      action('app_slack.act', {
+        tool: 'SLACK_SEND_MESSAGE',
+        arguments: { channel: 'C1', text: 'hi' },
+      }),
+      mailContext(),
+    );
+    expect(sent.outcome).toBe('succeeded');
+    expect(fake.executions.slice(before).map((run) => [run.account, run.tool])).toEqual([
+      [id, 'SLACK_LIST_CHANNELS'],
+      [id, 'SLACK_SEND_MESSAGE'],
+    ]);
+    // Another app's tool, or one naming an account, never runs.
+    expect(
+      await connector.execute(
+        action('app_slack.act', { tool: 'GMAIL_SEND_EMAIL', arguments: {} }),
+        mailContext(),
+      ),
+    ).toMatchObject({ outcome: 'failed' });
+    await expect(
+      connector.execute(
+        action('app_slack.act', {
+          tool: 'SLACK_SEND_MESSAGE',
+          arguments: { connected_account_id: 'ca_x' },
+        }),
+        mailContext(),
+      ),
+    ).rejects.toBeInstanceOf(ConnectorFaultError);
+    expect(fake.executions.length).toBe(before + 2);
+  });
+
+  test('a spent limit is told as a plain sentence the agent relays, and nothing is sent', async () => {
+    const { meter } = countingMeter(0);
+    const { connector } = await open(meter);
+    const before = fake.executions.length;
+    const sent = await connector.execute(
+      action('app_slack.act', { tool: 'SLACK_SEND_MESSAGE', arguments: { channel: 'C1' } }),
+      mailContext(),
+    );
+    expect(sent).toEqual({ outcome: 'failed', reason: CAP_WORDS.tool_calls, retryable: false });
+    expect(fake.executions.length).toBe(before);
+  });
+});
+
+describe('the app catalog', () => {
+  test('the popular list leaves out Google’s parts, and search offers only apps that can be signed in to here', async () => {
+    expect(POPULAR_APPS.length).toBeGreaterThanOrEqual(20);
+    expect(
+      POPULAR_APPS.some((app) => ['gmail', 'googlecalendar', 'googledrive'].includes(app.toolkit)),
+    ).toBe(false);
+    const catalog = new ComposioCatalog(client);
+    const found = await catalog.search('a');
+    const slugs = found.map((app) => app.toolkit);
+    expect(slugs).toContain('slack');
+    expect(slugs).toContain('acme_crm');
+    // Not managed, no sign-in at all, or Google's own parts: not offered.
+    for (const slug of ['spotify', 'weather_tool', 'gmail', 'googledrive'])
+      expect(slugs).not.toContain(slug);
+    expect(await catalog.title('acme_crm')).toBe('Acme CRM');
+    expect(await catalog.title('spotify')).toBeNull();
+    expect(await catalog.title('gmail')).toBeNull();
+    // With the operator's own auth config, an app Composio does not sign in to is offered.
+    expect(await new ComposioCatalog(client, new Set(['spotify'])).title('spotify')).toBe(
+      'Spotify',
+    );
+    expect(await catalog.search('<script>')).toEqual([]);
+  });
+});
+
+describe('a trigger delivery’s signature', () => {
+  const secret = 'whsec-test-secret-value';
+  const sign = (id: string, timestamp: string, body: string, key = secret) =>
+    `v1,${createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest('base64')}`;
+  test('is accepted only when made with the secret, over this body, recently', () => {
+    const now = Date.parse('2026-10-05T12:00:00Z');
+    const timestamp = String(now / 1000);
+    const body = '{"type":"composio.trigger.message"}';
+    const headers = { id: 'msg_1', timestamp, signature: sign('msg_1', timestamp, body) };
+    expect(signedByComposio(secret, headers, body, now)).toBe(true);
+    // One of several signatures is enough, as Standard Webhooks allows.
+    expect(
+      signedByComposio(
+        secret,
+        { ...headers, signature: `v1,AAAA ${headers.signature}` },
+        body,
+        now,
+      ),
+    ).toBe(true);
+    expect(signedByComposio(secret, headers, `${body} `, now)).toBe(false);
+    expect(signedByComposio('another-secret-value', headers, body, now)).toBe(false);
+    expect(signedByComposio(secret, { ...headers, id: 'msg_2' }, body, now)).toBe(false);
+    expect(signedByComposio(secret, headers, body, now + 10 * 60_000)).toBe(false);
+    expect(signedByComposio(secret, { ...headers, signature: null }, body, now)).toBe(false);
   });
 });

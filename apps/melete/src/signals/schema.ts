@@ -15,6 +15,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   check,
   index,
   integer,
@@ -127,6 +128,35 @@ export const managedCall = pgTable(
     index('managed_call_month_idx').on(table.month),
     check('managed_call_month_check', sql`${table.month} ~ '^[0-9]{4}-[0-9]{2}$'`),
     check('managed_call_calls_check', sql`${table.calls} >= 0`),
+  ],
+);
+
+/**
+ * What this installation has spent at Composio in each billing period, by
+ * billable dimension (tool calls, trigger events). A call is counted here
+ * before it is sent, under a lock, so concurrent calls cannot pass a limit
+ * together; one that was definitely never sent is taken back. `reported` is
+ * the count Composio's own usage numbers gave for the period, when read; the
+ * larger of the two is what a limit is checked against. Only counts are kept.
+ */
+export const composioUsage = pgTable(
+  'composio_usage',
+  {
+    /** The first day of the billing period, `YYYY-MM-DD` in UTC. */
+    period: text('period').notNull(),
+    dimension: text('dimension').notNull(),
+    used: bigint('used', { mode: 'number' }).notNull().default(0),
+    /** Composio's own count for the period, as last read. */
+    reported: bigint('reported', { mode: 'number' }),
+    /** Melete's own count when Composio's was read, so calls since then are added to it. */
+    usedAtReport: bigint('used_at_report', { mode: 'number' }).notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.period, table.dimension] }),
+    check('composio_usage_period_check', sql`${table.period} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`),
+    check('composio_usage_dimension_check', sql`${table.dimension} ~ '^[a-z_]{1,40}$'`),
+    check('composio_usage_used_check', sql`${table.used} >= 0`),
   ],
 );
 

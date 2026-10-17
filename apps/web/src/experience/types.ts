@@ -180,6 +180,7 @@ export type AccountSignInStart = Ok<paths['/google-sign-ins'], 'post'>;
 export type AccountSignInStatus = Ok<paths['/google-sign-ins/{id}'], 'get'>;
 /** Signing in to Google through Composio, one consent page per part. */
 export type ManagedSignInStart = Ok<paths['/managed-sign-ins'], 'post'>;
+export type ComposioAppSearchResponse = Ok<paths['/composio/apps'], 'get'>;
 /** Signing in to a remote MCP server, for a connection that is already installed. */
 export type McpSignInStart = Ok<paths['/mcp-sign-ins'], 'post'>;
 export type McpSignInStatus = Ok<paths['/mcp-sign-ins/{id}'], 'get'>;

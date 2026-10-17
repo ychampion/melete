@@ -44,6 +44,7 @@ import type {
   BrowserControl,
   BrowserSite,
   CatalogEntry,
+  ComposioAppSearchResponse,
   ConnectedAssistant,
   ConnectionChecked,
   ConnectionCreate,
@@ -907,12 +908,22 @@ export const adapter = {
         ? api.POST('/google-sign-ins', { body })
         : api.POST('/microsoft-sign-ins', { body });
     }),
-  /** Starts signing in to Google through Composio; the answer is the first consent page to open. */
-  startManagedSignIn: (spaceId?: string) =>
+  /**
+   * Starts signing in through Composio: Google, or the app named by its
+   * toolkit. The answer is the first consent page to open.
+   */
+  startManagedSignIn: (spaceId?: string, toolkit?: string) =>
     guard<ManagedSignInStart>(() =>
       api.POST('/managed-sign-ins', {
-        body: { provider: 'google', ...(spaceId ? { space_id: spaceId } : {}) },
+        body: toolkit
+          ? { provider: 'app', toolkit, ...(spaceId ? { space_id: spaceId } : {}) }
+          : { provider: 'google', ...(spaceId ? { space_id: spaceId } : {}) },
       }),
+    ),
+  /** Apps that can be connected through Composio, matching a search. */
+  searchComposioApps: (query: string) =>
+    guard<ComposioAppSearchResponse>(() =>
+      api.GET('/composio/apps', { params: { query: { query } } }),
     ),
   managedSignInStatus: (id: string) =>
     guard<AccountSignInStatus>(() => api.GET('/managed-sign-ins/{id}', path(id))),

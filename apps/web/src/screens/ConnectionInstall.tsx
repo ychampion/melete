@@ -443,8 +443,8 @@ export function AccountSignIn({
     if (!entry.available) return;
     let live = true;
     const starting = managed
-      ? adapter.startManagedSignIn(spaceId)
-      : adapter.startAccountSignIn(provider, spaceId);
+      ? adapter.startManagedSignIn(spaceId, managed.toolkit)
+      : adapter.startAccountSignIn(provider as 'google' | 'microsoft', spaceId);
     void starting.then((r) => {
       if (!live) return;
       setLoading(false);
@@ -468,7 +468,7 @@ export function AccountSignIn({
       }
       const asking = managed
         ? adapter.managedSignInStatus(started.sign_in_id)
-        : adapter.accountSignInStatus(provider, started.sign_in_id);
+        : adapter.accountSignInStatus(provider as 'google' | 'microsoft', started.sign_in_id);
       void asking.then((r) => {
         if (!r.data || r.data.state === 'pending') return;
         window.clearInterval(timer);
@@ -941,6 +941,10 @@ export function Catalog({
   ];
   const ready = offered.filter((item) => item.available);
   const later = offered.filter((item) => !item.available);
+  // Apps through Composio: the popular ones are cards, and any other is found by name.
+  const findsApps = ready.some(
+    (item) => item.connect.method === 'managed_sign_in' && item.connect.provider === 'app',
+  );
   const everyday = kinds.filter((item) => EVERYDAY.has(item.kind));
   const builders = kinds.filter((item) => !EVERYDAY.has(item.kind));
   return (
@@ -958,6 +962,9 @@ export function Catalog({
             />
           ))}
         </div>
+      ) : null}
+      {findsApps ? (
+        <AppSearch onOpen={onOpen} known={new Set(offered.map((item) => item.id))} />
       ) : null}
       {everyday.length ? (
         <div className="col" id="connect-mail-calendar" style={{ gap: 8 }}>
@@ -1024,6 +1031,89 @@ export function Catalog({
             </span>
           </div>
         </details>
+      ) : null}
+    </div>
+  );
+}
+
+/** Each app Composio can sign in to, found by name, as a card that connects it. */
+function AppSearch({
+  onOpen,
+  known,
+}: {
+  onOpen: (entry: SignInEntry) => void;
+  /** Catalog ids already shown as cards, left out of the results. */
+  known: ReadonlySet<string>;
+}) {
+  const [query, setQuery] = useState('');
+  const [found, setFound] = useState<SignInEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const search = query.trim();
+    if (search.length < 2) {
+      setFound([]);
+      setError(null);
+      return;
+    }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      void adapter.searchComposioApps(search).then((r) => {
+        if (!live) return;
+        setError(r.data ? null : (r.error ?? 'Couldn’t search apps'));
+        setFound(
+          (r.data?.apps ?? [])
+            .map(
+              (app): SignInEntry => ({
+                id: `app-${app.toolkit.replace(/_/g, '-')}`,
+                title: app.title,
+                description: app.description,
+                covers: ['tools'],
+                connect: {
+                  method: 'managed_sign_in',
+                  provider: 'app',
+                  toolkit: app.toolkit,
+                  via: 'composio',
+                  start: '/managed-sign-ins',
+                  note: `Composio handles this sign-in and keeps the ${app.title} access. The agent finds and runs ${app.title} tools through Composio, and asks before any that change something.`,
+                },
+                available: true,
+              }),
+            )
+            .slice(0, 12),
+        );
+      });
+    }, 300);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
+  const shown = found.filter((entry) => !known.has(entry.id));
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <span className="connect-group">Other apps</span>
+      <Input
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Find an app, such as Zendesk or Shopify"
+        aria-label="Find an app to connect"
+      />
+      {error ? <span className="app-connect-note">{error}</span> : null}
+      {shown.length ? (
+        <div className="app-grid">
+          {shown.map((item) => (
+            <AppCard
+              key={item.id}
+              title={item.title}
+              description={item.description}
+              available
+              connected={false}
+              onOpen={() => onOpen(item)}
+            />
+          ))}
+        </div>
+      ) : query.trim().length >= 2 && !error && !found.length ? (
+        <span className="app-connect-note">No app by that name connects here.</span>
       ) : null}
     </div>
   );

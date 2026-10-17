@@ -448,7 +448,12 @@ export function mountMockSignIns(
         expires_at: started.expires_at,
         issuer: origin(c.req.url),
         via: 'composio',
-        connects: parsed.data.documents ? ['documents'] : ['mail', 'calendar'],
+        connects:
+          parsed.data.provider === 'app'
+            ? ['tools']
+            : parsed.data.documents
+              ? ['documents']
+              : ['mail', 'calendar'],
       }),
       { status: 201 },
     );

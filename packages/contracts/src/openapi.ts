@@ -72,6 +72,7 @@ import {
   accountSignInRequest,
   accountSignInStart,
   accountSignInStatus,
+  composioAppSearchResponse,
   connectionCheckResponse,
   connectionKindListResponse,
   connectionListResponse,
@@ -3230,22 +3231,62 @@ export function buildOpenApiDocument() {
         '/managed-sign-ins': {
           post: {
             tags: ['connections'],
-            summary: 'Start connecting Google through Composio',
+            summary: 'Start connecting Google, or another app, through Composio',
             description:
-              "Offered when the operator has set a Composio key. Composio's own Google app asks for " +
+              "Offered when the operator has set a Composio key. Composio's own app asks for " +
               'consent and keeps the tokens; Melete keeps which Composio account each connection acts ' +
-              'for. One sign-in connects Gmail and Google Calendar, one consent page each; with ' +
+              'for. A Google sign-in connects Gmail and Google Calendar, one consent page each; with ' +
               '`documents`, Google Drive alone. Each account comes back as connections with the same ' +
               'tools, approvals and receipts as a native Google sign-in. An address already ' +
               'connected in the space through Composio is refused; one connected natively moves to ' +
-              'Composio and keeps its connection.',
+              'Composio and keeps its connection. With `provider: app` and a `toolkit`, any app ' +
+              'Composio signs in to is connected, and the agent finds and runs its tools there. A ' +
+              "sign-in makes an account at Composio, so it is refused while the operator's limit on " +
+              'connected accounts is reached.',
             requestBody: json(managedSignInRequest),
             responses: {
               '201': jsonResponse('Open `authorize_url` in the browser', managedSignInStart),
-              '400': problem('Invalid request'),
+              '400': problem('Invalid request, or an app that cannot be connected here'),
               '403': problem('Space owner and matching audience required'),
-              '409': problem('No Composio key, no public address to return to, or no master key'),
+              '409': problem(
+                'No Composio key, no public address to return to, no master key, or a limit reached',
+              ),
               '502': problem('Composio did not answer'),
+            },
+          },
+        },
+
+        '/composio/apps': {
+          get: {
+            tags: ['connections'],
+            summary: 'Search the apps that can be connected through Composio',
+            description:
+              'Searches every app Composio offers and answers with those it signs in to itself, or ' +
+              'that the operator set an auth config for. Answers are kept for ten minutes. Without a ' +
+              'Composio key, 409.',
+            requestParams: { query: z.object({ query: z.string().max(60) }) },
+            responses: {
+              '200': jsonResponse('Apps matching the search', composioAppSearchResponse),
+              '409': problem('No Composio key'),
+              '502': problem('Composio did not answer'),
+            },
+          },
+        },
+
+        '/composio/events': {
+          post: {
+            tags: ['connections'],
+            summary: "Composio's trigger deliveries",
+            description:
+              'Set as the webhook address in Composio, with its signing secret as ' +
+              '`COMPOSIO_WEBHOOK_SECRET`. Each delivery is checked against its signature, counted ' +
+              'toward the trigger-event limit, and makes the account it names be read now. Without ' +
+              'the secret, 404.',
+            security: [],
+            responses: {
+              '204': { description: 'Taken' },
+              '401': problem('The signature is missing, wrong or too old'),
+              '404': problem('Triggers are not set up here'),
             },
           },
         },

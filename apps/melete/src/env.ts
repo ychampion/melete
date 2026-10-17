@@ -236,14 +236,64 @@ const variables = z.object({
       .optional(),
   ),
   /**
-   * The most calls through Composio this installation makes in a calendar
-   * month. Close to it, watched accounts are read less often; past it, once an
-   * hour, with the reason shown on each account. A send the person approved is
-   * never held back by it. Unset, there is no limit.
+   * Auth configs of the operator's own for other apps, as
+   * `toolkit=ac_id,toolkit=ac_id` (for example `slack=ac_123`). An app left out
+   * signs in with the project's Composio-managed config.
    */
-  MELETE_MANAGED_CALLS_MONTHLY_CAP: unsetWhenBlank(
-    z.coerce.number().int().min(1).max(1_000_000_000).optional(),
+  COMPOSIO_AUTH_CONFIGS: unsetWhenBlank(
+    z
+      .string()
+      .regex(
+        /^[a-z0-9_]{1,64}=[A-Za-z0-9_-]{1,128}(,[a-z0-9_]{1,64}=[A-Za-z0-9_-]{1,128})*$/,
+        'Write toolkit=auth_config_id pairs separated by commas',
+      )
+      .optional(),
   ),
+  /**
+   * A secret for Composio's webhook signatures. Set, the mail and calendar
+   * accounts signed in through Composio are watched by Composio's triggers,
+   * which call `POST /composio/events`, and read on a slow schedule otherwise;
+   * unset, they are read on a schedule only.
+   */
+  COMPOSIO_WEBHOOK_SECRET: unsetWhenBlank(z.string().min(16).max(512).optional()),
+  /**
+   * The most tool calls through Composio this installation makes in a billing
+   * month. Close to it, watched accounts are read less often; past it, every
+   * call is refused before it reaches Composio, an approved send included,
+   * until the month resets. Unset, there is no limit.
+   * `MELETE_MANAGED_CALLS_MONTHLY_CAP` is the older name for it.
+   */
+  MELETE_COMPOSIO_TOOL_CALLS_MONTHLY_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  ),
+  MELETE_MANAGED_CALLS_MONTHLY_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  ),
+  /**
+   * The most trigger events from Composio this installation takes in a billing
+   * month. Past it, its triggers are switched off at Composio until the month
+   * resets, and accounts are read on a schedule. Unset, there is no limit.
+   */
+  MELETE_COMPOSIO_TRIGGER_EVENTS_MONTHLY_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  ),
+  /** The most accounts connected through Composio at once. Unset, there is no limit. */
+  MELETE_COMPOSIO_ACCOUNTS_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(10_000_000).optional(),
+  ),
+  /**
+   * A monthly credit in US dollars that use past a monthly limit may spend, at
+   * the rates below. Unset, every limit is hard.
+   */
+  MELETE_COMPOSIO_MONTHLY_CREDIT_USD: unsetWhenBlank(
+    z.coerce.number().min(0).max(1_000_000).optional(),
+  ),
+  /** What one tool call past the free allowance costs, in US dollars. */
+  MELETE_COMPOSIO_TOOL_CALL_USD: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.0005)),
+  /** What one trigger event past the free allowance costs, in US dollars. */
+  MELETE_COMPOSIO_TRIGGER_EVENT_USD: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.005)),
+  /** The day of the month (1-28, UTC) Composio's billing month starts on. */
+  MELETE_COMPOSIO_BILLING_DAY: unsetWhenBlank(z.coerce.number().int().min(1).max(28).default(1)),
   /**
    * The operator's Microsoft Entra app, for signing in to Outlook mail and
    * calendar (docs/mail-calendar.md). Both, or neither. The tenant is `common`,

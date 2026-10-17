@@ -24,6 +24,7 @@ import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
+import { mountComposio } from './api/composio.ts';
 import { connectorLiveness, mountConnections, mountDefaultConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
@@ -68,6 +69,8 @@ import { closeInterruptedScans } from './companies/repository.ts';
 import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
 import { companiesDeps } from './companies/service.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
+import { authConfigsSetting, ComposioCatalog } from './connectors/composio-catalog.ts';
+import { ComposioTriggers, startComposioUpkeep } from './connectors/composio-triggers.ts';
 import {
   type ConfiguredConnection,
   type ConnectorFactory,
@@ -232,7 +235,7 @@ import {
   sandboxRemovalTeardown,
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
-import { ManagedCallMeter } from './signals/managed-calls.ts';
+import { ComposioMeter, meterSettings, standingView } from './signals/managed-calls.ts';
 import { SignalPoller } from './signals/poller.ts';
 import { startObservationRetention } from './signals/retention.ts';
 import { mountSituations } from './situations/routes.ts';
@@ -698,6 +701,26 @@ export function createApp(deps: AppDeps) {
       twilio: factory.options.twilio,
       experience: experience ?? undefined,
     });
+    // Apps to connect through Composio, and the address its triggers deliver to.
+    const composio = factory.options.composio;
+    mountComposio(app, {
+      ...(composio
+        ? {
+            catalog: new ComposioCatalog(
+              composio.client,
+              new Set(authConfigsSetting(deps.env.COMPOSIO_AUTH_CONFIGS).keys()),
+            ),
+            triggers: new ComposioTriggers({
+              sql: connections.sql,
+              client: composio.client,
+              ...(composio.meter ? { meter: composio.meter } : {}),
+            }),
+          }
+        : {}),
+      ...(deps.env.COMPOSIO_WEBHOOK_SECRET
+        ? { webhookSecret: deps.env.COMPOSIO_WEBHOOK_SECRET }
+        : {}),
+    });
   }
   if (deps.db)
     mountCompanies(app, {
@@ -789,11 +812,21 @@ export function createApp(deps: AppDeps) {
   if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
   if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
 
+  // Use through Composio against each limit is part of the operator's health detail.
+  const composioMeter =
+    deps.env.COMPOSIO_API_KEY && deps.sql
+      ? new ComposioMeter(deps.sql, meterSettings(deps.env))
+      : undefined;
+  const baseDetail =
+    deps.healthDetail ??
+    (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql: deps.sql }));
   mountHealthDetail(app, {
     token: deps.env.MELETE_OPERATOR_TOKEN,
-    detail:
-      deps.healthDetail ??
-      (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql: deps.sql })),
+    detail: async () => {
+      const detail = await baseDetail();
+      const standing = await composioMeter?.standing().catch(() => null);
+      return standing ? { ...detail, composio: standingView(standing) } : detail;
+    },
   });
 
   app.get('/health', async (c) => {
@@ -942,6 +975,7 @@ export async function bootstrap(
   let stopAccessSweep: (() => void) | undefined;
   let stopSecretSweep: (() => void) | undefined;
   let stopManagedRemovals: (() => void) | undefined;
+  let stopComposioUpkeep: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -999,6 +1033,7 @@ export async function bootstrap(
     stopAccessSweep?.();
     stopSecretSweep?.();
     stopManagedRemovals?.();
+    stopComposioUpkeep?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
     sandboxes?.stop();
@@ -1218,6 +1253,23 @@ export async function bootstrap(
       // sign-in left at Composio are removed there, tried again until gone.
       stopManagedRemovals = composio
         ? startManagedRemovalSweep(handle.sql, composio.client)
+        : undefined;
+      // Composio's own usage numbers are read beside Melete's, its triggers kept
+      // within their limit, and where each limit stands is logged.
+      stopComposioUpkeep = composio?.meter
+        ? startComposioUpkeep({
+            client: composio.client,
+            meter: composio.meter,
+            ...(env.COMPOSIO_WEBHOOK_SECRET
+              ? {
+                  triggers: new ComposioTriggers({
+                    sql: handle.sql,
+                    client: composio.client,
+                    meter: composio.meter,
+                  }),
+                }
+              : {}),
+          })
         : undefined;
       const sandboxSessions = connectors.options.sandbox?.sessions;
       if (sandboxTeardown && sandboxSessions) {
@@ -1914,13 +1966,12 @@ export async function bootstrap(
             connectors,
             leads: () => leading(leases, 'signal-poller'),
             load,
-            // Reads through Composio count toward its monthly limit, and slow near it.
+            // Reads through Composio count toward its monthly limits, slow near them,
+            // and stop at them; accounts its triggers watch are read rarely.
             ...(env.COMPOSIO_API_KEY
               ? {
-                  managedCalls: new ManagedCallMeter(
-                    sql,
-                    env.MELETE_MANAGED_CALLS_MONTHLY_CAP ?? null,
-                  ),
+                  managedCalls: new ComposioMeter(sql, meterSettings(env)),
+                  ...(env.COMPOSIO_WEBHOOK_SECRET ? { managedTriggers: true } : {}),
                 }
               : {}),
             ...(noticing

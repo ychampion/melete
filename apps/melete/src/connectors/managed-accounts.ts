@@ -68,6 +68,11 @@ export function managedRevocation(sql: Sql, client: ComposioClient) {
     const configuration = row?.configuration as Record<string, unknown> | undefined;
     const accountId = configuration?.connected_account_id;
     if (configuration?.via !== 'composio' || typeof accountId !== 'string') return;
+    // Its trigger goes with it; removing the account ends it too, so a failure here is only noted.
+    if (typeof configuration.trigger_id === 'string')
+      await client.deleteTrigger(configuration.trigger_id).catch(() => {
+        process.stderr.write('connections: a Composio trigger was not removed\n');
+      });
     if (await managedAccountInUse(sql, accountId, connection.id)) return;
     try {
       await client.removeAccount(accountId);

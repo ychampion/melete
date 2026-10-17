@@ -40,6 +40,7 @@ import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { mountAccountAccess, sessionLabel } from './account-access.ts';
+import { COMPOSIO_EVENTS_PATH } from './composio.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import { ServiceError } from './errors.ts';
@@ -426,6 +427,8 @@ export function mountAuth(
     if (c.req.method === 'POST' && REACH_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
     // So does a text to a person's own Twilio connection (see sms/routes.ts).
     if (c.req.method === 'POST' && SMS_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
+    // So does a trigger delivery from Composio (see api/composio.ts).
+    if (c.req.method === 'POST' && c.req.path === COMPOSIO_EVENTS_PATH) return publicBody(c, next);
     // A paired computer's companion holds no session. Every `/device/` route
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.
