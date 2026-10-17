@@ -3,6 +3,7 @@ import { fakeProvider } from './fake.ts';
 import {
   modelApiMode,
   protocolForApiMode,
+  providerAddressProblem,
   providerKeyProblem,
   providerSelectionProblem,
   providersFromEnv,
@@ -93,7 +94,7 @@ describe('an operator-configured OpenAI-compatible endpoint', () => {
     expect(key('http://192.168.1.20:11434/v1', 'local-server-key')).toBe('local-server-key');
   });
 
-  test('is the only provider that may leave HTTPS', () => {
+  test('only an address the operator chose may leave HTTPS', () => {
     const downgraded: GatewayProvider = {
       name: 'openai',
       baseUrl: 'http://api.openai.com/v1/',
@@ -106,6 +107,43 @@ describe('an operator-configured OpenAI-compatible endpoint', () => {
     ).toThrow('HTTPS');
     for (const provider of providersFromEnv({}))
       expect(new URL(provider.baseUrl).protocol).toBe('https:');
+  });
+});
+
+describe('Anthropic through an operator gateway', () => {
+  const anthropic = (env: Record<string, string | undefined>): GatewayProvider => {
+    const provider = providersFromEnv(env).find((candidate) => candidate.name === 'anthropic');
+    if (!provider) throw new Error('anthropic was not configured');
+    return provider;
+  };
+
+  test('calls Anthropic directly over HTTPS by default', () => {
+    for (const env of [{}, { ANTHROPIC_BASE_URL: '' }]) {
+      const provider = anthropic(env);
+      expect(providerUrl(provider, 'messages').href).toBe('https://api.anthropic.com/v1/messages');
+      expect(provider.allowHttp).toBeUndefined();
+    }
+  });
+
+  test('reads the address as the Anthropic SDKs do, without /v1', () => {
+    expect(
+      providerUrl(anthropic({ ANTHROPIC_BASE_URL: 'http://172.17.0.1:4610/b/melete' }), 'messages')
+        .href,
+    ).toBe('http://172.17.0.1:4610/b/melete/v1/messages');
+    expect(
+      providerUrl(anthropic({ ANTHROPIC_BASE_URL: 'https://gateway.example.net/' }), 'messages')
+        .href,
+    ).toBe('https://gateway.example.net/v1/messages');
+  });
+
+  test('keeps the Anthropic key and names its own variable when the address is unusable', () => {
+    const provider = anthropic({
+      ANTHROPIC_API_KEY: 'anthropic-secret',
+      ANTHROPIC_BASE_URL: 'http://user:secret@127.0.0.1:4610',
+    });
+    expect(provider.apiKey).toBe('anthropic-secret');
+    expect(() => providerUrl(provider, 'messages')).toThrow('ANTHROPIC_BASE_URL');
+    expect(providerAddressProblem(provider)).toContain('ANTHROPIC_BASE_URL cannot be used');
   });
 });
 

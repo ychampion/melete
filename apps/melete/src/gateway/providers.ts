@@ -80,12 +80,7 @@ export function providersFromEnv(
       apiKey: env.OPENAI_API_KEY,
       protocols: [...PROVIDER_PROTOCOLS.openai],
     },
-    {
-      name: 'anthropic',
-      baseUrl: 'https://api.anthropic.com/v1/',
-      apiKey: env.ANTHROPIC_API_KEY,
-      protocols: [...PROVIDER_PROTOCOLS.anthropic],
-    },
+    anthropicProvider(env.ANTHROPIC_BASE_URL, env.ANTHROPIC_API_KEY),
     {
       name: 'google',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
@@ -118,6 +113,26 @@ export function providersFromEnv(
 /** An endpoint address as the gateway keeps it: its version prefix, ending in one slash. */
 export const compatibleBaseUrl = (address: string): string => `${address.replace(/\/+$/, '')}/`;
 
+/**
+ * Anthropic, directly or through a gateway the operator runs. ANTHROPIC_BASE_URL
+ * is written as the Anthropic SDKs read it: the address without its /v1 prefix.
+ */
+export function anthropicProvider(address: string | undefined, apiKey?: string): GatewayProvider {
+  return {
+    name: 'anthropic',
+    baseUrl: address ? `${compatibleBaseUrl(address)}v1/` : 'https://api.anthropic.com/v1/',
+    apiKey,
+    protocols: [...PROVIDER_PROTOCOLS.anthropic],
+    // Only an address the operator chose may be plain HTTP, as for the
+    // OpenAI-compatible endpoint.
+    ...(address ? { allowHttp: true } : {}),
+  };
+}
+
+/** The variable that names a provider's address, for one the operator chose. */
+const addressVariable = (provider: GatewayProvider): string =>
+  provider.name === 'anthropic' ? 'ANTHROPIC_BASE_URL' : 'OPENAI_COMPAT_BASE_URL';
+
 /** The OpenAI-compatible endpoint at an address the operator or the owner chose. */
 export function openAiCompatibleProvider(baseUrl: string, apiKey?: string): GatewayProvider {
   return {
@@ -138,7 +153,7 @@ export function providerUrl(provider: GatewayProvider, protocol: GatewayProtocol
   if ((!provider.fake && !schemes.includes(base.protocol)) || base.username || base.password) {
     throw new Error(
       provider.allowHttp
-        ? 'OPENAI_COMPAT_BASE_URL must be an http:// or https:// URL without credentials'
+        ? `${addressVariable(provider)} must be an http:// or https:// URL without credentials`
         : 'provider base URL must use HTTPS without credentials',
     );
   }
@@ -207,9 +222,10 @@ export function providerAddressProblem(provider: GatewayProvider): string | null
     for (const protocol of provider.protocols) providerUrl(provider, protocol);
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'it is not a usable URL';
-    return provider.allowHttp
-      ? `OPENAI_COMPAT_BASE_URL cannot be used: ${reason}. Give the endpoint's version prefix, for example https://models.example.net/v1.`
-      : `The ${provider.name} provider cannot be used: ${reason}.`;
+    if (!provider.allowHttp) return `The ${provider.name} provider cannot be used: ${reason}.`;
+    return provider.name === 'anthropic'
+      ? `ANTHROPIC_BASE_URL cannot be used: ${reason}. Give the gateway's address without /v1, for example https://gateway.example.net.`
+      : `OPENAI_COMPAT_BASE_URL cannot be used: ${reason}. Give the endpoint's version prefix, for example https://models.example.net/v1.`;
   }
   return null;
 }
