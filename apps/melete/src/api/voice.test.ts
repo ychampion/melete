@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 import { VOICE_LIMITS, voiceStatus } from '@melete/contracts';
 import { Hono } from 'hono';
+import { CallService } from '../call/service.ts';
 import { VoiceProviderError } from '../connectors/elevenlabs.ts';
 import { fakeTranscriptionAdapter, type TranscriptionAdapter } from '../connectors/transcribe.ts';
 import { pcmWav, silentWav } from '../connectors/wav.ts';
@@ -46,6 +47,7 @@ function app(
     seconds?: number;
     privacy?: VoicePrivacy;
     speechHealth?: SpeechHealth;
+    call?: CallService;
   } = {},
 ) {
   const allowance =
@@ -74,6 +76,7 @@ function app(
     limits: { seconds: options.seconds ?? 1800, characters: 20_000, sessions: 30, asides: 600 },
     privacy: options.privacy ?? (async () => null),
     ...(options.speechHealth ? { speechHealth: options.speechHealth } : {}),
+    ...(options.call ? { call: options.call } : {}),
   });
   return { built, allowance };
 }
@@ -98,10 +101,39 @@ describe('which voice features the service offers', () => {
     expect(voiceStatus.parse(await response.json())).toEqual({
       push_to_talk: false,
       voice_mode: false,
+      call: false,
       max_recording_seconds: 120,
       max_recording_bytes: VOICE_LIMITS.recording_bytes,
       off_reason: null,
     });
+  });
+
+  test('no ElevenLabs key means no call: the button is not offered and the route is not there', async () => {
+    const { built } = app();
+    expect((await (await built.request('/voice')).json()) as { call: boolean }).toMatchObject({
+      call: false,
+    });
+    const started = await built.request('/conversations/job_x/call', { method: 'POST' });
+    expect(started.status).toBe(404);
+    expect(((await started.json()) as { error: { code: string } }).error.code).toBe(
+      'voice_unavailable',
+    );
+  });
+
+  test('calls set up: offered, and held back while the speech key is failing', async () => {
+    const call = new CallService({
+      voice: { start: async () => Promise.reject(new Error('unused')), verify: () => false },
+      chat: () => {
+        throw new Error('unused');
+      },
+    });
+    const offered = await app({}, { call }).built.request('/voice');
+    expect(((await offered.json()) as { call: boolean }).call).toBe(true);
+    const failing = await app(
+      {},
+      { call, speechHealth: async () => ({ speech: false, transcription: true }) },
+    ).built.request('/voice');
+    expect(((await failing.json()) as { call: boolean }).call).toBe(false);
   });
 
   test('a transcription provider turns on push-to-talk; voice mode needs the live provider', async () => {

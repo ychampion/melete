@@ -91,6 +91,7 @@ const LEFTOVER_RECORDS = [
   'company',
   'ledger_item',
   'voice_usage',
+  'call_usage',
   'managed_call',
 ];
 
@@ -339,6 +340,7 @@ export class AccountRemovalService {
     if (owns) return false;
     await sql`delete from feedback where principal_id = ${principalId}`;
     await sql`delete from voice_usage where principal_id = ${principalId}`;
+    await sql`delete from call_usage where principal_id = ${principalId}`;
     await sql`delete from managed_call where principal_id = ${principalId}`;
     await sql`delete from space_membership where principal_id = ${principalId}
       and revoked_at is not null`;

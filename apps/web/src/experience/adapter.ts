@@ -43,6 +43,7 @@ import type {
   BeliefImportResult,
   BrowserControl,
   BrowserSite,
+  CallSession,
   CatalogEntry,
   ConnectedAssistant,
   ConnectionChecked,
@@ -1087,6 +1088,9 @@ export const adapter = {
       { method: 'POST', headers: { 'Content-Type': clip.type || 'audio/webm' }, body: clip },
       async (response) => (await response.json()) as VoiceTranscription,
     ),
+  /** A call with the agent: a token that starts it within minutes, for the speech service's client. */
+  startCall: (id: string) =>
+    guard<CallSession>(() => api.POST('/conversations/{id}/call', path(id))),
   /** A realtime transcription address with a single-use token, for voice mode. */
   voiceSession: (id: string) =>
     guard<VoiceSession>(() => api.POST('/conversations/{id}/voice/session', path(id))),

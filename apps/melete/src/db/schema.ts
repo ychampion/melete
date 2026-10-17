@@ -1279,6 +1279,28 @@ export const voiceUsage = pgTable(
 );
 
 /**
+ * One row per call: who was on it and for how long, so an operator's monthly
+ * cap on call minutes can hold. No words and no audio are kept here; what was
+ * said is in the conversation. Rows older than the month are cleared as new
+ * calls start.
+ */
+export const callUsage = pgTable(
+  'call_usage',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Seconds on the call, written as it goes on and when it ends. */
+    seconds: integer('seconds').notNull().default(0),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('call_usage_principal').on(t.principalId, t.startedAt),
+    check('call_usage_seconds', sql`${t.seconds} >= 0`),
+  ],
+);
+
+/**
  * How a person's space lets auto-review stand in for them. No row is the
  * default: auto-review for work inside the agent's own sandbox, and the
  * person asked for everything else.

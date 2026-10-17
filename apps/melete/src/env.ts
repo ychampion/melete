@@ -613,6 +613,22 @@ const variables = z.object({
   /** Voice mode sessions one person may start in a day. */
   MELETE_VOICE_DAILY_SESSIONS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(30)),
   /**
+   * Minutes of calls one person may have in a month (the last 30 days). Unset,
+   * calls are not capped.
+   */
+  MELETE_CALL_MONTHLY_MINUTES: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /**
+   * The ElevenLabs Speech Engine calls use. Unset, the service makes one for
+   * itself at the first call, pointed at MELETE_PUBLIC_URL, and keeps it in
+   * step. Set, that engine is used exactly as it is configured in ElevenLabs.
+   */
+  ELEVENLABS_SPEECH_ENGINE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^seng_[A-Za-z0-9]{1,64}$/, 'use a speech engine id, seng_…')
+      .optional(),
+  ),
+  /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`
    * keeps structured observations only and makes no model call.

@@ -27740,7 +27740,7 @@
           "voice"
         ],
         "summary": "Which voice features this installation has",
-        "description": "Both are false until the operator sets a speech provider key. Push-to-talk needs a provider that transcribes; voice mode needs ElevenLabs. Given a conversation, or the agent a new chat will have, `off_reason` says why voice is off there: the space or agent is marked private, or the conversation is about a sensitive topic.",
+        "description": "All are false until the operator sets a speech provider key. Push-to-talk needs a provider that transcribes; voice mode needs ElevenLabs; a call needs ElevenLabs and a public https:// address. Given a conversation, or the agent a new chat will have, `off_reason` says why voice is off there: the space or agent is marked private, or the conversation is about a sensitive topic.",
         "parameters": [
           {
             "in": "query",
@@ -27771,6 +27771,9 @@
                     "voice_mode": {
                       "type": "boolean"
                     },
+                    "call": {
+                      "type": "boolean"
+                    },
                     "max_recording_seconds": {
                       "type": "integer",
                       "exclusiveMinimum": 0,
@@ -27791,6 +27794,7 @@
                   "required": [
                     "push_to_talk",
                     "voice_mode",
+                    "call",
                     "max_recording_seconds",
                     "max_recording_bytes",
                     "off_reason"
@@ -28300,6 +28304,109 @@
           },
           "429": {
             "description": "Too many asides in a short time, or the daily allowance is used up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema238"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/conversations/{id}/call": {
+      "post": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Start a call with the conversation’s agent",
+        "description": "Answers with a token for the speech service, good for one call and for a few minutes; the provider key never reaches the browser. On the call the speech service listens, takes turns and speaks; the agent is the conversation’s own, with its tools, memory and approvals. Each thing said becomes a message in the conversation, as if typed, and the answer is read aloud as it is written. Hanging up ends only the call: work it started goes on.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Conversation id"
+            },
+            "required": true,
+            "description": "Conversation id"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Start the call with `token`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 8192
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "minutes_left": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "expires_at",
+                    "minutes_left"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Voice is off in a private space, agent or sensitive conversation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema238"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such conversation, or calls are not set up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema238"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The person’s call minutes for this month are used up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema238"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The speech provider could not start a call",
             "content": {
               "application/json": {
                 "schema": {

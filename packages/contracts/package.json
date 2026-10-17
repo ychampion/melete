@@ -33,6 +33,10 @@
       "types": "./src/mcp-catalog.ts",
       "default": "./src/mcp-catalog.ts"
     },
+    "./voice": {
+      "types": "./src/voice.ts",
+      "default": "./src/voice.ts"
+    },
     "./attachments": {
       "types": "./src/attachments.ts",
       "default": "./src/attachments.ts"

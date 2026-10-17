@@ -14,11 +14,16 @@
  */
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
+import type { ServerWebSocket } from 'bun';
 import {
   plainAddress,
   type TrustedPeer,
   trustedPeer,
 } from '../../apps/melete/src/api/trusted-peer.ts';
+import {
+  CALL_UPSTREAM_PATH,
+  SPEECH_ENGINE_AUTH_HEADER,
+} from '../../apps/melete/src/call/upstream-path.ts';
 import { PREVIEW_PREFIX } from '../../apps/melete/src/sandbox/preview-path.ts';
 import { isIsolated, VIEW_PREFIX } from '../../apps/melete/src/viewer/headers.ts';
 
@@ -369,6 +374,60 @@ const isFile = async (path: string): Promise<boolean> => {
   }
 };
 
+/** One call's upstream WebSocket, passed through to the API: what is waiting, and the API's side. */
+type CallBridge = {
+  authorization: string;
+  upstream?: WebSocket;
+  waiting: (string | Uint8Array)[];
+  closed?: boolean;
+};
+
+/**
+ * The one WebSocket this server passes through: ElevenLabs connecting for a
+ * call. The API checks the connection's own proof that it is from ElevenLabs,
+ * so that header goes along and nothing else of the request does. Messages are
+ * carried both ways as they come; either side closing closes the other.
+ */
+function callBridge(apiOrigin: string) {
+  const target = new URL(apiOrigin);
+  target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
+  target.pathname = CALL_UPSTREAM_PATH;
+  return {
+    open(socket: ServerWebSocket<CallBridge>) {
+      const upstream = new WebSocket(target.toString(), {
+        headers: { [SPEECH_ENGINE_AUTH_HEADER]: socket.data.authorization },
+      } as unknown as string[]);
+      upstream.binaryType = 'arraybuffer';
+      socket.data.upstream = upstream;
+      upstream.onopen = () => {
+        for (const message of socket.data.waiting.splice(0)) upstream.send(message);
+      };
+      upstream.onmessage = (event) => {
+        socket.send(
+          typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer),
+        );
+      };
+      upstream.onclose = (event) => {
+        if (!socket.data.closed)
+          socket.close(event.code === 1005 ? 1000 : event.code, event.reason);
+      };
+      upstream.onerror = () => {
+        if (!socket.data.closed) socket.close(1011, 'call service unavailable');
+      };
+    },
+    message(socket: ServerWebSocket<CallBridge>, message: string | Buffer) {
+      const data = typeof message === 'string' ? message : new Uint8Array(message);
+      const upstream = socket.data.upstream;
+      if (upstream?.readyState === WebSocket.OPEN) upstream.send(data);
+      else socket.data.waiting.push(data);
+    },
+    close(socket: ServerWebSocket<CallBridge>) {
+      socket.data.closed = true;
+      socket.data.upstream?.close();
+    },
+  };
+}
+
 export function createStaticServer(options: StaticServerOptions) {
   const root = resolve(options.root);
   const indexPath = resolve(root, 'index.html');
@@ -390,12 +449,23 @@ export function createStaticServer(options: StaticServerOptions) {
       headers: { 'content-type': 'text/html; charset=utf-8', ...CLIENT_FRAME_HEADERS },
     });
 
-  return Bun.serve({
+  return Bun.serve<CallBridge>({
     port: options.port ?? Number(process.env.PORT ?? 3000),
     ...(options.hostname ? { hostname: options.hostname } : {}),
     idleTimeout: 60,
+    websocket: callBridge(apiOrigin),
     async fetch(request, server) {
       const url = new URL(request.url);
+      if (
+        url.pathname === `/api${CALL_UPSTREAM_PATH}` &&
+        request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+      ) {
+        const authorization = request.headers.get(SPEECH_ENGINE_AUTH_HEADER);
+        if (!authorization) return new Response('Not a call.\n', { status: 401 });
+        return server.upgrade(request, { data: { authorization, waiting: [] } })
+          ? undefined
+          : new Response('The call could not connect.\n', { status: 400 });
+      }
       if (
         url.pathname === '/api' ||
         url.pathname.startsWith('/api/') ||
