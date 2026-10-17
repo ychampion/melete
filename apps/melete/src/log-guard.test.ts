@@ -37,6 +37,16 @@ describe('redactLogLine', () => {
     ];
     for (const line of lines) expect(redactLogLine(line)).toBe(line);
   });
+
+  test('takes linear time on a long line', () => {
+    // Each of these once took seconds at this length, holding the whole process.
+    for (const unit of ['a', 'a.', 'a-', 'ab+', 'sk-', 'eyJ-', 'session-', 'a@b']) {
+      const line = unit.repeat(Math.ceil(100_000 / unit.length));
+      const started = performance.now();
+      redactLogLine(line);
+      expect(performance.now() - started).toBeLessThan(1_000);
+    }
+  }, 120_000);
 });
 
 describe('guardProcessLogs', () => {

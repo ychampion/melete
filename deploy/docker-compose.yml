@@ -63,6 +63,10 @@ services:
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
     logging: *bounded-logs
+    # Its log may be shipped (docs/DEPLOYMENT.md, "What the logs hold"), so an
+    # error names its reason alone: never the failing row, which may hold what
+    # someone wrote, nor the statement, which may set a role's password.
+    command: ["postgres", "-c", "log_error_verbosity=terse", "-c", "log_min_error_statement=panic"]
     # Memory caps keep one runaway service from taking the machine; each is a
     # setting in deploy/.env (docs/DEPLOYMENT.md, "Memory limits").
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}

@@ -1,11 +1,13 @@
 # OpenTelemetry Collector configuration for deploy/docker-compose.log-shipping.yml.
-# It reads the json-file logs Docker keeps for every container on this machine
-# and sends them over OTLP/HTTP to the endpoint the operator names in
-# deploy/.env. Nothing here runs unless that file is started on its own.
+# It reads the json-file logs Docker keeps on this machine and sends the lines
+# of the Melete stack's services over OTLP/HTTP to the endpoint the operator
+# names in deploy/.env. Nothing here runs unless that file is started on its own.
 #
 # The service's lines carry ids, codes and short reasons, never what people
 # wrote or a model said, and known secret shapes are taken out before a line is
-# written (docs/DEPLOYMENT.md, "Shipping logs").
+# written (docs/DEPLOYMENT.md, "Shipping logs"). The containers attempts and
+# agents' computers run in print the agent's own work, so their lines, which
+# carry no Compose labels, are never sent; nor are other projects' lines.
 
 extensions:
   # Where each log file was read up to, so a restart neither resends nor skips.
@@ -24,6 +26,11 @@ receivers:
       - type: container
         format: docker
         add_metadata_from_filepath: false
+      # Only a line its container's logging labels as a Compose service's is
+      # kept: deploy/docker-compose.yml's x-logging adds the labels, and nothing
+      # the supervisor or a connection starts has them.
+      - type: filter
+        expr: 'attributes.attrs == nil or attributes.attrs["com.docker.compose.service"] == nil'
       - type: regex_parser
         parse_from: attributes["log.file.path"]
         regex: '^/var/lib/docker/containers/(?P<container_id>[a-f0-9]{64})/'
@@ -34,15 +41,13 @@ receivers:
       # The Compose project and service, from the labels the json-file driver
       # adds to each line (deploy/docker-compose.yml, x-logging).
       - type: move
-        if: 'attributes.attrs != nil and attributes.attrs["com.docker.compose.project"] != nil'
+        if: 'attributes.attrs["com.docker.compose.project"] != nil'
         from: attributes.attrs["com.docker.compose.project"]
         to: resource["service.namespace"]
       - type: move
-        if: 'attributes.attrs != nil and attributes.attrs["com.docker.compose.service"] != nil'
         from: attributes.attrs["com.docker.compose.service"]
         to: resource["service.name"]
       - type: remove
-        if: 'attributes.attrs != nil'
         field: attributes.attrs
 
 processors:

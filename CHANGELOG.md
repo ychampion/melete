@@ -10,11 +10,13 @@ What each version ships.
   every place the service writes a log line and fails on one that writes
   message text, file contents, prompts, model output or a credential, and the
   service and `melete-cells` take known secret shapes and email addresses out
-  of every line they write. Each container's log line now names its Compose
-  project and service. `deploy/docker-compose.log-shipping.yml` is an optional
-  OpenTelemetry Collector that sends this machine's container logs to any
-  OTLP/HTTP endpoint you name in `MELETE_LOG_SHIP_ENDPOINT`; it is off unless
-  you start it. See [Shipping logs](docs/DEPLOYMENT.md#shipping-logs).
+  of every line they write. The bundled Postgres logs an error's reason
+  without the failing row or statement. Each service's log line now names its
+  Compose project and service. `deploy/docker-compose.log-shipping.yml` is an
+  optional OpenTelemetry Collector that sends those lines to any OTLP/HTTP
+  endpoint you name in `MELETE_LOG_SHIP_ENDPOINT`, and never the logs of the
+  containers attempts and agents' computers run in; it is off unless you start
+  it. See [Shipping logs](docs/DEPLOYMENT.md#shipping-logs).
 - **A new installation others can reach is claimed with a code.** An
   installation with no setup code whose `MELETE_PUBLIC_URL` or
   `MELETE_WEB_ORIGIN` names another machine no longer lets its first visitor

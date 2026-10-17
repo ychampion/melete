@@ -54,13 +54,14 @@ const FORBIDDEN = new Set([
 const ALLOWED: Record<string, string> = {
   // The run.log tool: it stores an attempt's progress note and prints nothing.
   'runs/service.ts input': 'run.log tool',
+  // A HistoryFailure code (history-gateway.ts), never the provider's reply.
+  'jobs/history-extend.ts answer.reason': 'summary failure code',
 };
 
 /** Command-line programs print to the person running them, not to a service log. */
 const NOT_THE_SERVICE = [
   /(^|\/)cli\.ts$/,
   /(^|\/)account\/reset-password\.ts$/,
-  /(^|\/)db\/roles-main\.ts$/,
   /(^|\/)companies\/demo\.ts$/,
   // Child processes whose output is a JSON answer to the service, not a log.
   /(^|\/)learning\/gate-worker\.ts$/,
@@ -71,10 +72,11 @@ const NOT_THE_SERVICE = [
 
 /**
  * Writes to the process's output, and the `log`, `say`, `warn` and `report`
- * lines services are handed, which write to stderr by default.
+ * lines services are handed, which write to stderr by default, whether called
+ * bare, on `this`, `deps` or `options`, or only when given (`log?.(…)`).
  */
 const CALL =
-  /(?<![\w.])(?:console\.(?:log|info|warn|error|debug)|process\.std(?:out|err)\.write|(?:this\.)?(?:log|say|warn|report))\(/g;
+  /(?<![\w.])(?:console\.(?:log|info|warn|error|debug)|process\.std(?:out|err)\.write|(?:(?:this|deps|options)\.)?(?:log|say|warn|report)(?:\?\.)?)\(/g;
 
 function* sources(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {

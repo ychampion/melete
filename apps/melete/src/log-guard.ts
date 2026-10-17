@@ -12,12 +12,16 @@ import { formatWithOptions } from 'node:util';
 
 const REDACTED = '[redacted]';
 
+// Every line passes through these, so none may take more than linear time on a
+// long one. A pattern that scans a run of characters and may then fail starts
+// only where that run starts (the lookbehinds), never again inside it.
+
 /** `scheme://user:password@host`: the user and password go, the host stays. */
-const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@'"]+@/gi;
+const URL_USERINFO = /(?<![a-z0-9+.-])([a-z0-9+.-]+:\/\/)[^\s/?#@'"]+@/gi;
 /** `Bearer abc…`, `Basic abc…` and `Token abc…`, as a logged header carries them. */
 const AUTH_SCHEME = /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/g;
 /** A JSON Web Token. */
-const JWT = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g;
+const JWT = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g;
 /** Provider keys that announce themselves by prefix, and Melete's device tokens. */
 const PREFIXED_KEY =
   /\b(?:(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}|(?:sk|rk|pk|whsec)_(?:live_|test_)?[A-Za-z0-9]{16,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|glpat-[A-Za-z0-9_-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{12,}|AIza[A-Za-z0-9_-]{16,}|mdt_[A-Za-z0-9_-]{16,})/g;
@@ -37,7 +41,7 @@ const SECRET_PAIR =
  * container ids are one case and stay.
  */
 const RANDOM_RUN = /[A-Za-z0-9_-]{40,}/g;
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
 /** One log line with every known secret shape and email address taken out. */
 export function redactLogLine(text: string): string {

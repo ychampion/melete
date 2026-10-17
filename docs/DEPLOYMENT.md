@@ -2705,7 +2705,12 @@ leaves the process, known secret shapes are taken out of it (an address's
 user and password, `Bearer` credentials, JWTs, provider keys, private keys,
 `password=`-style pairs, long random tokens) and email addresses become
 `[email]` (`apps/melete/src/log-guard.ts`). Ids, digests and container names
-stay, since the log is read by them.
+stay, since the log is read by them. The bundled Postgres writes an error's
+reason alone, never the failing row or the statement that hit it.
+
+The containers attempts, agents' computers and connection installs run in are
+different: what they print is the agent's own work. Their logs stay on the
+machine (`melete logs --attempts`, `--computers`) and are never shipped.
 
 ### Shipping logs
 
@@ -2714,10 +2719,13 @@ them in one place, send them to a log collector that accepts OTLP over HTTP:
 Grafana Loki 3 (its `/otlp` endpoint), Grafana Cloud, an OpenTelemetry
 Collector of your own, or any hosted service that takes OTLP logs.
 `deploy/docker-compose.log-shipping.yml` runs an OpenTelemetry Collector
-(`deploy/config/log-shipping.yaml`) that reads the json-file logs of every
-container on the machine, from the moment it first starts, and sends each line with
-its `container.id`, `service.name` (the Compose service) and
-`service.namespace` (the Compose project). It is a Compose project of its own,
+(`deploy/config/log-shipping.yaml`) that reads the json-file logs on the
+machine from the moment it first starts and sends the lines of the stack's
+Compose services, each with its `container.id`, `service.name` (the Compose
+service) and `service.namespace` (the Compose project). A line is sent only
+when its container's logging labels it with a Compose service, as `x-logging`
+in `deploy/docker-compose.yml` does; attempts, computers and other projects'
+containers carry no such label. It is a Compose project of its own,
 so `deploy`, `upgrade` and `logs` neither start nor need it, and nothing is
 sent anywhere until you start it:
 
@@ -2740,10 +2748,9 @@ The shipper runs as root, because Docker's log files are readable by root
 alone, with no capabilities, no new privileges and a read-only filesystem; it
 mounts the log folder read-only and has no Docker socket. Where each file was
 read up to, and batches waiting while the endpoint is unreachable, are kept in
-its `log-shipping-state` volume, so a restart neither resends nor skips. On a
-machine that runs other containers too, their logs are shipped as well; filter
-by `service.namespace` at the collector, or run Melete on a machine of its
-own. Stop it with the same `docker compose -p melete-logs --env-file
+its `log-shipping-state` volume, so a restart neither resends nor skips. A
+second installation on the machine is shipped too, under its own
+`service.namespace`. Stop it with the same `docker compose -p melete-logs --env-file
 deploy/.env -f deploy/docker-compose.log-shipping.yml` prefix and `down`,
 adding `--volumes` to forget where it was.
 
