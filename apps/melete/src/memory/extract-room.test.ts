@@ -105,9 +105,12 @@ describe('what the extraction model is told about a room message', () => {
   const offered = (speaker: string | null) => {
     const { format } = extractionMessages(batch(speaker));
     const schema = format.schema as {
-      properties: { proposals: { items: { properties: { about: { enum: unknown[] } } } } };
+      properties: {
+        proposals: { items: { properties: { about: { anyOf: { enum?: unknown[] }[] } } } };
+      };
     };
-    return schema.properties.proposals.items.properties.about.enum;
+    const about = schema.properties.proposals.items.properties.about;
+    return about.anyOf.flatMap((choice) => choice.enum ?? []);
   };
 
   test('only a room message is offered shared work as an answer', () => {
