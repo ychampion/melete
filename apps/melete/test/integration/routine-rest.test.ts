@@ -229,6 +229,42 @@ withDb('standing work for people who stopped coming', () => {
     expect(home.routines_back).toBeUndefined();
   });
 
+  test('a turned-off account is not seen, so its routines stay resting until it is back on', async () => {
+    required(jobs).standingWork = { restAfterDays: 14 };
+    const scheduled = await daily('Every morning, check the train times');
+    await away(20);
+    const person = () =>
+      required(handle)
+        .db.select()
+        .from(principal)
+        .where(eq(principal.id, ownerId))
+        .then(([found]) => required(found));
+    const before = await person();
+    await required(handle)
+      .db.update(principal)
+      .set({ disabledAt: new Date(), routinesResumedAt: null })
+      .where(eq(principal.id, ownerId));
+    try {
+      // A text from the person's number while the account is off.
+      forgetSeen();
+      expect(await markSeen(required(handle).db, ownerId, 14)).toBe(false);
+      const off = await person();
+      expect(off.lastSeenAt.getTime()).toBe(before.lastSeenAt.getTime());
+      expect(off.routinesResumedAt).toBeNull();
+      await fire(scheduled);
+      await waiting(scheduled);
+    } finally {
+      await required(handle)
+        .db.update(principal)
+        .set({ disabledAt: null })
+        .where(eq(principal.id, ownerId));
+    }
+    // Back on and used again: the rest ends as it would for anyone away.
+    forgetSeen();
+    expect(await markSeen(required(handle).db, ownerId, 14)).toBe(true);
+    expect((await person()).routinesResumedAt).not.toBeNull();
+  });
+
   test('the result of work under way still reaches it while the person is away', async () => {
     required(jobs).standingWork = { restAfterDays: 14 };
     forgetSeen();
