@@ -129,10 +129,19 @@ export type SpendAlerts = {
   personPercent?: number;
   /** Neither check fires below this many dollars. */
   minUsd: number;
+  /**
+   * The installation's monthly cap (MELETE_SPEND_MONTHLY_USD), and the percent
+   * of it at which the operator is told, before model calls stop for everyone.
+   */
+  monthlyCap?: { usd: number; percent: number };
 };
 
 export function spendAlertsFromEnv(env: Env): SpendAlerts | undefined {
-  if (!env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE && !env.MELETE_ALERT_SPEND_PERSON_PERCENT)
+  if (
+    !env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE &&
+    !env.MELETE_ALERT_SPEND_PERSON_PERCENT &&
+    env.MELETE_SPEND_MONTHLY_USD === undefined
+  )
     return undefined;
   return {
     ...(env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE
@@ -142,10 +151,35 @@ export function spendAlertsFromEnv(env: Env): SpendAlerts | undefined {
       ? { personPercent: env.MELETE_ALERT_SPEND_PERSON_PERCENT }
       : {}),
     minUsd: env.MELETE_ALERT_SPEND_MIN_USD,
+    ...(env.MELETE_SPEND_MONTHLY_USD !== undefined
+      ? {
+          monthlyCap: {
+            usd: env.MELETE_SPEND_MONTHLY_USD,
+            percent: env.MELETE_SPEND_NOTICE_PERCENT,
+          },
+        }
+      : {}),
   };
 }
 
 const dollars = (value: number) => `$${value.toFixed(2)}`;
+
+/** This month's spending against the installation's monthly cap. */
+export function spendCapCheck(monthUsd: number, capUsd: number, percent: number): HealthCheck {
+  const used = capUsd > 0 ? (monthUsd / capUsd) * 100 : 100;
+  const reached = used >= 100;
+  return {
+    name: 'spend_cap',
+    ok: used < percent,
+    detail: `${dollars(monthUsd)} of the installation's ${dollars(capUsd)} monthly cap spent (${Math.floor(used)}%)${
+      reached
+        ? '; model calls are refused for everyone until the month resets'
+        : used >= percent
+          ? '; at the cap, model calls are refused for everyone until the month resets'
+          : ''
+    }`,
+  };
+}
 
 /** The last hour's spending against the usual hour. */
 export function spendRateCheck(
@@ -326,9 +360,20 @@ export function stuckCheck(stuck: StuckItem[]): HealthCheck {
   };
 }
 
-/** The spending checks the operator asked for, read from `model_usage`. */
+/**
+ * The spending checks the operator asked for, read from `model_usage`, and
+ * the installation's month from the running totals the caps read.
+ */
 async function spendChecks(sql: Sql, spend: SpendAlerts): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
+  if (spend.monthlyCap) {
+    const month = new Date().toISOString().slice(0, 7);
+    const [row] = await sql`select usd::float8 as usd from spend_counter
+      where period = ${month} and scope = 'installation'`;
+    checks.push(
+      spendCapCheck(Number(row?.usd ?? 0), spend.monthlyCap.usd, spend.monthlyCap.percent),
+    );
+  }
   if (spend.hourlyMultiple !== undefined) {
     const [rate] = await sql`with hours as (
         select generate_series(date_trunc('hour', now()) - interval '168 hours',

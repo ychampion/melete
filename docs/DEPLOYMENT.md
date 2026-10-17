@@ -502,7 +502,10 @@ a positive number:
 
 These are starting points: tune them to your price and your people (see
 [Spending caps](#spending-caps), [Attachments](#attachments) and
-[Alerts](#alerts)). `init --hosted` also writes
+[Alerts](#alerts)). The installation's `$200` is used up by ten people at
+their own `$20`, after which model calls stop for everyone until the month
+resets, so raise it as people join; the `spend_cap` alert fires at 80% of it.
+`init --hosted` also writes
 `MELETE_ATTEMPT_CONCURRENCY_PER_PERSON=2`, which is not required: free slots
 are shared between people either way ([Engine limits](#engine-limits)). They apply only to a hosted installation; a self-hosted
 one has no limits unless you set them, and `check` never asks for them.
@@ -2486,7 +2489,12 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
   median hour of the week before), or one person accounts for more than
   `MELETE_ALERT_SPEND_PERSON_PERCENT` percent of today's spending while others
   spend too. Neither fires below `MELETE_ALERT_SPEND_MIN_USD` (default `1`)
-  dollars. These checks are `spend_rate` and `spend_share`.
+  dollars. These checks are `spend_rate` and `spend_share`;
+- where `MELETE_SPEND_MONTHLY_USD` is set, the month's model spending reaches
+  `MELETE_SPEND_NOTICE_PERCENT` (default `80`) percent of it (`spend_cap`). At
+  the cap itself model calls are refused for everyone until the month resets,
+  so this is the time to raise it. The starting `$200` that `init --hosted`
+  writes is reached by ten people at their own `$20` cap.
 
 | Setting | What it does |
 | --- | --- |
