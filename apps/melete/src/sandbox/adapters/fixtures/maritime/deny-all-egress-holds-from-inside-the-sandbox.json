@@ -1,0 +1,10 @@
+{
+  "fixture": "maritime",
+  "source": "authored-from-documented-api",
+  "note": "Authored from the published Maritime API before a live run, not recorded from Maritime. Re-record with MELETE_MARITIME_API_KEY and MELETE_SANDBOX_RECORD=1.",
+  "api": {
+    "control": "Maritime computers API, https://api.maritime.sh/openapi.json (/api/v1/computers)",
+    "docs": "https://maritime.sh/docs/computers, read 2026-10-18 for behaviour the schema leaves open"
+  },
+  "exchanges": []
+}

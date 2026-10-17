@@ -970,6 +970,18 @@ const variables = z.object({
       .positive()
       .default(30 * 24 * 3600),
   ),
+  /**
+   * The most computers this installation keeps at Maritime, asleep or awake.
+   * Past it a new computer is refused with a sentence the agent passes on.
+   * Unset, there is no cap.
+   */
+  MELETE_MARITIME_MAX_COMPUTERS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  /**
+   * The most of those computers awake at once. A computer that would wake past
+   * it waits a little, then is refused with a sentence the agent passes on.
+   * Unset, there is no cap.
+   */
+  MELETE_MARITIME_MAX_AWAKE: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   /** E2B's maximum continuous runtime follows the account's plan. */
   MELETE_E2B_PLAN: unsetWhenBlank(z.enum(['hobby', 'pro']).default('hobby')),
   /**
