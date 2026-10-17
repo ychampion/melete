@@ -54,15 +54,17 @@ All optional. An empty value uses the default.
 | `ELEVENLABS_SPEECH_MODEL` | `eleven_multilingual_v2` | The model that makes speech files. |
 | `ELEVENLABS_STREAMING_MODEL` | `eleven_flash_v2_5` | The model that reads replies in voice mode, chosen for low delay. |
 | `ELEVENLABS_TRANSCRIPTION_MODEL` | `scribe_v2` | The model for transcription and push-to-talk. Voice mode listens with `scribe_v2_realtime`, the only realtime model. |
-| `MELETE_VOICE_DAILY_SECONDS` | `1800` | Seconds of push-to-talk recording one person may have transcribed in a day. |
-| `MELETE_VOICE_DAILY_CHARACTERS` | `20000` | Characters of replies one person may have read aloud in a day. |
-| `MELETE_VOICE_DAILY_SESSIONS` | `30` | Voice mode conversations one person may start in a day. |
+| `MELETE_VOICE_DAILY_SECONDS` | not set (no cap) | Seconds of push-to-talk recording one person may have transcribed in a day, for example `1800`. |
+| `MELETE_VOICE_DAILY_CHARACTERS` | not set (no cap) | Characters of replies one person may have read aloud in a day, for example `20000`. |
+| `MELETE_VOICE_DAILY_SESSIONS` | not set (no cap) | Voice mode conversations one person may start in a day, for example `30`. |
 | `ELEVENLABS_SPEECH_ENGINE_ID` | made at the first call | A speech engine of your own for calls (`seng_…`). |
 | `MELETE_CALL_MONTHLY_MINUTES` | not set (no cap) | Minutes of calls one person may have in 30 days. A call that reaches the cap ends. |
 
-A day is the last 24 hours, counted per person across all their spaces. A
-request the speech service refuses does not count; one that was sent and never
-answered does, because the service may have done the work.
+The caps are the operator's choice and none is set unless you set it; use is
+counted either way, so a cap set later holds from the first day. A day is the
+last 24 hours, counted per person across all their spaces. A request the
+speech service refuses does not count; one that was sent and never answered
+does, because the service may have done the work.
 
 ## What each feature does
 
@@ -165,9 +167,14 @@ does the thinking:
   running; **stop**, **pause** and **carry on** work the controls, and a quick
   question while it works is answered the way voice mode answers it.
 - Decisions are never made by voice. When the agent needs your OK, it says so
-  out loud and the card waits in the chat.
+  out loud and the card waits in the chat. While it waits, the call says now
+  and then that it is still waiting; after about 45 seconds it says the
+  decision stays on the screen and goes quiet, and the rest of the answer lands
+  in the chat. The call stays open, and the work waits for you.
 - **Hang up**, or Escape, ends the call. Work the agent started carries on,
   and its answer lands in the chat.
+- One call per chat: calling the same chat from another tab, or again after
+  the line dropped, moves the call there and hangs up the older one.
 
 How it connects: when a person starts a call, Melete asks ElevenLabs for a
 token and hands the browser only that token, which starts the call within two
@@ -180,6 +187,7 @@ one you made yourself.
 
 A call lasts at most 40 minutes. Calls are not capped per person unless
 `MELETE_CALL_MONTHLY_MINUTES` is set.
+
 ## Privacy
 
 ElevenLabs is a cloud service. Voice sends it audio and text directly, not

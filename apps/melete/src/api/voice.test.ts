@@ -6,6 +6,7 @@ import { VoiceProviderError } from '../connectors/elevenlabs.ts';
 import { fakeTranscriptionAdapter, type TranscriptionAdapter } from '../connectors/transcribe.ts';
 import { pcmWav, silentWav } from '../connectors/wav.ts';
 import type { Database } from '../db/client.ts';
+import { loadEnv } from '../env.ts';
 import { ServiceError } from './errors.ts';
 import {
   mountVoice,
@@ -14,6 +15,7 @@ import {
   type VoicePrivacy,
   type VoiceProviders,
   type VoiceUsageKind,
+  voiceLimitsFromEnv,
 } from './voice.ts';
 
 /** The allowance in memory, with what was taken and given back visible to the test. */
@@ -92,6 +94,42 @@ const clip = (
     headers: { 'content-type': type, ...headers },
     body: bytes,
   });
+
+describe('the operator sets the daily caps', () => {
+  test('left unset, none of them caps anything; set, each holds', () => {
+    const open = voiceLimitsFromEnv(loadEnv({ NODE_ENV: 'test' }));
+    expect(open.seconds).toBe(Number.POSITIVE_INFINITY);
+    expect(open.characters).toBe(Number.POSITIVE_INFINITY);
+    expect(open.sessions).toBe(Number.POSITIVE_INFINITY);
+    const blank = voiceLimitsFromEnv(
+      loadEnv({
+        NODE_ENV: 'test',
+        MELETE_VOICE_DAILY_SECONDS: '',
+        MELETE_VOICE_DAILY_CHARACTERS: '',
+        MELETE_VOICE_DAILY_SESSIONS: '',
+      }),
+    );
+    expect(blank.sessions).toBe(Number.POSITIVE_INFINITY);
+    const capped = voiceLimitsFromEnv(
+      loadEnv({
+        NODE_ENV: 'test',
+        MELETE_VOICE_DAILY_SECONDS: '1800',
+        MELETE_VOICE_DAILY_CHARACTERS: '20000',
+        MELETE_VOICE_DAILY_SESSIONS: '0',
+      }),
+    );
+    expect(capped).toMatchObject({ seconds: 1800, characters: 20_000, sessions: 0 });
+    expect(loadEnv({ NODE_ENV: 'test' }).MELETE_CALL_MONTHLY_MINUTES).toBeUndefined();
+  });
+
+  test('an uncapped allowance still counts what is used', async () => {
+    const allowance = new CountingAllowance();
+    expect(
+      await allowance.take('prn_1', 'session', 1_000_000, Number.POSITIVE_INFINITY),
+    ).not.toBeNull();
+    expect(allowance.used('session')).toBe(1_000_000);
+  });
+});
 
 describe('which voice features the service offers', () => {
   test('nothing configured: both absent, not broken', async () => {

@@ -166,10 +166,14 @@ export function voiceProvidersFromEnv(env: Env): VoiceProviders {
   return { transcription: configured.transcription, live: configured.live };
 }
 
+/**
+ * The operator's daily caps. One left unset is no cap: use is still counted,
+ * so a cap set later holds from the first day.
+ */
 export const voiceLimitsFromEnv = (env: Env): VoiceLimits => ({
-  seconds: env.MELETE_VOICE_DAILY_SECONDS,
-  characters: env.MELETE_VOICE_DAILY_CHARACTERS,
-  sessions: env.MELETE_VOICE_DAILY_SESSIONS,
+  seconds: env.MELETE_VOICE_DAILY_SECONDS ?? Number.POSITIVE_INFINITY,
+  characters: env.MELETE_VOICE_DAILY_CHARACTERS ?? Number.POSITIVE_INFINITY,
+  sessions: env.MELETE_VOICE_DAILY_SESSIONS ?? Number.POSITIVE_INFINITY,
   asides: DAILY_ASIDES,
 });
 
