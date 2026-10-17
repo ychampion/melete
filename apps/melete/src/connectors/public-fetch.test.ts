@@ -578,6 +578,30 @@ describe('internal hosts the operator opened to everyone', () => {
     expect(listedPin(at('169.254.10.1'), wide)).toEqual(at('169.254.10.1')[0]);
   });
 
+  test("a range never opens Melete's own network pool, where every agent computer has its network", () => {
+    const wide = parsePrivateHosts('10.0.0.0/8');
+    const was = process.env.MELETE_NETWORK_POOL;
+    try {
+      delete process.env.MELETE_NETWORK_POOL;
+      // The default pool, 10.215.0.0/16: another person's computer is there.
+      expect(listedPin(at('10.215.3.20'), wide)).toBeUndefined();
+      expect(listedPin(at('10.20.0.5', '10.215.3.20'), wide)).toBeUndefined();
+      expect(listedPin(at('10.20.0.5'), wide)).toEqual(at('10.20.0.5')[0]);
+      expect(reachPin(at('10.215.3.20'), 'public', false, wide)).toBeUndefined();
+      // The installation owner's own settings may still name anything private.
+      expect(reachPin(at('10.215.3.20'), 'installation', false, wide)).toEqual(at('10.215.3.20'));
+      process.env.MELETE_NETWORK_POOL = '10.99.0.0/16';
+      expect(listedPin(at('10.99.0.20'), wide)).toBeUndefined();
+      expect(listedPin(at('10.215.3.20'), wide)).toEqual(at('10.215.3.20')[0]);
+      // With the pool off, computers take the engine's own ranges and only those listed are open.
+      process.env.MELETE_NETWORK_POOL = 'off';
+      expect(listedPin(at('10.215.3.20'), wide)).toEqual(at('10.215.3.20')[0]);
+    } finally {
+      if (was === undefined) delete process.env.MELETE_NETWORK_POOL;
+      else process.env.MELETE_NETWORK_POOL = was;
+    }
+  });
+
   test('a listed name that turns to an unlisted address between requests reaches nothing', async () => {
     const { sent, request } = recorder();
     const answers = [at('10.20.0.5'), at('10.30.0.5'), at('127.0.0.1')];

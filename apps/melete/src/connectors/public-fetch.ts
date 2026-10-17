@@ -20,7 +20,8 @@
  * The operator may open internal hosts to the `public` reach too, by listing
  * them in MELETE_PRIVATE_HOSTS (see private-hosts.ts): a private answer is then
  * accepted when it falls in a listed range, and every other answer is still
- * held to the public rule.
+ * held to the public rule. Melete's own network pool, where every agent
+ * computer has its network, stays out of the `public` reach whatever is listed.
  *
  * Cloud metadata (`isMetadataAddress`) is refused to both. An operator who
  * really runs a model there sets MELETE_ALLOW_CLOUD_METADATA=true, which opens
@@ -32,8 +33,14 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { Readable } from 'node:stream';
 import type { Sql } from 'postgres';
+import { meleteNetworks } from '../runtime/network-pool.ts';
 import { ConnectorFaultError } from './faults.ts';
-import { inPrivateRange, type PrivateHosts, privateHostsFromEnv } from './private-hosts.ts';
+import {
+  inPrivateRange,
+  onNetworks,
+  type PrivateHosts,
+  privateHostsFromEnv,
+} from './private-hosts.ts';
 import { isMetadataAddress, isPublicAddress, type ResolvedAddress, resolveHost } from './web.ts';
 
 export type PublicFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -102,11 +109,15 @@ export function reachPin(
 /**
  * The first answer, when every answer is public or in a range of `privateHosts`;
  * with no ranges listed this is `publicPin`. Cloud metadata is never in reach,
- * whatever range holds it.
+ * whatever range holds it, and neither are the networks of Melete's own agent
+ * computers, attempt cells and server containers (`reserved`, the network
+ * pool): a range the operator opened for their team's hosts never opens one
+ * person's computer to another's.
  */
 export function listedPin(
   addresses: readonly ResolvedAddress[],
   privateHosts: PrivateHosts,
+  reserved: readonly string[] = meleteNetworks(),
 ): ResolvedAddress | undefined {
   if (
     !addresses.length ||
@@ -114,6 +125,7 @@ export function listedPin(
       (entry) =>
         isIP(entry.address) !== entry.family ||
         isMetadataAddress(entry.address) ||
+        onNetworks(entry.address, reserved) ||
         !(isPublicAddress(entry.address) || inPrivateRange(entry.address, privateHosts)),
     )
   )
