@@ -76,6 +76,23 @@ export function networkPool(): NetworkPool | null {
   return configured.pool;
 }
 
+/**
+ * The range Melete's own networks take, as a list for `onNetworks`: every
+ * agent computer, attempt cell and server container is on a network there, so
+ * nothing a person names may lead into it. Empty when the pool is off; the
+ * default range when the setting does not parse, which the service refuses at
+ * startup anyway.
+ */
+export function meleteNetworks(): string[] {
+  let pool: NetworkPool | null;
+  try {
+    pool = networkPool();
+  } catch {
+    return [DEFAULT_NETWORK_POOL];
+  }
+  return pool ? [formatPool(pool)] : [];
+}
+
 /** Whether `subnet` is exactly one network's share of `pool`. */
 export function subnetOfPool(pool: NetworkPool, subnet: unknown): boolean {
   if (typeof subnet !== 'string') return false;

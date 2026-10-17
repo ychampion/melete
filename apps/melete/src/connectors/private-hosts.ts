@@ -18,7 +18,10 @@
  * that answers with some other private address (a rebinding) reaches nothing.
  * Names decide where a token may travel without TLS: a bearer token goes over
  * plain http:// only to a listed name, or to an address in a listed range.
- * Cloud metadata is refused whatever the list says.
+ * Cloud metadata is refused whatever the list says, and so is Melete's own
+ * network pool (MELETE_NETWORK_POOL), where every agent computer has its
+ * network: a range listed for a team's hosts never opens one person's computer
+ * to another's.
  */
 import { isIP } from 'node:net';
 
@@ -203,6 +206,27 @@ export function inPrivateRange(address: string, hosts: PrivateHosts): boolean {
     if (range.family !== parsed.family) return false;
     const shift = BigInt(bitsOf(range.family) - range.prefix);
     return parsed.value >> shift === range.base >> shift;
+  });
+}
+
+/**
+ * Whether an address is on one of these networks, each written as an
+ * interface reports it (`172.18.0.3/16`, host bits and all) or as a range.
+ * An entry that does not parse matches nothing.
+ */
+export function onNetworks(address: string, networks: readonly string[]): boolean {
+  const parsed = addressNumber(address);
+  if (!parsed) return false;
+  return networks.some((network) => {
+    const [base = '', bits, ...rest] = network.split('/');
+    const net = addressNumber(base);
+    if (rest.length || !net || net.family !== parsed.family || !/^\d{1,3}$/.test(bits ?? ''))
+      return false;
+    // An IPv4-mapped network is read as the IPv4 network it carries.
+    const prefix = Number(bits) - (isIP(base) === 6 && net.family === 4 ? 96 : 0);
+    if (prefix < 0 || prefix > bitsOf(net.family)) return false;
+    const shift = BigInt(bitsOf(net.family) - prefix);
+    return parsed.value >> shift === net.value >> shift;
   });
 }
 

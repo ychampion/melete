@@ -504,6 +504,14 @@ bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOK
 bun run melete check
 ```
 
+Each person's agent computer has a network of its own in `MELETE_NETWORK_POOL`.
+Leave that setting at its default (`10.215.0.0/16`) or another range, not
+`off`: requests the agents make through Melete never enter the pool, whatever
+`MELETE_PRIVATE_HOSTS` lists, so one person's agent can't reach another
+person's computer. With the pool `off`, computers take the engine's own ranges
+instead, and a range listed in `MELETE_PRIVATE_HOSTS` that covers them would
+open them.
+
 ## On a cloud VM
 
 Any Linux virtual machine you reach over SSH can run Melete, and the melete

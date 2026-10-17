@@ -12,7 +12,11 @@
  * stdio egress proxy already hold, applied to one more client. The one
  * exception is the operator's own: an answer inside a range listed in
  * MELETE_PRIVATE_HOSTS is accepted as a public one is, so a team's computer can
- * reach its internal HTTPS hosts. Cloud metadata stays refused.
+ * reach its internal HTTPS hosts. Cloud metadata stays refused, and so does
+ * every network this service itself sits on (each computer's own, the
+ * deployment's internal ones, loopback), Melete's network pool, and the
+ * address of any computer it lets out: whatever range is listed, one person's
+ * computer never reaches another's, nor the containers behind the service.
  *
  * A sandbox is known by its address on its own network: no secret it holds
  * opens another sandbox's grant, and a container without network capabilities
@@ -34,7 +38,12 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { connect, isIP, type Socket } from 'node:net';
-import { type PrivateHosts, privateHostsFromEnv } from '../../connectors/private-hosts.ts';
+import { networkInterfaces } from 'node:os';
+import {
+  onNetworks,
+  type PrivateHosts,
+  privateHostsFromEnv,
+} from '../../connectors/private-hosts.ts';
 import { listedPin } from '../../connectors/public-fetch.ts';
 import { type ResolvedAddress, resolveHost } from '../../connectors/web.ts';
 import type { EgressCredentialPort } from '../../egress/credentials.ts';
@@ -53,6 +62,7 @@ import {
   EgressTokens,
   hostCounters,
 } from '../../egress/tokens.ts';
+import { meleteNetworks } from '../../runtime/network-pool.ts';
 
 export type SandboxEgressMode = 'open' | 'connected_hosts_only';
 
@@ -85,7 +95,27 @@ export type SandboxEgressOptions = {
    * connection; MELETE_PRIVATE_HOSTS unless given.
    */
   privateHosts?: () => PrivateHosts;
+  /**
+   * The networks no tunnel may lead into, whatever the operator listed:
+   * `serviceNetworks` unless given.
+   */
+  ownNetworks?: () => readonly string[];
 };
+
+/**
+ * Every network this process sits on, as its interfaces report them (each
+ * computer's network it joined, the deployment's own, loopback), and Melete's
+ * network pool, read at each connection since the service joins a computer's
+ * network when it starts. In the Compose deployment these hold the other
+ * computers, the database, the cell service and the engine's host; nothing a
+ * computer may reach through this relay is on them.
+ */
+export function serviceNetworks(): string[] {
+  const own = Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .flatMap((entry) => (entry.cidr ? [entry.cidr] : []));
+  return [...own, ...meleteNetworks()];
+}
 
 /** How long a record budget lasts, and how often coalesced counts are written. */
 const RECORD_WINDOW_MS = 60_000;
@@ -593,10 +623,17 @@ export class SandboxEgressGuard {
     let pinned: ResolvedAddress | undefined;
     try {
       const family = isIP(host);
-      pinned = listedPin(
-        family ? [{ address: host, family: family as 4 | 6 }] : await this.resolve(host),
-        (this.options.privateHosts ?? privateHostsFromEnv)(),
-      );
+      const answers = family
+        ? [{ address: host, family: family as 4 | 6 }]
+        : await this.resolve(host);
+      const own = (this.options.ownNetworks ?? serviceNetworks)();
+      // Another computer, or anything behind the service, whatever range was listed.
+      pinned = answers.some(
+        (answer) =>
+          onNetworks(answer.address, own) || this.grants.has(clientAddress(answer.address)),
+      )
+        ? undefined
+        : listedPin(answers, (this.options.privateHosts ?? privateHostsFromEnv)());
     } catch {
       pinned = undefined;
     }
