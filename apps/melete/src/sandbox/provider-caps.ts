@@ -1,23 +1,32 @@
 /**
- * The operator's caps on a provider whose plan limits how many computers an
- * account keeps and how many are awake at once, so this installation never
- * asks for more than the plan includes. Both are unset by default: an
- * installation with no caps is given its provider unwrapped.
+ * The operator's caps on a provider whose account limits how many computers it
+ * keeps and how many are awake at once, so this installation never asks for
+ * more than the account allows. Both are unset by default: an installation
+ * with no caps is given its provider unwrapped.
  *
  * The count lives in Postgres (`sandbox_provider_computer`,
- * `sandbox_provider_lease`) and every decision is made inside one transaction
- * holding one advisory lock per adapter, so concurrent requests from any
- * number of service instances can never take more places than there are.
+ * `sandbox_provider_lease`) and every decision is made inside one short
+ * transaction holding one advisory lock per adapter, so concurrent requests
+ * from any number of service instances can never take more places than there
+ * are. The lock is never held while the provider is called.
  *
  * - Making a computer reserves its place first; past the computer cap the
- *   request is refused and no computer is made.
+ *   request is refused and no computer is made. A create the provider refused
+ *   frees its place; one whose answer was lost keeps it until the reservation
+ *   goes stale, since the computer may exist.
  * - Any call that wakes a computer (a command, a file, a resume) first counts
  *   it awake. Past the awake cap it waits a little for a place, then is
  *   refused. A computer is never made, or swapped for another, to get round
  *   either cap.
- * - A computer counts as awake while it is not known to be asleep and was
- *   used within the provider's idle time, or while a call holds it. Putting it
- *   to sleep, or the provider reporting it asleep or gone, frees its place.
+ * - A computer counts as awake while a call holds it, or while it is not known
+ *   to be asleep and was used within the provider's idle time. Putting it to
+ *   sleep, or the provider reporting it asleep, frees its place, unless it was
+ *   used after the sleep was asked for. Deleting it, or the provider reporting
+ *   it gone, frees both places.
+ * - Checking a computer counts it, so computers made before the caps were set
+ *   are counted from their first check. Reconciliation forgets a counted
+ *   computer that no live session names, so a removal whose count was lost
+ *   does not hold a place forever.
  *
  * The refusals are plain sentences the agent passes on to the person.
  */
@@ -26,9 +35,11 @@ import type { Sql, TransactionSql } from 'postgres';
 import { SandboxRefusal } from './manifest.ts';
 import {
   SandboxAdapterRefusal,
+  SandboxGone,
   type SandboxHandle,
   type SandboxProvider,
   type SandboxSpec,
+  SandboxStartRefused,
 } from './types.ts';
 
 export type ProviderCaps = {
@@ -49,8 +60,17 @@ export const AWAKE_FULL =
   'Every computer this installation may run at once is in use right now, so this one could not start and nothing ran. Tell the person, and try again in a few minutes';
 
 const RESERVED = 'reserved:';
-/** A reservation older than this belongs to a request that died; its place is free. */
+/**
+ * A reservation older than this belongs to a request that died, or to a create
+ * whose answer was lost (any computer it made is removed by reconciliation, and
+ * counted when it is next checked or used); its place is free.
+ */
 const RESERVATION_STALE_SECONDS = 15 * 60;
+/**
+ * A counted computer no live session names, made and unused for this long, is
+ * one whose removal was not counted; reconciliation forgets it.
+ */
+const FORGOTTEN_SECONDS = 15 * 60;
 const WAIT_STEP_MS = 2_000;
 /** How long a call that is not a command may hold a computer awake. */
 const CALL_HOLD_MS = 5 * 60_000;
@@ -106,13 +126,21 @@ export class ProviderCapLedger {
     })) as T;
   }
 
+  /** Awake: held by a call, or not known to be asleep and used within the idle time. */
   private async awakeCount(tx: TransactionSql): Promise<number> {
     const [row] = await tx`select count(*)::int as awake from sandbox_provider_computer c
-      where c.adapter = ${this.adapter} and not c.asleep
-        and (c.active_at > now() - make_interval(secs => ${this.caps.idleSeconds})
+      where c.adapter = ${this.adapter}
+        and ((not c.asleep
+            and c.active_at > now() - make_interval(secs => ${this.caps.idleSeconds}))
           or exists (select 1 from sandbox_provider_lease l
             where l.adapter = c.adapter and l.computer_id = c.computer_id))`;
     return Number(row?.awake ?? 0);
+  }
+
+  /** The database's clock now, for telling a sleep from a wake that came after it was asked. */
+  async clock(): Promise<Date> {
+    const [row] = await this.sql`select clock_timestamp() as at`;
+    return row?.at as Date;
   }
 
   /** Counts as the operator would read them, for tests and status. */
@@ -175,7 +203,7 @@ export class ProviderCapLedger {
         from sandbox_provider_computer c
         where c.adapter = ${this.adapter} and c.computer_id = ${computerId}`;
       const awake =
-        row !== undefined && !row.asleep && (row.recent === true || row.leased === true);
+        row !== undefined && ((!row.asleep && row.recent === true) || row.leased === true);
       if (
         !awake &&
         this.caps.maxAwake !== null &&
@@ -200,9 +228,29 @@ export class ProviderCapLedger {
       where adapter = ${this.adapter} and computer_id = ${computerId} and not asleep`;
   }
 
-  async asleep(computerId: string): Promise<void> {
-    await this.sql`update sandbox_provider_computer set asleep = true, active_at = null
-      where adapter = ${this.adapter} and computer_id = ${computerId}`;
+  /**
+   * The provider put the computer to sleep, or reported it asleep, in answer
+   * to a request made at `asked` (the database's clock). A computer a call
+   * holds now, or used after `asked`, was woken again since, and stays
+   * counted until it is idle. A computer not counted yet is counted, asleep.
+   */
+  async asleep(computerId: string, asked: Date): Promise<void> {
+    await this.sql`insert into sandbox_provider_computer as c
+        (adapter, computer_id, asleep, active_at)
+      values (${this.adapter}, ${computerId}, true, null)
+      on conflict (adapter, computer_id) do update set asleep = true, active_at = null
+        where (c.active_at is null or c.active_at <= ${asked})
+          and not exists (select 1 from sandbox_provider_lease l
+            where l.adapter = c.adapter and l.computer_id = c.computer_id)`;
+  }
+
+  /** The provider reported the computer running: it is awake now, and counted. */
+  async seen(computerId: string): Promise<void> {
+    await this.sql`insert into sandbox_provider_computer as c
+        (adapter, computer_id, asleep, active_at)
+      values (${this.adapter}, ${computerId}, false, now())
+      on conflict (adapter, computer_id) do update
+        set asleep = false, active_at = greatest(c.active_at, now())`;
   }
 
   async gone(computerIds: readonly string[]): Promise<void> {
@@ -212,6 +260,41 @@ export class ProviderCapLedger {
     await this.sql`delete from sandbox_provider_computer
       where adapter = ${this.adapter} and computer_id in ${this.sql(computerIds)}`;
   }
+
+  /**
+   * Forget counted computers that no live session names and that nothing has
+   * made or used for a while: their removal happened without being counted.
+   * Returns the ids forgotten.
+   */
+  async forget(live: (computerId: string) => boolean): Promise<string[]> {
+    const rows = await this.sql<{ computer_id: string }[]>`
+      select computer_id from sandbox_provider_computer c
+      where c.adapter = ${this.adapter} and c.computer_id not like ${`${RESERVED}%`}
+        and c.created_at < now() - make_interval(secs => ${FORGOTTEN_SECONDS})
+        and (c.active_at is null
+          or c.active_at < now() - make_interval(secs => ${FORGOTTEN_SECONDS}))
+        and not exists (select 1 from sandbox_provider_lease l
+          where l.adapter = c.adapter and l.computer_id = c.computer_id)`;
+    const forgotten = rows.map((row) => row.computer_id).filter((id) => !live(id));
+    await this.gone(forgotten);
+    return forgotten;
+  }
+}
+
+/**
+ * A failure that proves no computer was made: refused before the provider was
+ * asked, or answered with a refusal (4xx other than a timeout). Anything else,
+ * a lost answer above all, may have made one.
+ */
+function nothingMade(error: unknown): boolean {
+  if (
+    error instanceof SandboxAdapterRefusal ||
+    error instanceof SandboxRefusal ||
+    error instanceof SandboxStartRefused
+  )
+    return true;
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 408;
 }
 
 const idOf = (handle: unknown): string | null =>
@@ -252,7 +335,14 @@ export function cappedSandboxProvider<P extends SandboxProvider>(
     }
     try {
       return await work();
+    } catch (error) {
+      // Removed under the call (by a destroy that raced it, say): the hold
+      // above counted it again, so it is forgotten again here.
+      if (error instanceof SandboxGone) await ledger.gone([computerId]).catch(() => {});
+      throw error;
     } finally {
+      // A lease that cannot be removed now ends by itself at its `until`; until
+      // then the computer is counted awake, which errs on the cap's side.
       await ledger.unhold(lease, computerId).catch(() => {});
     }
   }
@@ -262,7 +352,7 @@ export function cappedSandboxProvider<P extends SandboxProvider>(
       const deadline = Date.now() + waitMs;
       let taken = await ledger.reserve();
       while ('full' in taken) {
-        // A full plan is refused at once; a full awake count may free up.
+        // A full computer count is refused at once; a full awake count may free up.
         if (taken.full === 'computers')
           throw new SandboxRefusal('provider_capacity', COMPUTERS_FULL);
         if (Date.now() + WAIT_STEP_MS > deadline)
@@ -274,9 +364,11 @@ export function cappedSandboxProvider<P extends SandboxProvider>(
       try {
         handle = await inner.create(spec, signal);
       } catch (error) {
-        // A computer made before its answer was lost is found by reconcile,
-        // which removes it and, through `gone`, nothing more is owed here.
-        await ledger.release(taken.reservation).catch(() => {});
+        // Refused: nothing was made, the place is free. Otherwise a computer
+        // may have been made before its answer was lost; it keeps its place
+        // until the reservation goes stale, and reconciliation removes it.
+        // A release that fails leaves the same stale reservation.
+        if (nothingMade(error)) await ledger.release(taken.reservation).catch(() => {});
         throw error;
       }
       await ledger.made(taken.reservation, handle.providerSandboxId);
@@ -308,8 +400,15 @@ export function cappedSandboxProvider<P extends SandboxProvider>(
   if (inner.pause) {
     const pause = inner.pause.bind(inner);
     wrapped.pause = async (handle, signal) => {
-      const result = await pause(handle, signal);
-      await ledger.asleep(handle.providerSandboxId);
+      const asked = await ledger.clock();
+      let result: Awaited<ReturnType<typeof pause>>;
+      try {
+        result = await pause(handle, signal);
+      } catch (error) {
+        if (error instanceof SandboxGone) await ledger.gone([handle.providerSandboxId]);
+        throw error;
+      }
+      await ledger.asleep(handle.providerSandboxId, asked);
       return result;
     };
   }
@@ -318,14 +417,17 @@ export function cappedSandboxProvider<P extends SandboxProvider>(
     await ledger.gone([handle.providerSandboxId]);
   };
   wrapped.inspect = async (handle, signal) => {
+    const asked = await ledger.clock();
     const state = await inner.inspect(handle, signal);
     if (state === 'gone') await ledger.gone([handle.providerSandboxId]);
-    if (state === 'paused') await ledger.asleep(handle.providerSandboxId);
+    else if (state === 'paused') await ledger.asleep(handle.providerSandboxId, asked);
+    else await ledger.seen(handle.providerSandboxId);
     return state;
   };
   wrapped.reconcile = async (project, live, signal, connection) => {
     const destroyed = await inner.reconcile(project, live, signal, connection);
     await ledger.gone(destroyed);
+    await ledger.forget((id) => live.has(id));
     return destroyed;
   };
 

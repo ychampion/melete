@@ -272,7 +272,7 @@ export const sandboxControl = pgTable(
 );
 
 /**
- * The computers this installation keeps at a provider whose plan caps them,
+ * The computers this installation keeps at a provider whose account caps them,
  * for counting against the operator's caps (see `provider-caps.ts`). A row is
  * written, under one lock per adapter, before the provider is asked to make a
  * computer (`computer_id` is then `reserved:<id>`), so two requests can never
