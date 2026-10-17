@@ -66,6 +66,7 @@ import { space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { personZone } from '../jobs/local-now.ts';
 import { workQuiet } from '../jobs/quiet.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobService } from '../jobs/service.ts';
@@ -359,12 +360,11 @@ export class SituationService {
 
   /** The person's own time zone, for the times a situation names. */
   private async timeZoneOf(tx: Transaction | Database, principalId: string): Promise<string> {
-    const [row] = rows<{ time_zone: string }>(
-      await tx.execute(sql`select p.time_zone from experience_profile p
-        join space s on s.id = p.space_id
+    const [row] = rows<{ id: string }>(
+      await tx.execute(sql`select s.id from space s
         where s.owner_principal_id = ${principalId} and s.kind = 'personal' limit 1`),
     );
-    return row?.time_zone ?? 'UTC';
+    return row ? personZone(tx, row.id) : 'UTC';
   }
 
   private async connectionOwner(

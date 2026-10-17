@@ -397,7 +397,7 @@ export async function standingBrief(tx: Transaction, row: JobRow): Promise<strin
       const zone =
         spec?.success && spec.data.kind === 'schedule'
           ? spec.data.timezone
-          : await profileZone(tx, row.spaceId);
+          : await defaultZone(tx, row);
       const words = spec?.success && spec.data.kind === 'schedule' ? scheduleWords(spec.data) : '';
       lines.push(
         `Why this shift started: it is the scheduled time${words ? ` (${words.toLowerCase()})` : ''}: ${formatAt(woke.createdAt, zone)}.`,

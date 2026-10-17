@@ -10,7 +10,8 @@
  */
 import { canonicalTimeZone } from '@melete/contracts';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { event, experienceProfile } from '../db/schema.ts';
+import type { Database } from '../db/client.ts';
+import { event, experienceProfile, job, runState } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import type { JobRow } from './service.ts';
@@ -44,8 +45,12 @@ export function zoneCity(zone: string): string | null {
   return city && /^[\p{L}]/u.test(city) ? city : null;
 }
 
+/** A transaction, or the database outside one: zones are only read. */
+type Reader = Transaction | Database;
+
 /** The zone the person's device reported with their latest message in these jobs, if any. */
-async function deviceZone(tx: Transaction, jobIds: string[]): Promise<string | null> {
+async function deviceZone(tx: Reader, jobIds: string[]): Promise<string | null> {
+  if (!jobIds.length) return null;
   const [row] = await tx
     .select({ zone: sql<string | null>`${event.payload}->>'client_time_zone'` })
     .from(event)
@@ -62,13 +67,8 @@ async function deviceZone(tx: Transaction, jobIds: string[]): Promise<string | n
   return knownZone(row?.zone);
 }
 
-/**
- * When and where this attempt starts. `now` is the database's clock. A
- * mismatch is recorded the first time it is seen, and only that attempt is
- * told of it.
- */
 /** The profile's zone, the device's, and which one time is read in. */
-async function zoneChoice(tx: Transaction, spaceId: string, jobIds: string[]) {
+async function zoneChoice(tx: Reader, spaceId: string, jobIds: string[]) {
   const [profile] = await tx
     .select({
       timeZone: experienceProfile.timeZone,
@@ -97,8 +97,58 @@ export async function workZone(
   return (await zoneChoice(tx, row.spaceId, ids)).zone;
 }
 
+/** The space's conversations the person wrote in most lately. */
+async function recentChats(tx: Reader, spaceId: string): Promise<string[]> {
+  const found = await tx
+    .select({ id: job.id })
+    .from(job)
+    .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat')))
+    .orderBy(desc(job.updatedAt))
+    .limit(5);
+  return found.map((row) => row.id);
+}
+
+/**
+ * The zone a time is read back to the person in: the zone their work is told
+ * it is in, so a reminder set for 2:50 PM where they are reads back as 2:50
+ * PM. `jobIds` are the conversations the time came from; with none, the
+ * device's zone is read from the space's latest conversations.
+ */
+export async function personZone(
+  tx: Reader,
+  spaceId: string,
+  jobIds: readonly (string | null | undefined)[] = [],
+): Promise<string> {
+  const ids = jobIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
+  return (await zoneChoice(tx, spaceId, ids.length ? ids : await recentChats(tx, spaceId))).zone;
+}
+
+/** The conversation long work was started from: a run's own, or for a step, its run's. */
+async function startedFrom(tx: Reader, row: JobRow): Promise<string | null> {
+  if (row.kind !== 'run' && row.kind !== 'run_step') return null;
+  const [own] = await tx
+    .select({ conversationId: runState.conversationId, parent: runState.parentRunId })
+    .from(runState)
+    .where(eq(runState.jobId, row.id));
+  if (own?.conversationId || !own?.parent) return own?.conversationId ?? null;
+  const [run] = await tx
+    .select({ conversationId: runState.conversationId })
+    .from(runState)
+    .where(eq(runState.jobId, own.parent));
+  return run?.conversationId ?? null;
+}
+
+/**
+ * When and where this attempt starts. `now` is the database's clock. Long
+ * work also reads the device's zone from the conversation it was started
+ * from, so the times it was given there read as the person meant them. A
+ * mismatch is recorded the first time it is seen, and only that attempt is
+ * told of it.
+ */
 export async function localNow(tx: Transaction, row: JobRow, now: Date): Promise<LocalNow> {
-  const { saved, device, used, zone } = await zoneChoice(tx, row.spaceId, [row.id]);
+  const conversation = await startedFrom(tx, row);
+  const ids = conversation ? [row.id, conversation] : [row.id];
+  const { saved, device, used, zone } = await zoneChoice(tx, row.spaceId, ids);
   let zoneMismatch: LocalNow['zone_mismatch'] = null;
   if (device && device !== saved) {
     const told = await appendEvent(tx, {
