@@ -214,6 +214,8 @@ export type ConversationState = {
   transcript: Transcript;
   setTranscript: (update: (previous: Transcript) => Transcript) => void;
   live: boolean;
+  /** When the stream last carried anything from the work (keepalives aside), in ms. */
+  lastEventAt: number | null;
   error: string | null;
   loading: boolean;
   /** Read the conversation again, after it could not be read. */
@@ -247,6 +249,7 @@ export function useConversation(id: string | null): ConversationState {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [transcript, setTranscriptState] = useState<Transcript>(emptyTranscript);
   const [live, setLive] = useState(false);
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(id));
   /** Counts each "try again", so the whole conversation is read again. */
@@ -254,6 +257,7 @@ export function useConversation(id: string | null): ConversationState {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new attempt is the reason to read again
   useEffect(() => {
+    setLastEventAt(null);
     if (!id) {
       setConversation(null);
       setTranscriptState(emptyTranscript());
@@ -381,13 +385,17 @@ export function useConversation(id: string | null): ConversationState {
         signal: controller.signal,
       })) {
         if (controller.signal.aborted) return;
-        if (item.type === 'open') setLive(true);
-        else if (item.type === 'gap') {
+        if (item.type === 'open') {
+          setLive(true);
+          // Counted from when the page started following, until the first event.
+          setLastEventAt((previous) => previous ?? Date.now());
+        } else if (item.type === 'gap') {
           setLive(false);
           setTranscriptState((previous) => applyGap(previous, item.gap));
         } else {
           const event = item.event;
           const said = event.item;
+          setLastEventAt(Date.now());
           setTranscriptState((previous) => {
             const next = applyEvent(previous, event);
             if (next.turns.some((turn) => turn.unread && turn.id === event.turn_id))
@@ -469,6 +477,7 @@ export function useConversation(id: string | null): ConversationState {
     transcript,
     setTranscript,
     live,
+    lastEventAt,
     error,
     loading,
     reload,
