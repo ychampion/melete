@@ -4,8 +4,10 @@ import { UNREACHABLE } from '../connectors/public-fetch.ts';
 import type { Database } from '../db/client.ts';
 import { loadEnv } from '../env.ts';
 import { defaultPrivacyRouter } from '../privacy/index.ts';
+import type { ProviderSignIn } from './credentials.ts';
 import { createModelGateway, type GatewayProvider, providersFromEnv } from './index.ts';
 import { checkedBaseUrl, ModelSettingsService, modelIds } from './model-settings.ts';
+import type { ModelRouting } from './routing.ts';
 
 /** No keys stored and no model chosen: the tests here never reach the database. */
 const emptyDb = {
@@ -367,4 +369,35 @@ describe('an endpoint the owner connects in the app', () => {
       await new Promise<void>((done) => server.close(() => done()));
     }
   });
+});
+
+test('background work’s model is chosen wholly inside the claim’s own transaction', async () => {
+  // The pool is out of reach while a claim holds its transaction: any read of
+  // it here would wait on a connection, so it fails the test instead.
+  const pool = {
+    select: () => {
+      throw new Error('read the pool during a claim');
+    },
+  } as unknown as Database;
+  // Inside the claim: nothing stored, but the ChatGPT sign-in is active.
+  const claim = {
+    select: (fields?: Record<string, unknown>) => ({
+      from: () =>
+        Object.assign(Promise.resolve([]), {
+          where: async () => (fields && 'status' in fields ? [{ status: 'active' }] : []),
+        }),
+    }),
+  } as unknown as Database;
+  const settings = new ModelSettingsService({
+    db: pool,
+    env: loadEnv({
+      NODE_ENV: 'test',
+      MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+      MELETE_DEFAULT_MODEL: 'llama',
+    }),
+    signIn: { handles: (provider: string) => provider === 'chatgpt' } as unknown as ProviderSignIn,
+  });
+  const operator = { provider: 'chatgpt', model: 'gpt-mini' };
+  const routing: ModelRouting = { fast: null, vision: null, fallback: [], background: operator };
+  expect(await settings.backgroundModel('space', routing, claim)).toEqual(operator);
 });

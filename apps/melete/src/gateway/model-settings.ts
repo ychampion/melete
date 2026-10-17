@@ -292,11 +292,11 @@ export class ModelSettingsService {
    * the OpenAI-compatible endpoint at a local address, as the operator or the
    * owner connected it.
    */
-  async servesLocally(provider: string): Promise<boolean> {
+  async servesLocally(provider: string, db: Runner = this.options.db): Promise<boolean> {
     if (provider !== OPENAI_COMPATIBLE) return false;
     const base =
       this.operatorBaseUrl() ??
-      this.usableRow(provider, await this.keyRows())?.baseUrl ??
+      this.usableRow(provider, await this.keyRows(db))?.baseUrl ??
       undefined;
     return addressIsLocal(base);
   }
@@ -831,8 +831,8 @@ export class ModelSettingsService {
     const operator = routing.background;
     if (!operator) return null;
     const primary = await this.active(await this.chosen(db), db);
-    if (this.ownerChose(primary) || (await this.servesLocally(primary.provider))) return null;
-    if (!(await this.connected(operator.provider, await this.keyRows(db)))) return null;
+    if (this.ownerChose(primary) || (await this.servesLocally(primary.provider, db))) return null;
+    if (!(await this.connected(operator.provider, await this.keyRows(db), db))) return null;
     return operator;
   }
 
