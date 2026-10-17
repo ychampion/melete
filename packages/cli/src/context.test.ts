@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { stream } from './context.ts';
+import { realContext, stream } from './context.ts';
 import { CHANGED_WHILE_READ } from './files.ts';
 
 const bun = process.execPath;
@@ -293,18 +293,63 @@ for (;;) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(
     }
   }, 20_000);
 
-  test('a source is still read where no private pipe can be made for it', async () => {
+  test('a source is still read where no private pipe can be made for it, and says why once', async () => {
     // A temporary folder that cannot be written (a read-only root), or no mkfifo.
     const before = process.env.TMPDIR;
-    process.env.TMPDIR = join(tmpdir(), 'melete-stream-missing', 'nested');
+    const missing = join(tmpdir(), 'melete-stream-missing', 'nested');
+    process.env.TMPDIR = missing;
+    const said: string[] = [];
     try {
-      const result = await stream({ command: ['sh', '-c', 'printf "dump bytes"'] }, [
-        { command: ['sh', '-c', 'test "$(cat)" = "dump bytes"'] },
-      ]);
+      const result = await stream(
+        { command: ['sh', '-c', 'printf "dump bytes"'] },
+        [{ command: ['sh', '-c', 'test "$(cat)" = "dump bytes"'] }],
+        (reason) => said.push(reason),
+      );
       expect(result).toMatchObject({ ok: true, bytes: 10, sha256: sha('dump bytes'), detail: '' });
     } finally {
       if (before === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = before;
     }
+    expect(said).toEqual([
+      `No private pipe could be made in the temporary folder ${missing}, which does not exist`,
+    ]);
+  });
+
+  test('a source read through a private pipe says nothing of it', async () => {
+    const said: string[] = [];
+    const result = await stream(
+      { command: ['sh', '-c', 'printf "dump bytes"'] },
+      [{ command: ['sh', '-c', 'test "$(cat)" = "dump bytes"'] }],
+      (reason) => said.push(reason),
+    );
+    expect(result).toMatchObject({ ok: true, bytes: 10, detail: '' });
+    expect(said).toEqual([]);
+  });
+
+  test('a command says on stderr, for each part, that it reads without the memory limit; --json keeps it quiet', async () => {
+    const before = process.env.TMPDIR;
+    const missing = join(tmpdir(), 'melete-stream-missing', 'nested');
+    const write = process.stderr.write;
+    const lines: string[] = [];
+    const source = { command: ['sh', '-c', 'printf "dump bytes"'] };
+    const sinks = [{ command: ['sh', '-c', 'cat >/dev/null'] }];
+    const results: boolean[] = [];
+    process.env.TMPDIR = missing;
+    process.stderr.write = ((text: string | Uint8Array) => {
+      lines.push(String(text));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const told = realContext();
+      results.push((await told.stream(source, sinks)).ok, (await told.stream(source, sinks)).ok);
+      results.push((await realContext(undefined, { quiet: true }).stream(source, sinks)).ok);
+    } finally {
+      process.stderr.write = write;
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+    }
+    expect(results).toEqual([true, true, true]);
+    const line = `No private pipe could be made in the temporary folder ${missing}, which does not exist, so this backup or restore reads its data without a memory limit. It will work, but may use as much memory as the data it moves.\n`;
+    expect(lines).toEqual([line, line]);
   });
 });
