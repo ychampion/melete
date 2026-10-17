@@ -5,7 +5,7 @@ import type { SecretAccess } from '../connectors/secrets.ts';
 import type { TwilioOptions } from '../connectors/twilio.ts';
 import type { Database } from '../db/client.ts';
 import type { ExperienceService } from '../experience/service.ts';
-import { spaceAuthority } from '../principals/authority.ts';
+import { managesConnection, spaceAuthority } from '../principals/authority.ts';
 import { SmsInbox } from './inbox.ts';
 
 /** Twilio reads an empty TwiML document as "nothing to send back now". */
@@ -21,6 +21,7 @@ export type SmsRouteDeps = {
   publicUrl?: string;
   twilio?: TwilioOptions;
   experience?: ExperienceService;
+  seen?: (principalId: string) => Promise<unknown>;
 };
 
 /**
@@ -46,10 +47,14 @@ export function mountSms(app: Hono, deps: SmsRouteDeps): SmsInbox {
 
   app.get('/connections/:id/texts', async (c) => {
     const id = c.req.param('id');
-    const [row] = await deps.sql`select space_id, provider from connection where id = ${id}`;
+    const [row] =
+      await deps.sql`select space_id, provider, shared_use from connection where id = ${id}`;
     if (row?.provider !== 'twilio')
       throw new ServiceError('not_found', 'Connection not found.', 404);
-    if ((await spaceAuthority(deps.db, String(row.space_id), c.get('owner').id)).role !== 'owner')
+    const access = await spaceAuthority(deps.db, String(row.space_id), c.get('owner').id);
+    // A number kept for a room's maker is theirs: the owners they added read
+    // only the texts of a number that serves the room.
+    if (!managesConnection(access, String(row.shared_use)))
       throw new ServiceError('scope_denied', 'Connection is not accessible.', 403);
     return c.json(await inbox.texts(id));
   });

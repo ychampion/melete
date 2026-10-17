@@ -1,14 +1,19 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import {
   DEFAULT_STDIO_IMAGES,
   STDIO_LIMITS,
   stdioContainerBody,
 } from '../connectors/mcp-stdio-docker.ts';
+import { EngineImageUnavailable } from '../runtime/cell-host.ts';
 import { LocalCellHost } from '../runtime/cell-host-local.ts';
 import { DockerError } from '../runtime/docker.ts';
 import { DockerSandboxHost } from '../sandbox/adapters/docker.ts';
 import { type CellsLookup, type CellsPolicyConfig, judge, redactContainer } from './policy.ts';
+import { RuntimeImages } from './runtime-images.ts';
 
 const PROJECT = 'melete';
 const SANDBOX_PROJECT = 'melete-ab12cd34';
@@ -59,7 +64,8 @@ class Engine {
   execs = new Map<string, { ContainerID: string }>();
   refused: string[] = [];
 
-  constructor() {
+  /** `policy`: the cell service's settings, the shared ones unless a test gives its own. */
+  constructor(readonly policy: CellsPolicyConfig = config) {
     const runtime = {
       Id: RUNTIME_ID,
       RepoDigests: [],
@@ -115,20 +121,31 @@ class Engine {
     const url = new URL(target, 'http://engine');
     return judge(
       { method, path: url.pathname, query: url.searchParams, body },
-      config,
+      this.policy,
       this.lookup,
     );
   }
 
-  /** A Docker client seam that is judged first, then served from the maps. */
+  /** A Docker client seam that is judged first, then served from the maps, as the cell service serves it. */
   api = {
     request: async (method: 'GET' | 'POST' | 'DELETE', target: string, body?: unknown) => {
       const verdict = await this.ask(method, target, body);
       if (!verdict.allow) {
         this.refused.push(`${method} ${target}: ${verdict.reason}`);
-        throw new DockerError(verdict.status, method, target);
+        // The service's client keeps a refusal's reason, as it does over the network.
+        throw new DockerError(
+          verdict.status,
+          method,
+          target,
+          verdict.status === 403 ? verdict.reason : undefined,
+        );
       }
-      return this.serve(method, target, body);
+      const answer = this.serve(method, target, body);
+      if (verdict.runtimeImage) {
+        const id = (answer as { Id?: unknown } | undefined)?.Id;
+        if (typeof id === 'string') await this.policy.runtimeImages?.add(id);
+      }
+      return answer;
     },
     startExec: async () => new ReadableStream<Uint8Array>({ start: (c) => c.close() }),
     putArchive: async () => {},
@@ -198,8 +215,11 @@ class Engine {
         },
       };
     }
-    if (parts[0] === 'images' && parts[2] === 'json')
-      return this.images.get(decodeURIComponent(parts[1] ?? ''));
+    if (parts[0] === 'images' && parts[2] === 'json') {
+      const image = this.images.get(decodeURIComponent(parts[1] ?? ''));
+      if (!image) throw new DockerError(404, 'GET', target);
+      return image;
+    }
     if (parts[0] === 'networks' && parts.length === 2 && method === 'GET')
       return { ...this.networks.get(parts[1] ?? ''), Containers: {} };
     return null;
@@ -625,6 +645,59 @@ describe('melete-cells refuses a container outside its profiles', () => {
     expect(verdict.allow).toBe(false);
   });
 
+  test('allows a network on one subnet of the pool, and no other addresses', async () => {
+    const engine = new Engine();
+    const network = (IPAM: unknown) =>
+      engine.ask('POST', '/networks/create', {
+        Name: `${ATTEMPT}-net`,
+        Driver: 'bridge',
+        Internal: true,
+        Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
+        Labels: runtimeLabels('att_01j00000000000000000000000'),
+        IPAM,
+      });
+    expect(
+      (await network({ Driver: 'default', Config: [{ Subnet: '10.215.4.16/28' }] })).allow,
+    ).toBe(true);
+    for (const IPAM of [
+      { Config: [{ Subnet: '192.168.1.0/28' }] },
+      { Config: [{ Subnet: '10.215.0.0/16' }] },
+      { Config: [{ Subnet: '10.215.4.16/28', Gateway: '192.168.1.1' }] },
+      { Config: [{ Subnet: '10.215.4.16/28' }, { Subnet: '10.215.4.32/28' }] },
+      { Driver: 'other', Config: [{ Subnet: '10.215.4.16/28' }] },
+      { Config: [{ Subnet: '10.215.4.16/28' }], Options: {} },
+      { Config: [{ Subnet: ' 10.215.4.16/28' }] },
+      { Config: [{ Subnet: '10.215.4.8/28' }] },
+      { Config: [{ Subnet: '10.215.4.16/28', IPRange: '10.215.4.16/29' }] },
+      { Config: [{ Subnet: '10.215.4.16/28', AuxiliaryAddresses: { a: '10.215.4.20' } }] },
+      { Config: [{ Subnet: 'fd00::/64' }] },
+      { Config: [{ Subnet: 168_100_000 }] },
+      { Config: [] },
+      null,
+      'default',
+    ])
+      expect((await network(IPAM)).allow).toBe(false);
+    // With the pool off, a network names no addresses of its own.
+    const off = await judge(
+      {
+        method: 'POST',
+        path: '/networks/create',
+        query: new URLSearchParams(),
+        body: {
+          Name: `${ATTEMPT}-net`,
+          Driver: 'bridge',
+          Internal: true,
+          Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
+          Labels: runtimeLabels('att_01j00000000000000000000000'),
+          IPAM: { Config: [{ Subnet: '10.215.4.16/28' }] },
+        },
+      },
+      { ...config, networkPool: null },
+      engine.lookup,
+    );
+    expect(off.allow).toBe(false);
+  });
+
   test("refuses to act on containers outside the profiles, such as the database's", async () => {
     const engine = new Engine();
     for (const [method, target, body] of [
@@ -848,5 +921,197 @@ describe('melete-cells reads a body the way the engine will', () => {
         )
       ).allow,
     ).toBe(false);
+  });
+});
+
+/** The runtime supervisor on `engine`, started; and what starts an attempt's cell on it. */
+async function startedHost(engine: Engine) {
+  const host = new LocalCellHost({
+    project: PROJECT,
+    image: 'melete-runtime:local',
+    workRoot: '/nonexistent',
+    workVolume: `${PROJECT}_work`,
+    selfId: 'self',
+    docker: engine.api,
+  });
+  await host.verify();
+  const seam = host as unknown as {
+    provisionCell: (r: object, l: Labels, s: AbortSignal) => Promise<void>;
+    startContainer: (
+      r: object,
+      l: Labels,
+      e: string[],
+      w: string,
+      s: AbortSignal,
+    ) => Promise<string>;
+  };
+  let next = 0;
+  const startCell = async () => {
+    const attempt = `att_01J0000000000000000000000${next++}`;
+    const name = `${PROJECT}-${attempt.toLowerCase()}`;
+    const resources = { container: name, network: `${name}-net`, home: `${name}-home` };
+    const labels = runtimeLabels(attempt);
+    const signal = new AbortController().signal;
+    await seam.provisionCell(resources, labels, signal);
+    await seam.startContainer(resources, labels, ['A=1'], 'job_01J00000000000000000000000', signal);
+    return engine.containers.get(name);
+  };
+  return { host, startCell };
+}
+
+/** A newer runtime image, pulled under the configured name. */
+function moveRuntimeName(engine: Engine) {
+  const NEW_ID = `sha256:${'7'.repeat(64)}`;
+  const newer = {
+    Id: NEW_ID,
+    RepoDigests: [],
+    Config: { Labels: engine.images.get(RUNTIME_ID)?.Config.Labels ?? {} },
+  };
+  engine.images.set('melete-runtime:local', newer).set(NEW_ID, newer);
+  return NEW_ID;
+}
+
+describe('a moved runtime image name does not refuse a running service', () => {
+  test('an engine started after a pull moved the name runs the image the service started with', async () => {
+    const engine = new Engine({
+      ...config,
+      runtimeImages: new RuntimeImages('melete-runtime:local'),
+    });
+    const { startCell } = await startedHost(engine);
+    expect((await startCell())?.Image).toBe(RUNTIME_ID);
+    // Another installation on the same engine pulls the name.
+    moveRuntimeName(engine);
+    const after = await startCell();
+    expect(engine.refused).toEqual([]);
+    expect(after?.Image).toBe(RUNTIME_ID);
+  });
+
+  test('a restart of the cell service alone still accepts the image the service holds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melete-cells-'));
+    try {
+      const file = join(dir, 'runtime-images.json');
+      const engine = new Engine({
+        ...config,
+        runtimeImages: new RuntimeImages('melete-runtime:local', file),
+      });
+      const { startCell } = await startedHost(engine);
+      moveRuntimeName(engine);
+      // The cell service starts again, after the name moved; the Melete service does not.
+      (engine as { policy: CellsPolicyConfig }).policy = {
+        ...config,
+        runtimeImages: new RuntimeImages('melete-runtime:local', file),
+      };
+      expect((await startCell())?.Image).toBe(RUNTIME_ID);
+      expect(engine.refused).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a service started after the move runs the new image, and the old one stays accepted', async () => {
+    const images = new RuntimeImages('melete-runtime:local');
+    const engine = new Engine({ ...config, runtimeImages: images });
+    await startedHost(engine);
+    const NEW_ID = moveRuntimeName(engine);
+    // The service restarts, so it pins what the name stands for now.
+    const { startCell } = await startedHost(engine);
+    expect((await startCell())?.Image).toBe(NEW_ID);
+    // A replica that started before the move still runs its own.
+    expect(images.has(RUNTIME_ID)).toBe(true);
+    expect(engine.refused).toEqual([]);
+  });
+
+  test('an image the runtime name never stood for is still refused', async () => {
+    const engine = await engineWithAttemptNetwork();
+    const policy = { ...config, runtimeImages: new RuntimeImages('melete-runtime:local') };
+    await policy.runtimeImages.add(RUNTIME_ID);
+    const ask = (image: string) =>
+      judge(
+        {
+          method: 'POST',
+          path: '/containers/create',
+          query: new URLSearchParams({ name: ATTEMPT }),
+          body: attemptBody(ATTEMPT, { Image: image }),
+        },
+        policy,
+        engine.lookup,
+      );
+    expect(await ask(RUNTIME_ID)).toEqual({ allow: true });
+    for (const other of [LOCAL_ID, SANDBOX_ID, SERVER_ID])
+      expect(await ask(other)).toEqual({
+        allow: false,
+        status: 403,
+        reason: 'the runtime profile runs only the image the operator configured',
+      });
+    // Looking up any other name records nothing.
+    expect(
+      await judge(
+        {
+          method: 'GET',
+          path: `/images/${encodeURIComponent('melete-sandbox:local')}/json`,
+          query: new URLSearchParams(),
+        },
+        policy,
+        engine.lookup,
+      ),
+    ).toEqual({ allow: true });
+    expect(
+      await judge(
+        {
+          method: 'GET',
+          path: `/images/${encodeURIComponent('melete-runtime:local')}/json`,
+          query: new URLSearchParams(),
+        },
+        policy,
+        engine.lookup,
+      ),
+    ).toEqual({ allow: true, runtimeImage: true });
+  });
+
+  test('an engine whose pinned image was removed fails plainly, not as an engine error', async () => {
+    const engine = new Engine({
+      ...config,
+      runtimeImages: new RuntimeImages('melete-runtime:local'),
+    });
+    const { startCell } = await startedHost(engine);
+    moveRuntimeName(engine);
+    // The image the service started with is pruned from the engine.
+    engine.images.delete(RUNTIME_ID);
+    const error = await startCell().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EngineImageUnavailable);
+    expect(error).toMatchObject({ why: 'removed', imageId: RUNTIME_ID });
+  });
+
+  test('an engine the cell service refuses its image fails plainly', async () => {
+    // A cell service that never recorded the service's image: its record was lost.
+    const engine = new Engine({
+      ...config,
+      runtimeImages: new RuntimeImages('melete-runtime:local'),
+    });
+    const { startCell } = await startedHost(engine);
+    moveRuntimeName(engine);
+    (engine as { policy: CellsPolicyConfig }).policy = {
+      ...config,
+      runtimeImages: new RuntimeImages('melete-runtime:local'),
+    };
+    const error = await startCell().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EngineImageUnavailable);
+    expect(error).toMatchObject({ why: 'refused', imageId: RUNTIME_ID });
+  });
+
+  test('another refusal of a create is passed on as it was', async () => {
+    const engine = new Engine({
+      ...config,
+      runtimeImages: new RuntimeImages('melete-runtime:local'),
+    });
+    const { startCell } = await startedHost(engine);
+    // The workspace volume is not the one the cell service was configured with.
+    (engine as { policy: CellsPolicyConfig }).policy = {
+      ...engine.policy,
+      workVolume: 'other_work',
+    };
+    const error = await startCell().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DockerError);
+    expect(error).not.toBeInstanceOf(EngineImageUnavailable);
   });
 });

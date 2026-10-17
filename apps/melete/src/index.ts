@@ -11,7 +11,7 @@
  * model traffic on its own internal port.
  */
 
-import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
+import type { AttemptBundle, QuestioningRuntimeAdapter, RuntimeAdapter } from '@melete/contracts';
 import { brokerCatalogState } from '@melete/runtime-hermes';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -32,6 +32,7 @@ import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountModelSettings } from './api/model-settings.ts';
+import { mountMyUsage } from './api/my-usage.ts';
 import { mountNeedsYouSource } from './api/needs-you-source.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
@@ -41,7 +42,8 @@ import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountScreenshots } from './api/screenshots.ts';
-import { claimNotice } from './api/setup-code.ts';
+import { claimNotice, recordConfiguredCode } from './api/setup-code.ts';
+import { mountSignIns } from './api/sign-ins.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
@@ -81,8 +83,18 @@ import { startTrashSweep } from './connectors/files-trash.ts';
 import { managedRevocation, startManagedRemovalSweep } from './connectors/managed-accounts.ts';
 import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
-import { connectionRevocation, mcpIssuerFetch, startSecretSweep } from './connectors/revocation.ts';
-import { useEffectsPool } from './connectors/secrets.ts';
+import {
+  connectionRevocation,
+  mcpIssuerFetch,
+  spaceAccessWithdrawal,
+  startSecretSweep,
+} from './connectors/revocation.ts';
+import {
+  PostgresSecretRepository,
+  SealedSecretStore,
+  useEffectsPool,
+} from './connectors/secrets.ts';
+import { SignInVault } from './connectors/sign-in-vault.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { assertMigrated, migrateDatabase } from './db/migrate.ts';
@@ -100,6 +112,7 @@ import { ExperienceEffects } from './experience/effects.ts';
 import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
+import { startersFromSetting } from './experience/starters.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
 import { feedbackWebhook, mountFeedback } from './feedback/routes.ts';
@@ -132,6 +145,7 @@ import { QuestionService } from './jobs/questions.ts';
 import { QUEUES, queueCreatesSchema, startQueue } from './jobs/queue.ts';
 import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
+import { markSeen } from './jobs/resting.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { connectionScopesForJob } from './jobs/scopes.ts';
 import { CONVERSATION_BUDGET, JobService } from './jobs/service.ts';
@@ -141,6 +155,7 @@ import { unsettledSteps } from './jobs/unsettled.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
+import { startStagedWriteSweep } from './knowledge/staged.ts';
 import { attachConversationCorrections } from './learning/conversation.ts';
 import { EngineSkillService } from './learning/engine-skills.ts';
 import { EpisodeService } from './learning/episodes.ts';
@@ -156,6 +171,7 @@ import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes, startEpisodeRetention } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
 import { startLearning } from './learning/start.ts';
+import { guardProcessLogs } from './log-guard.ts';
 import { mountMcpServer } from './mcp-server/routes.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
@@ -168,10 +184,16 @@ import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { searchMemory } from './memory/search.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { OperatorConsole } from './operator/console.ts';
+import { diskReading } from './operator/disk.ts';
+import { mountOperatorConsole } from './operator/routes.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
+import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
+import { startRetention } from './ops/retention.ts';
 import {
+  ownsSpace,
   refusedForRemoval,
   requestPrincipal,
   SPACE_BEING_CLEARED,
@@ -180,6 +202,7 @@ import {
 import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
+import { requireSessionSpace } from './principals/session-space.ts';
 import { withPrivacyGate } from './privacy/gate.ts';
 import { defaultPrivacyRouter, PostgresPrivacyStore, PrivacyRouter } from './privacy/index.ts';
 import { mountPrivacy } from './privacy/routes.ts';
@@ -194,6 +217,7 @@ import { PushDispatcher, PushService, pushConfig } from './push/service.ts';
 import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
+import { requestFailureText } from './request-failure.ts';
 import { mountMultiplayerGate, multiplayerEnabled } from './rooms/preview.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
@@ -202,6 +226,7 @@ import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi, endpointName } from './runtime/docker.ts';
 import { assertDockerEngine } from './runtime/docker-engine.ts';
 import { type AttemptTiming, SupervisedHermesRuntime } from './runtime/hermes.ts';
+import { withPreparedEngine } from './runtime/prepare.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 import {
   DockerRuntimeSupervisor,
@@ -228,10 +253,13 @@ import { mountSituations } from './situations/routes.ts';
 import { SituationService } from './situations/service.ts';
 import { startSmsReplies } from './sms/inbox.ts';
 import { mountSms } from './sms/routes.ts';
+import { mountSpaceAudit } from './spaces/audit.ts';
+import { mountSpacePolicy } from './spaces/policy.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { type BlobStore, configuredBlobStore } from './storage/blob.ts';
 import { BlobCollector } from './storage/gc.ts';
+import { storagePerPersonBytes } from './storage/per-person.ts';
 import { configuredTriageGateway, type TriageClassifier } from './triage/classifier.ts';
 import { mountNeedsYou } from './triage/routes.ts';
 import { TriageService } from './triage/service.ts';
@@ -287,6 +315,8 @@ export type AppDeps = {
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
   browserSessions?: BrowserSessionService;
+  /** Saved sign-ins. Left out, built from `sql` and the master key. */
+  signInVault?: SignInVault;
   /** The desktops in docker sandboxes, to watch and take over. */
   sandboxComputers?: SandboxComputerService;
   /** Previews of servers in agents' computers, and a person's stop and output of their processes. */
@@ -346,7 +376,7 @@ export function createApp(deps: AppDeps) {
         { error: { code: 'invalid_request', message: 'Request data is invalid.' } },
         400,
       );
-    process.stderr.write(`request failed: ${error.message}\n`);
+    process.stderr.write(`request failed: ${requestFailureText(error)}\n`);
     return c.json(
       { error: { code: 'internal_error', message: 'The request could not be completed.' } },
       500,
@@ -361,6 +391,15 @@ export function createApp(deps: AppDeps) {
   // before sign-in, so an invite link and a guest's session meet the same answer.
   const multiplayer = multiplayerEnabled(deps.env);
   mountMultiplayerGate(app, multiplayer);
+  // No name, address, id or search holds a NUL, and the database refuses one in
+  // any text it is given: a query that carries one is refused here, for every
+  // route, as invalid request data, never answered with a server error.
+  app.use('*', async (c, next) => {
+    for (const [name, value] of new URL(c.req.url).searchParams)
+      if (name.includes('\u0000') || value.includes('\u0000'))
+        throw new ServiceError('invalid_request', 'Request data is invalid.', 400);
+    return next();
+  });
   const connections =
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
@@ -377,24 +416,25 @@ export function createApp(deps: AppDeps) {
         ...(deps.jobs ? { jobs: deps.jobs } : {}),
       })
     : undefined;
+  const accountMail = deps.accountMail ?? accountMailerFromEnv(deps.env);
+  // Computers a new password, "sign out everywhere" or a disabled account
+  // disconnected lose their connection the way a revoke from Settings ends it,
+  // fencing running work.
+  const devicesEnded = devices
+    ? async (principalId: string, deviceIds: string[]) => {
+        for (const id of deviceIds)
+          await devices.revoke(id, principalId).catch((error: unknown) => {
+            process.stderr.write(
+              `a disconnected computer's connection was not closed: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+          });
+      }
+    : undefined;
   mountAuth(app, {
     ...deps,
     limits,
-    accountMail: deps.accountMail ?? accountMailerFromEnv(deps.env),
-    // Computers a new password or "sign out everywhere" disconnected lose their
-    // connection the way a revoke from Settings ends it, fencing running work.
-    ...(devices
-      ? {
-          devicesEnded: async (principalId: string, deviceIds: string[]) => {
-            for (const id of deviceIds)
-              await devices.revoke(id, principalId).catch((error: unknown) => {
-                process.stderr.write(
-                  `a disconnected computer's connection was not closed: ${error instanceof Error ? error.message : String(error)}\n`,
-                );
-              });
-          },
-        }
-      : {}),
+    accountMail,
+    ...(devicesEnded ? { devicesEnded } : {}),
   });
   // Before every route that answers with a session, so its checks of a space
   // header, ?space_id and ?job_id run for all of them, files and apps included.
@@ -404,7 +444,9 @@ export function createApp(deps: AppDeps) {
     deps.resolveSpace ??
     (async (c) => {
       const spaceId = c.get('experienceSpaceId');
-      return spaceId ? { spaceId, principalId: c.get('owner')?.id } : null;
+      if (!spaceId) return null;
+      requireSessionSpace(c, spaceId);
+      return { spaceId, principalId: c.get('owner')?.id };
     });
   if (deps.db)
     mountArtifacts(
@@ -421,6 +463,7 @@ export function createApp(deps: AppDeps) {
       { workRoot: deps.env.MELETE_WORK_DIR, spacesRoot: deps.env.MELETE_SPACES_DIR },
       personalSpace,
       { days: deps.env.MELETE_TRASH_DAYS, maxBytes: deps.env.MELETE_TRASH_MAX_MB * 1024 * 1024 },
+      deps.sql ? { sql: deps.sql, quota: storagePerPersonBytes(deps.env) } : undefined,
     );
   // Apps a person can open, and the changes they make to their own.
   if (deps.sql)
@@ -442,6 +485,9 @@ export function createApp(deps: AppDeps) {
   // non-GET under /spaces/:id runs before the handler that removes one.
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
+  if (deps.db && deps.sql) mountSpaceAudit(app, { db: deps.db, sql: deps.sql });
+  // What work in a space may use, set by its owner or the setup owner.
+  if (deps.db) mountSpacePolicy(app, { db: deps.db });
   if (connections) mountConnections(app, connections);
   if (devices) mountDevices(app, devices, limits);
   const signIn = deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined);
@@ -464,6 +510,8 @@ export function createApp(deps: AppDeps) {
       },
       ...(modelSettings ? { roles: (actor) => modelSettings.roles(actor) } : {}),
     });
+  // Each person's own usage, for Settings: never anyone else's, whoever asks.
+  if (deps.spending && deps.sql) mountMyUsage(app, { spending: deps.spending, sql: deps.sql });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -508,6 +556,33 @@ export function createApp(deps: AppDeps) {
   // Taking everything along, and deleting an account.
   if (deps.sql) {
     const sql = deps.sql;
+    const accounts =
+      deps.accountRemovals ??
+      (deps.removals && deps.db && deps.jobs
+        ? new AccountRemovalService({
+            sql,
+            spaces: deps.removals,
+            principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
+            ...(deps.env.MELETE_BROWSER_SPACE
+              ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
+              : {}),
+            removeChats: (ids) =>
+              removeJobs(
+                {
+                  jobs: deps.jobs as JobService,
+                  sql,
+                  runner: deps.runner,
+                  blobs: deps.attachments?.store,
+                  workspaces: {
+                    workRoot: deps.env.MELETE_WORK_DIR,
+                    days: deps.env.MELETE_TRASH_DAYS,
+                    spacesRoot: deps.env.MELETE_SPACES_DIR,
+                  },
+                },
+                ids,
+              ),
+          })
+        : undefined);
     mountAccount(app, {
       sql,
       spacesRoot: deps.env.MELETE_SPACES_DIR,
@@ -525,34 +600,25 @@ export function createApp(deps: AppDeps) {
         );
         return 'content' in file ? file.content : null;
       },
-      accounts:
-        deps.accountRemovals ??
-        (deps.removals && deps.db && deps.jobs
-          ? new AccountRemovalService({
-              sql,
-              spaces: deps.removals,
-              principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
-              ...(deps.env.MELETE_BROWSER_SPACE
-                ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
-                : {}),
-              removeChats: (ids) =>
-                removeJobs(
-                  {
-                    jobs: deps.jobs as JobService,
-                    sql,
-                    runner: deps.runner,
-                    blobs: deps.attachments?.store,
-                    workspaces: {
-                      workRoot: deps.env.MELETE_WORK_DIR,
-                      days: deps.env.MELETE_TRASH_DAYS,
-                      spacesRoot: deps.env.MELETE_SPACES_DIR,
-                    },
-                  },
-                  ids,
-                ),
-            })
-          : undefined),
+      ...(accounts ? { accounts } : {}),
     });
+    // The installation's owner runs it from the web app as from the host.
+    mountOperatorConsole(
+      app,
+      new OperatorConsole({
+        sql,
+        env: deps.env,
+        ...(accounts ? { accounts } : {}),
+        ...(deps.spending ? { spending: deps.spending } : {}),
+        ...(accountMail ? { mailer: accountMail } : {}),
+        ...(devicesEnded ? { devicesEnded } : {}),
+        health:
+          deps.healthDetail ??
+          (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql })),
+        disk: () => diskReading(deps.env),
+        version: VERSION,
+      }),
+    );
   }
   const intents =
     deps.intents ??
@@ -566,13 +632,16 @@ export function createApp(deps: AppDeps) {
     intents.deps.reverse = undoThrough((spaceId, actionId) => undoing.undo(spaceId, actionId));
   }
   if (intents) mountIntents(app, intents);
+  const reachDb = deps.db;
   const reaching =
     deps.reach ??
-    (deps.db
+    (reachDb
       ? new ReachService({
-          db: deps.db,
+          db: reachDb,
           config: reachConfigFromEnv(deps.env),
           ...(noticing ? { ack: (principalId, id) => noticing.ack(principalId, id) } : {}),
+          seen: (principalId) =>
+            markSeen(reachDb, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
         })
       : undefined);
   if (reaching) mountReach(app, reaching);
@@ -640,6 +709,7 @@ export function createApp(deps: AppDeps) {
         spacesRoot: deps.env.MELETE_SPACES_DIR,
       },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
+      starters: startersFromSetting(deps.env.MELETE_STARTERS),
     });
   // Rooms: shared spaces where several people talk to one agent. Switched
   // off, no room request is started, by a route or by a chat platform.
@@ -670,6 +740,8 @@ export function createApp(deps: AppDeps) {
       publicUrl: deps.env.MELETE_PUBLIC_URL,
       twilio: factory.options.twilio,
       experience: experience ?? undefined,
+      seen: (principalId) =>
+        markSeen(connections.db, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
     });
   }
   if (deps.db)
@@ -743,12 +815,15 @@ export function createApp(deps: AppDeps) {
           const actor = requestPrincipal();
           if (!scope || !actor || !deps.db) return null;
           const access = await spaceAuthority(deps.db, scope.spaceId, actor);
+          // A space's memory is its owner's: the person who made a room, not
+          // the owners they added, who read what the room shares as members do.
+          const owns = ownsSpace(access);
           return {
             ...scope,
             principalId: actor,
             membershipGeneration: access.generation,
-            role: access.role === 'owner' ? 'owner' : 'reader',
-            audience: access.role === 'owner' ? scope.audience : 'space',
+            role: owns ? 'owner' : 'reader',
+            audience: owns ? scope.audience : 'space',
           };
         },
       }),
@@ -756,6 +831,19 @@ export function createApp(deps: AppDeps) {
   if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
   if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
+  // A person's saved sign-ins, sealed under the installation's key.
+  const signIns =
+    deps.signInVault ??
+    (deps.sql
+      ? new SignInVault(
+          deps.sql,
+          new SealedSecretStore(
+            new PostgresSecretRepository(deps.sql),
+            () => deps.env.MELETE_MASTER_KEY,
+          ),
+        )
+      : undefined);
+  if (signIns) mountSignIns(app, signIns);
   if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
   if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
 
@@ -797,7 +885,7 @@ export function createApp(deps: AppDeps) {
       ...(db
         ? {
             authorizeSpace: async (id: string) => ({
-              owner: (await spaceAuthority(db, id, requestPrincipal())).role === 'owner',
+              owner: ownsSpace(await spaceAuthority(db, id, requestPrincipal())),
             }),
           }
         : {}),
@@ -907,7 +995,9 @@ export async function bootstrap(
   let stopObservationRetention: (() => void) | undefined;
   let stopEgressRetention: (() => void) | undefined;
   let stopUsageRollup: (() => void) | undefined;
+  let stopRetention: (() => void) | undefined;
   let stopTrashSweep: (() => void) | undefined;
+  let stopStagedWriteSweep: (() => void) | undefined;
   let stopAccessSweep: (() => void) | undefined;
   let stopSecretSweep: (() => void) | undefined;
   let stopManagedRemovals: (() => void) | undefined;
@@ -940,6 +1030,7 @@ export async function bootstrap(
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   let releaseManaged: ReturnType<typeof managedRevocation> | undefined;
   let releaseCredential: ReturnType<typeof connectionRevocation> | undefined;
+  let withdrawSpaceAccess: ReturnType<typeof spaceAccessWithdrawal> | undefined;
   let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   let sandboxComputers: SandboxComputerService | undefined;
   let sandboxPreviews: SandboxPreviews | undefined;
@@ -962,7 +1053,9 @@ export async function bootstrap(
     stopObservationRetention?.();
     stopEgressRetention?.();
     stopUsageRollup?.();
+    stopRetention?.();
     stopTrashSweep?.();
+    stopStagedWriteSweep?.();
     stopAccessSweep?.();
     stopSecretSweep?.();
     stopManagedRemovals?.();
@@ -1039,6 +1132,8 @@ export async function bootstrap(
         await assertMigrated(handle);
         await checkRoles({ api: env.DATABASE_URL, effects: env.MELETE_EFFECTS_DATABASE_URL });
       } else await migrateDatabase(handle);
+      // The code `melete init` printed gets an issued code's rules from its first start.
+      await recordConfiguredCode(handle.sql, env.MELETE_SETUP_CODE_HASH);
       // An installation others can reach, with no account and no code yet, says how it is claimed.
       const claim = await claimNotice(handle.sql, env);
       if (claim) process.stderr.write(`${claim}\n`);
@@ -1082,6 +1177,10 @@ export async function bootstrap(
       );
       // Each finished day of model calls is rolled up for reports, by one instance.
       stopUsageRollup = startUsageRollup(handle.sql, () => leading(leases, 'usage-rollup'));
+      // Model calls and unused connector events older than MELETE_RETENTION_DAYS go, when set.
+      stopRetention = startRetention(handle.sql, env.MELETE_RETENTION_DAYS, () =>
+        leading(leases, 'retention'),
+      );
       // Sessions, links and codes that expired go, so the tables do not grow for ever.
       stopAccessSweep = startAccessSweep(handle.sql, () => leading(leases, 'access-sweep'));
       // Sealed tokens that refreshes and disconnections left behind go now and once a day.
@@ -1091,6 +1190,10 @@ export async function bootstrap(
         { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         env.MELETE_TRASH_DAYS,
         () => leading(leases, 'trash-sweep'),
+      );
+      // Writes staged in a space that nothing applied go after a week.
+      stopStagedWriteSweep = startStagedWriteSweep(env.MELETE_SPACES_DIR, () =>
+        leading(leases, 'staged-write-sweep'),
       );
     }
     if (handle) {
@@ -1166,12 +1269,15 @@ export async function bootstrap(
       const composio = connectors.options.composio;
       releaseManaged = composio ? managedRevocation(handle.sql, composio.client) : undefined;
       // A disconnection deletes the sealed tokens and withdraws them at the provider where it can.
-      releaseCredential = connectionRevocation({
+      const revocation = {
         sql: handle.sql,
         secrets: connectors.secrets,
         ...(connectors.options.google ? { google: connectors.options.google } : {}),
         mcpFetch: mcpIssuerFetch(handle.sql),
-      });
+      };
+      releaseCredential = connectionRevocation(revocation);
+      // Removing a space withdraws its connections' access the same way first.
+      withdrawSpaceAccess = spaceAccessWithdrawal(revocation);
       // Accounts a removed space, a failed disconnection or an unfinished
       // sign-in left at Composio are removed there, tried again until gone.
       stopManagedRemovals = composio
@@ -1220,7 +1326,13 @@ export async function bootstrap(
     if (env.DATABASE_URL)
       queue = await startQueue(env.DATABASE_URL, { createSchema: queueCreatesSchema(env) });
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
-    if (jobs) jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
+    if (jobs) {
+      jobs.attachmentsPerMessage = attachmentSettingsFromEnv(env).perMessage;
+      jobs.standingWork = {
+        restAfterDays: env.MELETE_REST_ROUTINES_AFTER_DAYS,
+        routinesPerPerson: env.MELETE_ROUTINES_PER_PERSON_MAX,
+      };
+    }
     runs = jobs ? new RunService(jobs) : undefined;
     intents = jobs && runs ? new IntentService({ jobs, runs }) : undefined;
     // A job memory invalidated is queued with no wake of its own; this enqueues
@@ -1458,14 +1570,14 @@ export async function bootstrap(
       const boundaryForCatalog = effectBoundary;
       // How the model an attempt runs on is reached, for the privacy checks before it starts.
       const engineOf = attemptEngine(env, modelSettings);
-      // A container engine is got ready while the attempt's memory is recalled.
+      // A container engine is got ready as soon as an attempt reaches the
+      // runtime: while its privacy is checked, a long conversation summarised,
+      // and its memory recalled.
       const engines = supervisedRuntime;
-      const prepareEngine = engines
-        ? {
-            prepareEngine: (bundle: AttemptBundle, signal: AbortSignal) =>
-              engines.prepare(bundle, signal),
-          }
-        : {};
+      const preparing = <T extends RuntimeAdapter | QuestioningRuntimeAdapter>(runtime: T): T =>
+        engines
+          ? withPreparedEngine(runtime, (bundle, signal) => engines.prepare(bundle, signal))
+          : runtime;
       const contextualRuntime =
         deploymentMemory && handle
           ? withDeploymentContext(observed, {
@@ -1473,12 +1585,10 @@ export async function bootstrap(
               spaces: databaseSpaces(handle.db, env.MELETE_SPACES_DIR),
               scopeForJob: deploymentMemory.scopeForJob,
               ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
-              ...prepareEngine,
             })
           : memory && handle
             ? withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
                 ...(memoryEmbedding ? { embedding: memoryEmbedding, embedsQuery } : {}),
-                ...prepareEngine,
                 // Private memory is recalled only into attempts that stay on the person's own model.
                 // Judged by the model the attempt runs on, which may not be the server's default.
                 recallsPrivateMemory: async (jobId, attemptId, model) =>
@@ -1528,9 +1638,12 @@ export async function bootstrap(
         engineFor: engineOf,
         onError: (error) => process.stderr.write(`privacy gate: ${error.message}\n`),
       });
-      runner = new AttemptRunner(jobs, gatedRuntime, {
+      runner = new AttemptRunner(jobs, preparing(gatedRuntime), {
         key: env.MELETE_CAPABILITY_KEY,
         concurrency: env.MELETE_ATTEMPT_CONCURRENCY,
+        ...(env.MELETE_ATTEMPT_CONCURRENCY_PER_PERSON
+          ? { concurrencyPerPerson: env.MELETE_ATTEMPT_CONCURRENCY_PER_PERSON }
+          : {}),
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
@@ -1629,7 +1742,7 @@ export async function bootstrap(
         spending,
         events,
       );
-      evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
+      evaluator = new ProcedureEvaluator(jobs, preparing(contextualRuntime), runner.options);
       triggers = new TriggerService(jobs, runner);
       if (runs) runs.triggers = triggers;
       // What Melete notices on its own: the built-in detectors read each
@@ -1724,6 +1837,8 @@ export async function bootstrap(
           // The registry stops answering for a space's connections before
           // their rows go, and the verification counts what it still holds.
           ...(registry ? { connectors: registry } : {}),
+          // Each provider is asked to withdraw the space's access before its tokens go.
+          ...(withdrawSpaceAccess ? { withdrawAccess: withdrawSpaceAccess } : {}),
           // A space's sandboxes and snapshots go through providers built from
           // its connection rows, and the removal finishes only on what those
           // providers say they still hold.
@@ -1934,6 +2049,8 @@ export async function bootstrap(
             db: handle.db,
             config: reachConfigFromEnv(env),
             ack: (principalId, id) => noticing.ack(principalId, id),
+            seen: (principalId) =>
+              markSeen(handle.db, principalId, env.MELETE_REST_ROUTINES_AFTER_DAYS),
           });
           const climbing = reach;
           noticing.deps.escalate = (tx, row, pushed) => climbing.escalate(tx, row, pushed);
@@ -1964,6 +2081,7 @@ export async function bootstrap(
       ...(sqlForHealth ? { sql: sqlForHealth } : {}),
       ...(spendAlerts ? { spend: spendAlerts } : {}),
       ...(env.MELETE_CELLS_URL ? { cells: cellsProbe(env.MELETE_CELLS_URL) } : {}),
+      stuck: stuckItems,
       ...(env.MELETE_ALERT_DISK_MIN_FREE_MB > 0
         ? {
             disk: {
@@ -2086,6 +2204,7 @@ function startBlobs(sql: Sql, env: Env, workers: boolean, leads: () => boolean |
 }
 
 if (import.meta.main) {
+  guardProcessLogs();
   const apiNetwork = await resolveApiNetwork(loadEnv());
   const service = await bootstrap({ effects: true });
   const { app, env, effectBoundary } = service;

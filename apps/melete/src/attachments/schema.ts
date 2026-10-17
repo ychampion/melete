@@ -42,6 +42,8 @@ export const attachment = pgTable(
   (table) => [
     index('attachment_job_idx').on(table.jobId),
     index('attachment_space_idx').on(table.spaceId),
+    // How much one person keeps is summed by who uploaded it (storage/per-person.ts).
+    index('attachment_principal_idx').on(table.principalId),
     check('attachment_kind', sql`${table.kind} in ('image', 'pdf', 'docx', 'xlsx', 'csv', 'text')`),
   ],
 );

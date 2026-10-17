@@ -5,6 +5,7 @@
  * routes give.
  */
 import {
+  type BeliefBlockScope,
   beliefExportQuery,
   beliefImport,
   memoryTimelineQuery,
@@ -61,12 +62,13 @@ export class ExperienceBeliefs {
     if (!context) return unavailable(NOT_CONNECTED);
     return beliefHistory(this.memory.sql, context.scope, id, context.timeZone);
   }
-  async block(spaceId: string, ownerId: string, id: string) {
+  /** Forget a belief and don't learn it again: anything about its subject unless `detail`. */
+  async block(spaceId: string, ownerId: string, id: string, scope: BeliefBlockScope = 'topic') {
     const context = await this.context(spaceId, ownerId);
     if (!context) return unavailable(NOT_CONNECTED);
     if (!this.memory.journal)
       return unavailable('Forgetting is not connected to the saved deletion history yet.');
-    return blockBelief(this.memory.sql, context.scope, id, this.memory.journal);
+    return blockBelief(this.memory.sql, context.scope, id, this.memory.journal, scope);
   }
   async blocks(spaceId: string, ownerId: string) {
     const context = await this.context(spaceId, ownerId);

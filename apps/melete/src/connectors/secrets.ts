@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ID_PREFIXES } from '@melete/contracts';
 import sodium from 'libsodium-wrappers';
 import type { Sql } from 'postgres';
@@ -106,6 +107,20 @@ export class SealedSecretStore implements SecretAccess {
       return sodium.crypto_box_seed_keypair(seed);
     } finally {
       sodium.memzero(seed);
+    }
+  }
+
+  /**
+   * A short name for the key secrets are sealed under now: a digest of its
+   * public half, which says nothing of the key. A record that keeps the name
+   * it was sealed under can tell a changed key from a damaged record.
+   */
+  async keyId(): Promise<string> {
+    const keys = await this.keys();
+    try {
+      return `k1:${createHash('sha256').update(keys.publicKey).digest('hex').slice(0, 16)}`;
+    } finally {
+      sodium.memzero(keys.privateKey);
     }
   }
 

@@ -6,7 +6,8 @@
  * small and the engine compacts a conversation that still fits, too large and it
  * never compacts before the provider refuses the request. Entries are keyed on
  * the exact model id a provider answers to, because that is the string both the
- * gateway and the engine see.
+ * gateway and the engine see. A Claude id with a snapshot date or a router's or
+ * Bedrock's prefix and version is looked up under its plain name (see catalogKey).
  *
  * A model with no entry falls back to 128,000 tokens, the smallest window in
  * common use among the providers Melete talks to. The fallback is deliberately
@@ -19,6 +20,21 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'deepseek-v4-pro': 1_000_000,
   'deepseek-v4-flash': 1_000_000,
   'gpt-6-astra': 1_050_000,
+  // Anthropic's current models, as its Messages API names them. Unlisted, a
+  // Claude model fell back to 128,000, below the 128,000-token output cap the
+  // engine asks of every current Claude model, so every call was refused.
+  'claude-fable-5-1': 1_000_000,
+  'claude-fable-5': 1_000_000,
+  'claude-opus-5-5': 1_000_000,
+  'claude-opus-5': 1_000_000,
+  'claude-opus-4-8': 1_000_000,
+  'claude-opus-4-7': 1_000_000,
+  'claude-opus-4-6': 1_000_000,
+  'claude-sonnet-5-5': 1_000_000,
+  'claude-sonnet-5': 1_000_000,
+  'claude-sonnet-4-6': 1_000_000,
+  'claude-haiku-5-5': 1_000_000,
+  'claude-haiku-4-5': 200_000,
 };
 
 /** The window a model answers with, or the documented fallback. */
@@ -46,8 +62,27 @@ export const GATEWAY_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 export const REQUEST_FRAMING_TOKENS = 256;
 
 export function modelContextWindow(model: string): number {
-  const named = hasKnownContextWindow(model) ? CONTEXT_WINDOWS[model] : undefined;
+  const key = catalogKey(model);
+  const named = key === undefined ? undefined : CONTEXT_WINDOWS[key];
   return typeof named === 'number' ? named : FALLBACK_CONTEXT_WINDOW;
+}
+
+/**
+ * The catalog entry a model id names: the id itself, or, for a Claude model, the id with the
+ * spellings other routes add taken off. Anthropic answers to a dated snapshot
+ * (`claude-haiku-4-5-20251001`), Vertex to one after an at sign (`claude-opus-4-8@20260101`),
+ * a router to `anthropic/claude-opus-5-5`, and Bedrock to
+ * `us.anthropic.claude-sonnet-5-5-v1:0`. Each is the same model and the same window.
+ */
+function catalogKey(model: string): string | undefined {
+  if (Object.hasOwn(CONTEXT_WINDOWS, model)) return model;
+  const claude = model
+    .replace(/^(?:[a-z]{2,6}\.)?anthropic[./]/i, '')
+    .replace(/-v\d+(?::\d+)?$/, '')
+    .replace(/[-@]\d{8}$/, '');
+  return claude !== model && claude.startsWith('claude-') && Object.hasOwn(CONTEXT_WINDOWS, claude)
+    ? claude
+    : undefined;
 }
 
 /**
@@ -61,7 +96,7 @@ export function modelContextWindow(model: string): number {
  * firing rather than fail closed.
  */
 export function hasKnownContextWindow(model: string): boolean {
-  return Object.hasOwn(CONTEXT_WINDOWS, model);
+  return catalogKey(model) !== undefined;
 }
 
 /**

@@ -6,10 +6,16 @@ import {
   BrowserNetworkError,
   type BrowserNetworkOptions,
   BrowserRedirect,
+  carriesSecret,
   createBrowserEgress,
+  type HeldSignInWrite,
+  printCarried,
+  type SecretPrint,
   SITE_FAILURES,
+  secretPrint,
 } from './egress.ts';
 import { BrowserLive, type BrowserLiveOptions } from './live.ts';
+import { hostOf, siteOf } from './live-protocol.ts';
 import { handbackLabel, handbackUrl, withoutValues } from './redact.ts';
 import {
   BrowserFault,
@@ -17,7 +23,19 @@ import {
   BrowserSessions,
   type BrowserSessionsOptions,
 } from './sessions.ts';
-import { isSensitiveControl, type VisibleSchema } from './visible.ts';
+import {
+  guardSignInSubmit,
+  markSignInFields,
+  originOf,
+  pageMeasure,
+  SIGN_IN_STEP_MS,
+  type SignInFields,
+  type SignInStepOutcome,
+  signInState,
+  signInSubmitHeld,
+  unmarkSignInFields,
+} from './sign-in-page.ts';
+import { attributeWords, isSensitiveControl, type VisibleSchema } from './visible.ts';
 
 // These declarations describe only code evaluated inside Chromium. They do not add DOM globals
 // to the Bun service's type environment (whose streams include Bun-specific methods).
@@ -25,7 +43,13 @@ type BrowserElement = {
   tagName: string;
   type: string;
   name: string;
+  id: string;
   value: string;
+  /** A slider's ends and step, as the page wrote them; empty when it wrote none. */
+  min: string;
+  max: string;
+  step: string;
+  isContentEditable: boolean;
   disabled: boolean;
   readOnly: boolean;
   checked: boolean;
@@ -46,11 +70,20 @@ type BrowserElement = {
   checkVisibility?(): boolean;
   /** An open shadow root; a closed one is null, as for any page script. */
   shadowRoot: BrowserRoot | null;
+  /** The document, or the shadow root the element sits in; only a shadow root has a host. */
+  getRootNode(): { host?: BrowserElement };
   focus(): void;
   select(): void;
   dispatchEvent(event: Event): boolean;
 };
-type BrowserForm = { elements: BrowserElement[]; method: string; enctype: string; action: string };
+declare const browserForm: unique symbol;
+/**
+ * A form, as page code may only read it: through `HTMLFormElement.prototype`'s own getters. A
+ * field named `action`, `method`, `enctype` or `elements` shadows the property of that name on
+ * the form itself, so a hidden `<input name="action">` would stand in for the form's address.
+ */
+type BrowserForm = { readonly [browserForm]: true };
+declare const HTMLFormElement: { prototype: object };
 /** A document or a shadow root: what can be searched for elements. */
 type BrowserRoot = { querySelectorAll(selector: string): ArrayLike<BrowserElement> };
 declare const document: BrowserRoot & {
@@ -59,6 +92,8 @@ declare const document: BrowserRoot & {
   querySelector(selector: string): BrowserElement | null;
 };
 declare const location: { href: string };
+/** Where an input field keeps the value setter the page itself reads. */
+declare const HTMLInputElement: { prototype: object };
 declare function getComputedStyle(element: BrowserElement): {
   visibility: string;
   display: string;
@@ -121,6 +156,19 @@ const operation = z.discriminatedUnion('kind', [
     name: z.string().max(240).optional(),
   }),
   z.strictObject({ kind: z.literal('submit'), intent: browserSubmitIntent }),
+  // A saved sign-in, filled by the worker from what the service opened for this one step.
+  z.strictObject({
+    kind: z.literal('sign_in'),
+    origin: z.string().url().max(300),
+    url: z.string().url().max(4000).optional(),
+    username: z.string().min(1).max(512),
+    password: z.string().min(1).max(1024),
+  }),
+  z.strictObject({
+    kind: z.literal('sign_in_code'),
+    origin: z.string().url().max(300),
+    code: z.string().regex(/^\d{6,8}$/),
+  }),
 ]);
 export const browserCommand = z.strictObject({
   session_id: z.string(),
@@ -242,8 +290,8 @@ export const CHALLENGE_DRAW_MS = 4_000;
  * field, as on a sign-in or sign-up form; else 'guarded'. Runs in the page.
  */
 function secretFieldState(): 'none' | 'passwords' | 'guarded' {
-  const secret = /password|one-time-code|webauthn|cc-number|cc-csc/i;
-  const other = /one-time-code|webauthn|cc-number|cc-csc/i;
+  const secret = /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i;
+  const other = /one-time-code|webauthn|cc-number|cc-csc|cc-exp/i;
   let state: 'none' | 'passwords' | 'guarded' = 'none';
   const look = (root: BrowserRoot) => {
     for (const element of Array.from(root.querySelectorAll('input, textarea, select')))
@@ -281,8 +329,20 @@ const LISTED_ROLES: Record<string, number> = {
   checkbox: 0,
   radio: 0,
   spinbutton: 0,
+  slider: 0,
   button: 1,
   link: 2,
+};
+/**
+ * The accessibility tree's own roles for a time, date or colour field, listed as the field a
+ * value is filled into. Chromium names the field by its label, and its parts (hours, minutes,
+ * a picker button) separately inside it; the parts are left out of a look.
+ */
+const VALUE_FIELD_ROLES: Record<string, string> = {
+  InputTime: 'textbox',
+  Date: 'textbox',
+  DateTime: 'textbox',
+  ColorWell: 'textbox',
 };
 /** The most controls one look lists; the rest are counted and said to be there. */
 export const MAX_LISTED_CONTROLS = 128;
@@ -312,14 +372,14 @@ function controlLooks(...elements: BrowserElement[]) {
         box.height > 0,
       secret:
         element.getAttribute('type') === 'password' ||
-        /password|one-time-code|webauthn|cc-number|cc-csc/i.test(
+        /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
           element.getAttribute('autocomplete') ?? '',
         ),
       // A password field with nothing in it yet, as a sign-in or sign-up form shows one.
       emptyPassword:
         element.tagName === 'INPUT' &&
         element.getAttribute('type') === 'password' &&
-        !/one-time-code|webauthn|cc-number|cc-csc/i.test(
+        !/one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
           element.getAttribute('autocomplete') ?? '',
         ) &&
         element.value === '',
@@ -327,7 +387,18 @@ function controlLooks(...elements: BrowserElement[]) {
         ['BUTTON', 'INPUT'].includes(element.tagName) &&
         element.type === 'submit' &&
         form !== null &&
-        (element.getAttribute('formmethod') ?? form.method).toLowerCase() === 'post',
+        (
+          element.getAttribute('formmethod') ??
+          String(
+            Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'method')?.get?.call(form),
+          )
+        ).toLowerCase() === 'post',
+      // A part the browser draws inside a field, such as a time field's hours or its picker
+      // button: the field itself is what is filled.
+      inner: (() => {
+        const host = element.getRootNode().host;
+        return host !== undefined && ['INPUT', 'TEXTAREA', 'SELECT'].includes(host.tagName);
+      })(),
     };
   });
 }
@@ -384,6 +455,12 @@ export class BrowserController {
    * top-level document.
    */
   private handback = false;
+  /**
+   * Prints of the passwords sign-in steps typed in this browser context, never the passwords
+   * themselves: a look never shows an address that carries one, whatever put it there and
+   * whenever, a script's `history.replaceState` after the step included.
+   */
+  private signInPrints: SecretPrint[] = [];
   readonly metrics = { observations: 0, dispatched_inputs: 0, refused_inputs: 0 };
 
   constructor(
@@ -402,6 +479,7 @@ export class BrowserController {
         this.pageId = undefined;
         // A new context opens on a new document, so nothing a person left behind is on it.
         this.handback = false;
+        this.signInPrints = [];
         // Additional windows cannot become an unobserved channel outside the single-page lease,
         // except one popup at a time that a person in control opens and sees in their live view.
         context.on('page', (page) => {
@@ -470,12 +548,22 @@ export class BrowserController {
     }
   }
 
-  private async navigate(command: BrowserCommand, target: string): Promise<void> {
+  private async navigate(
+    command: BrowserCommand,
+    target: string,
+    deadline?: number,
+  ): Promise<void> {
     if (!this.network || !this.sessions.context) throw new BrowserFault('worker_unavailable');
     let url = target;
     for (let hop = 0; hop < 6; hop++) {
       const page = this.sessions.page;
       if (!page) throw new BrowserFault('session_not_found');
+      // A sign-in step's deadline cuts the load short, and no hop starts past it.
+      const left = deadline === undefined ? 15_000 : Math.min(15_000, deadline - Date.now());
+      if (left <= 0)
+        throw new BrowserFault(
+          `page_timeout: ${new URL(url).host} did not finish loading in time.`,
+        );
       try {
         await this.network.run(
           'navigate',
@@ -483,7 +571,7 @@ export class BrowserController {
             this.input(command, () =>
               // Longer than the network guard gives one request, so a resource whose host never
               // answers is cut off and the page still finishes loading without it.
-              page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 }),
+              page.goto(url, { waitUntil: 'domcontentloaded', timeout: left }),
             ),
           undefined,
           () => this.sessions.checkInput(command.session_id, command.control_epoch),
@@ -492,7 +580,9 @@ export class BrowserController {
       } catch (error) {
         if (error instanceof Error && error.name === 'TimeoutError')
           throw new BrowserFault(
-            `page_timeout: ${new URL(url).host} did not finish loading the page within 15 seconds.`,
+            left < 15_000
+              ? `page_timeout: ${new URL(url).host} did not finish loading in time.`
+              : `page_timeout: ${new URL(url).host} did not finish loading the page within 15 seconds.`,
           );
         if (!(error instanceof BrowserRedirect) || error.after_commit) throw error;
         url = error.target_url;
@@ -526,7 +616,8 @@ export class BrowserController {
     const { nodes } = await cdp.send('Accessibility.getFullAXTree');
     const found: Candidate[] = [];
     for (const node of nodes) {
-      const role = String(node.role?.value ?? '');
+      const raw = String(node.role?.value ?? '');
+      const role = VALUE_FIELD_ROLES[raw] ?? raw;
       if (node.ignored || LISTED_ROLES[role] === undefined) continue;
       found.push({
         label: String(node.name?.value ?? ''),
@@ -606,7 +697,7 @@ export class BrowserController {
       const looks = await this.looks(cdp, batch);
       batch.forEach(({ label, role, required }, index) => {
         const look = looks[index];
-        if (!look?.visible) return;
+        if (!look?.visible || look.inner) return;
         const sensitive =
           look.secret || isSensitiveControl({ label, role, sensitive: false, required: false });
         if (sensitive && !look.emptyPassword) guarded = true;
@@ -638,6 +729,22 @@ export class BrowserController {
     return { controls, unlisted: rest.length, sensitive, guarded, submits: [...submits] };
   }
 
+  /**
+   * The page's address as a look shows it: without its query and fragment when it carries a
+   * password a sign-in step typed here, and only its origin when its path does too.
+   */
+  private shownAddress(address: string): string {
+    const carries = (text: string) => this.signInPrints.some((print) => printCarried(text, print));
+    if (!carries(address)) return address;
+    try {
+      const url = new URL(address);
+      const path = `${url.origin}${url.pathname}`;
+      return carries(path) ? `${url.origin}/` : path;
+    } catch {
+      return '';
+    }
+  }
+
   private async formIntent(page: Page, name: string): Promise<BrowserSubmitIntent> {
     const button = await this.unique(this.role(page, 'button', name));
     const data = await button.evaluate((element) => {
@@ -648,19 +755,22 @@ export class BrowserController {
       )
         return null;
       const form = element.form;
-      const controls = Array.from(form.elements).filter((field): field is BrowserElement =>
-        ['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName),
+      // Read through the prototype: a field named for a property shadows it on the form.
+      const read = (name: string): unknown =>
+        Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, name)?.get?.call(form);
+      const controls = Array.from(read('elements') as ArrayLike<BrowserElement>).filter(
+        (field): field is BrowserElement => ['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName),
       );
       const sensitive = controls.some(
         (field) =>
           field.type === 'password' ||
-          /password|one-time-code|webauthn|cc-number|cc-csc/i.test(field.autocomplete) ||
+          /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(field.autocomplete) ||
           /password|passcode|otp|verification.code|security.code|authenticator/i.test(
             `${field.name} ${field.getAttribute('aria-label') ?? ''}`,
           ),
       );
-      const method = (element.getAttribute('formmethod') ?? form.method).toUpperCase();
-      const enctype = element.getAttribute('formenctype') ?? form.enctype;
+      const method = (element.getAttribute('formmethod') ?? String(read('method'))).toUpperCase();
+      const enctype = element.getAttribute('formenctype') ?? String(read('enctype'));
       if (sensitive || method !== 'POST' || enctype !== 'application/x-www-form-urlencoded')
         return null;
       if (controls.some((field) => !field.validity.valid)) return null;
@@ -672,7 +782,10 @@ export class BrowserController {
         // Native HTML form submission normalizes line breaks before URL encoding.
         pairs.push([key.replace(/\r?\n|\r/g, '\r\n'), value.replace(/\r?\n|\r/g, '\r\n')]);
       }
-      const url = new URL(element.getAttribute('formaction') ?? form.action, location.href).href;
+      const url = new URL(
+        element.getAttribute('formaction') ?? String(read('action')),
+        location.href,
+      ).href;
       return { url, pairs, page_url: location.href };
     });
     if (!data) throw new BrowserFault('unsupported_or_incomplete_form');
@@ -775,7 +888,7 @@ export class BrowserController {
       control_epoch: epoch,
       observation: {
         id: `obs_${randomUUID()}`,
-        url: handedBack ? handbackUrl(page.url()) : page.url(),
+        url: handedBack ? handbackUrl(page.url()) : this.shownAddress(page.url()),
         title,
         schema: handedBack
           ? schema.map((control) => ({ ...control, label: handbackLabel(control.label) }))
@@ -953,8 +1066,14 @@ export class BrowserController {
             checked: element.tagName === 'INPUT' ? element.checked : undefined,
           })),
         forms: Array.from(document.forms).map((form) => ({
-          action: form.action,
-          valid: Array.from(form.elements).every(
+          action: String(
+            Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'action')?.get?.call(form),
+          ),
+          valid: Array.from(
+            Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements')?.get?.call(
+              form,
+            ) as ArrayLike<BrowserElement>,
+          ).every(
             (element) => !('validity' in element) || (element as BrowserElement).validity.valid,
           ),
         })),
@@ -962,8 +1081,412 @@ export class BrowserController {
     });
   }
 
+  /**
+   * One step of a saved sign-in: the username and password typed into the sign-in form of the
+   * exact site it was saved for and sent, or, when that page then asks for one, a one-time
+   * code. Nothing is typed anywhere but on that site: the page is checked to be on it after
+   * every navigation and redirect, a form that would send elsewhere ends the step, and plain
+   * http is refused outside a test's own fixture. The answer says what came of it and nothing
+   * of the page: no screenshot, no tree, no values. A password the site did not take is
+   * cleared from its field, so no later look finds it there.
+   */
+  private async signIn(
+    command: BrowserCommand,
+    operation: Extract<BrowserCommand['operation'], { kind: 'sign_in' | 'sign_in_code' }>,
+    deadline: number,
+  ): Promise<BrowserCommandResult> {
+    const network = this.network;
+    if (!network) throw new BrowserFault('worker_unavailable');
+    const origin = originOf(operation.origin);
+    if (origin === null || origin !== operation.origin) throw new BrowserFault('sign_in_origin');
+    const secret = operation.kind === 'sign_in' ? operation.password : undefined;
+    if (secret && !this.signInPrints.some((print) => printCarried(secret, print)))
+      this.signInPrints = [...this.signInPrints.slice(-7), secretPrint(secret)];
+    // What the step types besides the password: a write that carries it is the sign-in itself.
+    const typedFor = operation.kind === 'sign_in' ? [operation.username] : [operation.code];
+    // Once the username went, no answer says nothing was typed.
+    let usernameSent = false;
+    let passwordTyped = false;
+    // A write that may have carried the sign-in to another origin of the saved site was held
+    // back while the form was sent.
+    let heldOnSite = false;
+    // A write past the step's budget was held back while the form was sent.
+    let overBudget = false;
+    const answer = (outcome: SignInStepOutcome) => {
+      const current = this.sessions.requireSession(command.session_id, command.job_id);
+      return {
+        session_id: current.id,
+        control_epoch: current.control_epoch,
+        result: {
+          sign_in: outcome,
+          at: originOf(this.sessions.page?.url()) ?? '',
+          ...(usernameSent ? { username_sent: true } : {}),
+        },
+      };
+    };
+    if (!origin.startsWith('https://') && !network.fixture(origin)) return answer('insecure_site');
+    let { page, cdp } = await this.attach();
+    const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
+    const nonce = randomUUID();
+    const here = () => originOf(this.sessions.page?.url());
+    try {
+      if (operation.kind === 'sign_in') {
+        const target =
+          operation.url ?? (originOf(page.url()) === origin ? undefined : `${origin}/`);
+        if (target !== undefined) {
+          if (originOf(target) !== origin) return answer('wrong_site');
+          await this.navigate(command, target, deadline);
+          ({ page, cdp } = await this.attach());
+        }
+      }
+      let typedLast: 'username' | 'password' | 'code' | null = null;
+      for (let step = 0; step < 2; step++) {
+        // Checked after every navigation: a redirect to a lookalike, or to another site's
+        // sign-in, is never typed into.
+        if (here() !== origin) return answer('wrong_site');
+        if (await page.evaluate(challengeShown).catch(() => false)) return answer('captcha');
+        // Past the step's bound nothing new is typed, so the service, which waits a while
+        // longer, hears what came of it.
+        if (Date.now() >= deadline) {
+          if (usernameSent) return answer('username_sent');
+          throw new BrowserFault(`page_timeout: ${new URL(origin).host} took too long to sign in.`);
+        }
+        const found = await page.evaluate(markSignInFields, nonce);
+        if (found.ambiguous) return answer(usernameSent ? 'username_sent' : 'form_not_found');
+        // A form that would send what it holds to another site is never typed into.
+        const to = originOf(found.action);
+        if (to !== null && to !== origin) return answer('wrong_site');
+        // After the username, the page asks for the password or a code. One that asks for the
+        // username again, or for nothing, is told so: the username is never sent twice.
+        if (usernameSent && !found.password)
+          return answer(found.code !== 'none' ? 'code_asked' : 'username_sent');
+        if (operation.kind === 'sign_in' && found.password) passwordTyped = true;
+        let typed: 'nothing' | 'username' | 'password' | 'code';
+        try {
+          typed = await this.typeSignIn(command, page, operation, found, nonce);
+        } catch (error) {
+          const refused = signInRefusal(error);
+          if (refused) return answer(refused);
+          throw error;
+        }
+        if (typed === 'nothing') {
+          if (operation.kind === 'sign_in' && found.code !== 'none') return answer('code_asked');
+          return answer('form_not_found');
+        }
+        typedLast = typed;
+        const sent = await this.sendSignIn(
+          command,
+          page,
+          cdp,
+          found,
+          nonce,
+          secret,
+          typedFor,
+          deadline,
+        );
+        if (typed === 'username') usernameSent = true;
+        if (sent.moved !== 'sent') return answer(sent.moved);
+        if (sent.heldOnSite) heldOnSite = true;
+        if (sent.overBudget) overBudget = true;
+        ({ page, cdp } = await this.attach());
+        await page
+          .waitForLoadState('domcontentloaded', {
+            timeout: Math.max(1, Math.min(5_000, deadline - Date.now())),
+          })
+          .catch(() => {});
+        // A first step that asked for the username alone shows the password field next.
+        if (operation.kind === 'sign_in' && typed === 'username') continue;
+        break;
+      }
+      if (await page.evaluate(challengeShown).catch(() => false)) return answer('captcha');
+      const state = await page.evaluate(signInState, nonce);
+      // A page that asks again after its sign-in was held back did not refuse it: one that sent
+      // more writes than a step allows may never have had it, and a site whose script sent it
+      // to another of its origins sent it elsewhere. The person is never told a password or a
+      // code they saved is wrong when the site did not hear it.
+      if (state.code) {
+        if (operation.kind === 'sign_in_code' && overBudget)
+          throw new BrowserFault('sign_in_budget');
+        return answer('code_asked');
+      }
+      // The username went, and no password field followed it.
+      if (typedLast === 'username') return answer('username_sent');
+      if (state.password || (operation.kind === 'sign_in_code' && state.username)) {
+        if (heldOnSite) return answer('wrong_site');
+        if (overBudget) throw new BrowserFault('sign_in_budget');
+        return answer('not_accepted');
+      }
+      return answer('signed_in');
+    } finally {
+      // However the step ended, a password the site left in its field is taken out of it, and
+      // a page whose address came to hold the password is closed for a blank one.
+      if (passwordTyped) await this.clearSignIn(command, nonce, secret);
+      if (secret && carriesSecret(this.sessions.page?.url() ?? '', secret))
+        await this.replacePage(command).catch(() => {});
+      await this.sessions.page?.evaluate(unmarkSignInFields).catch(() => {});
+      if (handedBackIn !== undefined) {
+        const now = await this.attach().catch(() => undefined);
+        if (now && (await this.documentOf(now.cdp)) !== handedBackIn) this.handback = false;
+      }
+    }
+  }
+
+  /**
+   * Types what this step has into the fields it found, under the sign-in network window: the
+   * username and password, either alone when the form asks for them one at a time, or the code.
+   */
+  private async typeSignIn(
+    command: BrowserCommand,
+    page: Page,
+    operation: Extract<BrowserCommand['operation'], { kind: 'sign_in' | 'sign_in_code' }>,
+    found: SignInFields,
+    nonce: string,
+  ): Promise<'nothing' | 'username' | 'password' | 'code'> {
+    const network = this.network;
+    if (!network) throw new BrowserFault('worker_unavailable');
+    const field = (what: string) => page.locator(`[data-melete-sign-in="${nonce}:${what}"]`);
+    // The value goes into the marked field itself, through the page's own value setter, with
+    // the events typing raises, in one step. Nothing is typed into whatever has focus, which a
+    // frame on the page could take between a focus and the keystrokes after it.
+    const type = async (what: string, text: string) => {
+      const handle = await this.unique(field(what));
+      const filled = await this.input(command, () =>
+        handle.evaluate((element, value) => {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          if (!setter || element.tagName !== 'INPUT') return false;
+          element.focus();
+          setter.call(element, value);
+          element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }, text),
+      );
+      if (!filled) throw new BrowserFault('control_not_found');
+    };
+    if (operation.kind === 'sign_in_code') {
+      if (found.code === 'none') return 'nothing';
+      await network.run(
+        'sign_in',
+        async () => {
+          if (found.code === 'single') await type('code', operation.code);
+          else
+            for (const [index, digit] of Array.from(operation.code).entries())
+              if (index < found.boxes) await type(`code${index}`, digit);
+        },
+        undefined,
+        () => this.sessions.checkInput(command.session_id, command.control_epoch),
+      );
+      return 'code';
+    }
+    if (!found.password && !found.username) return 'nothing';
+    await network.run(
+      'sign_in',
+      async () => {
+        if (found.username) await type('username', operation.username);
+        if (found.password) await type('password', operation.password);
+      },
+      undefined,
+      () => this.sessions.checkInput(command.session_id, command.control_epoch),
+      undefined,
+      operation.password,
+    );
+    return found.password ? 'password' : 'username';
+  }
+
+  /**
+   * Sends the form the step filled, by its own submit button or by Enter in its last field, and
+   * waits for the page to answer: a new page, a changed one, or the site's redirect, which is
+   * followed under every check `open` makes. `wrong_site` when the form or the page's script
+   * would send it to another site, and `unsafe_form` when it would put the password in an
+   * address; either is held back, and nothing of it is sent. `held` when it was sent, and a
+   * write to another origin of the same site was held back meanwhile.
+   */
+  private async sendSignIn(
+    command: BrowserCommand,
+    page: Page,
+    cdp: CDPSession,
+    found: SignInFields,
+    nonce: string,
+    secret: string | undefined,
+    typed: readonly string[],
+    stepDeadline: number,
+  ): Promise<{
+    moved: 'sent' | 'wrong_site' | 'unsafe_form';
+    heldOnSite: boolean;
+    overBudget: boolean;
+  }> {
+    const network = this.network;
+    if (!network) throw new BrowserFault('worker_unavailable');
+    const last = found.password
+      ? 'password'
+      : found.code === 'single'
+        ? 'code'
+        : found.code === 'boxes'
+          ? `code${found.boxes - 1}`
+          : 'username';
+    // The fields' state and a rough measure of the page's text: a site that refuses in place,
+    // with a message and no new page, changes the second.
+    const look = () =>
+      page
+        .evaluate(signInState, nonce)
+        .then(async (state) => {
+          const text = await page.evaluate(pageMeasure).catch(() => '');
+          return `${page.url()} ${JSON.stringify(state)} ${text}`;
+        })
+        .catch(() => 'gone');
+    const before = await look();
+    // The browser's own sending of a form that would put the password in the address, or
+    // send it elsewhere, is held back in the page; the network window refuses it besides.
+    await page.evaluate(guardSignInSubmit, nonce).catch(() => {});
+    // What was held back before the send is the typing's, not the send's.
+    network.takeDropped();
+    network.takeSignInHeld();
+    let redirect: BrowserRedirect | undefined;
+    let refused: SignInStepOutcome | undefined;
+    try {
+      await network.run(
+        'sign_in',
+        async () => {
+          if (found.submit) {
+            const handle = await this.unique(
+              page.locator(`[data-melete-sign-in="${nonce}:submit"]`),
+            );
+            const box = await handle.boundingBox();
+            if (!box) throw new BrowserFault('control_not_available');
+            for (const type of ['mousePressed', 'mouseReleased'] as const)
+              await this.input(command, () =>
+                cdp.send('Input.dispatchMouseEvent', {
+                  type,
+                  button: 'left',
+                  clickCount: 1,
+                  x: box.x + box.width / 2,
+                  y: box.y + box.height / 2,
+                }),
+              );
+          } else {
+            const handle = await this.unique(
+              page.locator(`[data-melete-sign-in="${nonce}:${last}"]`),
+            );
+            await this.input(command, () => handle.evaluate((element) => element.focus()));
+            for (const type of ['keyDown', 'keyUp'] as const)
+              await this.input(command, () =>
+                cdp.send('Input.dispatchKeyEvent', {
+                  type,
+                  key: 'Enter',
+                  code: 'Enter',
+                  windowsVirtualKeyCode: 13,
+                  ...(type === 'keyDown' ? { text: '\r' } : {}),
+                }),
+              );
+          }
+          // The page answers by loading another, or by changing this one; a redirect or a
+          // refusal the network window met ends the wait at once.
+          const deadline = Date.now() + SIGN_IN_SETTLE_MS;
+          let changedAt = 0;
+          while (Date.now() < deadline && !network.settling) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const now = await look();
+            if (now !== before) {
+              if (!changedAt) changedAt = Date.now();
+              else if (Date.now() - changedAt >= 600) break;
+            }
+          }
+          await page.waitForLoadState('domcontentloaded', { timeout: 2_000 }).catch(() => {});
+        },
+        undefined,
+        () => this.sessions.checkInput(command.session_id, command.control_epoch),
+        undefined,
+        secret,
+        typed,
+      );
+    } catch (error) {
+      if (error instanceof BrowserRedirect) redirect = error;
+      else refused = signInRefusal(error);
+      if (!redirect && !refused) {
+        await page.evaluate(signInSubmitHeld, nonce).catch(() => '');
+        throw error;
+      }
+    }
+    const held = await page.evaluate(signInSubmitHeld, nonce).catch(() => '');
+    // What the send held back is the send's to answer for; a later look does not name it.
+    network.takeDropped();
+    const writes = network.takeSignInHeld();
+    const heldOnSite = heldWriteOnSite(writes, originOf(page.url()) ?? '');
+    const overBudget = writes.some((write) => write.budget);
+    const answered = (moved: 'sent' | 'wrong_site' | 'unsafe_form') => ({
+      moved,
+      heldOnSite,
+      overBudget,
+    });
+    if (refused === 'wrong_site' || refused === 'unsafe_form') return answered(refused);
+    if (held === 'elsewhere') return answered('wrong_site');
+    if (held === 'address') return answered('unsafe_form');
+    if (redirect) {
+      // A redirect to an address that holds the password is never followed.
+      if (secret && carriesSecret(redirect.target_url, secret)) return answered('unsafe_form');
+      // The site answered with a redirect: followed as an opened page is, on a new page,
+      // with the cookies it set kept.
+      await this.replacePage(command);
+      await this.navigate(command, redirect.target_url, stepDeadline);
+    }
+    return answered('sent');
+  }
+
+  /**
+   * Empties the password field a step filled, when the site left it holding the password, shown
+   * or hidden. Run however the step ended, so it never fails the step.
+   */
+  private async clearSignIn(command: BrowserCommand, nonce: string, secret: string | undefined) {
+    const attached = await this.attach().catch(() => undefined);
+    if (!attached || !this.network) return;
+    const { page, cdp } = attached;
+    const field = page.locator(`[data-melete-sign-in="${nonce}:password"]`);
+    const holds = await field
+      .evaluateAll((elements) =>
+        (elements as unknown as BrowserElement[]).some((element) => element.value !== ''),
+      )
+      .catch(() => false);
+    if (!holds) return;
+    // A field still shown is emptied as a person would, so the page's script hears it.
+    const handle = await this.unique(field).catch(() => null);
+    if (handle)
+      await this.network
+        .run(
+          'sign_in',
+          async () => {
+            await this.input(command, () =>
+              handle.evaluate((element) => {
+                element.focus();
+                element.select();
+              }),
+            );
+            for (const type of ['keyDown', 'keyUp'] as const)
+              await this.input(command, () =>
+                cdp.send('Input.dispatchKeyEvent', {
+                  type,
+                  key: 'Backspace',
+                  windowsVirtualKeyCode: 8,
+                }),
+              );
+          },
+          undefined,
+          undefined,
+          undefined,
+          secret,
+        )
+        .catch(() => {});
+    // Whatever the page's script did with the keys, the field ends empty.
+    await field
+      .evaluateAll((elements) => {
+        for (const element of elements as unknown as BrowserElement[]) element.value = '';
+      })
+      .catch(() => {});
+  }
+
   async command(input: unknown): Promise<BrowserCommandResult> {
     const command = browserCommand.parse(input);
+    // A sign-in step's bound counts from now, so time spent waiting for the session counts too.
+    const signInDeadline = Date.now() + SIGN_IN_STEP_MS;
     let commitStarted = false;
     // The HTTP status the form's POST got, which the read-back after a submit weighs.
     let commitStatus: number | undefined;
@@ -996,6 +1519,8 @@ export class BrowserController {
         }
         // Even a caller that skips planning checks reaches this controller gate before it can act.
         this.sessions.checkInput(command.session_id, command.control_epoch);
+        if (command.operation.kind === 'sign_in' || command.operation.kind === 'sign_in_code')
+          return await this.signIn(command, command.operation, signInDeadline);
         const before = await this.transition(page, cdp);
         const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
         const action = command.operation;
@@ -1019,51 +1544,139 @@ export class BrowserController {
           await this.navigate(command, link);
         } else if (action.kind === 'fill') {
           const handle = await this.unique(page.getByLabel(action.label, { exact: true }));
-          const safe = await handle.evaluate(
-            (element) =>
-              ((element.tagName === 'INPUT' &&
-                ['text', 'email', 'search', 'tel', 'url'].includes(element.type)) ||
-                element.tagName === 'TEXTAREA') &&
-              !element.readOnly &&
-              !element.disabled &&
-              !/password|one-time-code|webauthn|cc-number|cc-csc/i.test(element.autocomplete),
-          );
+          // What the field is: typed into, given a value (a time, a date, a number), not
+          // something fill changes, or where a secret goes, which stays the person's. Its name
+          // and id are read too, since a code field is often known by them alone.
+          const { kind, names } = await handle.evaluate((element) => {
+            const names = [element.getAttribute('name') ?? '', element.id];
+            const is = (kind: string) => ({ kind, names });
+            if (
+              /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(element.autocomplete)
+            )
+              return is('secret');
+            if (element.tagName === 'TEXTAREA')
+              return is(element.readOnly || element.disabled ? 'fixed' : 'typed');
+            if (element.tagName === 'SELECT') return is('dropdown');
+            if (element.tagName !== 'INPUT')
+              return is(element.isContentEditable ? 'editable' : 'other');
+            if (element.type === 'password') return is('secret');
+            if (element.readOnly || element.disabled) return is('fixed');
+            if (['text', 'email', 'search', 'tel', 'url'].includes(element.type))
+              return is('typed');
+            if (
+              [
+                'time',
+                'date',
+                'datetime-local',
+                'month',
+                'week',
+                'number',
+                'range',
+                'color',
+              ].includes(element.type)
+            )
+              return is('valued');
+            return is('other');
+          });
           if (
-            !safe ||
-            isSensitiveControl({
-              label: action.label,
-              role: 'textbox',
-              sensitive: false,
-              required: false,
-            })
+            kind === 'secret' ||
+            [action.label, ...names.filter(Boolean).map(attributeWords)].some((label) =>
+              isSensitiveControl({ label, role: 'textbox', sensitive: false, required: false }),
+            )
           )
             throw new BrowserFault('sensitive_input_require_takeover');
-          await this.network.run('reversible', async () => {
-            await this.input(command, () =>
-              handle.evaluate((element) => {
-                element.focus();
-                element.select();
-              }),
+          if (kind === 'fixed')
+            throw new BrowserFault('not_fillable: that field is read-only or disabled.');
+          if (kind === 'dropdown')
+            throw new BrowserFault(
+              'not_fillable: that field is a dropdown; choose one of its options with select.',
             );
-            if (action.value)
-              await this.input(command, () => cdp.send('Input.insertText', { text: action.value }));
-            else {
+          if (kind === 'editable')
+            throw new BrowserFault(
+              'not_fillable: that is an editable area of the page (contenteditable), not a form field; fill types only into text fields, text areas and fields that take a time, date, number or colour.',
+            );
+          if (kind === 'other')
+            throw new BrowserFault(
+              'not_fillable: that control takes no typed value; a checkbox, radio button or button is clicked, and a file is never chosen by the agent.',
+            );
+          if (kind === 'valued') {
+            // A time, date or number field is drawn in parts that typing does not fill in
+            // reliably, so its value is set the way the page itself would read it, then read
+            // back: the browser empties a value of the wrong form, such as "7:30 pm" in a time
+            // field, and the field is then put back as it was.
+            const taken = await this.network.run('reversible', () =>
+              this.input(command, () =>
+                handle.evaluate((element, value) => {
+                  const input = element;
+                  const before = input.value;
+                  const setter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    'value',
+                  )?.set;
+                  setter?.call(input, value);
+                  // A colour field turns a value it cannot read into black rather than empty,
+                  // and a slider moves a value past its ends or between its steps to the
+                  // nearest one it allows, so both are compared with what was asked for.
+                  const accepted =
+                    value === '' ||
+                    (input.value !== '' &&
+                      (input.type === 'color'
+                        ? input.value === value.toLowerCase()
+                        : input.type !== 'range' ||
+                          (value.trim() !== '' && Number(input.value) === Number(value))));
+                  if (!accepted) setter?.call(input, before);
+                  else {
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                  if (accepted) return null;
+                  return {
+                    type: input.type,
+                    range:
+                      input.type === 'range'
+                        ? [input.min || '0', input.max || '100', input.step || '1']
+                        : null,
+                  };
+                }, action.value),
+              ),
+            );
+            if (taken?.range)
+              throw new BrowserFault(
+                `value_not_accepted: that slider does not take "${action.value}"; it takes a number from ${taken.range[0]} to ${taken.range[1]} in steps of ${taken.range[2]}, and was left as it was.`,
+              );
+            if (taken)
+              throw new BrowserFault(
+                `value_not_accepted: that ${taken.type} field does not take "${action.value}"; give it in the form the field uses, such as 19:30 for a time or 2026-10-15 for a date.`,
+              );
+          } else
+            await this.network.run('reversible', async () => {
               await this.input(command, () =>
-                cdp.send('Input.dispatchKeyEvent', {
-                  type: 'keyDown',
-                  key: 'Backspace',
-                  windowsVirtualKeyCode: 8,
+                handle.evaluate((element) => {
+                  element.focus();
+                  element.select();
                 }),
               );
-              await this.input(command, () =>
-                cdp.send('Input.dispatchKeyEvent', {
-                  type: 'keyUp',
-                  key: 'Backspace',
-                  windowsVirtualKeyCode: 8,
-                }),
-              );
-            }
-          });
+              if (action.value)
+                await this.input(command, () =>
+                  cdp.send('Input.insertText', { text: action.value }),
+                );
+              else {
+                await this.input(command, () =>
+                  cdp.send('Input.dispatchKeyEvent', {
+                    type: 'keyDown',
+                    key: 'Backspace',
+                    windowsVirtualKeyCode: 8,
+                  }),
+                );
+                await this.input(command, () =>
+                  cdp.send('Input.dispatchKeyEvent', {
+                    type: 'keyUp',
+                    key: 'Backspace',
+                    windowsVirtualKeyCode: 8,
+                  }),
+                );
+              }
+            });
         } else if (action.kind === 'select') {
           const handle = await this.dropdown(page, action.label, action.value);
           // The dropdown may be found by an option or nearby text, so its own names are checked
@@ -1081,7 +1694,7 @@ export class BrowserController {
             element.options[0]?.disabled || element.options[0]?.value === ''
               ? element.options[0].label
               : '',
-            /password|one-time-code|webauthn|cc-number|cc-csc/i.test(
+            /password|one-time-code|webauthn|cc-number|cc-csc|cc-exp/i.test(
               element.getAttribute('autocomplete') ?? '',
             )
               ? 'password'
@@ -1225,6 +1838,42 @@ export class BrowserController {
         throw error;
       });
   }
+}
+
+/** How long a sign-in step waits for the page to answer what was sent. */
+export const SIGN_IN_SETTLE_MS = 8_000;
+
+/**
+ * What a sign-in step's network window refused, as the step's answer: the page or its script
+ * would have sent the sign-in to another site, or put the password in an address. Undefined for
+ * anything else.
+ */
+export function signInRefusal(error: unknown): 'wrong_site' | 'unsafe_form' | undefined {
+  if (!(error instanceof BrowserNetworkError)) return undefined;
+  if (error.code === 'sign_in_origin' || error.code === 'sign_in_secret_elsewhere')
+    return 'wrong_site';
+  if (error.code === 'sign_in_secret_in_url') return 'unsafe_form';
+  return undefined;
+}
+
+/**
+ * Whether the writes a sign-in send held back include one that may have been the sign-in
+ * itself (its body held the username, password or code, or its address is named for signing
+ * in) sent to another origin of the page's own site, such as the sign-in posted from
+ * www.example.com to api.example.com: only the exact saved origin is sent a sign-in. A beacon
+ * to a third party, or a site's own telemetry to another of its hosts, says nothing of the
+ * sign-in and is left out.
+ */
+export function heldWriteOnSite(held: readonly HeldSignInWrite[], origin: string): boolean {
+  const own = hostOf(origin);
+  if (own === undefined) return false;
+  return held.some(
+    ({ method, host, credentials }) =>
+      credentials &&
+      !['GET', 'HEAD'].includes(method) &&
+      host !== own &&
+      siteOf(host) === siteOf(own),
+  );
 }
 
 /** At most this many hosts are named; a page can ask for resources from as many as it likes. */

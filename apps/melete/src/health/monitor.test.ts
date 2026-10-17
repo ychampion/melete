@@ -16,6 +16,7 @@ import {
   HealthMonitor,
   healthDetail,
   spendAlertsFromEnv,
+  spendCapCheck,
   spendRateCheck,
   spendShareCheck,
   statfsFree,
@@ -85,6 +86,33 @@ describe('operator alerts', () => {
     expect(monitor.sent[0]?.subject).toBe('Melete is unhealthy: database');
     expect(monitor.sent[0]?.text).toContain('- database: unreachable');
     expect(monitor.sent[2]?.subject).toBe('Melete is healthy again');
+  });
+
+  test('a check that starts failing while another already fails is alerted at once', async () => {
+    const stuck: HealthDetail = {
+      status: 'unhealthy',
+      version: 'test',
+      checks: [
+        { name: 'database', ok: true, detail: 'ok' },
+        { name: 'background_work', ok: false, detail: 'trash sweep: sp_a failed 3 times' },
+      ],
+      time: '2026-10-03T12:01:00.000Z',
+    };
+    const down: HealthDetail = {
+      ...stuck,
+      checks: [
+        { name: 'database', ok: false, detail: 'unreachable' },
+        { name: 'background_work', ok: false, detail: 'trash sweep: sp_a failed 3 times' },
+      ],
+    };
+    const monitor = scripted([stuck, stuck, down, down, stuck]);
+    await monitor.tick(0);
+    await monitor.tick(60_000);
+    await monitor.tick(600_000);
+    await monitor.tick(660_000);
+    await monitor.tick(720_000);
+    expect(monitor.sent.map((alert) => alert.kind)).toEqual(['unhealthy', 'unhealthy']);
+    expect(monitor.sent[1]?.subject).toBe('Melete is unhealthy: database, background_work');
   });
 
   test('an instance that does not hold the alert lease sends nothing', async () => {
@@ -227,6 +255,45 @@ describe('operator alerts', () => {
       ok: true,
       detail: 'no model spending today',
     });
+  });
+
+  test('the installation nearing its monthly cap alerts before model calls stop for everyone', async () => {
+    expect(spendAlertsFromEnv(loadEnv({ MELETE_SPEND_MONTHLY_USD: '200' }))).toEqual({
+      minUsd: 1,
+      monthlyCap: { usd: 200, percent: 80 },
+    });
+    expect(spendCapCheck(150, 200, 80)).toEqual({
+      name: 'spend_cap',
+      ok: true,
+      detail: "$150.00 of the installation's $200.00 monthly cap spent (75%)",
+    });
+    expect(spendCapCheck(170, 200, 80)).toEqual({
+      name: 'spend_cap',
+      ok: false,
+      detail:
+        "$170.00 of the installation's $200.00 monthly cap spent (85%); at the cap, model calls are refused for everyone until the month resets",
+    });
+    expect(spendCapCheck(200, 200, 80).detail).toContain('are refused for everyone');
+    // Read from the running totals, the same rows the cap itself reads.
+    const seen: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join('');
+      seen.push(text);
+      return Promise.resolve(
+        text.includes('spend_counter') ? [{ usd: 190 }] : [{ stuck: 0, ended: 0, failed: 0 }],
+      );
+    }) as never;
+    const detail = await healthDetail({
+      version: 'test',
+      database: async () => 'ok',
+      sql,
+      spend: { minUsd: 1, monthlyCap: { usd: 200, percent: 80 } },
+    });
+    expect(detail.status).toBe('unhealthy');
+    expect(detail.checks.find((check) => check.name === 'spend_cap')?.ok).toBe(false);
+    expect(seen.some((text) => text.includes('from model_usage') && text.includes('sum('))).toBe(
+      false,
+    );
   });
 
   test('spending that cannot be read is reported as such, and the job queue as itself', async () => {

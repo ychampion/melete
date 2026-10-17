@@ -64,12 +64,16 @@ export async function rollupFinishedDays(
   const from = since
     ? new Date(`${since}T00:00:00.000Z`)
     : new Date(today.getTime() - ROLLUP_LOOKBACK_DAYS * DAY_MS);
-  const missing = await sql`select to_char(d at time zone 'UTC', 'YYYY-MM-DD') as day
-    from generate_series(${from.toISOString()}::timestamptz,
-      ${today.toISOString()}::timestamptz - interval '1 day', interval '1 day') as d
-    where not exists (select 1 from usage_day u where u.day = to_char(d at time zone 'UTC', 'YYYY-MM-DD'))
+  // The days are counted on UTC clock times, not in the database's own time
+  // zone: there, a day after a change of the clocks is 23 or 25 hours long,
+  // and every day after it would be read an hour off.
+  const missing = await sql`select to_char(d, 'YYYY-MM-DD') as day
+    from generate_series(${utcDay(from)}::date::timestamp,
+      ${utcDay(today)}::date::timestamp - interval '1 day', interval '1 day') as d
+    where not exists (select 1 from usage_day u where u.day = to_char(d, 'YYYY-MM-DD'))
       and exists (select 1 from model_usage m
-        where m.created_at >= d and m.created_at < d + interval '1 day')`;
+        where m.created_at >= d at time zone 'UTC'
+          and m.created_at < (d + interval '1 day') at time zone 'UTC')`;
   const days = new Set(missing.map((row) => String(row.day)));
   days.add(utcDay(new Date(today.getTime() - DAY_MS)));
   const written = [...days].sort();
@@ -78,7 +82,23 @@ export async function rollupFinishedDays(
 }
 
 /**
- * Rolls up finished days now and every hour after, while this instance leads.
+ * Removes the running spending totals (`spend_counter`) of periods the
+ * spending caps no longer read: days before yesterday and months before last
+ * month. A call settling just after midnight still finds its own day's row.
+ */
+export async function pruneSpendCounters(sql: Sql, now = new Date()): Promise<number> {
+  const yesterday = utcDay(new Date(now.getTime() - DAY_MS));
+  const lastMonth = utcDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)));
+  const rows = await sql`delete from spend_counter
+    where (length(period) = 10 and period < ${yesterday})
+      or (length(period) = 7 and period < ${lastMonth.slice(0, 7)})
+    returning period`;
+  return rows.length;
+}
+
+/**
+ * Rolls up finished days now and every hour after, while this instance leads,
+ * and drops running spending totals no cap reads any more.
  * The first pass looks back five weeks; later ones look only from the day
  * before the last pass, which is all that can have changed since.
  */
@@ -94,6 +114,7 @@ export function startUsageRollup(
         if (!leading) return;
         const now = new Date();
         await rollupFinishedDays(sql, now, since);
+        await pruneSpendCounters(sql, now);
         since = utcDay(new Date(now.getTime() - DAY_MS));
       })
       .catch((error: unknown) =>

@@ -147,6 +147,9 @@ describe('default connections', () => {
       memoryMb: 2048,
     });
     expect(dockerSandboxSettings(env, 'laptop').selfId).toBeUndefined();
+    expect(
+      dockerSandboxSettings({ ...env, MELETE_COMPOSE_PROJECT: 'melete-mine' }).installProject,
+    ).toBe('melete-mine');
   });
 
   test('every default effect that leaves the space waits for approval', () => {

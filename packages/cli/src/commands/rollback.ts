@@ -10,6 +10,8 @@
  * the deploy, and exits 3 without changing anything, because replacing the
  * database is the operator's call.
  */
+import { existsSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import type { Context } from '../context.ts';
 import { composeCommand } from '../deploy-config.ts';
 import { lastSwitched, readHistory } from '../history.ts';
@@ -23,7 +25,7 @@ import {
 } from '../installation.ts';
 import { migrationDelta, restoreSteps } from '../plan.ts';
 import { EXIT, type ExitCode } from '../schema.ts';
-import { writersOf } from './backup.ts';
+import { BACKUP_NAME, madeAt, writersOf } from './backup.ts';
 import {
   type DeployDependencies,
   immutableTag,
@@ -130,12 +132,24 @@ export async function runRollback(
       where = `No backup was recorded with that run; use your newest backup taken before ${last.at}.`;
     else if (last.backup.startsWith('ssh://'))
       where = `The backup taken before that run is ${last.backup}; copy it back to this machine first.`;
+    else if (last.command === 'upgrade' && existsSync(join(last.backup, 'database.dump')))
+      // The upgrade script's own layout: its SHA256SUMS names each archive by its full
+      // path, so sha256sum checks it from anywhere, and a melete backup's check does not apply.
+      where = `The backup the upgrade took before that run is ${last.backup}. Check it with sha256sum -c ${last.backup}/SHA256SUMS before you restore.`;
     else {
       const problems = await verifyBackup(context, last.backup);
+      // A backup older than backup.max_age_days goes when the next one is made.
+      const days = installation.config.backup.max_age_days;
+      const name = basename(last.backup);
+      const aged =
+        !existsSync(last.backup) &&
+        days !== null &&
+        BACKUP_NAME.test(name) &&
+        madeAt(name) < context.now().getTime() - days * 24 * 60 * 60 * 1000;
       where =
         problems.length === 0
           ? `The backup taken before that run is ${last.backup}, and it matches its SHA256SUMS.`
-          : `The backup recorded with that run, ${last.backup}, cannot be used: ${problems.join('; ')}. Use your newest sound backup taken before ${last.at}.`;
+          : `The backup recorded with that run, ${last.backup}, cannot be used: ${problems.join('; ')}.${aged ? ` It was made more than ${days} days ago, so backup.max_age_days has likely removed it.` : ''} Use your newest sound backup taken before ${last.at}.`;
     }
     const text = `${reason}, so going back means restoring the database. Nothing was changed.\n${where}\nRestore, from the installation's checkout:\n${steps.map((line) => `    ${line}`).join('\n')}\n`;
     if (json)

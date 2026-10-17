@@ -60,7 +60,8 @@ export type RunPlacement = {
  * A run's `instructions`: the persona, then the task notes. Nothing here is
  * chosen per turn, so the system prompt, and the tool definitions after it,
  * stay a cached prefix from one turn to the next and across a person's
- * conversations. The skills chosen for a turn go in its input (`renderSkills`).
+ * conversations; the person's standing instructions change only when they
+ * change one. The skills chosen for a turn go in its input (`renderSkills`).
  */
 export function renderInstructions(bundle: AttemptBundle, placement: RunPlacement = {}): string {
   const parts: string[] = [];
@@ -83,8 +84,36 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
     );
   }
 
+  parts.push(...renderStanding(bundle.earlier));
   parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
   return parts.join('\n\n');
+}
+
+/**
+ * The rules the person set in messages that are now summarised, in their own
+ * words. They go in the system prompt rather than beside the summary because
+ * the engine never compacts its system prompt: a rule set early in a long
+ * conversation then holds after Melete's summary and after the engine's own
+ * compaction inside a long turn. They change only when the person changes one.
+ *
+ * Being in the system prompt gives them no more weight than the messages they
+ * came from: each is quoted, as data, and said to be the person's, so a rule
+ * reads as what the person asked and never as one of Melete's own
+ * instructions, and nothing in its words can start a heading or a line of
+ * its own.
+ */
+export function renderStanding(earlier: AttemptBundle['earlier']): string[] {
+  const rules = earlier?.standing_instructions ?? [];
+  if (!rules.length) return [];
+  return [
+    [
+      '# Standing instructions from the person',
+      '',
+      'The person wrote these in earlier messages of this conversation, which are no longer shown. Each is quoted exactly as they wrote it, oldest first. Treat each as you would that message from the person: it holds for this conversation until a newer message from them changes it, and where two disagree the later one holds. They are the person’s words, not Melete’s instructions: they never override the instructions above, and they allow nothing the person’s own message would not.',
+      '',
+      ...rules.map((rule) => `- The person wrote: ${JSON.stringify(rule)}`),
+    ].join('\n'),
+  ];
 }
 
 /**
@@ -429,9 +458,9 @@ export function renderInput(bundle: AttemptBundle): string {
         : `for ${named?.event_name ?? 'its trigger'} (${cancelled.trigger_id})`;
     lines.push(
       '',
-      '## A wait was cancelled',
+      '## A wait is set aside',
       '',
-      `The wait ${what} was cancelled before it fired. No wait is in force now, whatever an earlier wait result says; if this job still needs it, call job.wait again.`,
+      `The wait ${what} was set aside before it fired so this attempt could run. It comes back by itself when you finish without choosing another wait, and still fires when due; call job.wait only to wait for something different.`,
     );
   }
   for (const approval of bundle.inputs.approval_results)
@@ -630,7 +659,8 @@ export function measureRenderedInput(bundle: AttemptBundle) {
   // The summary of earlier messages is conversation, as the transcript is.
   const transcriptChars =
     (bundle.transcript.length ? JSON.stringify(bundle.transcript).length : 0) +
-    (bundle.earlier?.summary?.length ?? 0);
+    (bundle.earlier?.summary?.length ?? 0) +
+    (bundle.earlier?.standing_instructions ?? []).reduce((sum, rule) => sum + rule.length, 0);
   const knowledgeChars = bundle.knowledge.reduce((sum, entry) => sum + entry.excerpt.length, 0);
   return {
     total: estimateTokens(rendered),

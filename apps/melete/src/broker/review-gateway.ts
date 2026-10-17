@@ -14,12 +14,12 @@ import type { AddressInfo } from 'node:net';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -132,6 +132,7 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
     reasoningEffort: options.reasoningEffort,
     maxRequestBytes: 128 * 1024,
     maxResponseBytes: 32 * 1024,
+    onError: gatewayLog('review'),
     async authenticate(token) {
       // One token, one call: it is spent the moment the gateway accepts it.
       const call = live.get(token);
@@ -148,9 +149,11 @@ export async function openReviewGateway(options: ReviewGatewayOptions) {
 
   const chat: ReviewChat = async (messages, signal, scope, format) => {
     // The model is read for each review, so one connected in the app applies at once.
-    // It is a safety check: no person's secondary model ever takes it.
+    // It is a safety check: no person's secondary model ever takes it. It reads
+    // the action, so it keeps to the models the space's rules allow; with none
+    // of them usable the review is unavailable, and the action waits for a person.
     const target = options.source
-      ? await options.source.current()
+      ? await options.source.current({ spaceId: scope.spaceId })
       : { provider: options.provider, model: options.model };
     const model = `${target.provider}/${target.model}`;
     const protocol = protocolForApiMode(modelApiMode(target.provider, target.model));
@@ -232,13 +235,12 @@ export async function configuredReviewGateway(
     providers: configuredProviders(env, () => {}, signIn),
     privacy,
     // A review is a short classification: the fast model, unless one is pinned.
-    source: serviceModelSource({
+    // It decides whether a risky action runs, so no person's secondary takes it.
+    source: sideCallSource('review', {
       env,
       settings: connected.settings,
       pinned,
-      fast: routingFromEnv(env).fast,
-      // It decides whether a risky action runs, so no person's secondary takes it.
-      sideTask: false,
+      routing: routingFromEnv(env),
     }),
     fake,
     ...(connected.fetch ? { fetch: connected.fetch } : {}),

@@ -1,3 +1,4 @@
+import type { StarterTask } from '@melete/contracts';
 import {
   COMPUTER_PROCESS_LIMIT,
   connectionWatching,
@@ -24,6 +25,7 @@ import { saveWebReadSetting, webReadSetting } from '../connectors/web.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, connection, experienceDraftSend } from '../db/schema.ts';
 import type { QuestionService } from '../jobs/questions.ts';
+import { routinesBackLine } from '../jobs/resting.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
@@ -34,7 +36,7 @@ import { actionBecause } from '../memory/basis.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
-import { ownsSessionSpace } from '../principals/session-space.ts';
+import { ownsSessionSpace, requireSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
 import { HandoffService } from '../rooms/handoffs.ts';
 import type { RunService } from '../runs/service.ts';
@@ -59,6 +61,7 @@ import {
 import { ExperienceQuestions } from './questions.ts';
 import { memorySourcesOf, removeJobs } from './removal.ts';
 import { ExperienceService } from './service.ts';
+import { StarterService } from './starters.ts';
 import type { WorkspaceTrash } from './workspace-trash.ts';
 
 export type ExperienceDeps = {
@@ -88,19 +91,23 @@ export type ExperienceDeps = {
   workspaces?: WorkspaceTrash;
   /** Whether an active connection's connector runs here; see connectorLiveness. */
   liveness?: ConnectionLiveness;
+  /** Home's starter tasks for a new person; left out, the built-in list. */
+  starters?: readonly StarterTask[];
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
- * profile, tasks, saved rules, agents and connection reads. In a personal space
- * the caller is always the owner. In a shared space only its owner works with
- * them; a member keeps to conversations, plans and routines of their own.
+ * profile's changes, tasks, saved rules, agents and connection reads. In a
+ * personal space the caller is always the owner. In a shared space only its
+ * owner works with them; a member keeps to conversations, plans and routines
+ * of their own. The profile and Home answer a member with a view of their own.
  */
 const NOT_CONNECTED = 'Your saved details are not connected yet.';
 const RUNS_UNAVAILABLE = 'Long work is not connected yet.';
+const STARTERS_UNAVAILABLE = 'Starter tasks are not connected yet.';
 const SPACE_OWNER_SURFACES = new Set([
-  'GET /profile',
   'PATCH /profile',
-  'GET /home',
+  'GET /starters',
+  'POST /starters/dismiss',
   'GET /tasks',
   'POST /tasks',
   'PATCH /tasks/{id}',
@@ -147,6 +154,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
       : undefined;
   const home = new ExperienceHome(deps.db, ownerEffects, deps.liveness);
+  const starters = deps.sql
+    ? new StarterService(deps.sql, deps.starters, (spaceId, recorded) =>
+        home.onboarded(spaceId, recorded),
+      )
+    : undefined;
   // Work rooms handed the person, shown on their Home and with their approvals.
   const handoffs = deps.jobs
     ? new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers })
@@ -199,7 +211,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     string,
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
   > = {
-    'GET /profile': (spaceId) => home.profile(spaceId),
+    // A member is shown their own view of it, never the owner's.
+    'GET /profile': (spaceId, c) =>
+      ownsSessionSpace(c.get('sessionSpace'))
+        ? home.profile(spaceId)
+        : home.memberProfile(spaceId, c.get('owner').id),
     'PATCH /profile': async (spaceId, _c, input) => {
       const { profile } = await home.saveProfile(spaceId, input);
       // Routines run on the person's clock: they keep their local hour when the
@@ -207,11 +223,31 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       await planning.retimeSchedules(spaceId, profile.time_zone);
       return { profile };
     },
-    'GET /home': async (spaceId, c) => ({
-      ...(await home.home(spaceId)),
-      routine_results: await planning.recentResults(spaceId),
-      ...(handoffs ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) } : {}),
-    }),
+    'GET /home': async (spaceId, c) => {
+      const back = await routinesBackLine(deps.db, c.get('owner').id);
+      const waiting = {
+        ...(handoffs ? { handoffs: await handoffs.waiting(c.get('owner').id, spaceId) } : {}),
+        ...(back ? { routines_back: back } : {}),
+      };
+      // A member sees their own day: nothing of the owner's calendar, tasks or routines.
+      if (!ownsSessionSpace(c.get('sessionSpace')))
+        return {
+          ...(await home.memberHome(spaceId, c.get('owner').id)),
+          routine_results: [],
+          ...waiting,
+        };
+      return {
+        ...(await home.home(spaceId)),
+        routine_results: await planning.recentResults(spaceId),
+        ...waiting,
+      };
+    },
+    'GET /starters': (spaceId, c) =>
+      starters
+        ? starters.view(spaceId, String(c.get('owner').id))
+        : unavailable(STARTERS_UNAVAILABLE),
+    'POST /starters/dismiss': (_spaceId, c) =>
+      starters ? starters.dismiss(String(c.get('owner').id)) : unavailable(STARTERS_UNAVAILABLE),
     'GET /tasks': (spaceId) => home.tasks(spaceId),
     'POST /tasks': (spaceId, _c, input) => home.saveTask(spaceId, input),
     'PATCH /tasks/{id}': (spaceId, c, input) =>
@@ -416,9 +452,13 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /memory/beliefs/{id}/history': (spaceId, c) =>
       beliefs?.history(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
       unavailable(NOT_CONNECTED),
-    'POST /memory/beliefs/{id}/block': (spaceId, c) =>
-      beliefs?.block(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
-      unavailable(NOT_CONNECTED),
+    'POST /memory/beliefs/{id}/block': (spaceId, c, input) =>
+      beliefs?.block(
+        spaceId,
+        c.get('owner').id,
+        c.req.param('id') ?? '',
+        input.scope === 'detail' ? 'detail' : 'topic',
+      ) ?? unavailable(NOT_CONNECTED),
     'GET /memory/blocks': (spaceId, c) =>
       beliefs?.blocks(spaceId, c.get('owner').id) ?? unavailable(NOT_CONNECTED),
     'DELETE /memory/blocks/{id}': (spaceId, c) =>
@@ -684,12 +724,18 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     app.on(method, path.replace(/\{([^}]+)\}/g, ':$1'), async (c) => {
       const spaceId = c.get('experienceSpaceId');
       if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+      requireSessionSpace(c, spaceId);
       // Anyone who is not the space's owner, whatever their role.
       const member = !ownsSessionSpace(c.get('sessionSpace'));
       const ownerOnly = () =>
         new ServiceError('scope_denied', 'Only the owner of this space can do that.', 403);
       if (member && SPACE_OWNER_SURFACES.has(key)) throw ownerOnly();
-      const input = 'request' in operation ? operation.request.parse(await c.req.json()) : {};
+      // An empty body is read as none, which only a request that may be left out accepts.
+      const raw = 'request' in operation ? await c.req.text() : '';
+      const input =
+        'request' in operation
+          ? (operation.request.parse(raw.trim() ? JSON.parse(raw) : undefined) ?? {})
+          : {};
       if ('query' in operation) operation.query.parse(c.req.query());
       // A standing rule changes what the whole space permits, not one job.
       if (
@@ -736,6 +782,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     if (c.req.query('view') !== 'experience') return next();
     const spaceId = c.get('experienceSpaceId');
     if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+    requireSessionSpace(c, spaceId);
     const since = readEventCursor(
       c.req.header('Last-Event-ID'),
       c.req.query('since') ?? c.req.query('after'),

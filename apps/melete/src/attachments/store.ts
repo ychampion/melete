@@ -31,6 +31,7 @@ import {
   readBlob,
   type StoredBlob,
 } from '../storage/blob.ts';
+import { storageUsed, uploadRefused } from '../storage/per-person.ts';
 import { defineBlobOwner, lockBlobKey, referenceBlobs } from '../storage/refs.ts';
 import { extractBounded, ReadersBusy } from './bounded.ts';
 import { looksLike, UnreadableFile } from './extract.ts';
@@ -125,6 +126,16 @@ export class AttachmentService {
       throw new ServiceError('attachment_empty', `${name} is empty.`, 400);
     if (input.bytes.length > this.settings.fileBytes)
       throw tooLarge(name, input.bytes.length, this.settings.fileBytes);
+    const quota = this.settings.storagePerPerson;
+    if (quota && scope.principalId) {
+      const used = await storageUsed(this.sql, scope.principalId);
+      if (used + input.bytes.length > quota)
+        throw new ServiceError(
+          'storage_full',
+          uploadRefused({ used, quota, name, bytes: input.bytes.length }),
+          413,
+        );
+    }
     if (!looksLike(kind.kind, input.bytes, kind.type))
       throw new ServiceError(
         'attachment_unreadable',

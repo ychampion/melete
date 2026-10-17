@@ -1,0 +1,12 @@
+# Runs melete-backup.service once a day. Persistent=true runs a missed backup
+# as soon as the machine is back up.
+[Unit]
+Description=Daily Melete backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -29,6 +29,7 @@
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PendingQuery, Row, Sql } from 'postgres';
+import { exportSavedSignIns } from '../connectors/sign-in-vault.ts';
 import type { ZipEntry } from './zip.ts';
 
 export type AccountExportDeps = {
@@ -44,10 +45,14 @@ export type AccountExportDeps = {
 /** Tables that hold only secrets, digests or sign-in state. */
 const WITHHELD_TABLES = new Set([
   'secret',
+  // Written out on its own, as sites and usernames: see saved-sign-ins.json.
+  'saved_sign_in',
   'session',
   'password_reset',
   'magic_link',
   'mcp_token',
+  // A browser's push address and keys, which let whoever holds them notify it.
+  'push_subscription',
   'privacy_vault',
   'provider_credential',
 ]);
@@ -81,6 +86,9 @@ program can open. Nothing in it needs Melete to read.
     and so on). Each file is a list of rows; each row is a JSON object.
 - account/records/: records kept for your account rather than a space, such
   as notification and memory settings.
+- account/saved-sign-ins.json: the sites and usernames you saved for Melete's
+  browser to sign in with, in every space. Their passwords and codes are not
+  in it.
 
 Left out on purpose: passwords, passkeys, sign-in sessions, and the sealed
 keys and tokens of your connections. They are secrets, and they would not
@@ -110,6 +118,9 @@ async function readableTables(sql: Sql): Promise<Table[]> {
     join information_schema.tables t
       on t.table_schema = c.table_schema and t.table_name = c.table_name
     where c.table_schema = 'public' and t.table_type = 'BASE TABLE'
+      -- A partition's rows are read once, through the table it is part of.
+      and not exists (select 1 from pg_class p join pg_namespace n on n.oid = p.relnamespace
+        where n.nspname = c.table_schema and p.relname = c.table_name and p.relispartition)
     order by c.table_name, c.ordinal_position`;
   // Read from the catalog itself: information_schema shows a table's key only
   // to a role that may do more than read it.
@@ -249,7 +260,10 @@ function chatMarkdown(
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
-/** The spaces an account owns and can still open. */
+/**
+ * The spaces an account owns and can still open: its personal space and the
+ * rooms it made. A room it was made an owner of is someone else's room.
+ */
 export async function ownedSpaces(sql: Sql, principalId: string) {
   return sql<{ id: string; name: string; kind: string; created_at: string }[]>`
     select s.id, s.name, s.kind, s.created_at from space s
@@ -257,7 +271,8 @@ export async function ownedSpaces(sql: Sql, principalId: string) {
       (s.kind = 'personal'
         and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
       or exists (select 1 from space_membership m where m.space_id = s.id
-        and m.principal_id = ${principalId} and m.role = 'owner' and m.revoked_at is null))
+        and m.principal_id = ${principalId} and m.role = 'owner' and m.revoked_at is null
+        and s.owner_principal_id = ${principalId}))
     order by s.created_at, s.id`;
 }
 
@@ -394,6 +409,15 @@ export async function* accountExport(
         yield { name: `${folder}/records/${table.name}.json`, modified: now, data: rows };
     }
   }
+  const signIns = await exportSavedSignIns(sql, principalId).catch(() => null);
+  if (signIns === null) withheld.push('saved_sign_in');
+  else if (signIns.length)
+    yield {
+      name: 'account/saved-sign-ins.json',
+      modified: now,
+      data: `${JSON.stringify(signIns, null, 2)}
+`,
+    };
   for (const table of tables.filter((entry) => !entry.spaceKeyed)) {
     const rows = await tryRows(sql, table, 'principal_id', principalId);
     if (rows === 'denied') withheld.push(table.name);

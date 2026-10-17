@@ -66,10 +66,12 @@ import { space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { personZone } from '../jobs/local-now.ts';
 import { workQuiet } from '../jobs/quiet.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { isQuiet } from '../push/policy.ts';
 import { documentSubjectKey } from '../signals/observations.ts';
 import type { DocumentFile, Occurrence, SignalSource, SubjectReader } from '../signals/types.ts';
@@ -301,6 +303,12 @@ export class SituationService {
   private started = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private timerAt = Number.POSITIVE_INFINITY;
+  /** Clocks whose check failed: each waits from a minute, doubling up to an hour. */
+  private readonly failures = new ItemFailures('situation checks', {
+    firstMs: 60_000,
+    maxMs: 60 * 60_000,
+    now: () => this.now(),
+  });
 
   constructor(readonly deps: SituationDeps) {}
 
@@ -352,12 +360,11 @@ export class SituationService {
 
   /** The person's own time zone, for the times a situation names. */
   private async timeZoneOf(tx: Transaction | Database, principalId: string): Promise<string> {
-    const [row] = rows<{ time_zone: string }>(
-      await tx.execute(sql`select p.time_zone from experience_profile p
-        join space s on s.id = p.space_id
+    const [row] = rows<{ id: string }>(
+      await tx.execute(sql`select s.id from space s
         where s.owner_principal_id = ${principalId} and s.kind = 'personal' limit 1`),
     );
-    return row?.time_zone ?? 'UTC';
+    return row ? personZone(tx, row.id) : 'UTC';
   }
 
   private async connectionOwner(
@@ -1322,8 +1329,30 @@ export class SituationService {
       const due = await this.claim();
       if (!due.length) break;
       for (const entry of due) {
-        const outcome = await this.check(entry);
-        totals[outcome] += 1;
+        // One clock whose check fails never holds up the clocks after it. It
+        // stays claimed, so no sweep takes it again until its pause is over.
+        try {
+          const outcome = await this.check(entry);
+          totals[outcome] += 1;
+          this.failures.succeeded(entry.id);
+        } catch (error) {
+          const retryAt = this.failures.failed(entry.id, error, `${entry.id} in ${entry.spaceId}`);
+          // Only while the claim is still this sweep's: a check that outlived
+          // it may find another sweep holding the clock, whose claim stays.
+          if (entry.claimedUntil)
+            await this.db
+              .update(clock)
+              .set({ claimedUntil: new Date(retryAt) })
+              .where(
+                and(
+                  eq(clock.id, entry.id),
+                  eq(clock.state, 'checking'),
+                  eq(clock.fireAt, entry.fireAt),
+                  eq(clock.claimedUntil, entry.claimedUntil),
+                ),
+              )
+              .catch(() => {});
+        }
       }
       if (due.length < 20) break;
     }

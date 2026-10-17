@@ -1,0 +1,22 @@
+# An example: copy this file and melete-backup.timer to /etc/systemd/system/,
+# change the paths and the account, then run
+#   systemctl daemon-reload && systemctl enable --now melete-backup.timer
+# docs/DEPLOYMENT.md, "Backups on a schedule".
+[Unit]
+Description=Melete backup, encrypted, to another machine
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+# The account that runs the installation, with docker access and its SSH key
+# for the backup host.
+User=melete
+WorkingDirectory=/home/melete/melete
+# Where bun is installed for that account.
+Environment=PATH=/home/melete/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=MELETE_BACKUP_TO=ssh://backup-host:/srv/melete-backups
+Environment=MELETE_BACKUP_RECIPIENT=age1replacewithyourpublickey
+# Optional: a monitor's check-in address, called after each run.
+Environment=MELETE_BACKUP_PING_URL=
+ExecStart=/home/melete/melete/deploy/backup-schedule/melete-backup.sh

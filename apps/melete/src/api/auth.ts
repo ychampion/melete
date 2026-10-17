@@ -26,6 +26,7 @@ import type { Env } from '../env.ts';
 import type { AccountMailer } from '../experience/account-mail.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
+import { markSeen } from '../jobs/resting.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
 import { type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
@@ -172,13 +173,22 @@ function sessionCookie(c: Context, token: string, env: Env) {
 /**
  * Sign a principal in on this response: a new session row and its cookie. For
  * routes outside this module that make an account, such as accepting a room
- * invite.
+ * invite or using an account invite.
+ *
+ * The new cookie replaces whatever session this browser held, so that session
+ * is ended too: a browser that was signed in to another account (the owner
+ * opening an invite link they just copied) does not leave that account's
+ * session alive behind a cookie nobody holds any more.
  */
 export async function startSession(c: Context, db: Database, env: Env, principalId: string) {
   const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
   if (!installation) throw new Error('No installation to sign in to');
   const authenticated = newSession(installation.id, principalId, undefined, browserOf(c));
-  await db.insert(session).values(authenticated.row);
+  const previous = getCookie(c, SESSION_COOKIE);
+  await db.transaction(async (tx) => {
+    if (previous) await tx.delete(session).where(eq(session.tokenHash, tokenHash(previous)));
+    await tx.insert(session).values(authenticated.row);
+  });
   sessionCookie(c, authenticated.token, env);
 }
 
@@ -313,6 +323,16 @@ export function mountAuth(
   const multiplayer = multiplayerEnabled(env);
   const signInKinds = multiplayer ? SIGN_IN_KINDS : ['person'];
   const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
+  // Each signed-in request, and each use through another assistant, is the
+  // person being seen. Failing to record it never refuses the request.
+  const seen = async (principalId: string) => {
+    if (!db) return;
+    await markSeen(db, principalId, env.MELETE_REST_ROUTINES_AFTER_DAYS).catch((error: unknown) =>
+      process.stderr.write(
+        `auth: last seen not recorded (${error instanceof Error ? error.message : 'error'})\n`,
+      ),
+    );
+  };
   const sessionBody = (c: Context, next: () => Promise<void>) =>
     c.req.method === 'POST' && c.req.path === '/attachments'
       ? uploadLimit(c, next)
@@ -385,6 +405,7 @@ export function mountAuth(
       if (!resolved) {
         return c.json({ error: { code: 'unauthorized', message: 'The access has ended.' } }, 401);
       }
+      await seen(person.id);
       c.set('owner', publicOwner(person));
       c.set('sessionSpace', resolved);
       c.set('experienceSpaceId', resolved.spaceId);
@@ -470,10 +491,12 @@ export function mountAuth(
           },
           403,
         );
+      await seen(active.owner.id);
       c.set('owner', { ...publicOwner(active.owner), kind: 'guest' });
       c.set('sessionDigest', tokenHash(token));
       return principalContext.run(active.owner.id, () => sessionBody(c, next));
     }
+    await seen(active.owner.id);
     c.set('owner', { ...publicOwner(active.owner), kind: 'person' });
     c.set('sessionDigest', tokenHash(token));
     // The space follows the authenticated principal; no request or other account can supply it.
@@ -503,6 +526,7 @@ export function mountAuth(
       clock,
       limits,
       ...devicesEnded,
+      ...(db ? { startSession: (c, principalId) => startSession(c, db, env, principalId) } : {}),
     });
     mountAccountAccess(app, { sql: deps.sql, sessionCookie: SESSION_COOKIE, ...devicesEnded });
   }
@@ -580,6 +604,9 @@ export function mountAuth(
         needed &&
         (claimRefused || (handle ? await setupCodeRequired(handle, setupCodeHash) : false)),
       email_sign_in: needed || !signIn ? false : await signIn.canSend(),
+      ...(env.MELETE_TERMS_URL ? { terms_url: env.MELETE_TERMS_URL } : {}),
+      ...(env.MELETE_PRIVACY_URL ? { privacy_url: env.MELETE_PRIVACY_URL } : {}),
+      ...(env.MELETE_SUPPORT_URL ? { support_url: env.MELETE_SUPPORT_URL } : {}),
     });
   });
 

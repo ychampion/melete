@@ -32,8 +32,9 @@ import { appendToolTrace } from '../experience/tools.ts';
 import { attemptContextBudget } from '../jobs/context-budget.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
-import { spaceRole } from '../principals/authority.ts';
+import { spaceStanding } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
+import { connectorDenied, spaceRulesFor, toolAllowedHere } from '../spaces/policy.ts';
 import { ASK_PERSON_TOOL } from './ask-person.ts';
 import { CHASE_FOLLOW_UP_TOOL } from './chase.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
@@ -484,15 +485,16 @@ export class ToolCatalog {
   ): Promise<readonly SourcedSkill[]> {
     if (job.constraints.public_compartment) return [];
     const skills = (await this.options.skills?.(job.space_id)) ?? [];
-    // The rule every other surface uses: a co-owner is an owner, and a space
-    // from before principals belongs to the installation's owner. A principal
-    // the space does not admit reads nothing.
-    const role = await spaceRole(tx, job.space_id, claims.principal_id ?? null);
-    if (!role) return [];
+    // The rule the skills a run is given use: a private skill is the space's
+    // own owner's (a room's maker, not an owner they added), and a space from
+    // before principals belongs to the installation's owner. A principal the
+    // space does not admit reads nothing.
+    const standing = await spaceStanding(tx, job.space_id, claims.principal_id ?? null);
+    if (!standing) return [];
     return readableSkills(skills, {
       spaceId: job.space_id,
       scopes: claims.scopes,
-      owner: role === 'owner',
+      owner: standing.owns,
     });
   }
 
@@ -552,6 +554,8 @@ export class ToolCatalog {
       }
     };
     const providers = connections.map((row) => String(row.provider));
+    // What the space's rules leave out is not offered, whatever else grants it.
+    const rules = await spaceRulesFor(tx, job.space_id);
     // The person's own browser takes sign-in work from the cloud browser; see devices/routing.ts.
     const personsBrowser = offersPersonsBrowser(
       connections
@@ -569,6 +573,7 @@ export class ToolCatalog {
       if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
         if (!toolOffered(access, declared.name)) continue;
+        if (!toolAllowedHere(rules, String(row.provider), declared.name)) continue;
         // Made by commands in the computer through the egress relay, never offered as a tool.
         if (isEgressTool(declared.name)) continue;
         const scopes = [declared.name, ...declared.required_scopes];
@@ -1057,6 +1062,7 @@ async function commandLineAccounts(
     from connection where space_id = ${job.space_id} and provider = 'command_line'
       and status = 'active' and configuration->>'kind' = 'command_line' order by label`;
   if (!rows.length) return [];
+  if (connectorDenied(await spaceRulesFor(tx, job.space_id), 'command_line')) return [];
   const audience = await jobConnectionAudience(tx, job.id);
   if (!audience) return [];
   return rows.flatMap((row) => {

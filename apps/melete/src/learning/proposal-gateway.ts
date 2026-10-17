@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { PROCEDURE_CHECK_KINDS, procedureCheck } from '@melete/contracts';
 import { and, eq, gt } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import { estimateInputTokens } from '../gateway/metering.ts';
 import type { ServiceModel, ServiceModelSource } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
@@ -253,9 +253,10 @@ export async function openProposalGateway(options: {
   type Call = Admission & ServiceModel;
   const tokens = new Map<string, Call>();
   const principals = new WeakMap<GatewayPrincipal, Call>();
-  const current = async (): Promise<ServiceModel> =>
+  // Told the space, a side call can run on the secondary its owner chose.
+  const current = async (spaceId: string): Promise<ServiceModel> =>
     options.source
-      ? options.source.current()
+      ? options.source.current({ spaceId })
       : { provider: options.provider, model: options.model };
   const budget: GatewayBudget = {
     async reserve(request) {
@@ -325,6 +326,7 @@ export async function openProposalGateway(options: {
     maxRequestBytes: 8192,
     // A full answer at the raised output cap, inside a provider envelope, can pass 8 KiB.
     maxResponseBytes: 16384,
+    onError: gatewayLog('proposal'),
     async authenticate(token) {
       const admission = tokens.get(token);
       if (!admission) throw new GatewayError(401, 'proposal_principal_denied');
@@ -453,7 +455,7 @@ export async function openProposalGateway(options: {
     async propose(admission: Admission, signal: string) {
       // Only this finite signal and audited vocabulary cross into inference. No episode prose is read here.
       const input = JSON.stringify({ signal, vocabulary: Object.keys(STEP_BODIES) });
-      const target = await current();
+      const target = await current(admission.spaceId);
       return ask(
         admission,
         target,
@@ -475,7 +477,7 @@ export async function openProposalGateway(options: {
      */
     async proposeGeneral(admission: Admission, request: GeneralProposalRequest) {
       const maxTokens = PROPOSAL_LIMITS.output_tokens;
-      const target = await current();
+      const target = await current(admission.spaceId);
       const whole = Object.fromEntries(request.sources.map((source) => [source.id, source.text]));
       const format = generalProposalFormat(request.sources.map((source) => source.id));
       const intervention = whole.intervention ?? '';

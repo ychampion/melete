@@ -3,6 +3,7 @@ import type { Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import { driveFileId } from '../connectors/google-drive.ts';
 import { mcpActorOf } from '../mcp-server/actor.ts';
+import { requireSessionSpace } from '../principals/session-space.ts';
 import type { SituationService } from './service.ts';
 
 /** What Melete noticed for the signed-in person. Every route is the caller's own. */
@@ -18,6 +19,8 @@ export function mountSituations(app: Hono, service: SituationService) {
    * what Google will be asked for and why, so the person can add it then.
    */
   app.post('/situations/deadlines', async (c) => {
+    const spaceId = c.get('sessionSpace')?.spaceId;
+    if (spaceId) requireSessionSpace(c, spaceId);
     const parsed = documentDeadlineRequest.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success)
       throw new ServiceError(
@@ -30,7 +33,6 @@ export function mountSituations(app: Hono, service: SituationService) {
     if (!fileId)
       throw new ServiceError('invalid_request', 'That is not a Google Drive file id or link.', 400);
     const principalId = c.get('owner').id;
-    const spaceId = c.get('sessionSpace')?.spaceId;
     const connectionId = spaceId ? await service.driveIn(spaceId, request.connection_id) : null;
     if (!spaceId || !connectionId)
       throw request.connection_id

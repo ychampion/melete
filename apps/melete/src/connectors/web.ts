@@ -6,6 +6,7 @@ import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import type { Action, ConnectorManifest, DispatchResult, JsonObject } from '@melete/contracts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
+import { ipv6Number } from './private-hosts.ts';
 import { readableText } from './readable.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import {
@@ -46,33 +47,6 @@ export type WebTransport = (
     userAgent?: string;
   },
 ) => Promise<WebResponse>;
-
-function ipv6Number(address: string): bigint | undefined {
-  let value = address.toLowerCase();
-  if (value.includes('.')) {
-    const separator = value.lastIndexOf(':');
-    const octets = value
-      .slice(separator + 1)
-      .split('.')
-      .map(Number);
-    if (
-      octets.length !== 4 ||
-      octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
-    )
-      return undefined;
-    value = `${value.slice(0, separator)}:${((octets[0] as number) * 256 + (octets[1] as number)).toString(16)}:${((octets[2] as number) * 256 + (octets[3] as number)).toString(16)}`;
-  }
-  const halves = value.split('::');
-  if (halves.length > 2) return undefined;
-  const left = halves[0] ? halves[0].split(':') : [];
-  const right = halves[1] ? halves[1].split(':') : [];
-  const parts =
-    halves.length === 2
-      ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right]
-      : left;
-  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return undefined;
-  return parts.reduce((sum, part) => (sum << 16n) | BigInt(`0x${part}`), 0n);
-}
 
 const NAT64_PREFIX = (ipv6Number('64:ff9b::') ?? 0n) >> 32n;
 const AWS_V6_PREFIX = (ipv6Number('fd00:ec2::') ?? 0n) >> 96n;

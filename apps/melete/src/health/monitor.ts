@@ -6,7 +6,9 @@
  * melete-cells and the container engine behind it, the free disk under the
  * directories the service writes, the job queue (work that is due but has not
  * been picked up) and the recent error rate (attempts that failed or were lost,
- * and model calls providers refused). Where the operator asks for them, two spending checks join it:
+ * and model calls providers refused), and background work stuck on one space
+ * (a space, account or routine that the same background pass keeps failing
+ * on while the rest go on). Where the operator asks for them, two spending checks join it:
  * the last hour's model spending against the installation's usual hour, and
  * one person's share of today's. `GET /health/detail` returns it to the
  * operator.
@@ -22,6 +24,7 @@ import nodemailer from 'nodemailer';
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
 import { smtpTransportOptions } from '../experience/account-mail.ts';
+import type { StuckItem } from '../ops/item-failures.ts';
 
 export type HealthCheck = { name: string; ok: boolean; detail: string };
 export type HealthDetail = {
@@ -46,6 +49,8 @@ export type HealthProbes = {
    * out where the service has no cell service (MELETE_CELLS_URL unset).
    */
   cells?: () => Promise<unknown>;
+  /** The items background passes keep failing on (ops/item-failures.ts); left out, not checked. */
+  stuck?: () => StuckItem[];
 };
 
 export type DiskProbe = {
@@ -124,10 +129,19 @@ export type SpendAlerts = {
   personPercent?: number;
   /** Neither check fires below this many dollars. */
   minUsd: number;
+  /**
+   * The installation's monthly cap (MELETE_SPEND_MONTHLY_USD), and the percent
+   * of it at which the operator is told, before model calls stop for everyone.
+   */
+  monthlyCap?: { usd: number; percent: number };
 };
 
 export function spendAlertsFromEnv(env: Env): SpendAlerts | undefined {
-  if (!env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE && !env.MELETE_ALERT_SPEND_PERSON_PERCENT)
+  if (
+    !env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE &&
+    !env.MELETE_ALERT_SPEND_PERSON_PERCENT &&
+    env.MELETE_SPEND_MONTHLY_USD === undefined
+  )
     return undefined;
   return {
     ...(env.MELETE_ALERT_SPEND_HOURLY_MULTIPLE
@@ -137,10 +151,35 @@ export function spendAlertsFromEnv(env: Env): SpendAlerts | undefined {
       ? { personPercent: env.MELETE_ALERT_SPEND_PERSON_PERCENT }
       : {}),
     minUsd: env.MELETE_ALERT_SPEND_MIN_USD,
+    ...(env.MELETE_SPEND_MONTHLY_USD !== undefined
+      ? {
+          monthlyCap: {
+            usd: env.MELETE_SPEND_MONTHLY_USD,
+            percent: env.MELETE_SPEND_NOTICE_PERCENT,
+          },
+        }
+      : {}),
   };
 }
 
 const dollars = (value: number) => `$${value.toFixed(2)}`;
+
+/** This month's spending against the installation's monthly cap. */
+export function spendCapCheck(monthUsd: number, capUsd: number, percent: number): HealthCheck {
+  const used = capUsd > 0 ? (monthUsd / capUsd) * 100 : 100;
+  const reached = used >= 100;
+  return {
+    name: 'spend_cap',
+    ok: used < percent,
+    detail: `${dollars(monthUsd)} of the installation's ${dollars(capUsd)} monthly cap spent (${Math.floor(used)}%)${
+      reached
+        ? '; model calls are refused for everyone until the month resets'
+        : used >= percent
+          ? '; at the cap, model calls are refused for everyone until the month resets'
+          : ''
+    }`,
+  };
+}
 
 /** The last hour's spending against the usual hour. */
 export function spendRateCheck(
@@ -240,6 +279,7 @@ export async function healthDetail(
     });
   }
   if (probes.disk) checks.push(diskCheck(probes.disk));
+  if (probes.stuck) checks.push(stuckCheck(probes.stuck()));
   if (probes.sql && database === 'ok') {
     const sql = probes.sql;
     try {
@@ -297,9 +337,43 @@ export async function healthDetail(
   };
 }
 
-/** The spending checks the operator asked for, read from `model_usage`. */
+/** How many listed in a stuck check's detail; the rest are counted. */
+const STUCK_LISTED = 10;
+
+/**
+ * Background work that keeps failing on one space, account or routine while
+ * the rest go on: each named with its pass, how often it failed and why.
+ */
+export function stuckCheck(stuck: StuckItem[]): HealthCheck {
+  if (!stuck.length) return { name: 'background_work', ok: true, detail: 'ok' };
+  const listed = stuck
+    .slice(0, STUCK_LISTED)
+    .map(
+      (item) =>
+        `${item.pass}: ${item.id} failed ${item.failures} times since ${item.since} (${item.error})`,
+    );
+  const more = stuck.length - listed.length;
+  return {
+    name: 'background_work',
+    ok: false,
+    detail: `${listed.join('; ')}${more > 0 ? `; and ${more} more` : ''}`,
+  };
+}
+
+/**
+ * The spending checks the operator asked for, read from `model_usage`, and
+ * the installation's month from the running totals the caps read.
+ */
 async function spendChecks(sql: Sql, spend: SpendAlerts): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
+  if (spend.monthlyCap) {
+    const month = new Date().toISOString().slice(0, 7);
+    const [row] = await sql`select usd::float8 as usd from spend_counter
+      where period = ${month} and scope = 'installation'`;
+    checks.push(
+      spendCapCheck(Number(row?.usd ?? 0), spend.monthlyCap.usd, spend.monthlyCap.percent),
+    );
+  }
   if (spend.hourlyMultiple !== undefined) {
     const [rate] = await sql`with hours as (
         select generate_series(date_trunc('hour', now()) - interval '168 hours',
@@ -432,6 +506,8 @@ export function alertSendersFromEnv(env: Env): AlertSender[] {
 
 export class HealthMonitor {
   private unhealthySince: number | null = null;
+  /** The checks failing at the last round, so one that starts failing is said at once. */
+  private failing = new Set<string>();
   private lastSent = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
   private running: Promise<unknown> | undefined;
@@ -473,12 +549,21 @@ export class HealthMonitor {
     }
     let kind: Alert['kind'] | null = null;
     if (detail.status === 'unhealthy') {
-      if (this.unhealthySince === null || now - this.lastSent >= this.options.repeatMs)
+      // A check that starts failing while another already fails is news of its
+      // own and is not held for the repeat: background work stuck on one space
+      // for days never keeps a database or disk failure quiet.
+      const failing = new Set(
+        detail.checks.filter((check) => !check.ok).map((check) => check.name),
+      );
+      const newly = [...failing].some((name) => !this.failing.has(name));
+      if (this.unhealthySince === null || newly || now - this.lastSent >= this.options.repeatMs)
         kind = 'unhealthy';
+      this.failing = failing;
       this.unhealthySince ??= now;
     } else if (this.unhealthySince !== null) {
       kind = 'recovered';
       this.unhealthySince = null;
+      this.failing = new Set();
     }
     if (!kind) return null;
     const alert: Alert = { kind, ...alertText(kind, detail), detail };

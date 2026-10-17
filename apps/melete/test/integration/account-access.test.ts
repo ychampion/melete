@@ -14,6 +14,8 @@ import { purgeExpiredAccess } from '../../src/api/account-access.ts';
 import {
   issueSetupCode,
   newSetupCode,
+  recordConfiguredCode,
+  SETUP_CODE_HOURS,
   SETUP_CODE_NOT_ISSUED,
   setupCodeHash,
 } from '../../src/api/setup-code.ts';
@@ -280,6 +282,87 @@ describeWithDb('account access', () => {
       await claim(api, { setup_code: second.code });
       // Once the owner exists there is nothing left to claim.
       expect(await issueSetupCode(database().sql)).toBeNull();
+    });
+
+    test('a code from melete account setup-code cancels the one melete init printed', async () => {
+      const printed = newSetupCode();
+      const hash = setupCodeHash(printed);
+      const api = claimable({ MELETE_SETUP_CODE_HASH: hash });
+      await recordConfiguredCode(database().sql, hash);
+      const issued = await issueSetupCode(database().sql, hash);
+      if (!issued) throw new Error('No setup code was issued');
+      const stale = await api.request(
+        '/setup',
+        json({ email: OWNER, password: PASSWORD, setup_code: printed }),
+      );
+      expect(stale.status).toBe(403);
+      expect(await codeOf(stale)).toBe('invalid_setup_code');
+      // A restart records the printed code again only if it was never recorded: it stays cancelled.
+      await recordConfiguredCode(database().sql, hash);
+      expect(
+        await codeOf(
+          await api.request(
+            '/setup',
+            json({ email: OWNER, password: PASSWORD, setup_code: printed }),
+          ),
+        ),
+      ).toBe('invalid_setup_code');
+      await claim(api, { setup_code: issued.code });
+    });
+
+    test('the code melete init printed is cancelled even before the service first started with it', async () => {
+      const printed = newSetupCode();
+      const hash = setupCodeHash(printed);
+      const api = claimable({ MELETE_SETUP_CODE_HASH: hash });
+      // `account setup-code` runs with the same deploy/.env, so it knows the printed code.
+      const issued = await runAccount(database().sql, ['setup-code', '--json'], PUBLIC_URL, hash);
+      expect(issued.code).toBe(0);
+      const { code } = JSON.parse(issued.out) as { code: string };
+      expect(
+        await codeOf(
+          await api.request(
+            '/setup',
+            json({ email: OWNER, password: PASSWORD, setup_code: printed }),
+          ),
+        ),
+      ).toBe('invalid_setup_code');
+      await claim(api, { setup_code: code });
+    });
+
+    test('the code melete init printed lasts as long as an issued one, from the first start', async () => {
+      const printed = newSetupCode();
+      const hash = setupCodeHash(printed);
+      const api = claimable({ MELETE_SETUP_CODE_HASH: hash });
+      await recordConfiguredCode(database().sql, hash);
+      const [row] = await database().sql<{ hours: number; unused: boolean }[]>`
+        select extract(epoch from expires_at - now())::float8 / 3600 as hours, used_at is null as unused
+        from setup_code where code_hash = ${hash}`;
+      expect(row?.unused).toBe(true);
+      const hours = Number(row?.hours);
+      expect(hours).toBeGreaterThan(SETUP_CODE_HOURS - 0.1);
+      expect(hours).toBeLessThan(SETUP_CODE_HOURS + 0.1);
+      // A later start keeps the first expiry rather than starting the clock again.
+      await database()
+        .sql`update setup_code set expires_at = now() - interval '1 minute' where code_hash = ${hash}`;
+      await recordConfiguredCode(database().sql, hash);
+      const expired = await api.request(
+        '/setup',
+        json({ email: OWNER, password: PASSWORD, setup_code: printed }),
+      );
+      expect(expired.status).toBe(403);
+      expect(await codeOf(expired)).toBe('invalid_setup_code');
+      // It still says a code is needed: the operator issues a new one.
+      expect(await (await api.request('/setup')).json()).toMatchObject({ code_required: true });
+    });
+
+    test('the code melete init printed works once, and is spent by the claim', async () => {
+      const printed = newSetupCode();
+      const hash = setupCodeHash(printed);
+      const api = claimable({ MELETE_SETUP_CODE_HASH: hash });
+      await claim(api, { setup_code: printed });
+      const [row] = await database().sql<{ spent: boolean }[]>`
+        select used_at is not null as spent from setup_code where code_hash = ${hash}`;
+      expect(row?.spent).toBe(true);
     });
   });
 

@@ -32,6 +32,12 @@ export type RuntimeCapabilities = z.infer<typeof runtimeCapabilities>;
 /** The most the summary of a conversation's earlier messages may take, rendered. */
 export const EARLIER_SUMMARY_CHARACTERS = 16_000;
 
+/**
+ * The standing instructions carried past a summary: rules the person set that
+ * hold until they change them, each in their own words.
+ */
+export const STANDING_INSTRUCTIONS = { items: 40, characters: 500 } as const;
+
 /** Provider-agnostic message shape. Nothing provider-specific reaches the transcript. */
 export const canonicalMessage = z.object({
   role: z.enum(['user', 'assistant', 'tool', 'system']),
@@ -268,7 +274,9 @@ export type RegisteredTrigger = z.infer<typeof registeredTrigger>;
 export function describeTrigger(spec: TriggerSpec): string {
   switch (spec.kind) {
     case 'schedule':
-      return `fires on the schedule "${spec.cron}" (${spec.timezone})`;
+      return spec.rrule !== undefined
+        ? `fires on the rule "${spec.rrule}" from ${spec.starts} (${spec.timezone})`
+        : `fires on the schedule "${spec.cron}" (${spec.timezone})`;
     case 'event':
       return `fires on each ${spec.event_name} event from ${spec.connection_id}`;
     case 'watch':
@@ -397,6 +405,17 @@ export const attemptBundle = z.object({
       summary: z.string().max(EARLIER_SUMMARY_CHARACTERS).nullable(),
       through: timestamp.nullable(),
       left_out: z.number().int().nonnegative(),
+      /**
+       * Rules the person set in the summarised messages that still hold (a
+       * currency, a format, something to leave out), each in their own words,
+       * newest last. They are kept apart from the summary so the engine can
+       * hold them where its own compaction never reaches. Optional: absent,
+       * there are none.
+       */
+      standing_instructions: z
+        .array(z.string().min(1).max(STANDING_INSTRUCTIONS.characters))
+        .max(STANDING_INSTRUCTIONS.items)
+        .optional(),
     })
     .optional(),
   tools: z.array(toolSpec),
@@ -444,6 +463,21 @@ export const evidenceRef = z.discriminatedUnion('kind', [
 ]);
 export type EvidenceRef = z.infer<typeof evidenceRef>;
 
+/**
+ * Why the model provider refused a call, in classes safe to show and act on.
+ * The provider's own words never travel with it.
+ */
+export const PROVIDER_FAILURES = [
+  'key_refused',
+  'quota',
+  'rate_limited',
+  'model_not_found',
+  'context_too_long',
+  'provider_down',
+] as const;
+export const providerFailure = z.enum(PROVIDER_FAILURES);
+export type ProviderFailure = z.infer<typeof providerFailure>;
+
 /** How an attempt ends. There is no other way out. */
 export const attemptOutcome = z.discriminatedUnion('kind', [
   z.object({
@@ -461,7 +495,13 @@ export const attemptOutcome = z.discriminatedUnion('kind', [
     action_ids: z.array(prefixedId(ID_PREFIXES.action)).min(1),
   }),
   z.object({ kind: z.literal('waiting_for_event_or_time'), wait: waitSpec }),
-  z.object({ kind: z.literal('failed'), reason: z.string(), retryable: z.boolean() }),
+  z.object({
+    kind: z.literal('failed'),
+    reason: z.string(),
+    retryable: z.boolean(),
+    /** Set when the model provider refused the call, and why. */
+    failure: providerFailure.optional(),
+  }),
   z.object({ kind: z.literal('budget_exhausted'), summary: z.string() }),
   z.object({
     kind: z.literal('unknown_check'),

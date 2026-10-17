@@ -36,6 +36,7 @@ import type {
   AutomationCreate,
   Belief,
   BeliefBlock,
+  BeliefBlockScope,
   BeliefExport,
   BeliefHistory,
   BeliefImport,
@@ -61,6 +62,7 @@ import type {
   EngineSkill,
   ExperienceEvent,
   FeedbackCreate,
+  FeedbackForwarding,
   FeedbackList,
   FeedbackReport,
   FeedbackStatus,
@@ -83,12 +85,19 @@ import type {
   MemoryRewind,
   MemoryTimeline,
   MessageAcceptance,
+  OperatorAuditEntry,
+  OperatorCaps,
+  OperatorOneTimeLink,
+  OperatorOverview,
+  OperatorPeople,
+  OperatorPerson,
   OwnSkill,
   OwnSkillEdit,
   Permission,
   PermissionOutcome,
   PersonFile,
   PersonFileDeleted,
+  PersonStorage,
   Plan,
   PlanCreate,
   PrivacyPreview,
@@ -120,6 +129,11 @@ import type {
   RunRecordPage,
   SandboxComputer,
   SandboxControl,
+  SavedSignIn,
+  SavedSignInCheck,
+  SavedSignInCode,
+  SavedSignInCreate,
+  SavedSignInUpdate,
   SearchResult,
   SendOutcome,
   SensitiveTopic,
@@ -128,6 +142,9 @@ import type {
   SpaceRemovalPreview,
   SpaceRemovalReport,
   SpaceRemovalStarted,
+  SpaceRulesChange,
+  SpaceRulesView,
+  Starters,
   StreamGap,
   Task,
   TaskInput,
@@ -299,10 +316,45 @@ export const adapter = {
     guard<{ preview: AccountRemovalPreview }>(() =>
       api.GET('/principals/{id}/removal/preview', path(id)),
     ),
+  /** The setup owner makes another person's account an admin, or takes that away. */
+  setAccountAdmin: (id: string, admin: boolean) =>
+    guard<{ account: { id: string; admin: boolean } }>(() =>
+      api.PATCH('/principals/{id}', { ...path(id), body: { admin } }),
+    ),
   removeOtherAccount: (id: string, confirmEmail: string) =>
     guard<{ removal: AccountRemoval }>(() =>
       api.DELETE('/principals/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
     ),
+  /* ---------- the operator console: the installation's owner only ---------- */
+  operatorOverview: () => guard<OperatorOverview>(() => api.GET('/operator/overview')),
+  operatorPeople: () => guard<OperatorPeople>(() => api.GET('/operator/people')),
+  invitePerson: (email: string) =>
+    guard<{ person: OperatorPerson; invite: OperatorOneTimeLink }>(() =>
+      api.POST('/operator/people', { body: { email } }),
+    ),
+  setPersonDisabled: (id: string, disabled: boolean) =>
+    guard<{ person: OperatorPerson }>(() =>
+      disabled
+        ? api.POST('/operator/people/{id}/disable', path(id))
+        : api.POST('/operator/people/{id}/enable', path(id)),
+    ),
+  sendPersonReset: (id: string) =>
+    guard<{ person: OperatorPerson; reset: OperatorOneTimeLink }>(() =>
+      api.POST('/operator/people/{id}/password-reset', path(id)),
+    ),
+  setPersonCaps: (id: string, caps: OperatorCaps) =>
+    guard<{ person: OperatorPerson }>(() =>
+      api.PUT('/operator/people/{id}/caps', { ...path(id), body: caps }),
+    ),
+  personRemovalPreview: (id: string) =>
+    guard<{ preview: AccountRemovalPreview }>(() =>
+      api.GET('/operator/people/{id}/removal/preview', path(id)),
+    ),
+  removePerson: (id: string, confirmEmail: string) =>
+    guard<{ removal: AccountRemoval }>(() =>
+      api.DELETE('/operator/people/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
+    ),
+  operatorAudit: () => guard<{ entries: OperatorAuditEntry[] }>(() => api.GET('/operator/audit')),
   spaceRemovalPreview: (id: string) =>
     guard<{ preview: SpaceRemovalPreview }>(() =>
       api.GET('/spaces/{id}/removal/preview', path(id)),
@@ -327,6 +379,9 @@ export const adapter = {
       multiplayer?: boolean;
       code_required?: boolean;
       email_sign_in?: boolean;
+      terms_url?: string;
+      privacy_url?: string;
+      support_url?: string;
     }>(() => api.GET('/setup')),
   /** Creates the first account and signs this browser in. */
   createAccount: (email: string, password: string, setup_code?: string) =>
@@ -364,16 +419,26 @@ export const adapter = {
   /** Mails a reset link when this install can send mail; otherwise says why not. */
   requestPasswordReset: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/password-reset', { body: { email } })),
-  /** Whether a reset code is still good, before a new password is chosen for it. */
+  /**
+   * Whether a reset code is still good, before a new password is chosen for
+   * it, and whether it is a new account's invite.
+   */
   checkPasswordReset: (token: string) =>
-    guard<{ status: 'ok' }>(() => api.POST('/password-reset/check', { body: { token } })),
+    guard<{ status: 'ok'; purpose?: 'reset' | 'invite' }>(() =>
+      api.POST('/password-reset/check', { body: { token } }),
+    ),
+  /** Sets the password; an invite also signs this browser in. */
   consumePasswordReset: (token: string, new_password: string) =>
-    guard<{ status: 'ok' }>(() =>
+    guard<{ status: 'ok'; purpose?: 'reset' | 'invite'; signed_in?: boolean }>(() =>
       api.POST('/password-reset/consume', { body: { token, new_password } }),
     ),
 
   /* ---------- home, tasks ---------- */
   home: () => guard<Home>(() => api.GET('/home')),
+  /** One-tap starter tasks for a new person's Home, and whether to show them. */
+  starters: () => guard<Starters>(() => api.GET('/starters')),
+  /** Puts the starters away for this person on every device. */
+  dismissStarters: () => guard<{ status: 'ok' }>(() => api.POST('/starters/dismiss')),
   tasks: () => guard<{ tasks: Task[] }>(() => api.GET('/tasks')),
   addTask: (title: string) =>
     guard<{ task: Task }>(() => api.POST('/tasks', { body: { title, due_at: null, done: false } })),
@@ -689,7 +754,8 @@ export const adapter = {
   saveMemorySettings: (capture: boolean) =>
     guard<{ capture: boolean }>(() => api.PUT('/memory/settings', { body: { capture } })),
   /* ---------- the person's files ---------- */
-  files: () => guard<{ files: PersonFile[] }>(() => api.GET('/files')),
+  files: () =>
+    guard<{ files: PersonFile[]; storage?: PersonStorage | null }>(() => api.GET('/files')),
   /** Into the trash; `trash_id` puts it back until `restorable_until`. */
   deleteFile: (id: string) => guard<PersonFileDeleted>(() => api.DELETE('/files/{id}', path(id))),
   restoreFile: (id: string, trashId: string) =>
@@ -737,9 +803,14 @@ export const adapter = {
   beliefs: () => guard<{ beliefs: Belief[]; time_zone: string }>(() => api.GET('/memory/beliefs')),
   beliefHistory: (id: string) =>
     guard<BeliefHistory>(() => api.GET('/memory/beliefs/{id}/history', path(id))),
-  /** Forget a belief and never learn its subject again. */
-  blockBelief: (id: string) =>
-    guard<{ status: 'ok' }>(() => api.POST('/memory/beliefs/{id}/block', path(id))),
+  /**
+   * Forget a belief and don't learn it again: anything about its subject, or
+   * just this detail. The answer says how far the block reached.
+   */
+  blockBelief: (id: string, scope: BeliefBlockScope = 'topic') =>
+    guard<{ status: 'ok'; scope: BeliefBlockScope }>(() =>
+      api.POST('/memory/beliefs/{id}/block', { ...path(id), body: { scope } }),
+    ),
   beliefBlocks: () => guard<{ blocks: BeliefBlock[] }>(() => api.GET('/memory/blocks')),
   unblockBelief: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/memory/blocks/{id}', path(id))),
@@ -812,6 +883,11 @@ export const adapter = {
     ),
   /** Who is in the space this session uses. */
   spaceMembers: () => guard<SpaceMembers>(() => api.GET('/space/members')),
+  /** What work in a space may use: models, and kinds of app and tool kept out. */
+  spaceRules: (spaceId: string) =>
+    guard<SpaceRulesView>(() => api.GET('/spaces/{id}/policy', path(spaceId))),
+  setSpaceRules: (spaceId: string, rules: SpaceRulesChange) =>
+    guard<SpaceRulesView>(() => api.PUT('/spaces/{id}/policy', { ...path(spaceId), body: rules })),
   /** The space's owner removes someone from a shared space. */
   removeMember: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),
@@ -983,6 +1059,23 @@ export const adapter = {
     guard<{ domain: string; forgotten: true }>(() =>
       api.DELETE('/browser/sites/{domain}', { params: { path: { domain } } }),
     ),
+  /**
+   * Sign-ins saved for the agent's browser. The service never sends a saved
+   * password or code secret back: a list carries the username and a mask.
+   */
+  savedSignIns: () => guard<{ sign_ins: SavedSignIn[] }>(() => api.GET('/sign-ins')),
+  saveSignIn: (body: SavedSignInCreate) =>
+    guard<SavedSignIn>(() => api.POST('/sign-ins', { body })),
+  updateSignIn: (id: string, body: SavedSignInUpdate) =>
+    guard<SavedSignIn>(() => api.PATCH('/sign-ins/{id}', { ...path(id), body })),
+  deleteSignIn: (id: string) =>
+    guard<{ id: string; deleted: true }>(() => api.DELETE('/sign-ins/{id}', path(id))),
+  /** The code the site would take right now, for the person to read. */
+  signInCode: (id: string) =>
+    guard<SavedSignInCode>(() => api.POST('/sign-ins/{id}/code', path(id))),
+  /** Whether a saved sign-in is ready to use, checked without visiting the site. */
+  checkSignIn: (id: string) =>
+    guard<SavedSignInCheck>(() => api.POST('/sign-ins/{id}/check', path(id))),
   /* ---------- the agent's computer ---------- */
   computer: (id: string) =>
     guard<AgentComputer>(() => api.GET('/conversations/{id}/computer', path(id))),
@@ -1094,6 +1187,7 @@ export const adapter = {
     guard<FeedbackList>(() =>
       api.GET('/feedback', { params: { query: status ? { status } : {} } }),
     ),
+  feedbackForwarding: () => guard<FeedbackForwarding>(() => api.GET('/feedback/forwarding')),
   feedbackReport: (id: string) =>
     guard<{ report: FeedbackReport }>(() => api.GET('/feedback/{id}', path(id))),
   setFeedbackStatus: (id: string, status: FeedbackStatus, note?: string | null) =>
@@ -1130,13 +1224,17 @@ async function binary<T>(
       headers: { ...client.options.headers, ...(init.headers as Record<string, string>) },
       credentials: client.options.credentials,
     });
-    if (!response.ok)
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
       return {
         data: null,
-        error: errorMessage(await response.json().catch(() => null), OFFLINE),
+        error: errorMessage(body, OFFLINE),
         unavailable: null,
         unauthorized: response.status === 401,
+        ...(typeof code === 'string' ? { code } : {}),
       };
+    }
     return { data: await read(response), error: null, unavailable: null };
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw error;

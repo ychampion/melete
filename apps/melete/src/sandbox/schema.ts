@@ -76,6 +76,11 @@ export const sandboxSession = pgTable(
     lastError: text('last_error'),
     /** Null on rows written before processes could hold a computer: the attempt. */
     heldBy: text('held_by').$type<SessionHolder>(),
+    /**
+     * The person whose turn opened it, whose computer limit it counts against.
+     * Null on rows written before it was kept, and for work nobody is named for.
+     */
+    personId: text('person_id'),
   },
   (t) => [
     uniqueIndex('sandbox_session_provider_idx')

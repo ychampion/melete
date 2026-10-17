@@ -10,11 +10,14 @@ name: ${COMPOSE_PROJECT_NAME:-melete}
 
 # Docker's default log has no size limit. Every service rotates a bounded
 # json-file instead; attempt containers get the same limits from the supervisor.
+# Each line also names its Compose project and service, for a log shipper
+# (docker-compose.log-shipping.yml) to say where it came from.
 x-logging: &bounded-logs
   driver: json-file
   options:
     max-size: "10m"
     max-file: "5"
+    labels: "com.docker.compose.project,com.docker.compose.service"
 
 # Health checks: every second while a service starts, so `up --wait` and the
 # start order stay quick, then every 30 seconds. Each check starts a process in
@@ -60,6 +63,10 @@ services:
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
     logging: *bounded-logs
+    # Its log may be shipped (docs/DEPLOYMENT.md, "What the logs hold"), so an
+    # error names its reason alone: never the failing row, which may hold what
+    # someone wrote, nor the statement, which may set a role's password.
+    command: ["postgres", "-c", "log_error_verbosity=terse", "-c", "log_min_error_statement=panic"]
     # Memory caps keep one runaway service from taking the machine; each is a
     # setting in deploy/.env (docs/DEPLOYMENT.md, "Memory limits").
     mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
@@ -127,6 +134,7 @@ services:
       MELETE_SANDBOX_DOCKER_IMAGE: "${MELETE_SANDBOX_DOCKER_IMAGE:-${MELETE_IMAGE_TAG:+${MELETE_IMAGE_REGISTRY:-ghcr.io/ychampion}/}melete-sandbox:${MELETE_IMAGE_TAG:-local}}"
       MELETE_MCP_NODE_IMAGE: ${MELETE_MCP_NODE_IMAGE:-}
       MELETE_MCP_PYTHON_IMAGE: ${MELETE_MCP_PYTHON_IMAGE:-}
+      MELETE_NETWORK_POOL: ${MELETE_NETWORK_POOL:-}
     group_add: ["${DOCKER_GID:?run bun run deploy/scripts/configure.ts}"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -183,6 +191,7 @@ services:
       # The engine, through the cell service; the service has no socket.
       MELETE_CELLS_URL: http://melete-cells:8791
       MELETE_CELLS_KEY_FILE: /data/cells-key/key
+      MELETE_NETWORK_POOL: ${MELETE_NETWORK_POOL:-}
       MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_APPROVAL_KEY: ${MELETE_APPROVAL_KEY:?run bun run deploy/scripts/configure.ts}
@@ -225,7 +234,7 @@ services:
       # Automatic memory (docs/DEPLOYMENT.md, "Memory model"). Empty uses the default model.
       MELETE_MEMORY_MODEL: ${MELETE_MEMORY_MODEL:-}
       MELETE_MEMORY_PROVIDER: ${MELETE_MEMORY_PROVIDER:-}
-      MELETE_MEMORY_DAILY_CALLS: ${MELETE_MEMORY_DAILY_CALLS:-200}
+      MELETE_MEMORY_DAILY_CALLS: ${MELETE_MEMORY_DAILY_CALLS:-}
       # Semantic recall (docs/DEPLOYMENT.md, "Semantic recall"). Empty uses the default provider's embedding model.
       MELETE_EMBEDDING_PROVIDER: ${MELETE_EMBEDDING_PROVIDER:-}
       MELETE_EMBEDDING_MODEL: ${MELETE_EMBEDDING_MODEL:-}
@@ -259,6 +268,9 @@ services:
       MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_TOKENS: ${MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_TOKENS:-}
       MELETE_SPEND_PERSON_BACKGROUND_DAILY_TOKENS: ${MELETE_SPEND_PERSON_BACKGROUND_DAILY_TOKENS:-}
       MELETE_JOB_USD_COUNTS_MODELS: ${MELETE_JOB_USD_COUNTS_MODELS:-}
+      # Rest the standing work of people unseen this many days, and cap routines per person. Empty is off.
+      MELETE_REST_ROUTINES_AFTER_DAYS: ${MELETE_REST_ROUTINES_AFTER_DAYS:-}
+      MELETE_ROUTINES_PER_PERSON_MAX: ${MELETE_ROUTINES_PER_PERSON_MAX:-}
       MELETE_ATTACHMENT_MAX_MB: ${MELETE_ATTACHMENT_MAX_MB:-}
       MELETE_ATTACHMENTS_PER_MESSAGE: ${MELETE_ATTACHMENTS_PER_MESSAGE:-}
       MELETE_ATTACHMENT_UPLOADS_AT_ONCE: ${MELETE_ATTACHMENT_UPLOADS_AT_ONCE:-}
@@ -270,6 +282,7 @@ services:
       MELETE_MODEL_FAST: ${MELETE_MODEL_FAST:-}
       MELETE_MODEL_VISION: ${MELETE_MODEL_VISION:-}
       MELETE_MODEL_FALLBACK: ${MELETE_MODEL_FALLBACK:-}
+      MELETE_MODEL_BACKGROUND: ${MELETE_MODEL_BACKGROUND:-}
       MELETE_REASONING_EFFORT_AGENT: ${MELETE_REASONING_EFFORT_AGENT:-}
       MELETE_REASONING_EFFORT_SIDE: ${MELETE_REASONING_EFFORT_SIDE:-}
       MELETE_MODEL_TRIAGE: ${MELETE_MODEL_TRIAGE:-}
@@ -287,6 +300,12 @@ services:
       MELETE_ALERT_SPEND_PERSON_PERCENT: ${MELETE_ALERT_SPEND_PERSON_PERCENT:-}
       MELETE_ALERT_SPEND_MIN_USD: ${MELETE_ALERT_SPEND_MIN_USD:-}
       MELETE_FEEDBACK_WEBHOOK_URL: ${MELETE_FEEDBACK_WEBHOOK_URL:-}
+      # Terms, privacy and support links, shown only when set.
+      MELETE_TERMS_URL: ${MELETE_TERMS_URL:-}
+      MELETE_PRIVACY_URL: ${MELETE_PRIVACY_URL:-}
+      MELETE_SUPPORT_URL: ${MELETE_SUPPORT_URL:-}
+      # Home's starter tasks for a new person, as JSON; empty is the built-in list.
+      MELETE_STARTERS: ${MELETE_STARTERS:-}
       # Account mail and the claim code (docs/DEPLOYMENT.md, "Account mail").
       MELETE_SMTP_URL: ${MELETE_SMTP_URL:-}
       MELETE_MAIL_FROM: ${MELETE_MAIL_FROM:-}
@@ -370,10 +389,12 @@ services:
       MELETE_SANDBOX_EGRESS_PORT: ${MELETE_SANDBOX_EGRESS_PORT:-}
       MELETE_SANDBOX_EGRESS_EXTRA_HOSTS: ${MELETE_SANDBOX_EGRESS_EXTRA_HOSTS:-}
       MELETE_EGRESS_RECORD_DAYS: ${MELETE_EGRESS_RECORD_DAYS:-}
+      MELETE_RETENTION_DAYS: ${MELETE_RETENTION_DAYS:-}
       MELETE_OBSERVATION_RETENTION_DAYS: ${MELETE_OBSERVATION_RETENTION_DAYS:-}
       MELETE_OBSERVATION_TOMBSTONE_DAYS: ${MELETE_OBSERVATION_TOMBSTONE_DAYS:-}
       MELETE_TRASH_DAYS: ${MELETE_TRASH_DAYS:-}
       MELETE_TRASH_MAX_MB: ${MELETE_TRASH_MAX_MB:-}
+      MELETE_STORAGE_PER_PERSON_MB: ${MELETE_STORAGE_PER_PERSON_MB:-}
       MELETE_EGRESS_HOLD_MAX_BYTES: ${MELETE_EGRESS_HOLD_MAX_BYTES:-}
       MELETE_EGRESS_APPROVAL_HOLD_SECONDS: ${MELETE_EGRESS_APPROVAL_HOLD_SECONDS:-}
       # Plugin runners (docs/DEPLOYMENT.md, "Isolation and image provenance"). Empty uses each default.
@@ -386,6 +407,8 @@ services:
       # Engines kept loaded ahead of the next attempts (default 1), and attempts run at once (default 4).
       MELETE_ENGINE_PREWARM: ${MELETE_ENGINE_PREWARM:-}
       MELETE_ATTEMPT_CONCURRENCY: ${MELETE_ATTEMPT_CONCURRENCY:-}
+      # How many of them one person may run at once (default no limit).
+      MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: ${MELETE_ATTEMPT_CONCURRENCY_PER_PERSON:-}
       # The text-to-speech model, when an OpenAI or OpenAI-compatible key is set.
       MELETE_SPEECH_MODEL: ${MELETE_SPEECH_MODEL:-}
       MELETE_ENABLE_FAKE_PROVIDER: ${MELETE_ENABLE_FAKE_PROVIDER:-false}
@@ -400,6 +423,8 @@ services:
       OPENAI_COMPAT_API_KEY: ${OPENAI_COMPAT_API_KEY:-}
       # Cloud metadata stays out of reach of every address set in the app unless this is true.
       MELETE_ALLOW_CLOUD_METADATA: ${MELETE_ALLOW_CLOUD_METADATA:-false}
+      # Internal hosts every space may reach, not only the owner's; empty keeps them to public addresses.
+      MELETE_PRIVATE_HOSTS: ${MELETE_PRIVATE_HOSTS:-}
       MELETE_CHATGPT_CLIENT_ID: ${MELETE_CHATGPT_CLIENT_ID:-}
       OPENAI_COMPAT_OAUTH_ISSUER: ${OPENAI_COMPAT_OAUTH_ISSUER:-}
       OPENAI_COMPAT_OAUTH_AUTHORIZE_URL: ${OPENAI_COMPAT_OAUTH_AUTHORIZE_URL:-}

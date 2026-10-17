@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../../apps/melete/src/runtime/docker-engine.ts';
+import { lastBackupPath } from './backup-age.ts';
 import { parseSshTarget, runBackup } from './commands/backup.ts';
 import { runDeploy } from './commands/deploy.ts';
 import { runRestore } from './commands/restore.ts';
@@ -23,6 +24,11 @@ import { DEPLOY_FILE } from './deploy-config.ts';
 import {
   archiveCommand,
   CHANGED_WHILE_READ,
+  computerExists,
+  extractCommand,
+  LEFT_OUT,
+  legacyExtractCommand,
+  measureFiles,
   parseContents,
   stopCellsCommand,
   volumePresence,
@@ -157,6 +163,60 @@ describe('melete backup', () => {
     expect(await runBackup(rig.context, [], false)).toBe(1);
     expect(readdirSync(rig.backups)).toEqual([]);
     expect(rig.context.printed()).toContain('No backup was kept');
+    // A backup that was not kept is not noted as the newest.
+    expect(existsSync(lastBackupPath(rig.deployDir))).toBe(false);
+  });
+
+  test('a finished backup, here or on another machine, is noted with its time and place', async () => {
+    const rig = backupRig();
+    expect(await runBackup(rig.context, ['--to', 'ssh://vault:/srv/melete'], false)).toBe(0);
+    expect(JSON.parse(readFileSync(lastBackupPath(rig.deployDir), 'utf8'))).toEqual({
+      at: '2026-10-02T10:00:00.000Z',
+      location: 'ssh://vault:/srv/melete/melete-20261002T100000Z',
+    });
+    const local = backupRig();
+    expect(await runBackup(local.context, [], false)).toBe(0);
+    expect(JSON.parse(readFileSync(lastBackupPath(local.deployDir), 'utf8')).location).toBe(
+      join(local.backups, 'melete-20261002T100000Z'),
+    );
+  });
+
+  test('a finished backup whose note cannot be written stays whole, and says so', async () => {
+    const rig = backupRig();
+    // Something in the way of the note: a folder where its file goes.
+    mkdirSync(lastBackupPath(rig.deployDir), { recursive: true });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups)).toEqual(['melete-20261002T100000Z']);
+    expect(rig.context.printed()).toContain('The backup is whole, but its time was not noted');
+    // The database still takes its note.
+    expect(rig.calls.some((call) => call.includes("'backup_taken'"))).toBe(true);
+  });
+
+  test('a finished backup is also noted in the database, where the web app reads it', async () => {
+    const rig = backupRig();
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const note = rig.calls.find((call) => call.includes("'backup_taken'"));
+    expect(note).toContain("'at', '2026-10-02T10:00:00.000Z'");
+    expect(note).toContain("'backup:melete-20261002T100000Z'");
+    // Taken after the dump, so the backup never holds its own note.
+    expect(rig.calls.indexOf(note ?? '')).toBeGreaterThan(
+      rig.calls.findIndex((call) => call.includes('pg_dump')),
+    );
+
+    // A database that will not take the note leaves the backup whole, and says so.
+    const refused = backupRig();
+    const run = refused.context.run;
+    refused.context.run = (command) =>
+      command.join(' ').includes('backup_taken')
+        ? { code: 1, stdout: '', stderr: 'permission denied for table event\nmore' }
+        : run(command);
+    expect(await runBackup(refused.context, [], false)).toBe(0);
+    expect(readdirSync(refused.backups)).toEqual(['melete-20261002T100000Z']);
+    expect(refused.context.printed()).toContain(
+      'the database did not take the note of it, so the web app',
+    );
+    expect(refused.context.printed()).toContain('permission denied for table event');
+    expect(refused.context.printed()).not.toContain('more');
   });
 
   test('keep removes the oldest backups only, and nothing else in the directory', async () => {
@@ -211,7 +271,7 @@ describe('melete backup', () => {
           'command' in call.source && call.source.command.join(' ').includes('src=melete_spaces'),
       );
       expect(spaces && 'command' in spaces.source ? spaces.source.command.at(-1) : '').toBe(
-        'exec tar -C /v --numeric-owner -cf - .',
+        "exec tar -C /v --numeric-owner --anchored --no-wildcards-match-slash --exclude='./*/.index' --exclude='./*/.proposed' -cf - .",
       );
     }
   });
@@ -323,29 +383,91 @@ describe('melete restore', () => {
 });
 
 describe('what backup and restore keep, and refuse', () => {
-  test('keep never removes the backup the last deploy took', async () => {
-    const rig = backupRig();
-    mkdirSync(rig.backups, { recursive: true });
-    for (const name of ['melete-20260901T000000Z', 'melete-20260915T000000Z'])
-      mkdirSync(join(rig.backups, name));
-    const named = join(rig.backups, 'melete-20260901T000000Z');
-    appendHistory(rig.deployDir, {
+  const deployedWith = (deployDir: string, backup: string) =>
+    appendHistory(deployDir, {
       at: '2026-09-01T00:00:01.000Z',
       command: 'deploy',
       from: { tag: 'aaaaaaa', revision: null },
       to: { tag: 'bbbbbbb', revision: null },
       checkout: null,
       migrations: { from: 68, to: 69 },
-      backup: named,
+      backup,
       result: 'deployed',
       detail: '',
     });
+
+  /** A backup directory holding these, and backup settings beside `dir`. */
+  const keeping = (names: string[], backup: object = {}) => {
+    const rig = backupRig();
+    writeFileSync(
+      join(rig.deployDir, DEPLOY_FILE),
+      JSON.stringify({ contract: 1, backup: { dir: rig.backups, ...backup } }),
+    );
+    mkdirSync(rig.backups, { recursive: true });
+    for (const name of names) mkdirSync(join(rig.backups, name));
+    return rig;
+  };
+
+  test('keep never removes the backup the last deploy took', async () => {
+    const rig = keeping(['melete-20260910T000000Z', 'melete-20260915T000000Z'], { keep: 2 });
+    deployedWith(rig.deployDir, join(rig.backups, 'melete-20260910T000000Z'));
     expect(await runBackup(rig.context, [], false)).toBe(0);
     // keep is 2: the two newest stay, and so does the one the deploy named, though it is older.
     expect(readdirSync(rig.backups).sort()).toEqual([
-      'melete-20260901T000000Z',
+      'melete-20260910T000000Z',
       'melete-20260915T000000Z',
       'melete-20261002T100000Z',
+    ]);
+  });
+
+  test('a backup older than max_age_days goes when a new one is made, however few there are', async () => {
+    // The backup is made at 2026-10-02T10:00:00Z.
+    const rig = keeping(
+      ['melete-20260925T095959Z', 'melete-20260925T100001Z', 'melete-20260930T000000Z', 'notes'],
+      { keep: 10, max_age_days: 7 },
+    );
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups).sort()).toEqual([
+      'melete-20260925T100001Z',
+      'melete-20260930T000000Z',
+      'melete-20261002T100000Z',
+      'notes',
+    ]);
+    expect(rig.context.printed()).toMatch(
+      /backup\.keep\s+Kept the newest 10, none older than 7 days; removed melete-20260925T095959Z\./,
+    );
+  });
+
+  test('by default a backup is kept 30 days, and the age limit removes even the one the last deploy took', async () => {
+    const rig = keeping(['melete-20260901T000000Z', 'melete-20260905T000000Z'], { keep: 3 });
+    deployedWith(rig.deployDir, join(rig.backups, 'melete-20260901T000000Z'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups).sort()).toEqual([
+      'melete-20260905T000000Z',
+      'melete-20261002T100000Z',
+    ]);
+    expect(rig.context.printed()).toContain('none older than 30 days');
+    expect(rig.context.printed()).toContain('rollback can no longer restore from it');
+  });
+
+  test('max_age_days null keeps backups by count alone, and the new one always stays', async () => {
+    const rig = keeping(['melete-20250101T000000Z', 'melete-20250601T000000Z'], {
+      keep: 3,
+      max_age_days: null,
+    });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.backups).sort()).toEqual([
+      'melete-20250101T000000Z',
+      'melete-20250601T000000Z',
+      'melete-20261002T100000Z',
+    ]);
+
+    // A clock behind the backups already there never removes the one just made.
+    const behind = keeping(['melete-20270101T000000Z'], { keep: 1, max_age_days: 1 });
+    expect(await runBackup(behind.context, [], false)).toBe(0);
+    expect(readdirSync(behind.backups).sort()).toEqual([
+      'melete-20261002T100000Z',
+      'melete-20270101T000000Z',
     ]);
   });
 
@@ -379,6 +501,41 @@ const labelsOf = (computer: string) => ({
   'melete.project': 'proj',
   'melete.session': computer.slice('melete-sbx-proj-'.length),
 });
+
+/** A restriction journal as the service writes it: its header, then one chained line per removal. */
+function journalText(records: readonly { id: string; operation: string }[]): string {
+  let previous = 'melete-memory-restrictions-v1';
+  const lines = [previous];
+  for (const [index, { id, operation }] of records.entries()) {
+    const record = { id, operation, recorded_at: `2026-10-0${index + 1}T09:00:00.000Z` };
+    const hash = createHash('sha256')
+      .update(JSON.stringify([previous, record]))
+      .digest('hex');
+    lines.push(JSON.stringify({ previous, record, hash }));
+    previous = hash;
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/** The removals in this machine's journal and in the backup's, unless a test says otherwise. */
+const SAME = [
+  { id: 'sup_01', operation: 'forget' },
+  { id: 'sup_02', operation: 'delete' },
+  { id: 'sup_03', operation: 'remove_space' },
+];
+
+/** Takes a file out of a backup set, and its line out of SHA256SUMS. */
+function removeFromSet(set: string, file: string) {
+  rmSync(join(set, file));
+  const sums = readFileSync(join(set, 'SHA256SUMS'), 'utf8');
+  writeFileSync(
+    join(set, 'SHA256SUMS'),
+    sums
+      .split('\n')
+      .filter((line) => !line.endsWith(`  ${file}`))
+      .join('\n'),
+  );
+}
 
 /**
  * A rig whose engine also has agents' computers, and which logs every command
@@ -415,12 +572,21 @@ function filesRig(
   const paused = new Set<string>();
   /** Labels a volume has on the engine when they are not its computer's own. */
   const owners = new Map<string, Record<string, string>>();
+  /** A volume's labels on the engine: a computer's own unless `owners` says otherwise. */
+  const volumeLabels = (volume: string): Record<string, string> =>
+    owners.get(volume) ??
+    (volume.startsWith('melete-sbx-') ? labelsOf(volume.replace(/-(work|home)$/, '')) : {});
+  /** Other installations' Melete service containers: their Compose and sandbox projects. */
+  const services = new Map<string, { compose: string; sandbox: string }>();
   /** The running containers that use a volume. */
   const users = new Map<string, string[]>();
   /** Commands that fail. */
   const fails: ((text: string) => boolean)[] = [];
-  /** The journal file in melete_restrictions: `none`, or its line count (the header is one). */
-  const journal = { lines: '4' };
+  /**
+   * The journal file in melete_restrictions: `none`, or its line count (the header is one);
+   * its text, and the text of the journal in the backup's archive.
+   */
+  const journal = { lines: '4', text: journalText(SAME), archived: journalText(SAME) };
   /** Volumes that hold at least one file. */
   const held = new Set<string>();
   /** The tables the external database holds. */
@@ -439,13 +605,50 @@ function filesRig(
     if (text.includes(' --entrypoint du ')) return ok('1000\t/m/0\n');
     if (text.startsWith('docker volume ls ')) {
       if (options.listFails) return no('Cannot connect to the Docker daemon');
-      // The engine filters by label; another installation's computer never matches it.
-      return text.includes('label=melete.project=proj')
-        ? ok(
-            `${[...volumes].filter((volume) => volume.startsWith('melete-sbx-proj-')).join('\n')}\n`,
+      // The engine filters by label, and prints a label it is asked for, through json.
+      const filters = command.flatMap((arg, index) =>
+        command[index - 1] === '--filter' && arg.startsWith('label=')
+          ? [arg.slice('label='.length)]
+          : [],
+      );
+      const matching = [...volumes].filter((volume) =>
+        filters.every((filter) => {
+          const [key = '', ...value] = filter.split('=');
+          const labels = volumeLabels(volume);
+          return value.length > 0 ? labels[key] === value.join('=') : key in labels;
+        }),
+      );
+      const format = command.includes('--format') ? command.at(-1) : undefined;
+      return ok(
+        `${matching
+          .map((volume) =>
+            format === undefined
+              ? volume
+              : format
+                  .replace('{{.Name}}', volume)
+                  .replace(/\{\{json \(\.Label "([^"]+)"\)\}\}/g, (_, key: string) =>
+                    JSON.stringify(volumeLabels(volume)[key] ?? ''),
+                  ),
           )
-        : ok('');
+          .join('\n')}\n`,
+      );
     }
+    // Other installations' service containers, and the sandbox project each runs with.
+    if (text.startsWith('docker ps --all --filter label=com.docker.compose.service=melete '))
+      return ok(
+        [...services]
+          .map(([id, service]) =>
+            command.includes('--quiet') ? `${id}\n` : `${id}\t${JSON.stringify(service.compose)}\n`,
+          )
+          .join(''),
+      );
+    if (text.startsWith('docker inspect --format {{range .Config.Env}}'))
+      return ok(
+        command
+          .slice(4)
+          .map((id) => `MELETE_SANDBOX_PROJECT=${services.get(id)?.sandbox ?? ''}\n`)
+          .join(''),
+      );
     if (text.startsWith('docker volume inspect --format {{.Name}} {{json .Labels}} '))
       return ok(
         command
@@ -472,7 +675,22 @@ function filesRig(
       return ok();
     }
     if (text.startsWith('docker volume create ')) {
-      volumes.add(command.at(-1) ?? '');
+      const volume = command.at(-1) ?? '';
+      volumes.add(volume);
+      // The engine keeps the labels it is given, and the volume has only those.
+      const given = command.flatMap((arg, index) =>
+        command[index - 1] === '--label' ? [arg] : [],
+      );
+      if (given.length > 0)
+        owners.set(
+          volume,
+          Object.fromEntries(
+            given.map((label) => [
+              label.slice(0, label.indexOf('=')),
+              label.slice(label.indexOf('=') + 1),
+            ]),
+          ),
+        );
       return ok();
     }
     if (
@@ -482,7 +700,9 @@ function filesRig(
       return running.has(name) ? ok(`true ${paused.has(name)}\n`) : no();
     }
     if (text.startsWith('docker container inspect --format {{.Id}} '))
-      return containers.has(command.at(-1) ?? '') ? ok('0123abcd\n') : no();
+      return containers.has(command.at(-1) ?? '')
+        ? ok('0123abcd\n')
+        : no(`Error response from daemon: No such container: ${command.at(-1)}`);
     if (text.startsWith('docker container inspect --format {{.State.Paused}} '))
       return ok(options.pauseState?.() ?? `${paused.has(command.at(-1) ?? '')}\n`);
     if (text.startsWith('docker pause ')) {
@@ -502,7 +722,11 @@ function filesRig(
       return ok((users.get(volume) ?? []).map((name) => `${name}\n`).join(''));
     }
     if (text.startsWith('sh -c ids=$(docker ps ')) return ok();
+    if (text.includes(' --entrypoint cat ') && text.endsWith(' /v/restrictions.jsonl'))
+      return ok(journal.text);
     if (text.includes('/v/restrictions.jsonl')) return ok(`lines ${journal.lines}\n`);
+    if (text.startsWith('tar -xOf ') && text.endsWith(' restrictions/restrictions.jsonl'))
+      return ok(journal.archived);
     if (text.includes('find "$d"'))
       return ok(
         `${[...text.matchAll(/src=([^,]+),dst=(\/m\/\d+)/g)]
@@ -548,6 +772,7 @@ function filesRig(
     running,
     paused,
     owners,
+    services,
     users,
     fails,
     journal,
@@ -701,16 +926,17 @@ describe('the people files and the agents computers in a backup', () => {
     expect(readdirSync(rig.backups)).toEqual([]);
   });
 
-  test("only this installation's computers are listed, and none without a sandbox project", async () => {
+  test("only this installation's computers are taken, and without a sandbox project only those that name it", async () => {
     const rig = filesRig();
     expect(await runBackup(rig.context, [], false)).toBe(0);
     expect(rig.events.find((event) => event.startsWith('run docker volume ls'))).toBe(
-      'run docker volume ls --quiet --filter label=com.melete.sandbox=v1 --filter label=melete.project=proj',
+      'run docker volume ls --filter label=com.melete.sandbox=v1 --format {{.Name}}\t{{json (.Label "melete.project")}}\t{{json (.Label "melete.install_project")}}',
     );
+    // Made before computers named their installation, under a project it no longer runs with.
     const none = filesRig({ env: { MELETE_SANDBOX_PROJECT: '' } });
     expect(await runBackup(none.context, [], false)).toBe(0);
-    expect(indexOf(none.events, 'docker volume ls')).toBe(-1);
     expect(readdirSync(none.set).some((file) => file.startsWith('computer-'))).toBe(false);
+    expect(none.context.printed()).toMatch(/warn\s+backup\.computer_volumes_unattributed\s+4 /);
   });
 
   test('--database-only leaves the files out and says so', async () => {
@@ -799,6 +1025,173 @@ describe('the people files and the agents computers in a backup', () => {
     },
   );
 
+  test("the spaces' archive leaves out each space's search index and staged writes, and only those", async () => {
+    const rig = filesRig();
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const archives = rig.events.filter(
+      (event) => event.startsWith('stream ') && / tar -C \/v /.test(event),
+    );
+    const spaces = archives.find((event) => event.includes('src=melete_spaces,'));
+    expect(spaces).toContain("--exclude='./*/.index'");
+    expect(spaces).toContain("--exclude='./*/.proposed'");
+    // Uploads, /work and the computers are people's own files: nothing of them is left out.
+    const others = archives.filter((event) => !event.includes('src=melete_spaces,'));
+    expect(others.length).toBeGreaterThan(0);
+    for (const event of others) expect(event).not.toContain('--exclude');
+  });
+
+  const gnuTar = posix && Bun.spawnSync(['tar', '--version']).stdout.toString().includes('GNU tar');
+  test.skipIf(!gnuTar)(
+    "a space's own .index and .proposed stay out of the archive, and a folder of that name in its files stays in",
+    () => {
+      const volume = join(temporaryDeployDir(), 'volume');
+      const files: Record<string, string> = {
+        'sp_a/.index/fts.sqlite': 'index',
+        'sp_a/.index/fts.sqlite-wal': 'log',
+        'sp_a/.proposed/prop_1.json': 'staged',
+        'sp_a/knowledge/note.md': 'kept',
+        'sp_a/knowledge/.index/own.md': 'a folder a person named .index',
+        'sp_a/raw/.proposed': 'a file a person named .proposed',
+        'sp_b/.git/HEAD': 'ref',
+      };
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(volume, path, '..'), { recursive: true });
+        writeFileSync(join(volume, path), text);
+      }
+      const realTar = Bun.which('tar') ?? 'tar';
+      const bin = join(volume, '..', 'bin');
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, 'tar'),
+        '#!/bin/sh\n[ "$1" = -C ] && [ "$2" = /v ] && shift 2\nexec "$REAL_TAR" -C "$VOLUME" "$@"\n',
+        { mode: 0o755 },
+      );
+      for (const online of [true, false]) {
+        const script = archiveCommand('img', 'melete_spaces', online, [
+          './*/.index',
+          './*/.proposed',
+        ]).at(-1);
+        // The volume is mounted at /v in the helper container; here it is a folder,
+        // reached through a `tar` first on PATH that swaps `-C /v` for it.
+        const run = Bun.spawnSync(['sh', '-c', `( ${script} ) | "$REAL_TAR" -tf -`], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            VOLUME: volume,
+            REAL_TAR: realTar,
+          },
+        });
+        expect({ code: run.exitCode, stderr: run.stderr.toString() }).toEqual({
+          code: 0,
+          stderr: '',
+        });
+        const listed = run.stdout
+          .toString()
+          .split('\n')
+          .filter((line) => line && !line.endsWith('/'))
+          .map((line) => line.replace(/^\.\//, ''))
+          .sort();
+        expect(listed).toEqual([
+          'sp_a/knowledge/.index/own.md',
+          'sp_a/knowledge/note.md',
+          'sp_a/raw/.proposed',
+          'sp_b/.git/HEAD',
+        ]);
+      }
+      rmSync(join(volume, '..'), { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(!gnuTar)(
+    'a restore leaves out the search index and staged writes an earlier backup still holds, and keeps everything else',
+    () => {
+      const root = temporaryDeployDir();
+      const source = join(root, 'source');
+      const files: Record<string, string> = {
+        'sp_a/.index/fts.sqlite': 'an old index, with a removed record still in its free pages',
+        'sp_a/.proposed/prop_1.json': 'staged',
+        'sp_a/knowledge/note.md': 'kept',
+        'sp_a/knowledge/.index/own.md': 'a folder a person named .index',
+        'sp_a/raw/.proposed': 'a file a person named .proposed',
+        'sp_b/.git/HEAD': 'ref',
+      };
+      for (const [path, text] of Object.entries(files)) {
+        for (const base of [source, join(source, 'data', 'spaces')]) {
+          mkdirSync(join(base, path, '..'), { recursive: true });
+          writeFileSync(join(base, path), text);
+        }
+      }
+      mkdirSync(join(source, 'data', 'artifacts', 'blobs'), { recursive: true });
+      writeFileSync(join(source, 'data', 'artifacts', 'blobs', 'b1'), 'upload');
+      const realTar = Bun.which('tar') ?? 'tar';
+      const archive = (name: string, members: string[]) => {
+        const file = join(root, name);
+        expect(Bun.spawnSync([realTar, '-C', source, '-cf', file, ...members]).exitCode).toBe(0);
+        return file;
+      };
+      const kept = (base: string) =>
+        Bun.spawnSync(['find', base, '-type', 'f'])
+          .stdout.toString()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => line.slice(base.length + 1))
+          .sort();
+      // The helper container's volumes are folders here, reached through a `tar` first on
+      // PATH that swaps the container's -C for them; only the unpacking part of each script runs.
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      writeFileSync(
+        join(bin, 'tar'),
+        '#!/bin/sh\n[ "$1" = -C ] && shift 2\nexec "$REAL_TAR" -C "$TARGET" "$@"\n',
+        { mode: 0o755 },
+      );
+      const unpack = (command: string[], file: string, target: string) => {
+        const script = (command.at(-1) ?? '').replace(/^.* && exec tar /, 'exec tar ');
+        const run = Bun.spawnSync(['sh', '-c', `${script} < "$ARCHIVE"`], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            TARGET: target,
+            REAL_TAR: realTar,
+            ARCHIVE: file,
+          },
+        });
+        expect({ code: run.exitCode, stderr: run.stderr.toString() }).toEqual({
+          code: 0,
+          stderr: '',
+        });
+      };
+      const people = [
+        'sp_a/knowledge/.index/own.md',
+        'sp_a/knowledge/note.md',
+        'sp_a/raw/.proposed',
+        'sp_b/.git/HEAD',
+      ];
+
+      // spaces.tar from a backup made before the index was left out.
+      const spaces = join(root, 'spaces-volume');
+      mkdirSync(spaces);
+      unpack(
+        extractCommand('img', 'melete_spaces', LEFT_OUT.spaces),
+        archive('spaces.tar', ['./sp_a', './sp_b']),
+        spaces,
+      );
+      expect(kept(spaces)).toEqual(people);
+
+      // data.tar from an earlier --with-volumes backup.
+      const r = join(root, 'r');
+      mkdirSync(join(r, 'data', 'spaces'), { recursive: true });
+      mkdirSync(join(r, 'data', 'artifacts'), { recursive: true });
+      unpack(legacyExtractCommand('img', 'melete', 'data.tar'), archive('data.tar', ['data']), r);
+      expect(kept(join(r, 'data', 'spaces'))).toEqual(people);
+      expect(kept(join(r, 'data', 'artifacts'))).toEqual(['blobs/b1']);
+
+      // Uploads, /work and the computers are people's own files: nothing of them is left out.
+      expect(extractCommand('img', 'melete_work', LEFT_OUT.work).at(-1)).not.toContain('--exclude');
+      rmSync(root, { recursive: true, force: true });
+    },
+  );
+
   test("a volume labelled for this installation's computers that is not a /work or home is named, not left out silently", async () => {
     const rig = filesRig();
     rig.volumes.add(`${COMPUTERS[0]}-cache`);
@@ -813,6 +1206,348 @@ describe('the people files and the agents computers in a backup', () => {
     expect(plain.context.printed()).not.toContain('backup.computer_volumes_skipped');
   });
 });
+
+/**
+ * A computer's labels as the adapter gives them under a sandbox project, and,
+ * since computers name the installation that made them, its Compose project.
+ */
+const computerLabels = (computer: string, project: string, installation?: string) => ({
+  'com.melete.sandbox': 'v1',
+  'com.melete.sandbox.name': computer,
+  'melete.owner': 'v1',
+  'melete.project': project,
+  'melete.session': computer.slice(`melete-sbx-${project}-`.length),
+  ...(installation ? { 'melete.install_project': installation } : {}),
+});
+
+/** Puts a computer, its container and its two volumes with these labels, on the rig's engine. */
+function addComputer(
+  rig: ReturnType<typeof filesRig>,
+  computer: string,
+  labels: Record<string, string>,
+) {
+  rig.containers.add(computer);
+  for (const volume of [`${computer}-work`, `${computer}-home`]) {
+    rig.volumes.add(volume);
+    rig.owners.set(volume, labels);
+  }
+}
+
+describe('computers made under an earlier sandbox project', () => {
+  /** This installation's (Compose project melete), made before MELETE_SANDBOX_PROJECT became proj. */
+  const EARLIER = 'melete-sbx-old-sbx_c';
+  /** This installation's too, made under proj after computers named their installation. */
+  const LABELLED = 'melete-sbx-proj-sbx_d';
+
+  test('one that names this installation is backed up, measured and restored', async () => {
+    const rig = filesRig();
+    addComputer(rig, EARLIER, computerLabels(EARLIER, 'old', 'melete'));
+    addComputer(rig, LABELLED, computerLabels(LABELLED, 'proj', 'melete'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const files = readdirSync(rig.set);
+    for (const computer of [EARLIER, LABELLED, ...COMPUTERS])
+      for (const kind of ['work', 'home'])
+        expect(files).toContain(`computer-${computer}-${kind}.tar`);
+    const contents = JSON.parse(readFileSync(join(rig.set, 'contents.json'), 'utf8'));
+    expect(
+      contents.computers.find((volume: { volume: string }) => volume.volume === `${EARLIER}-home`),
+    ).toMatchObject({ computer: EARLIER, labels: computerLabels(EARLIER, 'old', 'melete') });
+    expect(rig.context.printed()).toMatch(/ok\s+backup\.files\s+.* and 4 agent computer\(s\)/);
+    expect(rig.context.printed()).not.toContain('backup.computer_volumes_unattributed');
+
+    // --estimate measures the same volumes the backup takes.
+    rig.events.length = 0;
+    expect(await runBackup(rig.context, ['--estimate'], false)).toBe(0);
+    const measured = rig.events.find((event) => event.includes(' --entrypoint du ')) ?? '';
+    expect(measured).toContain(`src=${EARLIER}-home,`);
+    expect(measured).toContain(`src=${LABELLED}-work,`);
+
+    // A restore puts it back, into its volume here or, on a new machine, one made with its labels.
+    rig.events.length = 0;
+    expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+    expect(rig.context.printed()).toContain(`src=${EARLIER}-home,dst=/v`);
+    expect(rig.context.printed()).not.toContain('restore.computers_left_out');
+    for (const kind of ['work', 'home']) rig.volumes.delete(`${EARLIER}-${kind}`);
+    rig.events.length = 0;
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
+    expect(
+      rig.events.find(
+        (event) =>
+          event.startsWith('run docker volume create ') && event.endsWith(`${EARLIER}-home`),
+      ),
+    ).toContain('--label melete.install_project=melete');
+    expect(indexOf(rig.events, `src=${EARLIER}-home,dst=/v `)).toBeGreaterThan(-1);
+    expect(indexOf(rig.events, `src=${EARLIER}-work,dst=/v `)).toBeGreaterThan(-1);
+    expect(rig.volumes.has(`${EARLIER}-home`)).toBe(true);
+  });
+
+  test("another installation's computer under the same sandbox project is never backed up or restored into", async () => {
+    const theirs = 'melete-sbx-proj-sbx_e';
+    const rig = filesRig();
+    addComputer(rig, theirs, computerLabels(theirs, 'proj', 'other'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    expect(readdirSync(rig.set).some((file) => file.includes(theirs))).toBe(false);
+    expect(rig.events.some((event) => event.includes(`src=${theirs}-`))).toBe(false);
+    expect(rig.context.printed()).toMatch(/ok\s+backup\.files\s+.* and 2 agent computer\(s\)/);
+    expect(rig.context.printed()).not.toContain('backup.computer_volumes_unattributed');
+    rig.events.length = 0;
+    expect(await runBackup(rig.context, ['--estimate'], false)).toBe(0);
+    expect(rig.events.find((event) => event.includes(' --entrypoint du '))).not.toContain(
+      `src=${theirs}-`,
+    );
+
+    // A list that names another installation's computer is not restored from.
+    const listed = await backedUpRig();
+    const contents = JSON.parse(readFileSync(join(listed.set, 'contents.json'), 'utf8'));
+    for (const computer of contents.computers)
+      if (computer.computer === COMPUTERS[1]) computer.labels['melete.install_project'] = 'other';
+    replaceInSet(listed.set, 'contents.json', JSON.stringify(contents));
+    expect(await runRestore(listed.context, [listed.set], false)).toBe(0);
+    expect(listed.context.printed()).toMatch(
+      /warn\s+restore\.computers_left_out\s+1 agent computer/,
+    );
+    expect(listed.context.printed()).not.toContain(`src=${COMPUTERS[1]}-home,dst=/v`);
+    expect(listed.context.printed()).toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
+
+    // Nor is a volume here of the same name that another installation made emptied.
+    const taken = await backedUpRig();
+    taken.owners.set(`${COMPUTERS[0]}-home`, {
+      ...labelsOf(COMPUTERS[0] ?? ''),
+      'melete.install_project': 'other',
+    });
+    expect(await runRestore(taken.context, [taken.set], false)).toBe(0);
+    expect(taken.context.printed()).toMatch(
+      /warn\s+restore\.computers_named_elsewhere\s+1 agent computer\(s\) in this backup have volumes here that name the installation other/,
+    );
+    expect(taken.context.printed()).not.toContain('restore.computers_left_out');
+    expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
+    expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-work,dst=/v`);
+    expect(taken.context.printed()).not.toContain(`docker stop ${COMPUTERS[0]}`);
+    expect(taken.context.printed()).toContain(`src=${COMPUTERS[1]}-home,dst=/v`);
+  });
+
+  test('one that names no installation is named in a warning and left out, never guessed', async () => {
+    const unknown = 'melete-sbx-old-sbx_f';
+    const theirs = 'melete-sbx-theirs-sbx_g';
+    const rig = filesRig();
+    addComputer(rig, unknown, computerLabels(unknown, 'old'));
+    // Under the sandbox project another installation runs with now: that one's backup takes it.
+    addComputer(rig, theirs, computerLabels(theirs, 'theirs'));
+    rig.services.set('0a1b2c3d4e5f', { compose: 'other', sandbox: 'theirs' });
+    // This installation's own service container, still on the earlier project, claims nothing.
+    rig.services.set('1a2b3c4d5e6f', { compose: 'melete', sandbox: 'old' });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      new RegExp(
+        `warn\\s+backup\\.computer_volumes_unattributed\\s+2 agent computer volume\\(s\\) under sandbox project old, .*${unknown}-home, ${unknown}-work`,
+      ),
+    );
+    expect(printed).toContain('docs/DEPLOYMENT.md');
+    expect(printed).not.toContain(theirs);
+    expect(readdirSync(rig.set).some((file) => file.includes(unknown))).toBe(false);
+    expect(rig.events.some((event) => event.includes(`src=${unknown}-`))).toBe(false);
+
+    // When the engine cannot say which projects other installations run with, each is named.
+    const unsure = filesRig();
+    addComputer(unsure, theirs, computerLabels(theirs, 'theirs'));
+    unsure.fails.push((text) => text.startsWith('docker ps --all '));
+    expect(await runBackup(unsure.context, [], false)).toBe(0);
+    expect(unsure.context.printed()).toMatch(
+      new RegExp(`warn\\s+backup\\.computer_volumes_unattributed\\s+.*${theirs}-home`),
+    );
+  });
+
+  test('a label with no value names no installation', async () => {
+    const blank = 'melete-sbx-proj-sbx_h';
+    const elsewhere = 'melete-sbx-old-sbx_i';
+    const rig = filesRig();
+    addComputer(rig, blank, { ...computerLabels(blank, 'proj'), 'melete.install_project': '' });
+    addComputer(rig, elsewhere, {
+      ...computerLabels(elsewhere, 'old'),
+      'melete.install_project': '',
+    });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const files = readdirSync(rig.set);
+    expect(files).toContain(`computer-${blank}-work.tar`);
+    expect(files.some((file) => file.includes(elsewhere))).toBe(false);
+    expect(rig.context.printed()).toMatch(
+      new RegExp(`warn\\s+backup\\.computer_volumes_unattributed\\s+.*${elsewhere}-home`),
+    );
+  });
+
+  test('the same workspace under two sandbox projects is two computers, each kept', async () => {
+    const before = 'melete-sbx-old-sbx_j';
+    const after = 'melete-sbx-proj-sbx_j';
+    const rig = filesRig();
+    addComputer(rig, before, computerLabels(before, 'old', 'melete'));
+    addComputer(rig, after, computerLabels(after, 'proj', 'melete'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    for (const computer of [before, after])
+      for (const kind of ['work', 'home'])
+        expect(readdirSync(rig.set)).toContain(`computer-${computer}-${kind}.tar`);
+    rig.events.length = 0;
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
+    for (const computer of [before, after])
+      expect(indexOf(rig.events, `src=${computer}-home,dst=/v `)).toBeGreaterThan(-1);
+  });
+
+  test('computers that name an installation with no service here are named in a warning', async () => {
+    const renamed = 'melete-sbx-proj-sbx_k';
+    const running = 'melete-sbx-proj-sbx_l';
+    const rig = filesRig();
+    // Made before this installation's Compose project was renamed from earlier.
+    addComputer(rig, renamed, computerLabels(renamed, 'proj', 'earlier'));
+    // Another installation, whose service is on this engine.
+    addComputer(rig, running, computerLabels(running, 'proj', 'other'));
+    rig.services.set('0a1b2c3d4e5f', { compose: 'other', sandbox: 'proj' });
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      new RegExp(
+        `warn\\s+backup\\.computer_volumes_other_installation\\s+2 agent computer volume\\(s\\) name the installation earlier, .*${renamed}-home, ${renamed}-work`,
+      ),
+    );
+    expect(printed).toContain('COMPOSE_PROJECT_NAME');
+    expect(printed).not.toContain(running);
+    expect(readdirSync(rig.set).some((file) => file.includes(renamed))).toBe(false);
+  });
+});
+
+/** Moves the rig to an installation of another Compose project, on a machine that has its stack's volumes. */
+function renameInstallation(rig: ReturnType<typeof filesRig>, project: string) {
+  writeEnv(rig.deployDir, { MELETE_SANDBOX_PROJECT: 'proj', COMPOSE_PROJECT_NAME: project });
+  writeFileSync(
+    join(rig.deployDir, DEPLOY_FILE),
+    JSON.stringify({ contract: 1, project, backup: { dir: rig.backups, keep: 3 } }),
+  );
+  for (const part of ['spaces', 'artifacts', 'work', 'pgdata', 'restrictions'])
+    rig.volumes.add(`${project}_${part}`);
+}
+
+/** Takes every computer, its container and volumes, off the rig's engine: a new machine. */
+function removeComputers(rig: ReturnType<typeof filesRig>) {
+  for (const volume of [...rig.volumes])
+    if (volume.startsWith('melete-sbx-')) rig.volumes.delete(volume);
+  rig.containers.clear();
+  rig.running.clear();
+}
+
+describe('a backup restored into an installation of another Compose project', () => {
+  const EARLIER = 'melete-sbx-old-sbx_c';
+  const LABELLED = 'melete-sbx-proj-sbx_d';
+  const ALL = [...COMPUTERS, EARLIER, LABELLED];
+
+  async function backedUpAsMelete() {
+    const rig = filesRig();
+    addComputer(rig, EARLIER, computerLabels(EARLIER, 'old', 'melete'));
+    addComputer(rig, LABELLED, computerLabels(LABELLED, 'proj', 'melete'));
+    expect(await runBackup(rig.context, [], false)).toBe(0);
+    rig.events.length = 0;
+    return rig;
+  }
+
+  test('puts back every computer the backup holds, named for the installation it is restored into', async () => {
+    const rig = await backedUpAsMelete();
+    renameInstallation(rig, 'renamed');
+    removeComputers(rig);
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
+    expect(rig.context.printed()).not.toContain('restore.computers_left_out');
+    for (const computer of ALL)
+      for (const kind of ['work', 'home']) {
+        const volume = `${computer}-${kind}`;
+        expect(indexOf(rig.events, `src=${volume},dst=/v `)).toBeGreaterThan(-1);
+        const labels = rig.owners.get(volume) ?? {};
+        // What the service finds a computer's kept volumes by, and what reconciles them.
+        expect(labels['com.melete.sandbox']).toBe('v1');
+        expect(labels['com.melete.sandbox.name']).toBe(computer);
+        expect(labels['melete.owner']).toBe('v1');
+        expect(labels['melete.project']).toBe(computer === EARLIER ? 'old' : 'proj');
+        expect(labels['melete.install_project']).toBe('renamed');
+      }
+
+    // The next backup of that installation takes them all, and warns of none.
+    const later = join(rig.backups, 'later');
+    rig.events.length = 0;
+    expect(await runBackup(rig.context, ['--dir', later], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).not.toContain('backup.computer_volumes_unattributed');
+    expect(printed).not.toContain('backup.computer_volumes_other_installation');
+    for (const computer of ALL)
+      expect(readdirSync(join(later, 'melete-20261002T100000Z'))).toContain(
+        `computer-${computer}-home.tar`,
+      );
+  });
+
+  test('never empties a volume here of the same name that names another installation, and says how to put it back', async () => {
+    const rig = await backedUpAsMelete();
+    renameInstallation(rig, 'renamed');
+    // The volumes are still here, as they were made: named for the earlier Compose project.
+    expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      /warn\s+restore\.computers_named_elsewhere\s+2 agent computer\(s\) in this backup have volumes here that name the installation melete/,
+    );
+    expect(printed).toContain(`${EARLIER}, ${LABELLED}`);
+    expect(printed).toContain('docker volume rm');
+    expect(printed).not.toContain(`src=${EARLIER}-home,dst=/v`);
+    expect(printed).not.toContain(`src=${LABELLED}-home,dst=/v`);
+    // Unlabelled, under the sandbox project the installation runs with: still its own.
+    expect(printed).toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
+  });
+
+  test("a set that names its installation never brings back another installation's computer", async () => {
+    const rig = await backedUpAsMelete();
+    const contents = JSON.parse(readFileSync(join(rig.set, 'contents.json'), 'utf8'));
+    for (const computer of contents.computers)
+      if (computer.computer === LABELLED) computer.labels['melete.install_project'] = 'other';
+    replaceInSet(rig.set, 'contents.json', JSON.stringify(contents));
+    renameInstallation(rig, 'renamed');
+    removeComputers(rig);
+    expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+    const printed = rig.context.printed();
+    expect(printed).toMatch(
+      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup are not computers of the installation it is a backup of \(melete\): their labels name another installation/,
+    );
+    const plan = printed.slice(printed.indexOf('restore.checksums'));
+    expect(plan).not.toContain(`${LABELLED}-home`);
+    expect(plan).toContain(`--label melete.install_project=renamed ${EARLIER}-home`);
+  });
+
+  test("a set whose contents.json names no installation is the one its own contract names, or else judged by this installation's labels", async () => {
+    const unnamed = async () => {
+      const rig = await backedUpAsMelete();
+      const contents = JSON.parse(readFileSync(join(rig.set, 'contents.json'), 'utf8'));
+      delete contents.project;
+      replaceInSet(rig.set, 'contents.json', JSON.stringify(contents));
+      renameInstallation(rig, 'renamed');
+      removeComputers(rig);
+      return rig;
+    };
+    // Its contract names the installation it is a backup of.
+    const named = await unnamed();
+    expect(await runRestore(named.context, [named.set, '--yes'], false)).toBe(0);
+    expect(named.context.printed()).not.toContain('restore.computers_left_out');
+    expect(named.owners.get(`${LABELLED}-home`)?.['melete.install_project']).toBe('renamed');
+
+    // Nothing in it does.
+    const rig = await unnamed();
+    removeFromSet(rig.set, DEPLOY_FILE);
+    removeFromSet(rig.set, 'deploy.env');
+    expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(0);
+    expect(rig.context.printed()).toMatch(/warn\s+restore\.computers_left_out\s+2 agent computer/);
+    expect(indexOf(rig.events, `src=${LABELLED}-home,dst=/v `)).toBe(-1);
+    expect(indexOf(rig.events, `src=${COMPUTERS[0]}-home,dst=/v `)).toBeGreaterThan(-1);
+    expect(rig.owners.get(`${COMPUTERS[0]}-home`)?.['melete.install_project']).toBe('renamed');
+  });
+});
+
+async function backedUpRig() {
+  const rig = filesRig();
+  expect(await runBackup(rig.context, [], false)).toBe(0);
+  rig.events.length = 0;
+  return rig;
+}
 
 describe('restoring the files', () => {
   async function backedUp() {
@@ -886,6 +1621,14 @@ describe('restoring the files', () => {
       "find /v -mindepth 1 -delete && exec tar -C /v --numeric-owner -xpf -' < ",
     );
     expect(printed).toContain(`${rig.set}/spaces.tar`);
+    // An earlier backup's search index and staged writes are not put back; nothing else is left out.
+    const unpacks = printed.split('\n').filter((line) => line.includes(' -xpf -'));
+    const spaces = unpacks.filter((line) => line.includes('src=melete_spaces,'));
+    expect(spaces).toHaveLength(1);
+    expect(spaces[0]).toContain("--exclude='\\''./*/.index'\\'' --exclude='\\''./*/.proposed'\\''");
+    expect(unpacks.length).toBeGreaterThan(1);
+    for (const line of unpacks.filter((line) => !line.includes('src=melete_spaces,')))
+      expect(line).not.toContain('--exclude');
     expect(printed).toContain(`${rig.set}/computer-${COMPUTERS[0]}-home.tar`);
     expect(printed).toContain(`--yes runs these steps.`);
     expect(changes(rig.events)).toEqual([]);
@@ -958,7 +1701,7 @@ describe('restoring the files', () => {
     expect(indexOf(rig.events, 'src=melete_work,dst=/v ')).toBe(-1);
     expect(rig.events.some(startsStack)).toBe(false);
     expect(rig.context.printed()).toMatch(
-      /fail\s+restore\.step\s+docker run --rm -i --network none/,
+      /fail\s+restore\.step\s+Step failed \(Put back artifacts\.tar into melete_artifacts\): /,
     );
     expect(rig.context.printed()).toContain(
       'the stack was not started on a half-restored installation',
@@ -1050,6 +1793,208 @@ describe('restoring the files', () => {
       /fail\s+restore\.journal\s+melete_restrictions could not be read/,
     );
     expect(changes(unreadable.events)).toEqual([]);
+  });
+
+  test("a kept journal that lacks the backup's removals is named, with each removal that is not put back", async () => {
+    const rig = await backedUp();
+    try {
+      // A new machine, started and used before the restore, has a journal of its own.
+      rig.journal.lines = '2';
+      rig.journal.text = journalText([{ id: 'sup_here', operation: 'forget' }]);
+      rig.journal.archived = journalText([
+        { id: 'sup_a1', operation: 'forget' },
+        { id: 'sup_b2', operation: 'delete' },
+        { id: 'sup_c3', operation: 'remove_space' },
+      ]);
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+      const printed = rig.context.printed();
+      expect(printed).toContain('melete_restrictions stays as it is');
+      expect(printed).toMatch(
+        /warn\s+restore\.journal_diverged\s+melete_restrictions does not hold 3 removal\(s\) recorded in the backup's journal \(\S+restrictions-20261002T100000Z\.tar\)/,
+      );
+      for (const removal of [
+        'sup_a1 (forget, 2026-10-01T09:00:00.000Z)',
+        'sup_b2 (delete, 2026-10-02T09:00:00.000Z)',
+        'sup_c3 (remove_space, 2026-10-03T09:00:00.000Z)',
+      ])
+        expect(printed).toContain(removal);
+      expect(changes(rig.events)).toEqual([]);
+
+      // The machine the backup came from: its journal goes on from the backup's.
+      const same = await backedUp();
+      same.journal.lines = '5';
+      same.journal.text = journalText([...SAME, { id: 'sup_04', operation: 'forget' }]);
+      expect(await runRestore(same.context, [same.set], false)).toBe(0);
+      expect(same.context.printed()).not.toContain('restore.journal_diverged');
+      rmSync(join(same.deployDir, '..'), { recursive: true, force: true });
+
+      // A journal that cannot be read for the comparison is said so, not taken as agreeing.
+      const blind = await backedUp();
+      blind.fails.push((text) => text.startsWith('tar -xOf '));
+      expect(await runRestore(blind.context, [blind.set], false)).toBe(0);
+      expect(blind.context.printed()).toMatch(
+        /warn\s+restore\.journal_diverged\s+Whether melete_restrictions holds every removal in the backup's journal could not be read/,
+      );
+      rmSync(join(blind.deployDir, '..'), { recursive: true, force: true });
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a journal read that exits non-zero is unreadable, even when it printed a line count', async () => {
+    const rig = await backedUp();
+    try {
+      const run = rig.context.run;
+      rig.context.run = (command, timeoutMs) =>
+        command.join(' ').includes('echo "lines $(wc -l < /v/restrictions.jsonl)"')
+          ? { code: 125, stdout: 'lines 3\n', stderr: 'docker: Error response from daemon: oops.' }
+          : run(command, timeoutMs);
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(1);
+      expect(rig.context.printed()).toMatch(
+        /fail\s+restore\.journal\s+melete_restrictions could not be read \(docker: Error response from daemon: oops\.\)/,
+      );
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a set without a journal restores onto a journal that holds only its header, with a note', async () => {
+    const rig = await backedUp();
+    try {
+      removeFromSet(rig.set, 'restrictions-20261002T100000Z.tar');
+      rig.journal.lines = '1';
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+      expect(rig.context.printed()).toMatch(
+        /ok\s+restore\.journal\s+melete_restrictions holds no entry and the backup holds no journal: there is nothing to put back\./,
+      );
+      expect(rig.context.printed()).not.toContain('melete:/data');
+      // With no journal volume at all, the set is still refused.
+      rig.volumes.delete('melete_restrictions');
+      const fresh = testContext(rig.deployDir, [], { run: rig.context.run });
+      expect(await runRestore(fresh, [rig.set], false)).toBe(1);
+      expect(fresh.printed()).toMatch(/fail\s+restore\.journal\s+This machine has no restriction/);
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('with --keep-database, only the file volumes the set replaces are looked at', async () => {
+    // An earlier --with-volumes set that holds /work alone.
+    const rig = filesRig({ contract: { database: { external: true } } });
+    try {
+      expect(await runBackup(rig.context, ['--database-only'], false)).toBe(0);
+      writeFileSync(join(rig.set, 'work.tar'), 'old work.tar');
+      const sums = readFileSync(join(rig.set, 'SHA256SUMS'), 'utf8');
+      writeFileSync(
+        join(rig.set, 'SHA256SUMS'),
+        `${sums}${createHash('sha256').update('old work.tar').digest('hex')}  work.tar\n`,
+      );
+      rig.events.length = 0;
+      // The engine cannot describe the spaces' volume, which this set never touches.
+      rig.fails.push(
+        (text) => text.startsWith('docker volume inspect ') && text.endsWith(' melete_spaces'),
+      );
+      expect(await runRestore(rig.context, [rig.set, '--keep-database'], false)).toBe(0);
+      expect(rig.context.printed()).not.toContain('restore.keep_database_files');
+      const look = rig.events.find((event) => event.includes('find "$d"')) ?? '';
+      expect(look).toContain('src=melete_work,');
+      expect(look).not.toContain('src=melete_spaces,');
+      expect(look).not.toContain('src=melete_artifacts,');
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a computer whose container the engine could not describe is said so, never taken for gone', async () => {
+    const rig = await backedUp();
+    try {
+      const unknown = COMPUTERS[1] ?? '';
+      rig.fails.push((text) => text === `docker container inspect --format {{.Id}} ${unknown}`);
+      expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
+      const printed = rig.context.printed();
+      expect(printed).toMatch(
+        new RegExp(
+          `warn\\s+restore\\.computers_unreadable\\s+Whether ${unknown} has a container on this machine could not be read \\(failed in this test\\)`,
+        ),
+      );
+      expect(printed).not.toContain('restore.computers_without_container');
+      // It is stopped with the others: a container that is there is never left running on its volumes.
+      expect(printed).toContain(`docker stop ${COMPUTERS[0]} ${unknown}`);
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a container is absent only when the engine says it has no such container', () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      const answering = (code: number, stderr: string) =>
+        testContext(deployDir, [], { run: () => ({ code, stdout: '', stderr }) });
+      expect(computerExists(answering(0, ''), 'c')).toBe('present');
+      expect(computerExists(answering(1, 'Error: No such container: c'), 'c')).toBe('absent');
+      expect(
+        computerExists(answering(1, 'Error response from daemon: no such container: c'), 'c'),
+      ).toBe('absent');
+      expect(
+        computerExists(answering(1, 'Cannot connect to the Docker daemon at unix:///x.sock.'), 'c'),
+      ).toEqual({ unreadable: 'Cannot connect to the Docker daemon at unix:///x.sock.' });
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('the files are not measured when a volume the engine could not describe would be left out', () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      const measuring = (artifacts: { code: number; stderr: string }) =>
+        testContext(deployDir, [], {
+          run: (command) => {
+            const text = command.join(' ');
+            if (text.endsWith(' melete_artifacts')) return { stdout: '', ...artifacts };
+            if (text.startsWith('docker volume ls ')) return { code: 0, stdout: '', stderr: '' };
+            if (text.startsWith('docker volume inspect '))
+              return { code: 0, stdout: '', stderr: '' };
+            return { code: 0, stdout: text, stderr: '' };
+          },
+        });
+      const settings = {
+        image: 'img',
+        installProject: 'melete',
+        sandboxProject: null,
+        remoteSandboxes: null,
+        blobs: { store: 'local' as const },
+        cells: false,
+      };
+      const config = { project: 'melete' } as Parameters<typeof measureFiles>[1];
+      const measured: string[] = [];
+      const duBytes = (output: { stdout: string }) => {
+        measured.push(output.stdout);
+        return 1000;
+      };
+      // Not there: the volume holds nothing yet, and the rest is measured.
+      expect(
+        measureFiles(
+          measuring({ code: 1, stderr: 'Error: No such volume: melete_artifacts' }),
+          config,
+          settings,
+          duBytes,
+        ),
+      ).toBe(1000);
+      expect(measured.at(-1)).toContain('src=melete_spaces,');
+      expect(measured.at(-1)).not.toContain('src=melete_artifacts,');
+      // Not answered: the size is not known.
+      expect(
+        measureFiles(
+          measuring({ code: 1, stderr: 'Cannot connect to the Docker daemon' }),
+          config,
+          settings,
+          duBytes,
+        ),
+      ).toBeNull();
+      expect(measured).toHaveLength(1);
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
   });
 
   test("only the engine's own answer that it has no such volume counts as absent", () => {
@@ -1237,7 +2182,7 @@ describe('restoring the files', () => {
     expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
     const printed = rig.context.printed();
     expect(printed).toMatch(
-      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup are not this installation's \(MELETE_SANDBOX_PROJECT=proj\)/,
+      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup are not computers of the installation it is a backup of \(melete\)/,
     );
     expect(printed).toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
     expect(printed).not.toContain(`src=${COMPUTERS[1]}-home,dst=/v`);
@@ -1252,7 +2197,7 @@ describe('restoring the files', () => {
     });
     expect(await runRestore(taken.context, [taken.set], false)).toBe(0);
     expect(taken.context.printed()).toMatch(
-      /warn\s+restore\.computers_left_out\s+1 agent computer/,
+      /warn\s+restore\.computers_left_out\s+1 agent computer\(s\) in this backup have a volume of the same name on this engine that is not this installation's, or not one it can tell is its own .*: melete-sbx-proj-sbx_a\./,
     );
     expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-work,dst=/v`);
     expect(taken.context.printed()).not.toContain(`src=${COMPUTERS[0]}-home,dst=/v`);
@@ -1273,7 +2218,7 @@ describe('restoring the files', () => {
     expect(await runRestore(rig.context, [rig.set], false)).toBe(0);
     const printed = rig.context.printed();
     expect(printed).toContain(
-      'find /r/data/spaces -mindepth 1 -delete && find /r/data/artifacts -mindepth 1 -delete && exec tar -C /r --numeric-owner -xpf - data/spaces data/artifacts',
+      "find /r/data/spaces -mindepth 1 -delete && find /r/data/artifacts -mindepth 1 -delete && exec tar -C /r --numeric-owner --anchored --no-wildcards-match-slash --exclude='\\''data/spaces/*/.index'\\'' --exclude='\\''data/spaces/*/.proposed'\\'' -xpf - data/spaces data/artifacts",
     );
     expect(printed).toContain('exec tar -C /r --numeric-owner -xpf - work');
     expect(printed).not.toContain('data/restrictions');
@@ -1422,6 +2367,66 @@ describe('restoring with an external database', () => {
     );
     expect(indexOf(rig.events, 'src=melete_spaces,dst=/v ')).toBe(-1);
     expect(rig.events.some(startsStack)).toBe(false);
+  });
+
+  test("a failed step's report line names the step, not its whole shell line", async () => {
+    const rig = await external();
+    try {
+      rig.context.streamFails.push('pg_restore --dbname');
+      expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+      const line = rig.context
+        .printed()
+        .split('\n')
+        .find((text) => /fail\s+restore\.step\s/.test(text));
+      expect(line).toContain('Loaded the database dump into the database DATABASE_URL names');
+      expect(line).toContain('it failed in this test');
+      expect(line).not.toContain('sh -c');
+      expect(line?.length ?? 0).toBeLessThan(300);
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('while its steps run, a restore tells a Ctrl-C what to say, and what to run next', async () => {
+    const rig = await external();
+    try {
+      const hints: (string | null)[] = [];
+      rig.context.interruptHint = (hint) => hints.push(hint);
+      rig.context.streamFails.push('src=melete_artifacts,dst=/v ');
+      expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+      // Before the steps: nothing replaced yet, and the same restore may run again.
+      expect(hints[0]).toContain('run the same restore --yes again');
+      // Once the dump is in the database, the same restore is refused: the hint says what finishes it.
+      expect(hints.at(-1)).toContain('--keep-database --replace-files --yes');
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a Ctrl-C while a step runs is told what that step may have left, never to start the stack on it', async () => {
+    const rig = await external();
+    const started = await external();
+    try {
+      const hints: (string | null)[] = [];
+      rig.context.interruptHint = (hint) => hints.push(hint);
+      // Stopped during the load, as a Ctrl-C would stop it: the hint that stands is the load's.
+      rig.context.streamFails.push('pg_restore --dbname');
+      expect(await runRestore(rig.context, [rig.set, '--yes'], false)).toBe(3);
+      expect(hints.at(-1)).toContain('run the same restore --yes again');
+      // Started now, the stack would fill the new database, and the restore would then refuse it.
+      expect(hints.at(-1)).not.toContain('start the stack as it was');
+
+      // Stopped during the start, every part is back: the restore need not run again.
+      const told: (string | null)[] = [];
+      started.context.interruptHint = (hint) => told.push(hint);
+      started.fails.push(startsStack);
+      expect(await runRestore(started.context, [started.set, '--yes'], false)).toBe(3);
+      expect(told.at(-1)).toContain('Every part is back');
+      expect(told.at(-1)).toContain('The restore need not run again.');
+    } finally {
+      rmSync(join(rig.deployDir, '..'), { recursive: true, force: true });
+      rmSync(join(started.deployDir, '..'), { recursive: true, force: true });
+    }
   });
 
   test("the administrator's role addresses must name the database the restore loads or keeps", async () => {

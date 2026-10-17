@@ -925,7 +925,8 @@ is written as a literal address or is what the name resolves to. Installation
 answers such an address with `400`. Every request to the server resolves the
 name again, refuses it if any answer is not public, and connects to the address
 it checked, so a name that later resolves inside the installation reaches
-nothing. Evidence: `an MCP server at a private address is the setup owner’s
+nothing. The operator can open chosen internal hosts to every space; see
+[Internal hosts](#internal-hosts). Evidence: `an MCP server at a private address is the setup owner’s
 alone` in
 [connection-kinds.test.ts](../apps/melete/test/integration/connection-kinds.test.ts)
 and [public-fetch.test.ts](../apps/melete/src/connectors/public-fetch.test.ts). The same policy can instead be pinned by the operator: create
@@ -958,6 +959,63 @@ dialect explicitly. Unsupported dialects or unresolved references fail validatio
 Shutdown disposes HTTP sessions (a stateless server has none). This
 implementation does not configure server authentication or resume disconnected
 sessions; it sends no service secrets.
+
+### Internal hosts
+
+A team that runs its own MCP servers, calendars or mail on an internal network
+can let rooms and every other account reach them, not only the setup owner. The
+operator lists them in `MELETE_PRIVATE_HOSTS`, comma-separated. It is empty by
+default, and then nothing changes.
+
+| Entry | Example | What it covers |
+| --- | --- | --- |
+| Host name | `mcp.corp.internal` | That name exactly |
+| Wildcard | `*.corp.internal` | Every name below it, not the name itself; at least two labels after `*.` |
+| Address range | `10.20.0.0/16`, `fd00:20::/32`, `10.20.0.5` | Every address in it; one address is a range of one |
+
+```bash
+MELETE_PRIVATE_HOSTS=*.corp.internal,10.20.0.0/16
+```
+
+How the entries work together:
+
+- **Ranges decide where a request may land.** Every address a name resolves to
+  must still be public or inside a listed range, checked on every request and
+  pinned for the connection. A listed name that answers with some other private
+  address (another subnet, loopback, the host) reaches nothing, so list the
+  range your internal names answer in, not only the names. An unlisted name that
+  resolves into a listed range is reached, as the literal address would be.
+- **Names decide where a token may travel without TLS.** A bearer token, a
+  token endpoint and a sign-in resource go to `https://` addresses, to this
+  machine, and over plain `http://` only to a listed name, a name below a listed
+  wildcard, or an address in a listed range. Anything else is refused at install
+  with `A token is only sent to an https:// address. Use the server’s https://
+  address.`
+- **Cloud metadata stays refused**, whatever range holds it
+  (`169.254.169.254` and the others `MELETE_ALLOW_CLOUD_METADATA` describes).
+- **Melete's own network pool stays refused**, whatever range holds it
+  (`MELETE_NETWORK_POOL`, `10.215.0.0/16` by default). Every agent computer has
+  its network there, so listing `10.0.0.0/8` for a team's hosts never lets one
+  person's agent reach another person's computer. With the pool set to `off`,
+  computers take the engine's own ranges, so leave those out of the list.
+- **Agents' computers follow the same ranges.** The docker computer's egress
+  guard tunnels HTTPS to an address in a listed range as it does to a public
+  one; see [sandbox-docker.md](sandbox-docker.md#what-it-may-reach).
+
+The list is checked when the service starts, and a bad entry stops it with a
+message naming the entry: a wildcard with one label (`*.internal`), a range
+with host bits set (`10.20.0.1/16`), a range wider than `/8` (IPv4) or `/7`
+(IPv6), a URL or a port. A range that overlaps `MELETE_NETWORK_POOL`, the
+addresses Melete's own computers and attempts take, is refused too. Do not list
+the range Compose gives Melete's own containers (the database among them):
+anyone who can add a connection could then point one at them.
+
+Evidence: [private-hosts.test.ts](../apps/melete/src/connectors/private-hosts.test.ts),
+`internal hosts the operator opened to everyone` in
+[public-fetch.test.ts](../apps/melete/src/connectors/public-fetch.test.ts),
+and `a room reaches an internal server the operator listed, and nothing else
+inside` in
+[connection-kinds.test.ts](../apps/melete/test/integration/connection-kinds.test.ts).
 
 ### Connecting an app from the catalog
 

@@ -14,7 +14,7 @@ import {
   readExtractionReply,
   sameDetail,
 } from './extract.ts';
-import { ownTopicRun, relatedSubject, twoPeople, whoseDetail } from './labels.ts';
+import { ownTopicRun, relatedSubject, someoneFirst, twoPeople, whoseDetail } from './labels.ts';
 
 const span = {
   source_id: 'src_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -330,6 +330,204 @@ describe("the person's own details are filed under them, never as someone in the
       'person.priya.role',
       'person.diet',
     ]);
+  });
+
+  test("a detail filed under a bare topic whose words name someone else is not the person's own", () => {
+    // The model got both the subject and what it is about wrong.
+    expect(
+      filed([
+        said('person.allergy', 'Maya is allergic to peanuts', 'Maya is allergic to peanuts', {
+          about: 'the_person',
+        }),
+        said('person.diet', "Sam's diet is vegan", 'Sam is vegan', { about: 'the_person' }),
+        said('person.city', 'My sister lives in Lisbon', 'my sister lives in Lisbon', {
+          about: 'the_person',
+        }),
+        said('person.diet', 'My friend sam is vegetarian', 'my friend sam is vegetarian', {
+          about: 'preference',
+        }),
+        // The person's own, however the model wrote it.
+        said('person.allergy', 'Allergic to peanuts', 'I am allergic to peanuts', {
+          about: 'the_person',
+        }),
+        said('person.city', 'User lives in Lisbon', 'I live in Lisbon', { about: 'the_person' }),
+        said('person.travel', 'Will be away until Friday', 'I will be away until Friday', {
+          about: 'temporary_exception',
+        }),
+        said('person.city', 'Lives in Lisbon with Maya', 'I live in Lisbon with Maya', {
+          about: 'the_person',
+        }),
+      ]),
+    ).toEqual([
+      'person.maya.allergy',
+      'person.sam.diet',
+      'person.sister.city',
+      'person.friend.sam.diet',
+      'self.allergy',
+      'self.city',
+      'self.travel',
+      'self.city',
+    ]);
+    expect(whoseDetail('person.allergy', 'Maya is allergic to peanuts')).toEqual({
+      kind: 'other',
+      who: 'maya',
+    });
+    expect(whoseDetail('person.allergy', 'Allergic to peanuts').kind).toBe('unknown');
+    // Only words that start with someone name them.
+    expect(someoneFirst('Maya is allergic to peanuts')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Sister Maya is vegetarian')).toEqual({ name: 'maya', relation: 'sister' });
+    expect(someoneFirst("Mom's birthday is in May")).toEqual({ relation: 'mom' });
+    for (const own of [
+      'maya is allergic to peanuts',
+      'Loves dogs',
+      'Hates mushrooms',
+      'Has two cats',
+      'Is vegetarian',
+      'May be late on Mondays',
+      'The user is vegetarian',
+      'She is allergic to peanuts',
+      'Vegetarian and gluten free',
+    ])
+      expect(someoneFirst(own)).toBeNull();
+    // Nor is it merged into the person's own allergy held in the same words.
+    const [maya] = mergeIntoHeld(
+      [said('person.allergy', 'Maya is allergic to peanuts', 'Maya is allergic to peanuts')],
+      [
+        {
+          id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FA4',
+          domain_key: 'health.allergy',
+          key: null,
+          content: 'Allergic to peanuts',
+        },
+      ],
+    );
+    expect(maya?.op === 'add' ? maya.domain_key : maya?.op).toBe('person.allergy');
+  });
+
+  test('a detail filed under the person alone gets a subject of its own', () => {
+    expect(
+      filed([
+        said('person.user', 'Works as a nurse', 'I work as a nurse', { about: 'the_person' }),
+        said('person.user', 'Has two cats', 'I have two cats', { about: 'the_person' }),
+        said('contact.owner', 'Speaks Portuguese and English', 'I speak Portuguese and English', {
+          about: 'the_person',
+        }),
+        said('person.me', '!!!', 'I am', { about: 'the_person' }),
+      ]),
+    ).toEqual([
+      'self.about.nurse',
+      'self.about.2_cats',
+      'self.about.english_portuguese_speak',
+      'self.about',
+    ]);
+  });
+
+  test('a detail filed under the person alone keeps one subject however it is said again, and another detail another', () => {
+    const own = (content: string) =>
+      filed([said('person.user', content, content, { about: 'the_person' })])[0] ?? '';
+    // Said again in other words: one subject.
+    expect(own('Usually works at night')).toBe(own('Works nights'));
+    expect(own('Is a nurse')).toBe(own('Works as a nurse'));
+    expect(own('Nurse')).toBe(own('Works as a nurse'));
+    // Different details: two subjects, however many words they start with alike.
+    expect(own('Works night shifts on weekends')).not.toBe(
+      own('Works night shifts at the hospital'),
+    );
+    expect(own("Doesn't eat meat")).not.toBe(own('Eats meat'));
+    expect(own('Has two dogs')).not.toBe(own('Has two cats'));
+    expect(own('Has 2 cats')).toBe(own('Has two cats'));
+    // The same words the other way round are another detail.
+    expect(own('Teaches Spanish to English speakers')).not.toBe(
+      own('Teaches English to Spanish speakers'),
+    );
+    expect(own('Translates English into Portuguese')).not.toBe(
+      own('Translates Portuguese into English'),
+    );
+    expect(own('Translates Portuguese to English')).toBe(own('Translates Portuguese into English'));
+    expect(own('Speaks English and Portuguese')).toBe(own('Speaks Portuguese and English'));
+    // A long detail still gets a subject of its own that memory can hold.
+    const long = (end: string) =>
+      own(`Volunteers at the animal shelter near the old harbour every second Saturday ${end}`);
+    expect(long('with friends').length).toBeLessThanOrEqual(120);
+    expect(long('with friends')).not.toBe(long('with family'));
+    expect(long('with friends')).toBe(long('with friends'));
+    // With a topic in its subject, the topic is its subject.
+    expect(
+      filed([
+        said('person.user.work', 'Works as a nurse', 'I work as a nurse', { about: 'the_person' }),
+      ]),
+    ).toEqual(['self.work']);
+  });
+
+  test('a word that only starts the detail, as a thing or a place does, is not someone', () => {
+    // A capital at the start of a sentence says nothing of a name.
+    for (const own of [
+      'Coffee is a must',
+      'Coffee is a must for me',
+      'Lisbon is home now',
+      'Python is my main language',
+      "Maya's cat makes me sneeze",
+    ])
+      expect(someoneFirst(own)).toBeNull();
+    expect(
+      filed([
+        said('person.preference', 'Coffee is a must', 'Coffee is a must', { about: 'preference' }),
+        said('person.city', 'Lisbon is home now', 'Lisbon is home now', { about: 'the_person' }),
+        said('person.language', 'Python is my main language', 'Python is my main language', {
+          about: 'the_person',
+        }),
+        said('person.allergy', "Maya's cat makes me sneeze", "Maya's cat makes me sneeze", {
+          about: 'the_person',
+        }),
+      ]),
+    ).toEqual(['self.preference', 'self.city', 'self.language', 'self.allergy']);
+    // Someone they still are.
+    expect(someoneFirst('Maya is allergic to peanuts')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Maya is a teacher')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Maya is my sister')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Maya is my best friend')).toEqual({ name: 'maya' });
+    expect(someoneFirst('Sam lives near me')).toEqual({ name: 'sam' });
+    expect(someoneFirst('Maya has two kids')).toEqual({ name: 'maya' });
+    expect(someoneFirst("Sam's diet is vegan")).toEqual({ name: 'sam' });
+    expect(someoneFirst("Sam's birthday is the same day as mine")).toEqual({ name: 'sam' });
+    expect(someoneFirst("Sam's dog is a labrador")).toEqual({ name: 'sam' });
+  });
+
+  test('a detail that starts with a name and says what someone is to the person, or where they are, is theirs', () => {
+    for (const [text, name] of [
+      ['Sam is the best cook I know', 'sam'],
+      ["Sam's the best cook I know", 'sam'],
+      ['Maya is my favourite cousin', 'maya'],
+      ['Maya is our favourite babysitter', 'maya'],
+      ['Sam is my main contact at the bank', 'sam'],
+      ['Max is our dog', 'max'],
+      ['Max is my main running partner', 'max'],
+      ['Will is the best', 'will'],
+      ['Sam is the best at fixing bikes', 'sam'],
+      ['Maya is the best person to ask about taxes', 'maya'],
+      ['Jo is home for the holidays', 'jo'],
+      ['Sam is home sick today', 'sam'],
+      ['Sam is everything to me', 'sam'],
+      ['Maya is essential to the team', 'maya'],
+      ['Sam has been my friend since school', 'sam'],
+    ] as const)
+      expect([text, someoneFirst(text)]).toEqual([text, { name }]);
+    // Days, meals, everyday things and what the person does are no one.
+    for (const text of [
+      'Monday is gym day',
+      "Monday's standup is at 9",
+      'Sunday is family day',
+      'Dinner is usually at 7',
+      'Sleep is a priority',
+      'Gardening is how I relax',
+      'Cycling is how I get to work',
+      "Coffee's too bitter for me without milk",
+      'Chess has been my hobby since school',
+      'Pizza is the best food',
+      'Tea is the best way to start the day',
+      'Coffee is essential',
+    ])
+      expect([text, someoneFirst(text)]).toEqual([text, null]);
   });
 
   test('a subject memory already holds, and a registry key, are never moved', () => {

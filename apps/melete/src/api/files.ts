@@ -19,8 +19,9 @@ import {
   personFileRestored,
   prefixedId,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
+import type { Sql } from 'postgres';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { FILE_TOOLS, mimeForName, savedFile } from '../artifact/shown.ts';
 import { attachment } from '../attachments/schema.ts';
@@ -33,11 +34,28 @@ import {
   SPACE_FILES_TRASH,
   type TrashPlace,
 } from '../connectors/files-trash.ts';
+import {
+  FILES_TURN_IDLE_LIMIT,
+  FILES_TURN_LOCK,
+  FILES_TURN_LOCK_TIMEOUT,
+  type FilesHold,
+  heldThrough,
+  inFilesTurn,
+  managesSharedFiles,
+} from '../connectors/shared-files.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, job } from '../db/schema.ts';
 import { ownJob, spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
-import { artifactLocation, openArtifact, type Stored } from './artifacts.ts';
+import { restoreStoredFiles, storageUsed, trashStoredFile } from '../storage/per-person.ts';
+import {
+  artifactLocation,
+  MAX_SERVED_BYTES,
+  matches,
+  type Opened,
+  openArtifact,
+  type Stored,
+} from './artifacts.ts';
 import { ServiceError } from './errors.ts';
 import type { SpaceResolver } from './reactions.ts';
 
@@ -79,6 +97,9 @@ type Found = {
   mime: string;
   savedAt: Date;
   job: JobRow | null;
+  /** The content the record saved, and its size where recorded. */
+  hash: string | null;
+  size: number | null;
 };
 
 /** Where a record's file is: the key that makes one file one entry, and how to reach its trash. */
@@ -151,18 +172,23 @@ function fromArtifact(row: { artifact: typeof artifact.$inferSelect; job: JobRow
     mime: row.artifact.mime,
     savedAt: row.artifact.createdAt,
     job: row.job,
+    hash: row.artifact.contentHash,
+    size: row.artifact.size,
   };
 }
 
 function fromAction(row: { action: typeof action.$inferSelect; job: JobRow }): Found | null {
   const saved = savedFile(row.action.kind, row.action.receipt);
   if (!saved) return null;
+  const bytes = (row.action.receipt as { detail?: { bytes?: unknown } } | null)?.detail?.bytes;
   return {
     id: row.action.id,
     row: { area: saved.area, path: saved.path, jobId: row.job.id, sourceJobId: row.job.id },
     mime: mimeForName(saved.path.split('/').at(-1) ?? ''),
     savedAt: row.action.resolvedAt ?? row.action.dispatchedAt ?? new Date(0),
     job: row.job,
+    hash: saved.contentHash,
+    size: typeof bytes === 'number' && Number.isSafeInteger(bytes) ? bytes : null,
   };
 }
 
@@ -238,8 +264,20 @@ async function managesSpaceFiles(db: Database, scope: Scope): Promise<boolean> {
       throw error;
     },
   );
-  return access?.role === 'owner';
+  return managesSharedFiles(access?.role);
 }
+
+/**
+ * Whether the file open at a record's name is still the one the record saved:
+ * the same size where one was recorded, and the same content. A chat's record
+ * of a file in the space's Files stands for that file only while it is.
+ */
+const stillSaved = (found: Found, opened: Opened): Promise<boolean> =>
+  found.hash === null
+    ? Promise.resolve(false)
+    : matches(opened, { size: found.size, hash: found.hash, max: MAX_SERVED_BYTES }).catch(
+        () => false,
+      );
 
 /** The chats files came from, by job: a run reports into the chat it was started from. */
 async function chatsFor(
@@ -288,7 +326,19 @@ export function mountFiles(
   roots: ArtifactRoots,
   resolveSpace: SpaceResolver,
   trash: { days: number; maxBytes: number },
+  /**
+   * Where what each person keeps is recorded, and the most they may keep
+   * (storage/per-person.ts). Left out, deletes here are not recorded there.
+   */
+  storage?: { sql: Sql; quota: number | null },
 ): void {
+  /** What this person keeps against their limit, where the installation sets one. */
+  const storageOf = async (scope: Scope) => {
+    if (!storage?.quota || !scope.principalId) return null;
+    const used = await storageUsed(storage.sql, scope.principalId);
+    return { used_bytes: Math.round(used), quota_bytes: storage.quota };
+  };
+
   app.get('/files', async (c) => {
     const scope = await scopeOf(c, resolveSpace);
     const [artifacts, actions, sent] = await Promise.all([
@@ -325,12 +375,24 @@ export function mountFiles(
       }
       if (!newest.has(where.key)) newest.set(where.key, { found, where });
     }
+    const managesSpace = [...newest.values()].some((entry) => entry.where.place === 'files')
+      ? await managesSpaceFiles(db, scope)
+      : false;
     // Only what is still there: a file moved, deleted or never written is not listed.
     const present = await inBatches([...newest.values()], async (entry) => {
       try {
         const opened = await openArtifact(roots, scope.spaceId, entry.found.row);
-        await opened.handle.close();
-        return { ...entry, size: opened.size };
+        try {
+          // What the space holds with no chat behind it, or that is no longer
+          // what a chat saved there, is its owner's to delete.
+          const deletable =
+            managesSpace ||
+            (entry.found.job !== null &&
+              (entry.where.place === 'chat' || (await stillSaved(entry.found, opened))));
+          return { ...entry, size: opened.size, deletable };
+        } finally {
+          await opened.handle.close();
+        }
       } catch {
         return null;
       }
@@ -340,9 +402,6 @@ export function mountFiles(
       ...kept.flatMap((entry) => entry.found.job ?? []),
       ...sent.map((row) => row.job),
     ]);
-    const managesSpace = kept.some((entry) => entry.found.job === null)
-      ? await managesSpaceFiles(db, scope)
-      : false;
     const files: PersonFile[] = [
       ...kept.map((entry) => ({
         id: entry.found.id,
@@ -353,8 +412,7 @@ export function mountFiles(
         size: entry.size,
         saved_at: entry.found.savedAt.toISOString(),
         chat: entry.found.job ? (chats.get(entry.found.job.id) ?? null) : null,
-        // What the space holds with no chat behind it is its owner's to delete.
-        deletable: entry.found.job !== null || managesSpace,
+        deletable: entry.deletable,
       })),
       ...sent.map((row) => ({
         id: row.attachment.id,
@@ -370,8 +428,24 @@ export function mountFiles(
     ]
       .sort((a, b) => Date.parse(b.saved_at) - Date.parse(a.saved_at))
       .slice(0, LIST_LIMIT);
-    return c.json(personFileList.parse({ files }));
+    return c.json(personFileList.parse({ files, storage: await storageOf(scope) }));
   });
+
+  /**
+   * A delete's turn in the space's Files held in the database too, so it is
+   * one turn with steps on every instance (`inFilesTurn`): the same lock as
+   * `lockFilesTurnIn`, in Drizzle form.
+   */
+  const filesTurnHold: FilesHold = <T>(spaceId: string, work: (query: null) => Promise<T>) =>
+    heldThrough<Parameters<Parameters<Database['transaction']>[0]>[0], T>(
+      (body) => db.transaction(body),
+      (tx) =>
+        tx.execute(sql`select pg_advisory_xact_lock(${FILES_TURN_LOCK}, hashtext(${spaceId}))
+          from (select set_config('lock_timeout', ${FILES_TURN_LOCK_TIMEOUT}, true) as timeout,
+              set_config('idle_in_transaction_session_timeout', ${FILES_TURN_IDLE_LIMIT}, true) as idle) limits
+          where limits.timeout is not null and limits.idle is not null`),
+      () => work(null),
+    );
 
   app.delete('/files/:id', async (c) => {
     const scope = await scopeOf(c, resolveSpace);
@@ -392,6 +466,12 @@ export function mountFiles(
     // name since stays where it is. It is held open until the move is done,
     // so a file made at its name after it was deleted there cannot be given
     // its number on the disk and pass for it.
+    // A chat's record of a file in the space's Files deletes only the file it
+    // saved: anything put at its name since is the space's, and its owner's to
+    // delete. Who manages the space is read before the turn, which then
+    // sends nothing to the database but its own lock.
+    const onlyAsSaved =
+      found.job !== null && !inChatFolder(found.row) && !(await managesSpaceFiles(db, scope));
     let opened: Awaited<ReturnType<typeof openArtifact>>;
     try {
       opened = await openArtifact(roots, scope.spaceId, found.row);
@@ -400,22 +480,32 @@ export function mountFiles(
     }
     let trashed: Awaited<ReturnType<typeof moveToTrash>>;
     try {
-      const checked = await opened.handle.stat().catch(() => {
-        throw noFile();
-      });
-      const file = { dev: checked.dev, ino: checked.ino };
-      trashed = await moveToTrash(place, [{ path: target.path, hash: null, file }], {
-        days: trash.days,
-        maxBytes: trash.maxBytes,
-      }).catch((error: unknown) => {
-        throw new ServiceError(
-          'file_not_deleted',
-          error instanceof Error
-            ? `The file was not deleted: ${error.message}.`
-            : 'The file was not deleted.',
-          409,
-        );
-      });
+      // The check and the delete are one turn in the space's Files, on every
+      // instance: nothing saved there can change the open file between them.
+      trashed = await inFilesTurn(
+        scope.spaceId,
+        async () => {
+          // The file checked is the open one, the one that goes.
+          if (onlyAsSaved && !(await stillSaved(found, opened))) throw notTheirs('delete');
+          const checked = await opened.handle.stat().catch(() => {
+            throw noFile();
+          });
+          const file = { dev: checked.dev, ino: checked.ino };
+          return moveToTrash(place, [{ path: target.path, hash: null, file }], {
+            days: trash.days,
+            maxBytes: trash.maxBytes,
+          }).catch((error: unknown) => {
+            throw new ServiceError(
+              'file_not_deleted',
+              error instanceof Error
+                ? `The file was not deleted: ${error.message}.`
+                : 'The file was not deleted.',
+              409,
+            );
+          });
+        },
+        filesTurnHold,
+      );
     } finally {
       await opened.handle.close();
     }
@@ -433,6 +523,14 @@ export function mountFiles(
         409,
       );
     }
+    // What it held is no longer counted against anyone while it is in the trash.
+    if (storage)
+      await trashStoredFile(
+        storage.sql,
+        scope.spaceId,
+        { place: placeOf(roots, scope.spaceId, found.row).key },
+        trashed.trash_id,
+      );
     return c.json(
       personFileDeleted.parse({
         id: found.id,
@@ -479,6 +577,7 @@ export function mountFiles(
         `The file was not put back${restored.kept[0] ? `: ${restored.kept[0].reason}` : ''}.`,
         409,
       );
+    if (storage) await restoreStoredFiles(storage.sql, scope.spaceId, body.data.trash_id);
     return c.json(personFileRestored.parse({ id: found.id, restored: true }));
   });
 }

@@ -19,6 +19,7 @@ import {
   type TransitionInput,
   transition,
   type WaitSpec,
+  waitSpec,
 } from '@melete/contracts';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
@@ -39,8 +40,10 @@ import {
   spaceAuthority,
   visibleJob,
 } from '../principals/authority.ts';
+import { personSetSchedule } from './attention.ts';
 import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
+import type { StandingWorkSettings } from './resting.ts';
 import { opensWithMention, recordSteer } from './steer.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
 
@@ -119,6 +122,7 @@ export function jobView(row: JobRow) {
     id: row.id,
     space_id: row.spaceId,
     principal_id: row.principalId,
+    requested_by: row.requestedByPrincipalId,
     title: row.title,
     objective: row.objective,
     constraints: row.constraints,
@@ -150,6 +154,8 @@ export type TransitionOptions = {
   payload?: JsonObject;
   reason?: AttemptWake['reason'];
   bumpEpoch?: boolean;
+  /** For a move back to queued: how long the next attempt waits before it may start. */
+  retryAfterMs?: number;
 };
 
 export type JobFaults = {
@@ -167,6 +173,8 @@ export class JobService {
   stopTurn?: (tx: Transaction, row: JobRow) => Promise<boolean>;
   /** The most files one message may carry, as the operator sets it. */
   attachmentsPerMessage: number = ATTACHMENT_LIMITS.per_message;
+  /** When standing work rests for someone away, and how much one person may keep, as the operator sets it. */
+  standingWork: StandingWorkSettings = {};
   constructor(
     readonly db: Database,
     readonly boss: PgBoss,
@@ -253,6 +261,14 @@ export class JobService {
     );
     if (room && access.role !== 'agent')
       throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
+    // A member's own job in a shared space is allowed on purpose: it reads what
+    // the space shares (its knowledge and the procedures its people taught it)
+    // for the member's own task. It acts through none of the space's
+    // connections (`connectionServesJob`): the owner's serve only the owner's
+    // jobs, and the room's serve only requests made of the room's agent. So
+    // every effect in a shared space is either the owner's own work or a room
+    // request, and both appear in the space's audit log. Guests make no jobs
+    // of their own at all; they ask the room.
     const base = experience?.kind === 'chat' ? CONVERSATION_BUDGET : DEFAULT_BUDGET;
     // A job offered background processes gets the wall time to use them,
     // unless its creator named one.
@@ -350,6 +366,26 @@ export class JobService {
     );
   }
 
+  /** Whether a waiting job has an attempt left to wake into. */
+  async attemptsLeft(tx: Transaction, row: JobRow): Promise<boolean> {
+    // A run counts failed shifts in a row instead, when each shift ends.
+    if (isRunKind(row.kind)) return true;
+    const [used] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(attempt)
+      .where(
+        and(
+          eq(attempt.jobId, row.id),
+          ['chat', 'routine'].includes(row.kind)
+            ? row.currentTurnId
+              ? eq(attempt.turnId, row.currentTurnId)
+              : sql`false`
+            : undefined,
+        ),
+      );
+    return Number(used?.count ?? 0) < jobBudget.parse(row.budget).max_attempts;
+  }
+
   /** The only production write to job.state, including cancellation and recovery. */
   async move(
     tx: Transaction,
@@ -359,28 +395,12 @@ export class JobService {
   ): Promise<JobRow> {
     const result = transition(row.state as JobState, input);
     if (!result.ok) throw new ServiceError(result.error.code, result.error.message);
-    // A run counts failed shifts in a row instead, when each shift ends.
-    if (result.value === 'queued' && row.state !== 'running' && !isRunKind(row.kind)) {
-      const [used] = await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(attempt)
-        .where(
-          and(
-            eq(attempt.jobId, row.id),
-            ['chat', 'routine'].includes(row.kind)
-              ? row.currentTurnId
-                ? eq(attempt.turnId, row.currentTurnId)
-                : sql`false`
-              : undefined,
-          ),
-        );
-      if (Number(used?.count ?? 0) >= jobBudget.parse(row.budget).max_attempts)
-        throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
-    }
+    if (result.value === 'queued' && row.state !== 'running' && !(await this.attemptsLeft(tx, row)))
+      throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     let wait = options.wait ?? { kind: 'none' };
     const baseWakeAt =
       result.value === 'queued'
-        ? await databaseNow(tx)
+        ? new Date((await databaseNow(tx)).getTime() + Math.max(0, options.retryAfterMs ?? 0))
         : result.value === 'waiting_for_event_or_time' && wait.kind === 'timer'
           ? new Date(wait.wake_at)
           : result.value === 'waiting_for_event_or_time' &&
@@ -388,16 +408,22 @@ export class JobService {
               wait.deadline_at
             ? new Date(wait.deadline_at)
             : null;
+    // Unread results slow work down by stretching its timers, except a
+    // schedule the person asked for, which keeps its time.
     const nextWakeAt =
       result.value === 'waiting_for_event_or_time' &&
       wait.kind === 'timer' &&
       baseWakeAt &&
-      row.cadenceMultiplier > 1
+      row.cadenceMultiplier > 1 &&
+      !(await personSetSchedule(tx, row))
         ? new Date(
             Date.now() + Math.max(0, baseWakeAt.getTime() - Date.now()) * row.cadenceMultiplier,
           )
         : baseWakeAt;
-    if (wait.kind === 'timer' && nextWakeAt) wait = { ...wait, wake_at: nextWakeAt.toISOString() };
+    // Only a job going to rest on its timer takes the stretched time. A queued
+    // job that keeps a wait it has not reached yet keeps it as it was set.
+    if (result.value === 'waiting_for_event_or_time' && wait.kind === 'timer' && nextWakeAt)
+      wait = { ...wait, wake_at: nextWakeAt.toISOString() };
     const [updated] = await tx
       .update(job)
       .set({
@@ -511,11 +537,18 @@ export class JobService {
       : [];
     if (!text && !files.length)
       throw new ServiceError('invalid_request', 'A message needs words or a file.', 400);
+    // A conversation resting until a reminder is due answers the message now and
+    // keeps the reminder: the queued row carries the wait, so the reply is told
+    // it was set aside and the runner puts it back when the reply is done.
+    const kept =
+      continuing && row.state === 'waiting_for_event_or_time'
+        ? waitSpec.parse(row.wait)
+        : undefined;
     const updated = await this.move(
       tx,
       row,
       { kind: continuing ? 'conversation_continued' : 'user_input_received' },
-      { reason: 'input' },
+      { reason: 'input', ...(kept ? { wait: kept } : {}) },
     );
     await appendEvent(tx, {
       jobId: id,

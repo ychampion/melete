@@ -15,6 +15,8 @@ import {
   MEMORY_TOOL_NOTICE,
   type MemoryToolNotice,
   memoryToolNotice,
+  type ProviderFailure,
+  providerFailure,
   TOOL_EXCERPT_LIMIT,
   TOOL_QUOTE_LIMIT,
   TOOL_SUMMARY_LIMIT,
@@ -320,6 +322,10 @@ function actionInput(row: ActionRow): ToolSummary | null {
       const site = host(payload.url);
       return site ? summary(`On ${site}`) : null;
     }
+    case 'browser.sign_in': {
+      const site = host(object(payload.saved).origin);
+      return site ? summary(`On ${site}`, quote(object(payload.saved).label, 'request')) : null;
+    }
     case 'web.search':
       return typeof payload.query === 'string' && payload.query.trim()
         ? summary('Looked for', quote(payload.query, 'request'))
@@ -561,6 +567,19 @@ export function actionPhrase(row: ActionRow, app: string): Phrase {
       return page
         ? phrase(`Opening ${page} in the browser`, `Opened ${page} in the browser`)
         : base;
+    case 'browser.sign_in': {
+      // The site and a masked username, as bound when it was proposed; never what was typed.
+      const saved = object(payload.saved);
+      const site = host(saved.origin);
+      const account = toolText(detail.account ?? saved.account, 40);
+      if (!site) return phrase('Signing in with a saved sign-in', 'Used a saved sign-in');
+      if (detail.outcome === 'signed_in')
+        return phrase(
+          `Signing in to ${site}`,
+          account ? `Signed in to ${site} as ${account}` : `Signed in to ${site}`,
+        );
+      return phrase(`Signing in to ${site}`, `Tried to sign in to ${site}`);
+    }
     case 'computer.open':
       if (detail.navigated === false)
         return page
@@ -1111,10 +1130,27 @@ export function runtimeCall(input: {
 // Model calls through the gateway
 // --------------------------------------------------------------------------
 
+/** A model call the provider refused, in a few words for the work log. */
+const MODEL_REFUSALS: Record<ProviderFailure, string> = {
+  key_refused: 'The provider did not accept the API key.',
+  quota: 'The provider account is out of credit.',
+  rate_limited: 'The provider is limiting requests right now.',
+  model_not_found: 'The provider does not have this model.',
+  context_too_long: 'The conversation is too long for this model.',
+  provider_down: 'The provider did not answer.',
+};
+
 export function modelCall(input: {
   reservationId: string;
   requestedAt: Date;
-  receipt?: { status: unknown; latencyMs: unknown; at: Date; stopped?: boolean };
+  receipt?: {
+    status: unknown;
+    latencyMs: unknown;
+    at: Date;
+    stopped?: boolean;
+    /** Why the provider refused the call, as the gateway classed it. */
+    failure?: unknown;
+  };
 }): ToolCall {
   const settled = input.receipt;
   // A call cut off by Stop ended as asked: it is finished, not failed.
@@ -1130,6 +1166,8 @@ export function modelCall(input: {
     typeof settled?.latencyMs === 'number' && Number.isFinite(settled.latencyMs)
       ? Math.max(0.1, Math.round(settled.latencyMs / 100) / 10)
       : null;
+  const refused = providerFailure.safeParse(settled?.failure);
+  const refusal = refused.success ? MODEL_REFUSALS[refused.data] : null;
   return toolCall.parse({
     id: toolId('model', input.reservationId),
     kind: 'model',
@@ -1142,8 +1180,8 @@ export function modelCall(input: {
       ? summary('Stopped when you asked.')
       : status === 'done'
         ? summary(seconds === null ? 'Answered' : `Answered in ${seconds} s`)
-        : status === 'failed'
-          ? summary('No answer came back.')
+        : status === 'failed' || (status === 'unknown' && refusal)
+          ? summary(refusal ?? 'No answer came back.')
           : status === 'unknown'
             ? summary('It is unclear whether an answer came back.')
             : null,

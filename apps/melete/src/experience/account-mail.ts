@@ -33,6 +33,15 @@ export function passwordResetMail(to: string, url: string, minutes: number): Acc
   };
 }
 
+/** The invite the installation's owner sends a new account from the operator console. */
+export function inviteMail(to: string, url: string, days: number, inviter: string): AccountMail {
+  return {
+    to,
+    subject: 'You’re invited to Melete',
+    text: `${inviter} made you a Melete account. Use this link to choose your password and get set up. It expires in ${days} days and can be used once.\n\n${url}\n\nIf you weren’t expecting this, ignore this email; nothing happens until the link is used.`,
+  };
+}
+
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
 /**

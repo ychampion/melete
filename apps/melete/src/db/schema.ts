@@ -58,6 +58,21 @@ export const principal = pgTable(
      * the account cannot sign in, and nothing it had signed in still works.
      */
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    /**
+     * Granted by the account that set Melete up: an admin provisions accounts
+     * and chooses the installation's model, as the setup owner does. Only a
+     * person holds it, and only the setup owner grants or takes it away.
+     */
+    admin: boolean('admin').notNull().default(false),
+    /**
+     * The last time the person signed in, used the app or reached their
+     * assistant through a channel, to within a few minutes. When the operator
+     * sets MELETE_REST_ROUTINES_AFTER_DAYS, standing work rests once this is
+     * older than that.
+     */
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    /** When the person's routines last came back on after resting while they were away. */
+    routinesResumedAt: timestamp('routines_resumed_at', { withTimezone: true }),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );
@@ -128,6 +143,72 @@ export const browserSiteProfile = pgTable(
   (t) => [
     primaryKey({ columns: [t.spaceId, t.domain] }),
     check('browser_site_domain_lower', sql`${t.domain} = lower(${t.domain})`),
+  ],
+);
+
+/**
+ * A person's saved sign-in for one site, kept for Melete's browser to sign in
+ * with. The password and the one-time code secret are one sealed `secret`
+ * (`secret_ref`), bound to this row, its person and its site; `key_id` names
+ * the installation key it was sealed under. This row holds only what a list
+ * shows. Each person's are their own, even in a space they share.
+ */
+export const savedSignIn = pgTable(
+  'saved_sign_in',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    /** `https://host[:port]`, exactly as filled; never a path. */
+    origin: text('origin').notNull(),
+    label: text('label').notNull(),
+    username: text('username').notNull(),
+    secretRef: text('secret_ref').notNull(),
+    keyId: text('key_id').notNull(),
+    hasCode: boolean('has_code').notNull().default(false),
+    /** `whenever_needed` or `ask_first`. */
+    policy: text('policy').notNull().default('whenever_needed'),
+    createdAt: created(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    lastOutcome: text('last_outcome'),
+  },
+  (t) => [
+    uniqueIndex('saved_sign_in_person_site_idx').on(t.spaceId, t.principalId, t.origin, t.username),
+    check('saved_sign_in_policy', sql`${t.policy} in ('whenever_needed', 'ask_first')`),
+    check('saved_sign_in_origin_lower', sql`${t.origin} = lower(${t.origin})`),
+  ],
+);
+
+/**
+ * Each time Melete's browser used a saved sign-in: which, where, for which
+ * work and what came of it. Never what was typed.
+ */
+export const savedSignInUse = pgTable(
+  'saved_sign_in_use',
+  {
+    id: text('id').primaryKey(),
+    signInId: text('sign_in_id')
+      .notNull()
+      .references(() => savedSignIn.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id').notNull(),
+    jobId: text('job_id'),
+    actionId: text('action_id'),
+    origin: text('origin').notNull(),
+    outcome: text('outcome').notNull(),
+    createdAt: created(),
+  },
+  (t) => [
+    index('saved_sign_in_use_sign_in_idx').on(t.signInId, t.createdAt),
+    // Removing a space removes its uses by this column.
+    index('saved_sign_in_use_space_idx').on(t.spaceId),
   ],
 );
 
@@ -423,6 +504,8 @@ export const job = pgTable(
     // The recovery scan reads this every 60 seconds.
     index('job_next_wake_idx').on(t.nextWakeAt),
     index('job_room_thread_idx').on(t.roomThreadId),
+    // A person's chats, which the starter tasks scan for whether they have begun.
+    index('job_chat_principal_idx').on(t.principalId).where(sql`${t.kind} = 'chat'`),
     check('job_audience', sql`${t.audience} in ('principal', 'room')`),
   ],
 );
@@ -436,6 +519,12 @@ export const attempt = pgTable(
       .references(() => job.id, { onDelete: 'cascade' }),
     epoch: integer('epoch').notNull(),
     principalId: text('principal_id').references(() => principal.id),
+    /**
+     * For a request made of a room's agent, the member who asked, copied from
+     * the job when the attempt starts. `principal_id` is the room's own
+     * principal then, so this is what says whose request the work was.
+     */
+    requestedByPrincipalId: text('requested_by_principal_id').references(() => principal.id),
     membershipGeneration: integer('membership_generation'),
     turnId: text('turn_id'),
     runtimeVersion: text('runtime_version').notNull(),
@@ -637,6 +726,20 @@ export const event = pgTable(
     index('event_connector_observation_idx')
       .on(sql`(${t.payload}->>'connection_id')`)
       .where(sql`${t.jobId} is null and ${t.payload}->>'kind' = 'connector_event'`),
+    // The operator's record (`operator/audit.ts`), newest first, read without
+    // walking every other event no job owns.
+    index('event_operator_action_idx')
+      .on(t.seq)
+      .where(
+        sql`${t.jobId} is null and ${t.type} = 'notice' and ${t.payload}->>'kind' = 'operator_action'`,
+      ),
+    // The notes `melete backup` leaves (`operator/backup-note.ts`), read for
+    // the newest backup on every operator overview.
+    index('event_backup_note_idx')
+      .on(t.seq)
+      .where(
+        sql`${t.jobId} is null and ${t.type} = 'notice' and ${t.payload}->>'kind' = 'backup_taken'`,
+      ),
   ],
 );
 
@@ -918,6 +1021,17 @@ export const clientFocus = pgTable('client_focus', {
     .primaryKey()
     .references(() => principal.id, { onDelete: 'cascade' }),
   focusedAt: timestamp('focused_at', { withTimezone: true }).notNull(),
+});
+
+/**
+ * A person who put Home's starter tasks away. Kept by account, not by
+ * browser, so they stay away on every device.
+ */
+export const starterDismissal = pgTable('starter_dismissal', {
+  principalId: text('principal_id')
+    .primaryKey()
+    .references(() => principal.id, { onDelete: 'cascade' }),
+  dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 /**
@@ -1370,6 +1484,8 @@ export const schema = {
   spaceMembership,
   space,
   secret,
+  savedSignIn,
+  savedSignInUse,
   connection,
   job,
   attempt,
@@ -1505,4 +1621,51 @@ export const spendingNotice = pgTable(
     createdAt: created(),
   },
   (t) => [primaryKey({ columns: [t.scope, t.period, t.level] })],
+);
+
+/**
+ * What `model_usage` adds up to so far, kept as it is written: dollars and
+ * tokens for the installation (`installation`), each person (`person:<id>`)
+ * and each person's background calls alone (`background:<id>`), per UTC month
+ * (`YYYY-MM`) and day (`YYYY-MM-DD`). A trigger on `model_usage` keeps each
+ * row in step with every insert, change and delete there, in the same
+ * transaction, so the spending caps read a few rows instead of summing the
+ * month. Rows for past periods are removed by the hourly usage rollup.
+ */
+export const spendCounter = pgTable(
+  'spend_counter',
+  {
+    period: text('period').notNull(),
+    scope: text('scope').notNull(),
+    usd: doublePrecision('usd').notNull().default(0),
+    tokens: bigint('tokens', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.period, t.scope] })],
+);
+
+/**
+ * A person's own spending caps, set by the installation's owner in place of
+ * the installation's per-person caps (`MELETE_SPEND_PERSON_*`). A column left
+ * null keeps the installation's cap for that period. Dollars only: token
+ * caps stay installation-wide.
+ */
+export const personSpendLimit = pgTable(
+  'person_spend_limit',
+  {
+    principalId: text('principal_id')
+      .primaryKey()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    dayUsd: doublePrecision('day_usd'),
+    monthUsd: doublePrecision('month_usd'),
+    backgroundDayUsd: doublePrecision('background_day_usd'),
+    backgroundMonthUsd: doublePrecision('background_month_usd'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'person_spend_limit_positive',
+      sql`coalesce(${t.dayUsd}, 1) > 0 and coalesce(${t.monthUsd}, 1) > 0
+        and coalesce(${t.backgroundDayUsd}, 1) > 0 and coalesce(${t.backgroundMonthUsd}, 1) > 0`,
+    ),
+  ],
 );

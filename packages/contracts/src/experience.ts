@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { ATTACHMENT_LIMITS, attachmentView } from './attachments.ts';
 import {
   becauseLink,
+  beliefBlocked,
   beliefBlockList,
+  beliefBlockRequest,
   beliefExport,
   beliefExportQuery,
   beliefHistory,
@@ -35,6 +37,7 @@ import {
   runRecordResponse,
   runResponse,
 } from './runs.ts';
+import { startersResponse } from './starters.ts';
 
 const id = z.string().min(1).max(240);
 const text = z.string().min(1).max(4000);
@@ -1143,6 +1146,12 @@ export const profileView = profileInput.extend({
    * there is one. It is read from the connection, not set here.
    */
   sending_address: z.string().max(4000).nullable(),
+  /**
+   * Whether the signed-in person owns this space or is a member of it. A
+   * member's view carries their own name and the space's clock, and none of
+   * the owner's details: setup and the time zone are the owner's to change.
+   */
+  role: z.enum(['owner', 'member']),
 });
 export const profileResponse = z.strictObject({ profile: profileView });
 export const automationRun = z.strictObject({
@@ -1187,6 +1196,8 @@ export const homeResponse = z.strictObject({
   routine_results: z.array(routineResult),
   /** Work rooms asked the person to run with their own setup, work of theirs running for a room, and results waiting to be shared or kept. */
   handoffs: z.array(roomHandoff).optional(),
+  /** Said for a while after the person's routines came back on from resting while they were away. */
+  routines_back: z.string().max(300).optional(),
 });
 export const experienceAutomation = z.strictObject({
   id,
@@ -1370,6 +1381,20 @@ export const passwordResetConsume = z.strictObject({
   token: z.string().min(20).max(200),
   new_password: newPassword,
 });
+/**
+ * What a one-time code is for: `invite` when it came with a new account, so
+ * the page asks the person to choose their password; `reset` otherwise.
+ */
+export const passwordResetChecked = z.strictObject({
+  status: z.literal('ok'),
+  purpose: z.enum(['reset', 'invite']),
+});
+/** An invite also signs the person in, so they go straight on to setting up. */
+export const passwordResetDone = z.strictObject({
+  status: z.literal('ok'),
+  purpose: z.enum(['reset', 'invite']),
+  signed_in: z.boolean(),
+});
 
 /** Shared operation table makes the mock and OpenAPI cover precisely the same surface. */
 export const experienceOperations = {
@@ -1468,7 +1493,11 @@ export const experienceOperations = {
   'PUT /web/settings': { request: webReadSettings, response: webReadStatus },
   'GET /memory/beliefs': { response: beliefList },
   'GET /memory/beliefs/{id}/history': { response: beliefHistory },
-  'POST /memory/beliefs/{id}/block': { response: experienceOk },
+  /**
+   * Forgets the belief and stops learning it again: anything about its
+   * subject by default, or with `scope: "detail"` just that detail.
+   */
+  'POST /memory/beliefs/{id}/block': { request: beliefBlockRequest, response: beliefBlocked },
   'GET /memory/blocks': { response: beliefBlockList },
   'DELETE /memory/blocks/{id}': { response: experienceOk },
   'GET /memory/timeline': { query: memoryTimelineQuery, response: memoryTimeline },
@@ -1499,6 +1528,13 @@ export const experienceOperations = {
   'GET /profile': { response: profileResponse },
   'PATCH /profile': { request: profileInput, response: profileResponse },
   'GET /home': { response: homeResponse },
+  /**
+   * One-tap starter tasks for a new person's Home, until they have a few chats
+   * or put them away. Each is a request to edit and send, never sent for them.
+   */
+  'GET /starters': { response: startersResponse },
+  /** Puts the starters away for this person, on every device. */
+  'POST /starters/dismiss': { response: experienceOk },
   'GET /tasks': { response: taskList },
   'POST /tasks': { request: taskInput, response: taskResponse },
   'PATCH /tasks/{id}': { request: taskInput, response: taskResponse },
@@ -1600,12 +1636,16 @@ export const experienceOperations = {
    */
   'POST /password-reset': { request: passwordResetRequest, response: experienceOk },
   /**
-   * Whether a reset code is still good: unused and unexpired. A code that isn't
-   * answers 400 invalid_reset_link. Spends nothing.
+   * Whether a reset code is still good: unused and unexpired, and whether it is
+   * a new account's invite. A code that isn't answers 400 invalid_reset_link.
+   * Spends nothing.
    */
-  'POST /password-reset/check': { request: passwordResetCheck, response: experienceOk },
-  /** Sets a new password from a one-time link and signs out every session. */
-  'POST /password-reset/consume': { request: passwordResetConsume, response: experienceOk },
+  'POST /password-reset/check': { request: passwordResetCheck, response: passwordResetChecked },
+  /**
+   * Sets a new password from a one-time link and signs out every session. An
+   * invite's link then signs this browser in to the new account.
+   */
+  'POST /password-reset/consume': { request: passwordResetConsume, response: passwordResetDone },
   'GET /search': {
     query: z.strictObject({ q: z.string().min(1).max(200) }),
     response: experienceSearch,

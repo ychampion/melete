@@ -10,12 +10,21 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { aRecord, createSpaceTemplate, fixedClock, IDS } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
-import { type IndexedRecord, SpaceIndex } from './fts.ts';
+import { type IndexedRecord, indexDisk, SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
 import { hardDelete, retract } from './records.ts';
 import { commitRecord } from './space.ts';
@@ -369,4 +378,347 @@ describe('forgetting at scale', () => {
     }
     expect(copiesOnDisk()).toBe(0);
   });
+
+  /**
+   * Makes the first `failures` VACUUMs any index runs fail as a full disk does,
+   * and counts every VACUUM, until restored.
+   */
+  const failVacuums = (failures: number) => {
+    const original = Database.prototype.run;
+    let count = 0;
+    Database.prototype.run = function (this: Database, ...args: Parameters<Database['run']>) {
+      if (/^\s*VACUUM\b/i.test(String(args[0]))) {
+        count += 1;
+        if (count <= failures) throw new Error('database or disk is full');
+      }
+      return original.apply(this, args);
+    } as Database['run'];
+    return {
+      count: () => count,
+      restore: () => {
+        Database.prototype.run = original;
+      },
+    };
+  };
+
+  const kept = Array.from({ length: 200 }, (_, i) =>
+    indexed(`k_kept_${i}`, `Note ${i}`, `ordinary words number${i}`),
+  );
+  const forgotten = Array.from({ length: 20 }, (_, i) =>
+    indexed(`k_gone_${i}`, `Gone ${i}`, `the code is ${MARKER}${i}`),
+  );
+  const forgottenIds = forgotten.map((record) => record.id);
+
+  test('a removal whose rewrite fails is finished by its retry', () => {
+    const index = SpaceIndex.open(paths);
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      const vacuums = failVacuums(1);
+      try {
+        expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+        // The rows are gone, but the file still holds what they said.
+        expect(index.search(MARKER)).toEqual([]);
+        expect(copiesOnDisk()).toBeGreaterThan(0);
+        // The retry finds nothing left to delete, and still owes the rewrite.
+        index.removeMany(forgottenIds);
+        expect(vacuums.count()).toBe(2);
+      } finally {
+        vacuums.restore();
+      }
+      expect(copiesOnDisk()).toBe(0);
+      expect(index.erasePending()).toBe(false);
+      expect(index.search('number7')).toHaveLength(1);
+    } finally {
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('a removal cut short before its rewrite is finished when the index is next opened', () => {
+    const first = SpaceIndex.open(paths);
+    const vacuums = failVacuums(1);
+    try {
+      first.rebuild([...kept, ...forgotten]);
+      expect(() => first.removeMany(forgottenIds)).toThrow('database or disk is full');
+      first.close();
+      const before = vacuums.count();
+      const reopened = SpaceIndex.open(paths);
+      try {
+        expect(vacuums.count()).toBe(before + 1);
+        expect(reopened.erasePending()).toBe(false);
+        expect(reopened.search('number7')).toHaveLength(1);
+      } finally {
+        reopened.close();
+      }
+      // Once finished, an open does no more work.
+      SpaceIndex.open(paths).close();
+      expect(vacuums.count()).toBe(before + 1);
+    } finally {
+      vacuums.restore();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('an open that cannot finish the rewrite still searches, and the next removal finishes it', () => {
+    const first = SpaceIndex.open(paths);
+    const vacuums = failVacuums(2);
+    try {
+      first.rebuild([...kept, ...forgotten]);
+      expect(() => first.removeMany(forgottenIds)).toThrow('database or disk is full');
+      first.close();
+      const reopened = SpaceIndex.open(paths);
+      try {
+        expect(reopened.erasePending()).toBe(true);
+        expect(reopened.search('number7')).toHaveLength(1);
+        reopened.removeMany(['k_kept_0']);
+        expect(reopened.erasePending()).toBe(false);
+      } finally {
+        reopened.close();
+      }
+      expect(vacuums.count()).toBe(3);
+    } finally {
+      vacuums.restore();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('a rebuild keeps an erase still owed, and finishes it', () => {
+    const index = SpaceIndex.open(paths);
+    const vacuums = failVacuums(2);
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+      // Its own try fails too: the rebuild still lands, and the erase is still owed.
+      index.rebuild(kept);
+      expect(index.count()).toBe(kept.length);
+      expect(index.erasePending()).toBe(true);
+      index.rebuild(kept);
+      expect(vacuums.count()).toBe(3);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'a removal does not wait for a log another reader holds, and keeps the mark until a later removal can empty it',
+    () => {
+      const index = SpaceIndex.open(paths);
+      const reader = new Database(paths.indexDb);
+      try {
+        index.rebuild([...kept, ...forgotten]);
+        reader.run('BEGIN');
+        reader.query('SELECT count(*) FROM record').get();
+        // The log cannot be emptied while the reader holds on; the removal
+        // must not sit out the lock timeout waiting for it.
+        const started = performance.now();
+        index.removeMany(forgottenIds);
+        expect(performance.now() - started).toBeLessThan(1000);
+        // The rows are gone at once; only emptying the log is left for later.
+        expect(index.has(forgottenIds[0] as string)).toBe(false);
+        expect(index.search(MARKER)).toEqual([]);
+        expect(index.erasePending()).toBe(true);
+        reader.run('COMMIT');
+        index.removeMany([]);
+        expect(index.erasePending()).toBe(false);
+        expect(copiesOnDisk()).toBe(0);
+      } finally {
+        reader.close();
+        index.close();
+      }
+    },
+    30_000,
+  );
+
+  test('adding a record while an erase is owed never fails the write', () => {
+    const index = SpaceIndex.open(paths);
+    // The removal's own rewrite, the one the added record tries, and the replacement's.
+    const vacuums = failVacuums(3);
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+      // The new record owes no erase of its own; the older one stays owed.
+      index.upsert(indexed('k_new', 'New', 'a note written while the disk was full'));
+      expect(index.has('k_new')).toBe(true);
+      expect(index.erasePending()).toBe(true);
+      // Replacing a record is a removal of its old words, and its failure is reported.
+      expect(() => index.upsert(indexed('k_kept_1', 'Note 1', 'changed words'))).toThrow(
+        'database or disk is full',
+      );
+      expect(vacuums.count()).toBe(3);
+      index.upsert(indexed('k_newer', 'Newer', 'and now the disk has room'));
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('retrying a removal never fails, nor tries the rewrite, while the disk has no room for it', () => {
+    const index = SpaceIndex.open(paths);
+    const vacuums = failVacuums(1);
+    const free = indexDisk.free;
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      expect(() => index.removeMany(forgottenIds)).toThrow('database or disk is full');
+      // A forget's cleanup retries until it succeeds; each failing retry would hold up the
+      // work queued behind it and fill what is left of the disk again.
+      indexDisk.free = () => 4096;
+      index.removeMany(forgottenIds);
+      index.removeMany(forgottenIds);
+      expect(vacuums.count()).toBe(1);
+      expect(index.erasePending()).toBe(true);
+      indexDisk.free = free;
+      index.removeMany(forgottenIds);
+      expect(vacuums.count()).toBe(2);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      indexDisk.free = free;
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('a removal never tries a rewrite the disk has no room for, and owes it instead', () => {
+    const index = SpaceIndex.open(paths);
+    const vacuums = countVacuums();
+    const free = indexDisk.free;
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      index.rebuild([...kept, ...forgotten]);
+      indexDisk.free = () => 4096;
+      index.removeMany(forgottenIds);
+      // The rows go at once; only the rewrite waits for room.
+      expect(index.has(forgottenIds[0] as string)).toBe(false);
+      expect(index.search(MARKER)).toEqual([]);
+      expect(index.erasePending()).toBe(true);
+      // Replacing a record takes its old words out the same way.
+      index.upsert(indexed('k_kept_1', 'Note 1', 'changed words'));
+      expect(vacuums.count()).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('Not enough disk to finish erasing');
+      indexDisk.free = free;
+      index.removeMany([]);
+      expect(vacuums.count()).toBe(1);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      indexDisk.free = free;
+      warn.mockRestore();
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test('deleting a record is erased by its rebuild, without a rewrite of the whole file first', async () => {
+    const { index } = buildIndex(paths);
+    const vacuums = countVacuums();
+    try {
+      await hardDelete(paths, index, findSecret(), { reason: 'never keep this', by: 'zara', now });
+      expect(vacuums.count()).toBe(0);
+      expect(index.search(MARKER)).toEqual([]);
+      expect(index.search('bun')).toHaveLength(1);
+      expect(index.erasePending()).toBe(false);
+    } finally {
+      vacuums.restore();
+      index.close();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'a deletion whose log another reader holds is still owed, and finished later',
+    async () => {
+      const { index } = buildIndex(paths);
+      const reader = new Database(paths.indexDb);
+      try {
+        reader.run('BEGIN');
+        reader.query('SELECT count(*) FROM record').get();
+        const started = performance.now();
+        await hardDelete(paths, index, findSecret(), {
+          reason: 'never keep this',
+          by: 'zara',
+          now,
+        });
+        expect(performance.now() - started).toBeLessThan(2000);
+        expect(index.search(MARKER)).toEqual([]);
+        expect(index.erasePending()).toBe(true);
+        reader.run('COMMIT');
+        index.removeMany([]);
+        expect(index.erasePending()).toBe(false);
+        expect(copiesOnDisk()).toBe(0);
+      } finally {
+        reader.close();
+        index.close();
+      }
+    },
+    30_000,
+  );
+
+  test('an open never tries a rewrite the disk has no room for', () => {
+    const first = SpaceIndex.open(paths);
+    const vacuums = failVacuums(1);
+    const free = indexDisk.free;
+    try {
+      first.rebuild([...kept, ...forgotten]);
+      expect(() => first.removeMany(forgottenIds)).toThrow('database or disk is full');
+      first.close();
+      // VACUUM would fill what is left of the disk, for everything on it, at every open.
+      indexDisk.free = () => 4096;
+      for (let i = 0; i < 3; i++) {
+        const reopened = SpaceIndex.open(paths);
+        try {
+          expect(reopened.erasePending()).toBe(true);
+          expect(reopened.search('number7')).toHaveLength(1);
+        } finally {
+          reopened.close();
+        }
+      }
+      expect(vacuums.count()).toBe(1);
+      indexDisk.free = free;
+      const roomy = SpaceIndex.open(paths);
+      expect(roomy.erasePending()).toBe(false);
+      roomy.close();
+      expect(vacuums.count()).toBe(2);
+    } finally {
+      indexDisk.free = free;
+      vacuums.restore();
+    }
+    expect(copiesOnDisk()).toBe(0);
+  });
+
+  test.skipIf(process.platform === 'win32')(
+    'an open does not wait for another reader to finish an owed erase',
+    () => {
+      const index = SpaceIndex.open(paths);
+      const reader = new Database(paths.indexDb);
+      try {
+        index.rebuild([...kept, ...forgotten]);
+        reader.run('BEGIN');
+        reader.query('SELECT count(*) FROM record').get();
+        index.removeMany(forgottenIds);
+        expect(index.erasePending()).toBe(true);
+        // A search opens the index: it must not sit out the lock timeout each time.
+        const started = performance.now();
+        const reopened = SpaceIndex.open(paths);
+        const waited = performance.now() - started;
+        expect(reopened.erasePending()).toBe(true);
+        reopened.close();
+        expect(waited).toBeLessThan(2000);
+        reader.run('COMMIT');
+        const later = SpaceIndex.open(paths);
+        expect(later.erasePending()).toBe(false);
+        later.close();
+        expect(copiesOnDisk()).toBe(0);
+      } finally {
+        reader.close();
+        index.close();
+      }
+    },
+    30_000,
+  );
 });

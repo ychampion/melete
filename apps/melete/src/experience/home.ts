@@ -12,7 +12,16 @@ import { and, desc, eq, ilike, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { builtinLabel } from '../connectors/builtin.ts';
 import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
-import { action, agent, connection, experienceProfile, job, space, task } from '../db/schema.ts';
+import {
+  action,
+  agent,
+  connection,
+  experienceProfile,
+  job,
+  principal,
+  space,
+  task,
+} from '../db/schema.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import { watchedByDefault } from '../signals/poller.ts';
@@ -87,23 +96,27 @@ export class ExperienceHome {
     /** Left out, the stored state is all there is to show. */
     readonly liveness?: ConnectionLiveness,
   ) {}
+  /**
+   * Whether the space's setup is done: recorded as done, or, for a space set
+   * up before setup was recorded here, it has an agent to show for it.
+   */
+  async onboarded(spaceId: string, recorded: boolean): Promise<boolean> {
+    if (recorded) return true;
+    // Read only while setup is not recorded, so a set-up account's profile needs no agent list.
+    const made = await this.db
+      .select({ id: agent.id })
+      .from(agent)
+      // Melete is in every space from the start, so only an agent the person made counts.
+      .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
+      .limit(1);
+    return made.length > 0;
+  }
   async profile(spaceId: string) {
     const [row] = await this.db
       .select()
       .from(experienceProfile)
       .where(eq(experienceProfile.spaceId, spaceId));
-    // A space set up before setup was recorded here has an agent to show for it.
-    const onboarded =
-      Boolean(row?.onboardedAt) ||
-      // Read only while setup is not recorded, so a set-up account's profile needs no agent list.
-      (
-        await this.db
-          .select({ id: agent.id })
-          .from(agent)
-          // Melete is in every space from the start, so only an agent the person made counts.
-          .where(and(eq(agent.spaceId, spaceId), eq(agent.isDefault, false)))
-          .limit(1)
-      ).length > 0;
+    const onboarded = await this.onboarded(spaceId, Boolean(row?.onboardedAt));
     return {
       profile: {
         ...profileInput.parse(
@@ -119,6 +132,43 @@ export class ExperienceHome {
         onboarded,
         time_zone_confirmed: Boolean(row?.timeZoneConfirmedAt),
         sending_address: await this.sendingAddress(spaceId),
+        role: 'owner' as const,
+      },
+    };
+  }
+  /**
+   * What a member of a shared space is shown: their own name and the space's
+   * clock, which every time in it is read on. Nothing of the owner's is in
+   * it, not their name and not the mailbox the space sends from. Setup and
+   * the clock are the owner's to change, so both read as settled.
+   */
+  async memberProfile(spaceId: string, principalId: string) {
+    const [row] = await this.db
+      .select({
+        timeZone: experienceProfile.timeZone,
+        dayStart: experienceProfile.dayStart,
+        dayEnd: experienceProfile.dayEnd,
+      })
+      .from(experienceProfile)
+      .where(eq(experienceProfile.spaceId, spaceId));
+    const [person] = await this.db
+      .select({ displayName: principal.displayName })
+      .from(principal)
+      .where(eq(principal.id, principalId));
+    const name = person?.displayName?.trim().slice(0, 80) || 'there';
+    return {
+      profile: {
+        ...profileInput.parse({
+          name,
+          time_zone: canonicalTimeZone(row?.timeZone),
+          day_hours: row
+            ? { start: row.dayStart, end: row.dayEnd }
+            : { start: '08:00', end: '22:00' },
+        }),
+        onboarded: true,
+        time_zone_confirmed: true,
+        sending_address: null,
+        role: 'member' as const,
       },
     };
   }
@@ -339,6 +389,19 @@ export class ExperienceHome {
       upcoming: await this.upcoming(spaceId),
       tasks: tasks.filter((item) => !item.done).slice(0, 20),
       open_task_count: counts?.count ?? 0,
+    };
+  }
+  /**
+   * A member's Home: the day on the space's clock, greeted by their own name.
+   * The calendar, tasks and their counts are the owner's, so none are here.
+   */
+  async memberHome(spaceId: string, principalId: string) {
+    const { profile } = await this.memberProfile(spaceId, principalId);
+    return {
+      ...dayGreeting(profile),
+      upcoming: unavailable('The calendar here is the space owner’s.'),
+      tasks: [],
+      open_task_count: 0,
     };
   }
   /**

@@ -834,6 +834,90 @@
       "when": 1789232400098,
       "tag": "0118_sandbox_display_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1789232400099,
+      "tag": "0119_principal_admin",
+      "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1789232400100,
+      "tag": "0120_space_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1789232400101,
+      "tag": "0121_attempt_requested_by",
+      "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1789232400102,
+      "tag": "0122_principal_last_seen",
+      "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1789232400103,
+      "tag": "0123_stored_file",
+      "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1789232400104,
+      "tag": "0124_person_spend_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1789232400105,
+      "tag": "0125_sign_in_vault",
+      "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1789232400106,
+      "tag": "0126_starter_dismissal",
+      "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1789232400107,
+      "tag": "0127_operator_action_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1789232400108,
+      "tag": "0128_chat_principal_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1789232400109,
+      "tag": "0129_spend_counter",
+      "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1789232400110,
+      "tag": "0130_person_computers_and_indexes",
+      "breakpoints": true
     }
   ]
 }

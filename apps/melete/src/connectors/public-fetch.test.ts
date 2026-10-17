@@ -2,15 +2,19 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { selfSignedPair } from '../gateway/fixtures/self-signed.ts';
 import { ConnectorFaultError } from './faults.ts';
 import { openHttpMcpTransport } from './mcp-transport.ts';
+import { NO_PRIVATE_HOSTS, parsePrivateHosts } from './private-hosts.ts';
 import {
   asFetch,
+  isPublicEndpoint,
   isReachableEndpoint,
+  listedPin,
   metadataAllowed,
   outOfReach,
   pinnedRequest,
   publicOnlyFetch,
   reachAddresses,
   reachFetch,
+  reachPin,
   reachTransport,
   UNREACHABLE,
 } from './public-fetch.ts';
@@ -502,4 +506,157 @@ test('an MCP session is closed through the same fetch that opened it', async () 
   } finally {
     listener.stop(true);
   }
+});
+
+describe('internal hosts the operator opened to everyone', () => {
+  const listed = parsePrivateHosts('mcp.corp.internal, *.tools.corp.internal, 10.20.0.0/16');
+  const at = (...addresses: string[]): ResolvedAddress[] =>
+    addresses.map((address) => ({ address, family: address.includes(':') ? 6 : 4 }));
+  const corp: Record<string, ResolvedAddress[]> = {
+    'mcp.corp.internal': at('10.20.0.5'),
+    'search.tools.corp.internal': at('10.20.9.9'),
+    'mapped.tools.corp.internal': at('::ffff:10.20.0.7'),
+    // A listed name that answers outside the listed range: a rebinding.
+    'rebound.tools.corp.internal': at('10.30.0.5'),
+    'loopback.tools.corp.internal': at('127.0.0.1'),
+    'mixed.tools.corp.internal': at('10.20.0.5', '192.168.1.1'),
+    'metadata.tools.corp.internal': at('169.254.169.254'),
+    // An unlisted name inside a listed range: the range is what decides.
+    'elsewhere.example.test': at('10.20.0.8'),
+    'public.example.test': [PUBLIC],
+  };
+  const resolve = async (name: string) => {
+    const found = corp[name];
+    if (!found) throw new Error('ENOTFOUND');
+    return found;
+  };
+
+  test('a room reaches an address in a listed range, and every other private answer is still refused', async () => {
+    const { sent, request } = recorder();
+    const fetch = reachFetch({ reach: 'public', resolve, request, privateHosts: listed });
+    for (const url of [
+      'http://mcp.corp.internal/mcp',
+      'https://search.tools.corp.internal/mcp',
+      'http://mapped.tools.corp.internal/mcp',
+      'http://elsewhere.example.test/mcp',
+      'http://10.20.1.1:8080/mcp',
+      'https://public.example.test/mcp',
+    ])
+      expect([url, (await fetch(url, {})).status]).toEqual([url, 200]);
+    expect(sent.map((entry) => entry.address)).toEqual([
+      '10.20.0.5',
+      '10.20.9.9',
+      '::ffff:10.20.0.7',
+      '10.20.0.8',
+      '10.20.1.1',
+      PUBLIC.address,
+    ]);
+    sent.length = 0;
+    for (const url of [
+      'http://rebound.tools.corp.internal/mcp',
+      'http://loopback.tools.corp.internal/mcp',
+      'http://mixed.tools.corp.internal/mcp',
+      'http://metadata.tools.corp.internal/mcp',
+      'http://10.30.0.5/mcp',
+      'http://127.0.0.1/mcp',
+      'http://169.254.169.254/latest',
+    ]) {
+      expect([url, await refused(fetch(url, {}))]).toEqual([
+        url,
+        expect.objectContaining({ kind: 'unsupported_route', detail: UNREACHABLE }),
+      ]);
+      expect([url, await isPublicEndpoint(url, resolve, listed)]).toEqual([url, false]);
+    }
+    expect(sent).toEqual([]);
+  });
+
+  test('a range never opens cloud metadata, even one that holds it', () => {
+    const wide = parsePrivateHosts('169.254.0.0/16, 100.64.0.0/10');
+    expect(listedPin(at('169.254.169.254'), wide)).toBeUndefined();
+    expect(listedPin(at('100.100.100.200'), wide)).toBeUndefined();
+    expect(listedPin(at('100.101.0.4'), wide)).toEqual(at('100.101.0.4')[0]);
+    expect(listedPin(at('169.254.10.1'), wide)).toEqual(at('169.254.10.1')[0]);
+  });
+
+  test("a range never opens Melete's own network pool, where every agent computer has its network", () => {
+    const wide = parsePrivateHosts('10.0.0.0/8');
+    const was = process.env.MELETE_NETWORK_POOL;
+    try {
+      delete process.env.MELETE_NETWORK_POOL;
+      // The default pool, 10.215.0.0/16: another person's computer is there.
+      expect(listedPin(at('10.215.3.20'), wide)).toBeUndefined();
+      expect(listedPin(at('10.20.0.5', '10.215.3.20'), wide)).toBeUndefined();
+      expect(listedPin(at('10.20.0.5'), wide)).toEqual(at('10.20.0.5')[0]);
+      expect(reachPin(at('10.215.3.20'), 'public', false, wide)).toBeUndefined();
+      // The installation owner's own settings may still name anything private.
+      expect(reachPin(at('10.215.3.20'), 'installation', false, wide)).toEqual(at('10.215.3.20'));
+      process.env.MELETE_NETWORK_POOL = '10.99.0.0/16';
+      expect(listedPin(at('10.99.0.20'), wide)).toBeUndefined();
+      expect(listedPin(at('10.215.3.20'), wide)).toEqual(at('10.215.3.20')[0]);
+      // With the pool off, computers take the engine's own ranges and only those listed are open.
+      process.env.MELETE_NETWORK_POOL = 'off';
+      expect(listedPin(at('10.215.3.20'), wide)).toEqual(at('10.215.3.20')[0]);
+    } finally {
+      if (was === undefined) delete process.env.MELETE_NETWORK_POOL;
+      else process.env.MELETE_NETWORK_POOL = was;
+    }
+  });
+
+  test('a listed name that turns to an unlisted address between requests reaches nothing', async () => {
+    const { sent, request } = recorder();
+    const answers = [at('10.20.0.5'), at('10.30.0.5'), at('127.0.0.1')];
+    const fetch = reachFetch({
+      reach: 'public',
+      resolve: async () => answers.shift() ?? [],
+      request,
+      privateHosts: listed,
+    });
+    expect((await fetch('http://mcp.corp.internal/mcp', {})).status).toBe(200);
+    for (let tries = 0; tries < 2; tries += 1)
+      expect(await refused(fetch('http://mcp.corp.internal/mcp', {}))).toMatchObject({
+        kind: 'unsupported_route',
+      });
+    expect(sent.map((entry) => entry.address)).toEqual(['10.20.0.5']);
+  });
+
+  test('every check agrees: the pin, a host that is not HTTP, and an install-time check', async () => {
+    expect(reachPin(at('10.20.0.5'), 'public', false, listed)).toEqual(at('10.20.0.5'));
+    expect(reachPin(at('10.20.0.5'), 'public', false, NO_PRIVATE_HOSTS)).toBeUndefined();
+    expect(
+      await reachAddresses('mcp.corp.internal', 'public', { resolve, privateHosts: listed }),
+    ).toEqual(at('10.20.0.5'));
+    expect(
+      await reachAddresses('rebound.tools.corp.internal', 'public', {
+        resolve,
+        privateHosts: listed,
+      }),
+    ).toBeUndefined();
+    expect(await outOfReach('mcp.corp.internal', 'public', { resolve, privateHosts: listed })).toBe(
+      false,
+    );
+    expect(
+      await outOfReach('rebound.tools.corp.internal', 'public', { resolve, privateHosts: listed }),
+    ).toBe(true);
+    expect(
+      await outOfReach('mcp.corp.internal', 'public', { resolve, privateHosts: NO_PRIVATE_HOSTS }),
+    ).toBe(true);
+    expect(await isPublicEndpoint('http://mcp.corp.internal/mcp', resolve, listed)).toBe(true);
+    expect(await isPublicEndpoint('http://mcp.corp.internal/mcp', resolve, NO_PRIVATE_HOSTS)).toBe(
+      false,
+    );
+  });
+
+  test('the list is read from the environment, so a room is held to public addresses until it is set', async () => {
+    const saved = process.env.MELETE_PRIVATE_HOSTS;
+    try {
+      delete process.env.MELETE_PRIVATE_HOSTS;
+      expect(await outOfReach('mcp.corp.internal', 'public', { resolve })).toBe(true);
+      process.env.MELETE_PRIVATE_HOSTS = '10.20.0.0/16';
+      expect(await outOfReach('mcp.corp.internal', 'public', { resolve })).toBe(false);
+      expect(await outOfReach('rebound.tools.corp.internal', 'public', { resolve })).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.MELETE_PRIVATE_HOSTS;
+      else process.env.MELETE_PRIVATE_HOSTS = saved;
+    }
+  });
 });

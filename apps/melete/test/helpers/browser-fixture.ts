@@ -76,7 +76,26 @@ export function startBrowserFixture() {
         variant === 'labelled' && labelled
           ? `<label for="labelled">${labelled.replace(/'/g, '&#39;')}</label><input id="labelled" name="labelled">`
           : '';
+      // One field that takes a value, with the label, type, name, id and hint the test gives,
+      // and an editable area that is not a form field.
+      const param = (key: string) =>
+        (url.searchParams.get(key) ?? '').replace(/[^A-Za-z0-9 -]/g, '');
+      const valuedId = param('id') || 'valued';
+      const valued =
+        variant === 'valued'
+          ? `<label for="${valuedId}">${param('label')}</label><input id="${valuedId}" type="${param('type') || 'number'}"${param('name') ? ` name="${param('name')}"` : ''}${param('autocomplete') ? ` autocomplete="${param('autocomplete')}"` : ''}${param('type') === 'range' ? ' min="0" max="10" step="1"' : ''}>` +
+            '<div contenteditable="true" aria-label="Notes" style="min-height:2em"></div>'
+          : '';
       const duplicate = variant === 'ambiguous_save' ? '<button type="submit">Save</button>' : '';
+      // Fields drawn in parts, which take a value rather than typing, and one fill cannot change.
+      const typed =
+        variant === 'typed_fields'
+          ? '<label for="when">Delivery time</label><input id="when" name="delivery" type="time">' +
+            '<label for="day">Day</label><input id="day" name="day" type="date">' +
+            '<label for="guests">Guests</label><input id="guests" name="guests" type="number" min="1" max="12">' +
+            '<label for="shade">Colour</label><input id="shade" name="shade" type="color">' +
+            '<label for="extra">Extra cheese</label><input id="extra" name="extra" type="checkbox">'
+          : '';
       const hidden =
         variant === 'hidden_destination'
           ? '<input type="hidden" name="destination_picker_7" value="hidden@example.test">'
@@ -110,7 +129,7 @@ export function startBrowserFixture() {
           ? `<script>document.getElementById('name').addEventListener('input',()=>{document.querySelector('label[for="email"]').textContent='Contact email';});</script>`
           : '';
       return new Response(
-        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${auth}${named}${hidden}<button type="submit">Save</button>${duplicate}</form>${signInLinks}${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
+        `<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>Browser fixture ${variant}</title></head><body><h1>Contact form</h1><form method="post" action="${endpoint}">${fields}${extra}${typed}${auth}${named}${valued}${hidden}<button type="submit">Save</button>${duplicate}</form>${signInLinks}${check}${malicious}${tamper}${rename}${serializer}</body></html>`,
         { headers: { 'content-type': 'text/html' } },
       );
     },

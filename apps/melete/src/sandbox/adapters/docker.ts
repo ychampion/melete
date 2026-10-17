@@ -44,6 +44,7 @@ import {
   endpointName,
 } from '../../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../../runtime/docker-engine.ts';
+import { createPooledNetwork } from '../../runtime/network-pool.ts';
 import { LABEL_CONNECTION, LABEL_PROJECT, LABEL_SESSION, ownedLabels } from '../manifest.ts';
 import { reattachByMarker } from '../marker.ts';
 import {
@@ -78,6 +79,11 @@ const OWNER = 'com.melete.sandbox';
 const LIFETIME = 'com.melete.sandbox.lifetime';
 const EGRESS = 'com.melete.sandbox.egress';
 const BASE = 'com.melete.sandbox.name';
+/**
+ * The Compose project of the installation that made a computer, so a stopped
+ * installation's computers can be told from ones no installation owns.
+ */
+export const LABEL_INSTALL_PROJECT = 'melete.install_project';
 export const EGRESS_ALIAS = 'melete-egress';
 const NAME = /^melete-sbx-[a-z0-9][a-z0-9_.-]{0,160}$/;
 /** A container id as the engine reports it, safe as one path segment. */
@@ -131,6 +137,8 @@ export type DockerSandboxSettings = {
    * never another installation's on the same engine.
    */
   project: string;
+  /** The Compose project of this installation (MELETE_COMPOSE_PROJECT), labelled on what it makes. */
+  installProject?: string;
   cpus: number;
   memoryMb: number;
   pids: number;
@@ -781,11 +789,14 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       [BASE]: name,
       [LIFETIME]: String(spec.lifetimeSeconds),
       [EGRESS]: spec.egress.kind,
+      ...(this.settings.installProject
+        ? { [LABEL_INSTALL_PROJECT]: this.settings.installProject }
+        : {}),
     };
   }
 
   private async createNetwork(network: string, labels: Record<string, string>): Promise<void> {
-    await this.api.request('POST', '/networks/create', {
+    await createPooledNetwork(this.api, {
       Name: network,
       Driver: 'bridge',
       Internal: true,
@@ -1661,10 +1672,16 @@ export class DockerSandboxHost implements DockerSandboxProvider, CommandEgress {
       if (!idle && !expired) continue;
       this.guard.revoke(name);
       this.trusted.delete(name);
-      await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
-        if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
-          throw error;
-      });
+      try {
+        await this.api.request('POST', `/containers/${name}/stop?t=10`).catch((error) => {
+          if (!(error instanceof DockerError && (error.status === 304 || error.status === 404)))
+            throw error;
+        });
+      } catch (error) {
+        // One that will not stop is tried again next pass; the rest still are.
+        process.stderr.write(`docker sandbox idle stop of ${name} failed: ${describe(error)}\n`);
+        continue;
+      }
       this.started.delete(name);
       stopped.push(name);
     }

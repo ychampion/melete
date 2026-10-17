@@ -45,7 +45,7 @@ volume are kept. Once your account exists, running it again with
 the agent's own browser, with no Bun on the host:
 
 ```bash
-MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash
 ```
 
 From then on every run starts the worker too, from its published image. While
@@ -58,14 +58,33 @@ the worker is off, the installer's last lines print this command.
 | `MELETE_IMAGE_TAG` | `main` | The image tag to run, such as a release's `v0.3.0`; set on a later run, it switches the installation to that tag |
 | `MELETE_MODEL` | | The model id, for an Anthropic, OpenAI or Google key |
 | `MELETE_NO_OPEN` | | `1` leaves the browser closed |
+| `MELETE_COMPUTER` | `1` for a new installation | Every agent gets a [computer of its own](sandbox-docker.md), a container on this Docker engine; `0` leaves it out, and `1` on a later run turns it on. Its image is a download of about 600 MB and takes about 2.3 GB of disk |
+| `MELETE_PROJECT` | `melete` | The Compose project name. Chosen when `deploy/.env` is written; a second installation on one machine needs its own, and its own ports |
+| `MELETE_PORT` | `3100` | The service's port on `127.0.0.1` |
+| `MELETE_WEB_PORT` | `3101` | The web app's port on `127.0.0.1`; the installer prints the address with it |
 | `MELETE_BROWSER` | | `1`, once your account exists, turns on the browser worker |
 | `MELETE_BROWSER_SPACE` | the first person's space | With `MELETE_BROWSER=1`, the space the worker works for, `sp_...` |
 
-Pass them on the `bash` side of the pipe:
+Pass them on the `bash` side of the pipe, where the installer reads them. Put
+before `curl`, they go to `curl` instead, and the installer runs with none of
+them:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=/srv/melete bash
 ```
+
+A second installation on the same machine needs a project name and ports of its
+own. The installer refuses to start one under a project name another
+installation's containers already use, since Compose would hand it that
+installation's containers and volumes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_DIR=~/melete2 MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 bash
+```
+
+The health check is `/api/health` on the web app's port (3101 by default). On
+the service's own port (3100) the same check is `/health`; `/api/health` there
+answers 401.
 
 Afterwards the stack is managed with Compose, for example
 `docker compose -f ~/melete/deploy/docker-compose.yml logs` or `down`. The
@@ -197,16 +216,32 @@ calendar connect by signing in with Microsoft
 Compose names every container, volume and network after the project, and
 `deploy/.env.example` names the project `melete` with ports 3100 and 3101. A
 second installation that keeps those values is the first one: its `up` replaces
-the first installation's containers and opens its database. The
-[one-line install](#one-line-install) always writes those values, so use it only
-for the first installation on a host.
+the first installation's containers and opens its database. With the
+[one-line install](#one-line-install), give the second one `MELETE_PROJECT`,
+`MELETE_PORT` and `MELETE_WEB_PORT`, as shown there.
 
-For another one, clone into a directory of its own and run `configure.ts` there
-as above. Then, before the first `up`, give it its own project and ports:
+From a checkout, clone into a directory of its own and give `init` the project
+and ports there:
 
 ```bash
-bun run deploy/scripts/set-env.ts COMPOSE_PROJECT_NAME=melete-two MELETE_PORT=3110 WEB_PORT=3111
+bun run melete init --project melete-two --api-port 3110 --web-port 3111
 ```
+
+`init` takes the other options it always does beside these (`--provider`,
+`--connect-in-app`, `--public-url` and the rest), and `deploy/scripts/configure.ts`
+takes the same three. `init` refuses, with nothing written, a project name
+that containers or volumes on this engine already use: another installation's,
+or the data of one that was stopped or removed, which this one would otherwise
+start on with new secrets. The containers of another installation are named by
+the directory they were started from.
+
+Each project keeps its backups in a folder of its own: `~/melete-backups` for
+`melete`, and `~/melete-backups/<project>` for any other, so two installations
+never prune each other's backups. `--backup-dir <folder>` chooses another, and
+`backup.dir` in `deploy/melete.deploy.json` changes it later. An installation
+whose deploy file names the folder another installation uses should be given
+its own. `melete upgrade` puts its backup in that folder too; an upgrade made
+before it did left a second installation's in `~/melete-backups`.
 
 Keep the `MELETE_SANDBOX_PROJECT` that `configure.ts` wrote: it is random for
 each installation and tells apart the agents' computers and attempt containers,
@@ -214,6 +249,88 @@ which Compose does not manage. Run every command from that installation's own
 directory, so its `deploy/.env` names the project; a `docker compose` command
 given a Compose file without that `.env` acts on the project `melete`. Its web
 address is then **http://localhost:3111**.
+
+Each installation's stack also takes networks from Docker's address pools,
+which the whole machine shares, and its agents' networks come from
+`MELETE_NETWORK_POOL`, which installations left at the default share too; with
+two or more installations, check [Docker address pools](#docker-address-pools)
+first.
+
+### Docker address pools
+
+Every network Docker makes without a subnet of its own takes one block from
+the engine's address pools. With no `default-address-pools` in
+`/etc/docker/daemon.json`, Docker has 31 blocks for the whole machine: fifteen
+/16 blocks between 172.17.0.0 and 172.31.255.255, and sixteen /20 blocks in
+192.168.0.0/16. Each installation's stack takes four or more, and every other
+Compose project on the machine takes its own. When none is left,
+`docker compose up` fails with "all predefined address pools have been fully
+subnetted".
+
+The networks of chat attempts, agent computers and plugins do not take those
+blocks. The service gives each one a /28 (14 addresses) of its own range,
+`MELETE_NETWORK_POOL`, which is 10.215.0.0/16 unless you set it, so a /16 holds
+4096 of them. The range must be between /8 and /24 in size, and the service
+refuses one that overlaps 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16 or anything
+from 224.0.0.0 up. Change it when it overlaps a route of this machine, such as
+your LAN or a VPN, or when two installations on one engine should each keep to
+a range of their own: `bun run melete set MELETE_NETWORK_POOL=10.214.0.0/16`.
+Set it to `off` to have those networks take blocks from Docker's own pools
+instead, as described above.
+
+`bun run melete doctor` reports `docker.address_pools`, how many networks
+Docker can still make, and `docker.network_pool`, how many are left in
+`MELETE_NETWORK_POOL` (not reported with `off`). Each warns below 8 and fails
+at none. `docker.network_pool` also fails when the setting is one the service
+refuses, and `bun run melete set` does not write such a value. A
+`MELETE_NETWORK_POOL` set in the shell `doctor` runs in is the one Compose
+gives the service, over `deploy/.env`'s, so it is the one judged, and
+`docker.network_pool_shell` says so, warning when the two differ. A value in
+`deploy/.env` that refers to another setting (`${OTHER}` or `$OTHER`) is filled
+in by Compose, not by `doctor`, so it is not judged: `docker.network_pool`
+warns instead.
+`docker.address_pools` also fails when `daemon.json` names only IPv6 pools:
+Docker then has no pool for an IPv4 network that names no subnet, and does not
+fall back to its built-in ones. To give Docker more, choose a private range
+that nothing on your network, VPN or tailnet uses, and name it in
+`/etc/docker/daemon.json` (merged with what the file already holds):
+
+```json
+{
+  "default-address-pools": [{ "base": "10.216.0.0/14", "size": 24 }],
+  "live-restore": true
+}
+```
+
+That is 1024 networks of 254 addresses each. These pools replace Docker's
+built-in ones; networks that exist keep their addresses. Check the file with
+`dockerd --validate --config-file /etc/docker/daemon.json`, then restart Docker
+(`sudo systemctl restart docker`) while no `docker compose up` is running. With
+`live-restore`, running containers keep running through the restart. `doctor`
+warns when a pool named there, or `MELETE_NETWORK_POOL`, overlaps a route of
+this machine (`ip route`
+lists them), since a network made from it would hide those addresses from its
+containers.
+
+Networks that no container uses hold blocks too; `docker network ls` lists
+them. `doctor` also reports `docker.leftover_sandboxes`: the stopped agents'
+computers and empty networks whose sandbox project no installation on this
+engine uses, which an installation's own clean-up never reaches. Another
+installation's computers are never listed; they are told apart by the
+`MELETE_SANDBOX_PROJECT` each installation's service runs with, and by the
+`melete.install_project` label each computer and its network carry: the Compose
+project of the installation that made them. While that project still has a
+container or a volume on this engine they are its own, even with the
+installation down (`docker compose down` removes its service container but
+keeps its volumes); once it has neither, they are listed. They stay its own
+after its `MELETE_SANDBOX_PROJECT` changes, too: an agent's paused workspace is
+resumed by the name it was made with, so the earlier project's computers can
+still be in use. Computers made before
+they carried that label are listed with an unknown owner when their sandbox
+project is not in use, since an installation that is down cannot be told from
+one that was removed that way; check those before
+`bun run melete doctor --remove-leftovers` removes them. It removes only the
+listed stopped computers and empty networks, and keeps the computers' volumes.
 
 ## The melete command
 
@@ -227,7 +344,7 @@ driving the command; `packages/cli/src/schema.ts` describes its shape.
 bun run melete init            # configure.ts, then deploy/melete.deploy.json
 bun run melete init --adopt    # describe an installation that is already running
 bun run melete check           # the files alone: no Docker, no network
-bun run melete doctor          # this machine: Docker, disk in MB, memory, ports, images, registry
+bun run melete doctor          # this machine: Docker, its networks, disk in MB, memory, ports, images, registry
 bun run melete status          # the running installation, as status.ts reports it
 bun run melete set MELETE_PUBLIC_URL=https://melete.example.net
 bun run melete logs melete --since 1h
@@ -242,13 +359,13 @@ bun run melete feedback        # problem reports people sent from the app
 
 | Command | What it does |
 |---|---|
-| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). |
-| `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. |
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token, starting cost guards and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). `--project <name> --api-port <port> --web-port <port>` set up [a second installation on this host](#a-second-installation-on-this-host), and `--backup-dir <folder>` where its backups go. A project name that containers or volumes on this engine already use is refused, and so is any name while the engine does not answer, unless `--force`. |
+| `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. It takes `--backup-dir` too. |
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, the Compose boundary checks, and what [an installation for other people](#hosting-for-other-people) needs. |
-| `doctor [--offline]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. |
-| `browser enable [--space <id>]` | Turns on the [browser worker](browser-worker.md#one-command) for one space once its account exists: the space's connection and `browser` directory, `MELETE_BROWSER_SPACE` and `MELETE_BROWSER_TOKEN` in `deploy/.env`, the `browser` overlay in `deploy/melete.deploy.json` and the entry in `deploy/config/connections.json`, then builds the worker and starts the stack with it. Running it again changes nothing. `check` and `doctor` report `browser.worker` with this command as the fix. On a host without Bun: `MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh \| bash`. |
+| `doctor [--offline] [--remove-leftovers]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. `docker.address_pools` counts the networks Docker can still make, and `docker.network_pool` those left in `MELETE_NETWORK_POOL` ([Docker address pools](#docker-address-pools)), and `docker.leftover_sandboxes` lists the agents' computers and networks that sandbox projects no installation on this engine uses left behind; `--remove-leftovers` removes those, and is the only time `doctor` changes anything. |
+| `browser enable [--space <id>]` | Turns on the [browser worker](browser-worker.md#one-command) for one space once its account exists: the space's connection and `browser` directory, `MELETE_BROWSER_SPACE` and `MELETE_BROWSER_TOKEN` in `deploy/.env`, the `browser` overlay in `deploy/melete.deploy.json` and the entry in `deploy/config/connections.json`, then builds the worker and starts the stack with it. Running it again changes nothing. `check` and `doctor` report `browser.worker` with this command as the fix. On a host without Bun: `curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh \| MELETE_BROWSER=1 bash`. |
 | `status` | The report `deploy/scripts/status.ts` prints, run with the deploy file's overlay files and profiles, with `disk.min_free_mb` as its disk floor, and the `hosted.*` rules `check` reports. |
-| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY` or `COMPOSE_PROJECT_NAME` updates `deploy/melete.deploy.json` to match. A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers, since every command would then act on a new, empty installation; `--force` sets it anyway. A name Melete does not read is refused, with the closest one it does (`--force` writes a name of your own). `--clear NAME` empties a setting, a key included. Each change ends with how to apply it: the services that read it, recreated with `up -d --force-recreate`, since `docker compose restart` keeps the old values. |
+| `set NAME=value ...` | Changes settings in `deploy/.env` in place. A key is taken only from the environment, with `--from-env NAME`, and is never printed. Setting `MELETE_IMAGE_TAG`, `MELETE_IMAGE_REGISTRY`, `COMPOSE_PROJECT_NAME` or `COMPOSE_PROFILES` updates `deploy/melete.deploy.json` to match (`COMPOSE_PROFILES=sandbox` turns its `sandbox` profile on). A new `COMPOSE_PROJECT_NAME` is refused while the current project has containers started from this checkout, since every command would then act on a new, empty installation; another installation's containers under that name do not count. `--force` sets it anyway. A name Melete does not read is refused, with the closest one it does (`--force` writes a name of your own). `--clear NAME` empties a setting, a key included. Each change ends with how to apply it: the services that read it, recreated with `up -d --force-recreate`, since `docker compose restart` keeps the old values. |
 | `logs [service ...]` | `docker compose logs` with the deploy file's overlay files; takes `--since`, `--tail`, `--follow` and `--timestamps`. `--attempts` lists the containers attempts ran in, and `--computers` the agents' computers, found by this installation's labels; with an attempt id or a container name it shows that one's logs, with the same options. |
 | `deploy [--tag <tag>]` | Updates an installation that runs the published images, in the order [Update](#update) describes. `--dry-run` prints the plan, `--checkout` checks out the commit the images were built from, `--allow-compose-mismatch` runs them with the checkout as it is, and `--skip-backup` or `--backup-to ssh://host:/path` change the backup taken before new migrations. |
 | `rollback [--dry-run]` | Goes back to the images the stack ran before the last deploy. When that deploy ran migrations, it prints the database restore instead and exits 3. |
@@ -288,13 +405,15 @@ connections file the service runs with, and `status` asks the service itself for
 its health and whether the owner account exists. With the worker on, add
 `-f deploy/docker-compose.browser.yml` after the base file. On a host without
 Bun, the installer turns the worker on:
-`MELETE_BROWSER=1 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash`.
+`curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | MELETE_BROWSER=1 bash`.
 
 ### The deploy file
 
 `deploy/melete.deploy.json` records what an installation is beyond what
 `deploy/.env` says. It holds no secret, so it can be kept in a repository; the
-keys stay in `deploy/.env`. Every key has a default, so `{"contract": 1}` is a
+keys stay in `deploy/.env`. This repository's `.gitignore` leaves it out, with
+`deploy/.env` and `deploy/.melete/`, so a checkout stays clean for
+`deploy --checkout`. Every key has a default, so `{"contract": 1}` is a
 complete file, and `init` writes each one out:
 
 ```json
@@ -305,7 +424,7 @@ complete file, and `init` writes each one out:
   "profiles": [],
   "overlays": [],
   "disk": { "min_free_mb": 4096, "pull_margin_mb": 512 },
-  "backup": { "dir": "~/melete-backups", "keep": 3 },
+  "backup": { "dir": "~/melete-backups", "keep": 3, "max_age_days": 30 },
   "public_ports": false,
   "database": { "external": false },
   "blobs": { "store": "local" },
@@ -326,8 +445,12 @@ complete file, and `init` writes each one out:
   `status` report the machine short of disk. A small host sets its own, below
   1 GB if it must. `pull_margin_mb` is the room an update keeps beyond the
   images it pulls.
-- `backup.dir` is where backups are written, and `backup.keep` how many are
-  kept there.
+- `backup.dir` is where backups are written: by default `~/melete-backups`
+  for the project `melete` and `~/melete-backups/<project>` for any other, so
+  installations on one machine never prune each other's. `backup.keep` is how
+  many are kept there, and `backup.max_age_days` the most days any of them is kept
+  (`null` keeps them by number alone); see
+  [How long backups keep what was removed](#how-long-backups-keep-what-was-removed).
 - `blobs.store` is `local`, or `s3` with a non-secret `bucket`, an `endpoint`
   (left out for AWS S3) and an optional `region`; the storage keys stay in
   `deploy/.env`. With `s3`, every Compose command adds
@@ -355,13 +478,51 @@ sign-in and reset links, invites, Google, Microsoft and MCP sign-ins and
 texting; the web origin that matches it (`MELETE_WEB_ORIGIN`), or the web app
 refuses sign-in there; an alert target (`MELETE_ALERT_WEBHOOK_URL`, or
 `MELETE_ALERT_EMAIL_TO` with `MELETE_ALERT_SMTP_URL`, see [Alerts](#alerts));
-and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`.
+and `MELETE_OPERATOR_TOKEN`, which opens `GET /health/detail`. Say in your
+privacy terms how long backups keep what people remove; see
+[How long backups keep what was removed](#how-long-backups-keep-what-was-removed).
+The logs hold no one's messages, files or secrets
+([What the logs hold](#what-the-logs-hold)); to keep them past rotation, set
+`MELETE_LOG_SHIP_ENDPOINT` to your log collector and start the shipper in
+[Shipping logs](#shipping-logs). It stays off unless you start it.
 
 Mark such an installation with `"hosted": true` in `deploy/melete.deploy.json`.
 `check` and `status` then fail, under `hosted.public_url`, `hosted.web_origin`,
 `hosted.alerts` and `hosted.operator_token`, until each is set. Without the
-mark the same rules only warn. A new installation gets all of it but the alert
-target in one step:
+mark the same rules only warn.
+
+Because the installation's model key pays for everyone, a hosted installation
+also needs its cost guards, and `check` and `status` fail until each is set to
+a positive number:
+
+| Rule | Settings | Starting value |
+|---|---|---|
+| `hosted.spend_person` | `MELETE_SPEND_PERSON_DAILY_USD`, `MELETE_SPEND_PERSON_MONTHLY_USD` | $2 a day, $20 a month |
+| `hosted.spend_background` | `MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD`, `MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD` | $0.50 a day, $5 a month |
+| `hosted.spend_installation` | `MELETE_SPEND_MONTHLY_USD` | $200 a month |
+| `hosted.uploads` | `MELETE_ATTACHMENT_UPLOADS_AT_ONCE`, `MELETE_ATTACHMENT_UPLOADS_PER_WINDOW` | 3 at once, 30 in ten minutes |
+| `hosted.storage` | `MELETE_STORAGE_PER_PERSON_MB` | 2048 MB per person |
+| `hosted.computers` | `MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION` | 1 computer per person |
+| `hosted.spend_alert` | `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` or `MELETE_ALERT_SPEND_PERSON_PERCENT` | an alert at 4 times the usual hour |
+| `hosted.network_pool` | `MELETE_NETWORK_POOL` | the default range; it fails only when set to `off` |
+
+These are starting points: tune them to your price and your people (see
+[Spending caps](#spending-caps), [Attachments](#attachments) and
+[Alerts](#alerts)). The installation's `$200` is used up by ten people at
+their own `$20`, after which model calls stop for everyone until the month
+resets, so raise it as people join; the `spend_cap` alert fires at 80% of it.
+`init --hosted` also writes
+`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON=2`, which is not required: free slots
+are shared between people either way ([Engine limits](#engine-limits)). They apply only to a hosted installation; a self-hosted
+one has no limits unless you set them, and `check` never asks for them.
+
+With a computer limit of one, a person whose computer is busy with another
+task, or anyone when every computer is in use, is told so in their
+conversation in plain words, and can ask again once it is free. Size
+`MELETE_SANDBOX_MAX_CONCURRENT` to the machine: each running computer may use
+up to 2 GB.
+
+A new installation gets all of it but the alert target in one step:
 
 ```bash
 bun run melete init --connect-in-app --public-url https://assistant.example.net --hosted
@@ -370,14 +531,125 @@ bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL && unset MELETE_ALERT_WEB
 ```
 
 For an installation that is already running, set the two addresses together,
-put `"hosted": true` in the deploy file, and give it a token:
+put `"hosted": true` in the deploy file, give it a token, and set the cost
+guards (`check` names each one that is missing, with a starting value):
 
 ```bash
 bun run melete set MELETE_PUBLIC_URL=https://assistant.example.net MELETE_WEB_ORIGIN=https://assistant.example.net
 read -rs MELETE_OPERATOR_TOKEN && export MELETE_OPERATOR_TOKEN   # 24 or more random characters
 bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOKEN
+bun run melete set MELETE_SPEND_PERSON_DAILY_USD=2 MELETE_SPEND_PERSON_MONTHLY_USD=20 \
+  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD=0.5 MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD=5 \
+  MELETE_SPEND_MONTHLY_USD=200 MELETE_ATTACHMENT_UPLOADS_AT_ONCE=3 \
+  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW=30 MELETE_STORAGE_PER_PERSON_MB=2048 \
+  MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION=1 MELETE_ALERT_SPEND_HOURLY_MULTIPLE=4
 bun run melete check
 ```
+
+A hosted installation also needs a daily backup that leaves the machine:
+`check` and `status` fail once the newest backup is more than 26 hours old
+([Backups on a schedule](#backups-on-a-schedule)).
+
+People you invite should be able to read your terms and privacy notice and
+reach you for help. Host those pages yourself and name them; each is linked on
+the sign-in page, in setup and in Settings › Account only when it is set:
+
+```bash
+bun run melete set MELETE_TERMS_URL=https://example.net/terms \
+  MELETE_PRIVACY_URL=https://example.net/privacy MELETE_SUPPORT_URL=mailto:help@example.net
+```
+
+Terms and privacy take an `https://` page; support takes an `https://` page or
+a `mailto:` address.
+
+A self-hosted installation limits nobody's storage. One that hosts other
+people caps how much each person keeps (`hosted.storage` above), so one
+account cannot fill the disk or the bucket for everyone:
+`MELETE_STORAGE_PER_PERSON_MB=2048` is a reasonable start. See
+[How much each person keeps](#how-much-each-person-keeps).
+
+Each person's agent computer has a network of its own in `MELETE_NETWORK_POOL`.
+Leave that setting at its default (`10.215.0.0/16`) or another range, not
+`off`; a hosted installation fails `hosted.network_pool` while it is `off`.
+Requests the agents make through Melete never enter the pool, whatever
+`MELETE_PRIVATE_HOSTS` lists, so one person's agent can't reach another
+person's computer. With the pool `off`, computers take the engine's own ranges
+instead, and a range listed in `MELETE_PRIVATE_HOSTS` that covers them would
+open them.
+
+Two settings keep the background work of many people in proportion; both are
+empty, and so off, unless set. `MELETE_REST_ROUTINES_AFTER_DAYS` is how many
+days a person may go unseen (no sign-in, no use of the app, no message through
+a channel) before their routines, watches and other repeating work rest. A
+time that comes while they rest is let pass, not kept: the next time the
+person is seen, everything comes back on from that moment, nothing missed runs
+late, and Home tells them in one line that their routines rested and are back
+on. `MELETE_ROUTINES_PER_PERSON_MAX` is how many routines and pieces of
+repeating work one person may keep; one more is refused with a sentence the
+assistant passes on. For an installation that other people sign in to, `14`
+days and `20` routines are a good start:
+
+```bash
+bun run melete set MELETE_REST_ROUTINES_AFTER_DAYS=14 MELETE_ROUTINES_PER_PERSON_MAX=20
+```
+
+### Running it from the web app
+
+The installation's owner also has **Settings › Installation** in the web app,
+which nobody else sees and the service answers to nobody else. It shows the
+month's and the day's spending against the installation's caps, how many
+people are active, invited or turned off, the agent runs and computers going
+now against their limits, the newest backup, free disk, health and the
+version.
+
+Under it is everyone with an account: their status, when they were last
+seen, and what they spent this month and today against their caps. From
+there the owner can invite someone, send a new invite or a password reset,
+turn an account off (which signs them out everywhere) or back on, delete an
+account by typing its email, and give a person caps of their own. Those are
+dollar caps for a day, a month and background work; each stays within the
+installation's caps, and a blank one keeps the `MELETE_SPEND_PERSON_*` value.
+Token caps stay installation-wide.
+
+Every invite and reset link is shown to copy, whether or not account mail is
+set up, so an installation without mail can still bring people in. Every
+change made here, and by `melete account create`, `reset`, `disable` and
+`enable` on the host, is listed under Changes with who made it and when;
+links and codes are never kept there. The newest backup shown is the one
+`melete backup` last noted in the database, so backups taken before this
+release don't appear until the next one runs.
+
+### How long call records are kept
+
+Every model call writes a row to `model_usage`, and every message, meeting,
+file change or process report a connected account sends writes one to `event`.
+With many people both grow every day. `MELETE_RETENTION_DAYS` bounds them; it
+is unset by default, and then nothing is removed. Use **90** on an
+installation that hosts other people:
+
+```bash
+bun run melete set MELETE_RETENTION_DAYS=90
+```
+
+Once an hour, one instance removes, a small batch at a time and oldest first:
+
+- model calls made before the start of the UTC day that many days back. Each
+  day's calls are summed into the daily usage roll-up (`usage_day`) before
+  they go, so the usage chart, background cost per day and spending by day
+  keep their history. This month's spending, the spending alerts and the
+  roll-up read the calls themselves, so the setting is at least 35.
+- connector events that no job took in and nothing still holds. A conversation
+  and everything its agent reads stay as long as the conversation does, and so
+  do the audit log, receipts, approvals and files. An event a job or something
+  Melete noticed cites, one a listening trigger has not read, one an open
+  "needs you" item points at, and mail an open wait on a reply may still be
+  checked against are kept. Each removed event leaves its delivery key, so the
+  same message is not delivered twice.
+
+Each batch is its own short transaction. It passes over model calls another
+transaction holds, and gives up after five seconds of waiting for anything
+else, to try again on the next pass; a large backlog goes over several passes. `MELETE_OBSERVATION_RETENTION_DAYS` (14 by default)
+still removes unused mail, calendar and document observations sooner.
 
 ## On a cloud VM
 
@@ -433,6 +705,16 @@ copied. A key belongs in your local `deploy/.env` (`bun run melete set
    run `bun run melete set MELETE_DATABASE_CA_FILE=/etc/melete/database-ca.pem`.
    `?sslmode=require` also encrypts, and accepts the server's certificate
    without a check; `check` reports that as a warning.
+   Give Melete a separate, empty database of its own, not the provider's
+   default one: a default database can already hold the provider's own tables
+   (Supabase's `postgres` database does, and so does any database made from a
+   `template1` where TimescaleDB or PostGIS is installed), and a restore or a
+   rollback loads only into a database that holds no table, so it refuses that
+   one. If the provider sets Postgres 17's `transaction_timeout` for the user or
+   the database, raise it or set it to `0` for the user `DATABASE_URL` names
+   before a restore or a rollback (`alter role <user> set transaction_timeout = 0`):
+   the load runs as one transaction, so a timeout shorter than the load cuts it
+   off, and the database is left empty again.
 2. Set it, keeping it out of your shell history, and turn the database on in
    the deploy file:
 
@@ -545,6 +827,26 @@ Each image carries these tags:
 - the commit's first seven characters, such as `023df46`: one build, kept.
 - a release's version, such as `v0.3.0`, when that tag is pushed.
 
+A tag belongs to the Docker engine, not to one installation: a pull of `main`
+by any installation on the same engine, or by hand, moves it for all of them.
+The `melete` service looks up the runtime image's ID once, when it starts, and
+starts every attempt's engine from that exact image. `melete-cells` records
+the image the service was given and keeps accepting it after the tag moves,
+also when `melete-cells` restarts on its own, so a moved tag never stops a
+running installation's engines. A newer runtime image is used from the next
+start of the `melete` service, which `melete deploy` does once the matching
+service image is in place: the service image expects the Hermes commit its
+own release's runtime carries, so the two change together, never when the tag
+happens to move. `melete deploy` also pins each installation to its commit's
+own tag, which keeps installations on one engine from moving each other's.
+
+If the image the service started with is removed from the engine, such as by
+`docker image prune` after the tag moved away from it, a new message ends
+with “I couldn’t start the engine that does the work … Restart Melete”, and the
+service log names the image. Restart the `melete` service to use the image the
+tag names now, or run `melete deploy` when that is a newer release than the
+service's.
+
 The images are built for `linux/amd64`. On another architecture, build from
 source as [Install on a Linux Docker host](#install-on-a-linux-docker-host)
 shows. They hold no keys or configuration: `deploy/.env` and everything under
@@ -578,7 +880,9 @@ docker compose -f deploy/docker-compose.yml up -d --no-build --wait --wait-timeo
 
 With a docker sandbox ([Sandboxes](#sandboxes)), add `--profile sandbox` to
 both `docker compose` lines, or set `COMPOSE_PROFILES=sandbox` in
-`deploy/.env`; the computer image is then pulled with the others.
+`deploy/.env` (`bun run melete set COMPOSE_PROFILES=sandbox` also turns on the
+deploy file's `sandbox` profile); the computer image is then pulled with the
+others.
 
 `MELETE_IMAGE_TAG` set to a version, such as `v0.3.0`, stays on that release;
 check out the same tag (`git checkout v0.3.0`) so the Compose file matches the
@@ -805,7 +1109,8 @@ account and by administrators.
 
 `bun run deploy/scripts/upgrade.ts <tag> --dry-run` works as described in
 [upgrading](UPGRADING.md). Its `mkdir -p -m 700 ~/melete-backups` creates the
-default backup parent, `C:\Users\<you>\melete-backups`, in Git Bash as on Linux;
+default backup parent, `C:\Users\<you>\melete-backups` (a second
+installation's is `melete-backups\<project>` inside it), in Git Bash as on Linux;
 `--backup-dir` also takes a Windows path such as `C:/melete-backups`. Docker Desktop keeps images and
 volumes on its VM's disk, so the upgrade measures the free space there, from
 beside the database volume, rather than on a Windows drive.
@@ -1148,8 +1453,11 @@ While the code is configured, the sign-in page asks for it beside the email and
 password (the link fills it in), and `POST /setup` answers 403
 `setup_code_required` without it and 403 `invalid_setup_code` for a wrong one.
 Case, spaces and dashes don't matter. The password is checked first, so a weak
-one does not use up an issued code. Once the account exists the code has
-nothing left to open. `GET /setup` says `code_required` while it matters.
+one does not use up a code. The code works once, and lasts 72 hours from the
+first time Melete starts with it; after that, or once `account setup-code` has
+issued a newer one, it is refused as `invalid_setup_code`. Once the account
+exists the code has nothing left to open. `GET /setup` says `code_required`
+while it matters.
 
 Lost it, or setting up installations for other people without `init`?
 
@@ -1158,7 +1466,7 @@ bun run melete account setup-code
 ```
 
 prints a new code and link that last 72 hours; each new one cancels the one
-before. An operator who provisions an installation for someone else can also
+before, the code `init` printed included. An operator who provisions an installation for someone else can also
 skip the code and create that person's account directly with
 `bun run melete account create <email>` (see [Accounts](#accounts)).
 
@@ -1210,15 +1518,25 @@ links use `MELETE_PUBLIC_URL`, or the web port on this machine.
 | Command | What it does |
 |---|---|
 | `account list` | Every account: email, owner, person or guest, created, disabled, whether it has a password yet, how many browsers are signed in, and the last sign-in. |
-| `account create <email>` | A new account with a one-time link, valid for seven days, to choose its password. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
+| `account create <email>` | A new account with a one-time link, valid for seven days. The link opens as an invite: the person chooses their password and goes straight on to setting up, already signed in. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
 | `account reset <email>` | A one-time link (60 minutes) that sets a new password. Using it signs the account out everywhere. |
-| `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept. |
+| `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept, but its work does not run, nor use its saved sign-ins, until it is enabled again. |
 | `account enable <email>` | Lets a disabled account sign in again. |
 | `account setup-code` | A new [setup code](#claiming-a-new-installation), while no account exists. |
 
 The exit code is 0 when it was done, 2 when it was refused (no such account,
 an email already in use, a setup code once the owner exists) and 1 when it
 failed.
+
+In the app, the account that set Melete up can make another person's account
+an admin, or take that away, from Settings › Account › Accounts on this Melete
+(`PATCH /principals/{id}` with `admin: true` or `false`). An admin adds
+accounts (`POST /principals`), sees the list of them, and chooses the
+installation's model and its keys, as the setup owner does. Only the setup
+owner makes admins, deletes other people's accounts and sets the secondary
+model, and nobody can change the setup owner, who is always an admin. Only a
+person's account that can sign in holds admin; a disabled one administers
+nothing.
 
 ## Signing out everywhere
 
@@ -1283,6 +1601,12 @@ container's default gateway from its routing table and believes the header
 only on a connection from that address, and only when it holds one
 well-formed address; anything else is attributed to the socket as before. A
 proxy on another machine is named by its address instead of `gateway`.
+With `gateway`, keep the web port published on `127.0.0.1` only, as
+`deploy/docker-compose.yml` does (`127.0.0.1:${WEB_PORT}`), and never on every
+address in an override: every program on the host and every SSH tunnel to it
+arrives from the gateway and is believed, and with the port published on every
+address, Docker's userland proxy can make clients from outside arrive from the
+gateway too, so they could name any address they like.
 
 **Per client address.** A burst of five attempts, then 1, 2, 4, up to 60
 seconds between attempts. A refusal is 429 `login_rate_limited` with
@@ -1374,7 +1698,10 @@ links point at `MELETE_PUBLIC_URL`, so email sign-in and mailed resets are
 offered only once it is set. Every link signs in to an account, so `smtp://`
 must upgrade to TLS with STARTTLS before anything is sent, unless the server
 is on this machine; add `?requireTLS=false` to the URL only for a relay on a
-network you trust that cannot.
+network you trust that cannot. Leave `?opportunisticTLS=true` and
+`?ignoreTLS=true` out of the URL: the first sends in plain text whenever the
+server refuses the upgrade, and the second never asks for it, so either one
+turns the requirement off as `?requireTLS=false` does, without saying so.
 This sender carries nothing but these two kinds of mail, for any account;
 what Melete sends for a person still leaves from their own connected
 accounts, after their approval. The answer to a request is the same whether or
@@ -1540,8 +1867,9 @@ provider, paste its API key (and, for `openai-compatible`, the endpoint's
 address), test the connection, choose a model from the provider's list or type
 its identifier, and use it. The test makes one small call, the provider's model
 list, and says plainly when the key is refused, the address answers 404, or the
-provider does not answer in time. Only the setup owner can change a key or the
-model; every other account sees which model is active.
+provider does not answer in time. Only the setup owner, or an account they made
+an admin, can change a key or the model; every other account sees which model
+is active. The secondary model stays the setup owner's own.
 
 A key entered this way is sealed with `MELETE_MASTER_KEY` before it is stored,
 so the app refuses to store one while that key is unset. No answer ever carries
@@ -1662,9 +1990,9 @@ memory. It uses the default provider and model through the same gateway, so the
 provider key stays in the gateway. `MELETE_MEMORY_MODEL` names a different model
 for this (a smaller one is usually enough), with `MELETE_MEMORY_PROVIDER` when it
 is served by another provider; `MELETE_MEMORY_MODEL=off` stops model reads and
-keeps structured observations only. `MELETE_MEMORY_DAILY_CALLS` (default `200`)
-is how many reads one person's memory may make in a day; raise or lower it for
-your provider's cost. A call the provider answers with an error does not count;
+keeps structured observations only. `MELETE_MEMORY_DAILY_CALLS`
+is how many reads one person's memory may make in a day. It is empty by default,
+which means no daily limit; set a number to bound your provider's cost. A call the provider answers with an error does not count;
 a call that was sent and timed out does. When the budget is spent, or the
 provider fails, limits or times out, the conversation carries on and the message
 waits unread: it is tried again 30 seconds later, then after a gap that doubles
@@ -1775,6 +2103,39 @@ nothing uses and that was stored more than seven days ago. Removing a space dele
 only that space used, and the removal finishes only when the store confirms
 they are gone.
 
+### How much each person keeps
+
+By default nobody is limited. To cap how much one person may keep, set
+`MELETE_STORAGE_PER_PERSON_MB` in `deploy/.env` and recreate the service.
+
+What counts, across all of a person's spaces: the files they sent in chat, and
+every file their work saved, in their Files or in a chat's own folder,
+generated recordings and published files among them. A file a member's request
+saved in a shared space counts against that member, not the space's owner, and
+so does a file a member copies into a room from their own work; work in a
+shared space that nobody asked for counts against its owner. Someone who leaves
+a shared space, or is removed from it, stops being charged for what they kept
+there, since they can no longer delete it. A file deleted into the trash stops
+counting, and counts again if it is put back. Deleting a chat frees what its
+folder held and the files sent in it. Files the agent's computer made in its
+own `/work` are not counted until they are moved or saved into Files.
+
+The amounts are read from what the service recorded as each file was saved,
+moved and deleted, never by walking the disk. They are recorded whether or not
+a limit is set, from the version that added this setting on; files saved
+before that upgrade are not counted. The limit is checked as each upload
+begins and as each step is proposed, so uploads sent at the same moment, or
+steps proposed before the others landed, can take a person past it; once they
+are past it, nothing more is saved until they free space.
+
+Once a person reaches the limit, an upload is refused with a sentence that says
+how much they use and that deleting files in Files, or chats with files sent in
+them, frees space. A step that would save a file past the limit is refused the
+same way, and the agent passes it on. A step whose size is known only once it
+runs, such as a generated recording, goes ahead until the limit is reached.
+The Files page shows how much the person uses against the limit, only when one
+is set.
+
 ## Company map
 
 A scan reads the connected mailbox with the installation's own model, once the
@@ -1816,9 +2177,12 @@ Screen from Safari's Share menu and open it from there; Safari in a tab does not
 receive pushes.
 
 Each person chooses under Settings › Notifications what is pushed, at most how
-many a day, and how close together events are grouped into one push. Nothing is
-sent outside their day hours, in their own time zone, and every push says why
-it was sent.
+many a day, and how close together events are grouped into one push. Nothing
+Melete decides to say by itself is sent outside their day hours, in their own
+time zone, and every push says why it was sent. What the person asked for at a
+time they chose (a reminder coming due, a routine's scheduled run, the report
+from a scheduled occurrence of long work) goes at that time, whatever the hour,
+and does not count toward the daily limit.
 
 ## Engine limits
 
@@ -1907,6 +2271,48 @@ order across chats, routines and quiet work, and the conversation says it is
 waiting and how many other tasks are running. Raise it on a host with memory to
 spare; each running attempt may use up to 2 GB.
 
+Slots are shared fairly between people too: within chats, routines and quiet
+work alike, the next free slot goes to the waiting person who is running the
+fewest, and among equals to the one who started something longest ago, so one
+person with many chats or routines cannot keep everyone else waiting.
+`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` (unset by default, which is no limit of
+its own) also caps how many one person runs at once, even while slots are
+free; `init --hosted` writes `2`. The cap counts everything a person runs on
+one service instance; with several, each counts its own (see
+[Running more than one service instance](#running-more-than-one-service-instance)).
+Their routines and quiet work may use all of it but one slot, which stays free
+for their chats, so their own routines never hold back their chat (with a cap
+of `1`, a chat waits for their running routine). Work held by its person's cap waits
+without taking a queue worker, so other people's work still starts.
+
+## Starter tasks
+
+A new person's Home offers a few one-tap starter tasks once setup is done:
+finding well-reviewed places near them, a reminder in ten minutes, a one-page
+PDF of the day's news, pulling facts out of a file they attach, watching a
+page, and planning a trip. Each works with no apps connected, and none sends a
+message, buys anything or needs a sign-in elsewhere. A tap writes the request
+into the composer to edit; nothing is sent until the person sends it. They go
+away once the person has three chats, or when they choose "Hide these", which
+is kept for their account on every device.
+
+`MELETE_STARTERS` replaces the built-in list with your own, as a JSON array of
+at most six entries:
+
+```json
+[{ "id": "coffee-nearby", "label": "Coffee shops nearby",
+   "text": "Find 3 well-reviewed coffee shops near {city} and put them in a short list.",
+   "icon": "mapPin", "capability": "research" }]
+```
+
+`text` may hold `{city}`, filled with the city of the person's time zone, and
+one `[blank]`, whose words are selected in the composer so the first thing the
+person types replaces them. `icon` is one of `mapPin`, `bell`, `fileText`,
+`upload`, `globe`, `compass`, `sparkles`, `calendar`, `search` or `clock`;
+`capability` one of `research`, `reminders`, `files_out`, `files_in`,
+`monitoring`, `planning` or `other`. A list that does not parse or fit stops
+the service at start with the reason.
+
 ## Spending caps
 
 The engine limits above bound one attempt. Spending caps bound what the whole
@@ -1921,7 +2327,7 @@ again before every new call.
 | Setting | Limit |
 | --- | --- |
 | `MELETE_SPEND_MONTHLY_USD`, `MELETE_SPEND_DAILY_USD` | Dollars the whole installation may spend in a UTC month or day |
-| `MELETE_SPEND_PERSON_MONTHLY_USD`, `MELETE_SPEND_PERSON_DAILY_USD` | Dollars one person may spend |
+| `MELETE_SPEND_PERSON_MONTHLY_USD`, `MELETE_SPEND_PERSON_DAILY_USD` | Dollars one person may spend (at most $1,000,000, like the background caps below) |
 | `MELETE_SPEND_MONTHLY_TOKENS`, `MELETE_SPEND_DAILY_TOKENS` | Input and output tokens for the whole installation |
 | `MELETE_SPEND_PERSON_MONTHLY_TOKENS`, `MELETE_SPEND_PERSON_DAILY_TOKENS` | Tokens for one person |
 | `MELETE_SPEND_NOTICE_PERCENT` | When the person is told a limit is close (default `80`) |
@@ -1939,8 +2345,9 @@ against the person talking, and a companies scan against the person who started
 it.
 
 - At the notice level of any limit, the person sees a quiet line at the top of
-  every page, and Settings › Models shows it beside this month's usage. The
-  service log records `spending: person warning (month)` once per period.
+  every page, and above the composer in a chat with when the limit starts
+  again; Settings › Models shows it beside this month's usage. The service log
+  records `spending: person warning (month)` once per period.
 - At the limit, no new model call is made. The gateway refuses it with
   `402 spending_limit_reached` and a plain sentence: "This month's limit is
   reached; it resets on November 1." A call already answering is never cut
@@ -1973,6 +2380,12 @@ before the built-in table:
 ```bash
 MELETE_MODEL_PRICES='{"fireworks/accounts/fireworks/models/deepseek-v4p1-flash":{"input":0.3,"output":1.2},"anthropic/*sonnet*":{"input":3,"output":15,"cached_input":0.3}}'
 ```
+
+A model that charges more for a long prompt can name that price as
+`long_prompt`, for example
+`{"input":0.1,"output":0.5,"long_prompt":{"above":100000,"input":0.5,"output":2.5}}`:
+a call whose input, cached input included, is above `above` tokens is charged
+at it in full. The built-in table prices Haiku 5.5 this way.
 
 `cached_input` is the price of input read from the provider's cache, and
 `cache_write_input` the price of input written to it. Left out, each is the
@@ -2011,6 +2424,33 @@ the limit is not yet spent and charged when it reports, so one call may finish
 past the limit; the next is refused, as an action past the limit is. Jobs carry
 a $1 limit by default, so turn this on together with the dollar limits your
 installation gives its jobs.
+
+## Space rules
+
+Spending caps apply to everyone alike. Space rules are set per space, for an
+installation several people share: which models a space's work may run on, and
+which kinds of connected app and tool it may not use. Every space starts with
+none, so a single-person installation behaves as it always has.
+
+Whoever set up the installation may set the rules of any space; a space's own
+owner may set them for that space. Anyone the space admits can read them. They
+are in Settings › Space rules, and through the API:
+
+```bash
+curl -b cookies.txt https://melete.example.com/spaces/sp_.../policy
+curl -b cookies.txt -X PUT https://melete.example.com/spaces/sp_.../policy \
+  -H 'content-type: application/json' \
+  -d '{"allowed_models":["anthropic/claude-sonnet-4-5"],"denied_connector_kinds":["mcp"],"denied_tool_kinds":["email.send"]}'
+```
+
+| Rule | What it does |
+| --- | --- |
+| `allowed_models` | `provider/model` entries, in order. When the model work would use is not listed, it moves to the first listed model whose provider is connected; with none connected, the attempt stops and the conversation says why. A vision or fallback route to a model not listed is not taken, and the service's own model calls about the space (memory reads, summaries, reviews of its actions, reading its mail for Companies) keep to the list too. A review with no allowed model to use leaves the action for a person to approve. Empty allows any model. |
+| `denied_connector_kinds` | Connection providers, such as `imap`, `caldav`, `mcp` or `command_line`. A connection of a listed kind cannot be added to the space, and one added earlier is neither offered to the agent nor used. |
+| `denied_tool_kinds` | A tool by its name, such as `email.send`, or a family by the part before its first dot, such as `email`, which covers `email.read` and `email.send`. It covers the tools of connections, the built-in files, web and computer ones included. The agent is not offered them, and is refused if it asks for one anyway. Melete's own tools for asking the person, following up and searching memory are not affected. |
+
+A change applies from the next attempt, catalog and call; an attempt already
+running on a model the rules now leave out has its next call refused.
 
 ## Attachments
 
@@ -2065,9 +2505,10 @@ Melete pick a better model per call:
 
 | Setting | Used for |
 | --- | --- |
-| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier and the companies scan |
+| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier, the companies scan, conversation summaries and learning from corrections |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
+| `MELETE_MODEL_BACKGROUND` | Everyone's scheduled and background work: routines, watches, standing runs and any turn nobody is waiting on. Unset, that work runs on the default model. A person's own messages never run on it |
 | `MELETE_MODEL_TRIAGE` | Sorting new mail and calendar changes for Home's "Needs you" list, or `off`. Unset, the owner's secondary model for scheduled work, else `MELETE_MODEL_FAST`, else the default. See [Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in) |
 
 For example:
@@ -2082,6 +2523,13 @@ The rules, in order:
 
 - A model the owner chose in the app always wins for agent turns: those turns
   are never sent to the vision model or a fallback.
+- Background work runs on `MELETE_MODEL_BACKGROUND` when it is set, in every
+  person's spaces, even when the owner chose the primary model in the app; it
+  keeps the vision model and the fallbacks. In the owner's own spaces, their
+  secondary model wins once they move scheduled work to it in Settings ›
+  Models. On a hosted installation a cheaper model here, such as
+  `anthropic/claude-haiku-5-5`, keeps routines from spending at the primary's
+  price, and their cost still counts against the background caps.
 - A model on the owner's own machine or network (the OpenAI-compatible endpoint
   at a local address, or one the owner confirmed is on their device) keeps
   every call: side calls stay on it instead of the fast model, and nothing is
@@ -2153,18 +2601,30 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 - the error rate spikes: over the last fifteen minutes, at least five attempts
   or model calls and half or more of them failed, were lost, or were refused by
   the provider;
+- background work is stuck on one item: a pass that walks many spaces or
+  accounts, such as the trash sweep, failed on the same one three times in a
+  row (`background_work`, which names the pass, the item and the error). Each
+  service instance counts only its own passes, so with several instances on one
+  database a stuck item shows only on the instance whose pass is stuck: the
+  alert comes only when that is the instance holding the `health-alerts` lease,
+  and `/health/detail` shows it only when the request reaches that instance;
 - where set, spending runs high: the last hour's model calls cost more than
   `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` times the installation's usual hour (the
   median hour of the week before), or one person accounts for more than
   `MELETE_ALERT_SPEND_PERSON_PERCENT` percent of today's spending while others
   spend too. Neither fires below `MELETE_ALERT_SPEND_MIN_USD` (default `1`)
-  dollars. These checks are `spend_rate` and `spend_share`.
+  dollars. These checks are `spend_rate` and `spend_share`;
+- where `MELETE_SPEND_MONTHLY_USD` is set, the month's model spending reaches
+  `MELETE_SPEND_NOTICE_PERCENT` (default `80`) percent of it (`spend_cap`). At
+  the cap itself model calls are refused for everyone until the month resets,
+  so this is the time to raise it. The starting `$200` that `init --hosted`
+  writes is reached by ten people at their own `$20` cap.
 
 | Setting | What it does |
 | --- | --- |
 | `MELETE_ALERT_WEBHOOK_URL` | Receives a JSON POST: `text` (a sentence chat webhooks show), `status` (`unhealthy` or `recovered`), `service`, `version`, `checks` and `time` |
 | `MELETE_ALERT_EMAIL_TO`, `MELETE_ALERT_EMAIL_FROM` | Where alert email goes, and its sender (default: the same address) |
-| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465`. As with `MELETE_SMTP_URL`, a plain `smtp://` server elsewhere must upgrade to TLS with STARTTLS; add `?requireTLS=false` only for a relay that cannot |
+| `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465`. As with `MELETE_SMTP_URL`, a plain `smtp://` server elsewhere must upgrade to TLS with STARTTLS; add `?requireTLS=false` only for a relay that cannot, and never `?opportunisticTLS=true` or `?ignoreTLS=true`, which send in plain text without saying so |
 | `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
 | `MELETE_ALERT_DISK_MIN_FREE_MB` | The free space, in MB, below which the `disk` check fails (default `2048`; `0` turns it off) |
 | `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
@@ -2185,7 +2645,9 @@ relay on another host without TLS must add `?requireTLS=false` to
 logs `alert not sent` each time.
 
 `GET /health/detail` (through the web server, `/api/health/detail`) returns
-each check with what it found, `200` while all pass and `503` while any fails:
+each check with what it found, `200` while all pass and `503` while any fails.
+That includes `background_work`, so one space whose background work is stuck
+makes it answer `503` while everything else works:
 
 ```bash
 curl -fsS -H "Authorization: Bearer $MELETE_OPERATOR_TOKEN" https://melete.example.com/api/health/detail
@@ -2197,9 +2659,11 @@ uptime check as well: point a monitor such as UptimeRobot, Better Stack or
 Healthchecks.io at `https://<your host>/api/health` every minute, alerting
 when it fails twice in a row. `/api/health` answers `503`, with the same body
 and `database` `unreachable`, while the database is down, so a monitor that
-only reads the status code sees that too. With
-the operator token, a monitor that can send a header can watch
-`/api/health/detail` instead and alert on any non-200 answer.
+only reads the status code sees that too. Page on `/api/health`. With the
+operator token, a monitor that can send a header can watch
+`/api/health/detail` beside it, but its `503` can mean one stuck space as well
+as an outage: treat it as a reason to read the checks it lists, not as the
+uptime page.
 
 ## Memory extraction
 
@@ -2222,7 +2686,7 @@ read-only, and `melete-cells` starts only these fixed profiles:
 
 | Profile | Image | Network | Storage |
 | --- | --- | --- | --- |
-| An attempt's engine | the runtime image the stack names | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
+| An attempt's engine | the runtime image the stack names, as it stood when the service started ([prebuilt images](#using-prebuilt-images)) | its own internal network, with the service as its one peer | its job's directory of the work volume, and its own home |
 | An agent's computer | `MELETE_SANDBOX_DOCKER_IMAGE` | none, or its own internal network | its two volumes |
 | A stdio MCP server | one pulled by digest from any registry that does not point back at the host ([CONNECTORS.md](CONNECTORS.md)), or the runner images below | none, or its own internal network | its own volumes |
 
@@ -2432,6 +2896,12 @@ own.
   serves it. Run one instance, or send every request for a computer to the same
   instance, when people take over the agent's computer; otherwise another
   instance's sweep can suspend a computer while someone is using it.
+- Attempt slots (`MELETE_ATTEMPT_CONCURRENCY`) and a person's own cap
+  (`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON`) are counted by each instance for
+  the attempts it runs, so a person can run up to their cap on every instance,
+  and work one instance holds back for its person's cap can be started by
+  another. Run one instance where that cap must hold exactly. The spending caps
+  and the limits on computers are kept in Postgres and hold across instances.
 
 ## Upgrading
 
@@ -2483,8 +2953,70 @@ A container that was removed when its work ended has no logs left.
 The limits live in the `x-logging` anchor at the top of
 `deploy/docker-compose.yml`; a changed limit applies when a container is
 recreated, not on restart. `bun run compose:check` and
-`bun run browser:compose:check` refuse a service without the bound. Logs that
-must outlive rotation belong in a log collector you run beside the stack.
+`bun run browser:compose:check` refuse a service without the bound. Each line
+also names its Compose project and service (the json-file driver's `labels`
+option), so a shipped line says where it came from.
+
+### What the logs hold
+
+The service and `melete-cells` write ids, codes, counts and short reasons:
+which job, attempt, connection or route failed, and why. They never write
+what someone wrote, a file's contents, a prompt, a model's answer, a password,
+a token or a sign-in secret. `apps/melete/src/log-content.test.ts` reads every
+place they write a line and fails on one that writes a value named like
+content or a secret. Error messages are written, cut short; before any line
+leaves the process, known secret shapes are taken out of it (an address's
+user and password, `Bearer` credentials, JWTs, provider keys, private keys,
+`password=`-style pairs, long random tokens) and email addresses become
+`[email]` (`apps/melete/src/log-guard.ts`). Ids, digests and container names
+stay, since the log is read by them. The bundled Postgres writes an error's
+reason alone, never the failing row or the statement that hit it.
+
+The containers attempts, agents' computers and connection installs run in are
+different: what they print is the agent's own work. Their logs stay on the
+machine (`melete logs --attempts`, `--computers`) and are never shipped.
+
+### Shipping logs
+
+Rotation keeps about 50 MB per container. To keep logs longer, or to search
+them in one place, send them to a log collector that accepts OTLP over HTTP:
+Grafana Loki 3 (its `/otlp` endpoint), Grafana Cloud, an OpenTelemetry
+Collector of your own, or any hosted service that takes OTLP logs.
+`deploy/docker-compose.log-shipping.yml` runs an OpenTelemetry Collector
+(`deploy/config/log-shipping.yaml`) that reads the json-file logs on the
+machine from the moment it first starts and sends the lines of the stack's
+Compose services, each with its `container.id`, `service.name` (the Compose
+service) and `service.namespace` (the Compose project). A line is sent only
+when its container's logging labels it with a Compose service, as `x-logging`
+in `deploy/docker-compose.yml` does; attempts, computers and other projects'
+containers carry no such label. It is a Compose project of its own,
+so `deploy`, `upgrade` and `logs` neither start nor need it, and nothing is
+sent anywhere until you start it:
+
+```bash
+bun run melete set MELETE_LOG_SHIP_ENDPOINT=https://otlp.example.net/otlp   # /v1/logs is added
+read -rs MELETE_LOG_SHIP_AUTHORIZATION && export MELETE_LOG_SHIP_AUTHORIZATION   # e.g. "Basic <base64 of user:key>"; leave unset if none
+bun run melete set --from-env MELETE_LOG_SHIP_AUTHORIZATION && unset MELETE_LOG_SHIP_AUTHORIZATION
+docker compose -p melete-logs --env-file deploy/.env \
+  -f deploy/docker-compose.log-shipping.yml up -d
+docker compose -p melete-logs --env-file deploy/.env -f deploy/docker-compose.log-shipping.yml logs --tail 20
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `MELETE_LOG_SHIP_ENDPOINT` | none (required) | The collector's OTLP/HTTP base address |
+| `MELETE_LOG_SHIP_AUTHORIZATION` | empty | The `Authorization` header it expects, if any |
+| `MELETE_LOG_SHIP_MEMORY_LIMIT` | `512m` | The shipper's memory cap |
+
+The shipper runs as root, because Docker's log files are readable by root
+alone, with no capabilities, no new privileges and a read-only filesystem; it
+mounts the log folder read-only and has no Docker socket. Where each file was
+read up to, and batches waiting while the endpoint is unreachable, are kept in
+its `log-shipping-state` volume, so a restart neither resends nor skips. A
+second installation on the machine is shipped too, under its own
+`service.namespace`. Stop it with the same `docker compose -p melete-logs --env-file
+deploy/.env -f deploy/docker-compose.log-shipping.yml` prefix and `down`,
+adding `--volumes` to forget where it was.
 
 ## Backup and restore
 
@@ -2545,17 +3077,38 @@ while it is written; the restriction journal on its own, under a timestamped
 name; `deploy/.env` without the master key, the key's fingerprint
 (`master-key.fingerprint`), `deploy/config/` and `deploy/melete.deploy.json`;
 then the files, one archive per volume, with ownership and modes kept:
-`spaces.tar` (each space's files), `artifacts.tar` (uploads and Files, kept by
+`spaces.tar` (each space's files, without its search index, `.index/`, or the
+writes staged in `.proposed/`: the index is rebuilt from the files the first
+time a restored space is searched, and a restore leaves both out of a backup
+made before they were), `artifacts.tar` (uploads and Files, kept by
 their content, unless they are in an S3 bucket), `work.tar` (the shared
 `/work`), and for each agent computer of this installation its two volumes,
 `computer-<name>-work.tar` and `computer-<name>-home.tar` (its `/work` and its
-home folder, browser profile included); `contents.json`, which lists those
-archives and each computer volume's labels; and a `SHA256SUMS` list. The
-runtime's attempt homes are left out: they are disposable, and jobs recover
-from the database into fresh attempts. The newest `backup.keep` backups are
-kept, each holding the files, so the disk they take is about `backup.keep`
-times what `--estimate` reports. `--to` streams every part to another machine
-over SSH and keeps nothing on this disk, for a host short on space.
+home folder, browser profile included). A computer is this installation's when
+its volumes' `melete.install_project` label names this installation's Compose
+project, whatever `MELETE_SANDBOX_PROJECT` it was made under, so the computers
+an agent still resumes after that setting changes are kept too; one made before
+computers carried that label is this installation's when its `melete.project`
+is the current `MELETE_SANDBOX_PROJECT` (see
+[Computers a backup leaves out](#computers-a-backup-leaves-out)
+for the others); `contents.json`, which lists those
+archives and each computer volume's labels and names the installation's
+Compose project; and a `SHA256SUMS` list. The
+`runtime-home` volume, the home folder of the warm runtime container that no
+job runs in, and each attempt's own home are left out: they keep no job's
+work, and jobs recover from the database into fresh attempts. Each new backup removes the older ones
+beyond the newest `backup.keep` (3 by default), and every one older than
+`backup.max_age_days` (30 by default), from `backup.dir`; the one just made
+always stays. Each holds the files, so the disk they take is at most about
+`backup.keep` times what `--estimate` reports. `--to` streams every part to
+another machine over SSH and keeps nothing on this disk, for a host short on
+space. `backup.keep` and `backup.max_age_days` apply in the folder there in the
+same way: the backups in it are listed over SSH, and this installation's beyond
+them are removed there, never another installation's or one that does not say
+whose it is. The listing reads only the files that name a backup's
+installation, and of its `deploy.env` only the `COMPOSE_PROJECT_NAME` line, so
+no service key leaves that machine. When the listing fails, nothing is removed
+that night and the backup warns (`backup.keep`).
 
 **What "online" means for the files.** By default the stack keeps running. The
 database is dumped first and the files are copied after it, so every file the
@@ -2586,8 +3139,9 @@ volumes; replaces the database volume and loads the dump; puts the newest
 restriction journal back where the journal volume is missing or holds no entry,
 as on a machine that never ran the installation or after a restore that stopped
 before that step (keeping its file ownership); empties each file volume and
-unpacks its archive into it, after asking the engine that no running container uses that volume; makes any
-missing computer volume with its labels; and only then starts the stack.
+unpacks its archive into it, after asking the engine that no running container
+uses that volume; makes any missing computer volume with its labels; and only
+then starts the stack.
 
 A step that fails stops the restore there, and the report says what that left:
 
@@ -2619,42 +3173,81 @@ refused: the files are put back as the backup's database
 knows them, so that database comes back with them. An agent computer whose
 container is still on the machine starts on its restored volumes when it is
 next used; for one whose container is gone, see
-[Replacing the VM](#replacing-the-vm). A computer in the backup that belongs to
-another installation (another `MELETE_SANDBOX_PROJECT`), or whose volume name
-is taken here by a volume labelled for something else, is left out, and the
-report says so. A backup made by `--with-volumes` before backups held their
+[Replacing the VM](#replacing-the-vm). The computers come back as the backup
+holds them, whatever the installation it was taken of was called: each is
+made with `melete.install_project` set to this installation's Compose project,
+so a restore onto a new machine under another `COMPOSE_PROJECT_NAME` keeps
+every computer, and this installation's backups take them from then on.
+`contents.json` names the installation the backup is of (`project`; in a
+backup from before it did, the backup's unencrypted `melete.deploy.json` or
+`deploy.env` names it), and a computer whose labels name another installation
+is not that installation's to put back. A backup in which nothing names its
+installation is judged by this installation's own labels, as a backup is.
+Such a computer, and one whose volume name is taken here by a volume that is
+not this installation's, is left out and the report says so; nothing of its
+here is touched. One whose volumes are here but name another installation
+(`restore.computers_named_elsewhere`, as after `COMPOSE_PROJECT_NAME`
+changed on the same machine) is left out too, and the report says how to
+make it this installation's. A backup made by `--with-volumes` before backups held their
 list of parts restores its `data.tar` and `work.tar` the same way, without
 their copy of the journal; each is checked first to hold the folders put back
 from it. A backup counts as whole only when `SHA256SUMS` lists every file in it
-and each matches. `backup.keep` never removes the backup the last deploy took.
+and each matches. `backup.keep` never removes the backup the last deploy took,
+which `rollback` restores from; `backup.max_age_days` does, once it is that old,
+and says so.
 
-The same backup by hand: back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
-artifacts, workspaces, and restrictions. Preserve ownership and permissions.
-Stop Melete and runtime work before taking the database and volume snapshot so
-their durable state is consistent. An installation started with an override
-names the same files on each Compose command below, and one running the browser
-worker stops `browser` with the others, since it writes into a space. From the
-repository root:
+The same backup by hand: back up `deploy/.env`, Postgres, the named volumes
+containing knowledge, artifacts, workspaces, and restrictions, and the two
+volumes of each of the agents' computers (`melete-sbx-<name>-work` and
+`melete-sbx-<name>-home`: those whose `melete.install_project` is this
+installation's Compose project, and those made before computers carried that
+label whose `melete.project` is its `MELETE_SANDBOX_PROJECT`). Preserve
+ownership and permissions. Stop Melete,
+runtime work and the agents' computers before taking the database and volume
+snapshot so their durable state is consistent; a stopped computer starts again
+when it is next used. An installation started with an override names the same
+files on each Compose command below, and one running the browser worker stops
+`browser` with the others, since it writes into a space. From the repository
+root:
 
 ```bash
 backup_dir="$HOME/melete-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -m 700 "$backup_dir"
 docker compose -f deploy/docker-compose.yml stop melete runtime web
+project="$(sed -n 's/^MELETE_SANDBOX_PROJECT=//p' deploy/.env)"
+name="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' deploy/.env)"
+computers="label=com.melete.sandbox=v1"
+labels='{{.Label "melete.install_project"}}|{{.Label "melete.project"}}'
+# This installation's computers: labelled with its Compose project or, made
+# before computers carried that label, with its sandbox project.
+own() {
+  awk -F'|' -v name="${name:-melete}" -v project="$project" \
+    '$2 == name || ($2 == "" && project != "" && $3 == project) { print $1 }'
+}
+docker ps --filter "$computers" --format "{{.Names}}|$labels" | own | xargs -r docker stop
 docker compose -f deploy/docker-compose.yml exec -T postgres sh -c \
   'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
   > "$backup_dir/database.dump"
 cp -p deploy/.env "$backup_dir/deploy.env"
 docker compose -f deploy/docker-compose.yml cp -a melete:/data - > "$backup_dir/data.tar"
 docker compose -f deploy/docker-compose.yml cp -a melete:/work - > "$backup_dir/work.tar"
+image="$(docker inspect --format '{{.Config.Image}}' \
+  "$(docker compose -f deploy/docker-compose.yml ps --all --quiet melete)")"
+for volume in $(docker volume ls --filter "$computers" --format "{{.Name}}|$labels" | own); do
+  docker run --rm --network none --user 0:0 --entrypoint tar \
+    --mount "type=volume,src=$volume,dst=/v,readonly" "$image" \
+    -C /v --numeric-owner -cf - . > "$backup_dir/computer-$volume.tar"
+done
 chmod 600 "$backup_dir"/*
 docker compose -f deploy/docker-compose.yml up -d --wait --wait-timeout 180
 ```
 
 The [Compose copy command](https://docs.docker.com/reference/cli/docker/compose/cp/)
-uses archive mode to retain ownership. The `/data` archive includes spaces,
-artifacts, and the current restriction
-journal. Keep a current independent journal copy as described below. Runtime
-attempt homes are disposable; jobs recover from Postgres into fresh attempts.
+uses archive mode to retain ownership, and the computers' archives keep each
+file's numeric owner. The `/data` archive includes spaces, artifacts, and the
+current restriction journal. Keep a current independent journal copy as
+described below. `runtime-home` and each attempt's home are left out: they
+keep no job's work, and jobs recover from Postgres into fresh attempts.
 
 The `restrictions` volume must be retained **independently of older database
 snapshots**. It contains the append-only removal journal. When restoring an old
@@ -2693,6 +3286,146 @@ Each run writes a private directory under `/tmp/melete-compose-restore` containi
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
 to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
 records a measured run and its evidence.
+
+### Backups on a schedule
+
+A backup that stays on the same disk goes when that disk goes. Run one every
+day, encrypted, to another machine, and have something tell you when a day is
+missed. `deploy/backup-schedule/` holds an example: `melete-backup.sh` takes
+the backup with `--to` and `--encrypt-to`, then calls a check-in address you
+choose; the systemd `melete-backup.timer` runs it every night, and runs a
+missed night as soon as the machine is back. Any monitor that alerts you when
+its pings stop arriving will do.
+
+A finished backup calls the check-in address exactly as you gave it. A backup
+that did not finish calls it as a failure:
+
+- Most monitors (healthchecks.io and those like it) get `/fail` added to the
+  address's path, before any query string: `https://hc-ping.com/abc?rid=1`
+  becomes `https://hc-ping.com/abc/fail?rid=1`.
+- An Uptime Kuma push address (one whose path holds `/api/push/`) signals
+  failure with `status=down`, not `/fail`, so `status` and `msg` in its query
+  are replaced: `https://kuma.example/api/push/T0k3n?status=up&msg=OK&ping=`
+  becomes `https://kuma.example/api/push/T0k3n?ping=&status=down&msg=backup%20failed`.
+
+```bash
+age-keygen -o melete-backup.key   # on another machine; keep this file off the server
+sudo cp deploy/backup-schedule/melete-backup.{service,timer} /etc/systemd/system/
+sudoedit /etc/systemd/system/melete-backup.service   # the account, the paths, the destination, the public key, the check-in address
+sudo systemctl daemon-reload && sudo systemctl enable --now melete-backup.timer
+```
+
+With cron instead, two lines in the installation account's crontab do the same.
+Cron runs with a bare `PATH` that does not include `~/.bun/bin`, so the first
+line names where `bun` is (the same `PATH` the systemd unit sets); without it
+every night's backup fails with `bun: command not found`:
+
+```cron
+PATH=/home/melete/.bun/bin:/usr/local/bin:/usr/bin:/bin
+30 3 * * * cd /home/melete/melete && MELETE_BACKUP_TO=ssh://backup-host:/srv/melete-backups MELETE_BACKUP_RECIPIENT=age1... MELETE_BACKUP_PING_URL=https://monitor.example/ping/your-check deploy/backup-schedule/melete-backup.sh
+```
+
+Then say that backups run on a schedule, in `deploy/melete.deploy.json`:
+
+```json
+"backup": { "dir": "~/melete-backups", "keep": 3, "scheduled": true }
+```
+
+`keep` (and `max_age_days`, 30 by default) hold on the backup host as well, so
+the nightly backups over SSH there never grow past the newest three.
+
+Every backup `melete backup` finishes, here or over SSH, is noted in
+`deploy/.melete/last-backup.json`. With `"scheduled": true`, and always on a
+hosted installation, `check` and `status` fail (`backup.age`) when the newest
+backup is more than 26 hours old, or when there is none yet. They read only the
+newest backup's time, so pruning old backups never changes the answer.
+### Computers a backup leaves out
+
+`backup` takes the agent computers it can tell are this installation's. The
+volumes of one it cannot tell about are named in a warning, so none is left
+out silently:
+
+- `backup.computer_volumes_unattributed`: made before computers carried
+  `melete.install_project`, under a `MELETE_SANDBOX_PROJECT` this installation
+  no longer runs with. It may be this installation's, from before that setting
+  changed, or another's on the same engine. One under the sandbox project that
+  another installation's service runs with now belongs to that installation,
+  whose own backup takes it, so it is not named.
+- `backup.computer_volumes_other_installation`: its `melete.install_project`
+  names a Compose project that has no Melete service container on this engine.
+  It is this installation's from before its `COMPOSE_PROJECT_NAME` changed, or
+  belongs to an installation that was removed or is down
+  (`docker compose down`).
+
+The volumes stay on the engine as they are, and `restore` does not put them
+back. To keep a copy of one that is this installation's, stop its container
+(`computer`, the volume name without `-work` or `-home`). Then archive both
+volumes with their labels into a folder of their own, outside the backup (a
+backup counts as whole only when `SHA256SUMS` lists every file in it), with
+`image` and `name` set as in the commands above:
+
+```bash
+computer=melete-sbx-<name>
+copy_dir="$HOME/melete-computers-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -m 700 "$copy_dir"
+docker stop "$computer"
+for volume in "$computer-work" "$computer-home"; do
+  docker volume inspect --format \
+    '{{range $key, $value := .Labels}}--label {{$key}}={{$value}} {{end}}' \
+    "$volume" > "$copy_dir/$volume.labels"
+  docker run --rm --network none --user 0:0 --entrypoint tar \
+    --mount "type=volume,src=$volume,dst=/v,readonly" "$image" \
+    -C /v --numeric-owner -cf - . > "$copy_dir/$volume.tar"
+done
+```
+
+To make it this installation's, so that its backups take it from then on and a
+restore puts it back, make both volumes again, named for this installation,
+and unpack the archives into them before the agent next uses the computer. On
+the engine that still has them, first remove the computer's container and both
+volumes; the service makes the container again on the volumes the next time
+the agent uses it:
+
+```bash
+docker rm -f "$computer"
+docker volume rm "$computer-work" "$computer-home"
+```
+
+Then, on that engine or a new one:
+
+```bash
+for volume in "$computer-work" "$computer-home"; do
+  docker volume create \
+    $(sed 's/--label melete\.install_project=[^ ]* //' "$copy_dir/$volume.labels") \
+    --label "melete.install_project=${name:-melete}" "$volume"
+  docker run --rm -i --network none --user 0:0 --entrypoint tar \
+    --mount "type=volume,src=$volume,dst=/v" "$image" \
+    -C /v --numeric-owner -xpf - < "$copy_dir/$volume.tar"
+done
+```
+
+### How long backups keep what was removed
+
+Forgetting a memory or deleting a record removes it from the running
+installation at once: from what it shows and searches, and from the space's
+files and search index. (A file deleted in a conversation waits in the trash
+for `MELETE_TRASH_DAYS` first.) Backups made before that still hold it. A
+backup is removed only when a newer one is made, so what was removed stays in
+this installation's backups until the last backup made before the removal is
+older than `backup.max_age_days` (30 days by default) and another backup is
+made. Taken on a schedule, for example daily from cron, that bounds it to about
+30 days. When no new backup is made, older ones stay where they are; copies kept
+elsewhere (`--to`, a copy of `backup.dir`, the provider's disk snapshots, an S3
+bucket's old versions) are yours to expire on the same schedule; and the
+directories `melete upgrade` leaves (`upgrade-<tag>-<time>`) are not removed by
+this rule, so remove them once the release has run as it should.
+
+An operator who offers Melete to other people should say this in their privacy
+terms: what someone removes is gone from the service at once, and from its
+backups within the period they are kept, 30 days unless you set another
+`backup.max_age_days`. Restoring an older backup does not bring back a memory
+forgotten after it was made, because the newest restriction journal is replayed
+at startup; a record or file deleted after it was made does come back with it.
 
 ## Remove it completely
 
@@ -2733,6 +3466,10 @@ docker image rm melete-service:local melete-runtime:local melete-web:local \
   postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
 # With Tailscale, also remove:
 #   tailscale/tailscale@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+# With log shipping, first run
+#   docker compose -p melete-logs --env-file deploy/.env -f deploy/docker-compose.log-shipping.yml down --volumes
+# and also remove:
+#   otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
 # With prebuilt images, remove those instead of the :local ones:
 #   docker image ls --format '{{.Repository}}:{{.Tag}}' 'ghcr.io/ychampion/melete-*' | xargs -r docker image rm
 ```

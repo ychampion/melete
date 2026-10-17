@@ -7,6 +7,10 @@
 # state, then runs the plain installer once more to show a later run keeps
 # deploy/.env, the data and the worker. The first run prints a one-time setup
 # code and keeps only its SHA-256 in deploy/.env; the account is made with it.
+# A second installation then runs beside the first, under umask 077, with a
+# project name and ports of its own, after one without them is refused and
+# leaves nothing behind. Last, the first installation is moved to another
+# folder and run from there, and keeps its containers and its data.
 # On a pull request the published images
 # are main's, so this pull request's images are built and served under the same
 # names from a registry on the runner, as the setup-guide workflow does. No
@@ -77,6 +81,12 @@ jobs:
             # Removed here, so the installer's own pull is what puts them back.
             docker image rm "localhost:5000/melete-$image:main"
           done
+          # The agents' computer image, which a new installation pulls too, is
+          # main's: served under the same name rather than built here.
+          docker pull ghcr.io/ychampion/melete-sandbox:main
+          docker tag ghcr.io/ychampion/melete-sandbox:main localhost:5000/melete-sandbox:main
+          docker push localhost:5000/melete-sandbox:main
+          docker image rm localhost:5000/melete-sandbox:main ghcr.io/ychampion/melete-sandbox:main
       # The published worker image may not be readable without signing in yet. The
       # installer then runs the copy already on the machine, so one is built here
       # under the published name, from the commit the images were built from.
@@ -104,8 +114,13 @@ jobs:
           if command -v bun; then echo "bun is on the PATH"; exit 1; fi
           # No provider key is in this environment, so it starts with the practice model.
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh" | MELETE_REF="$REF" bash | tee "$RUNNER_TEMP/first.log"
-          # The worker is off, so the closing lines name the command that turns it on.
-          grep -F 'MELETE_BROWSER=1 curl -fsSL' "$RUNNER_TEMP/first.log"
+          # The worker is off, so the closing lines name the command that turns it
+          # on, with the option on the bash side of the pipe where the installer reads it.
+          grep -F 'install.sh | MELETE_BROWSER=1 bash' "$RUNNER_TEMP/first.log"
+          # A new installation gives every agent a computer of its own.
+          grep -Fx 'Every agent has a computer of its own, a container on this Docker engine.' "$RUNNER_TEMP/first.log"
+          grep -qx 'MELETE_SANDBOX_PROVIDER=docker' "$HOME/melete/deploy/.env"
+          grep -qx 'COMPOSE_PROFILES=sandbox' "$HOME/melete/deploy/.env"
       - name: The web app and the API answer
         run: |
           set -euo pipefail
@@ -120,6 +135,8 @@ jobs:
           set -euo pipefail
           env_file="$HOME/melete/deploy/.env"
           test "$(grep -c '^MELETE_SETUP_CODE_HASH=' "$env_file")" = 1
+          # It stands where the template's commented line was, as `melete init` writes it.
+          test "$(grep -c 'MELETE_SETUP_CODE_HASH' "$env_file")" = 1
           hash="$(sed -n 's/^MELETE_SETUP_CODE_HASH=//p' "$env_file")"
           [[ "$hash" =~ ^[0-9a-f]{64}$ ]]
           code="$(sed -n 's|^Open http[^ ]*/#/welcome?code=\([A-Z0-9-]*\) to create your account$|\1|p' "$RUNNER_TEMP/first.log")"
@@ -140,7 +157,7 @@ jobs:
           state() { printf '%s\n' "$1" > "$RUNNER_TEMP/state/.env" && (source "$RUNNER_TEMP/install-functions.sh" && DEPLOY="$RUNNER_TEMP/state" setup_code_state); }
           test "$(state "export MELETE_SETUP_CODE_HASH=$hash")" = set
           test "$(state "  MELETE_SETUP_CODE_HASH = \"$hash\"")" = set
-          # An empty one, as deploy/.env.example ships it, is no hash: it gets a code.
+          # An empty one, as older templates shipped it, is no hash: it gets a code.
           test "$(state 'MELETE_SETUP_CODE_HASH=')" = missing
           test "$(state 'MELETE_SETUP_CODE_HASH=""')" = missing
           test "$(state "MELETE_SETUP_CODE_HASH=$hash"$'\n''MELETE_SETUP_CODE_HASH=')" = missing
@@ -184,7 +201,7 @@ jobs:
           grep -qx 'MELETE_SETUP_CODE_HASH=' "$env_file"
           if grep -F 'welcome?code=' "$RUNNER_TEMP/open.log"; then exit 1; fi
           grep -F 'Setup is open: with MELETE_SETUP_OPEN=true' "$RUNNER_TEMP/open.log"
-          # Without it, the empty hash, as deploy/.env.example ships it, gets a
+          # Without it, the empty hash, as older templates shipped it, gets a
           # code; so does one followed by a later empty line, which Compose reads.
           sed -i '/^MELETE_SETUP_OPEN=/d' "$env_file"
           sed -i "s/^MELETE_SETUP_CODE_HASH=.*/MELETE_SETUP_CODE_HASH=$before/" "$env_file"
@@ -286,13 +303,78 @@ jobs:
             -d '{"email":"other@example.com","password":"another-password-1"}')"
           echo "second setup answered $code"
           test "$code" -ge 400
+      - name: A second installation needs its own name, and runs beside the first under umask 077
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh"
+          # With the first one's project name it would take over the first one's
+          # containers, so it is refused before deploy/.env is written.
+          if curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete2" bash > "$RUNNER_TEMP/second-refused.log" 2>&1; then
+            echo "a second installation started under the first one's project"
+            exit 1
+          fi
+          grep -F 'already runs as the Compose project melete' "$RUNNER_TEMP/second-refused.log"
+          grep -F "MELETE_DIR='$HOME/melete2'" "$RUNNER_TEMP/second-refused.log"
+          # Refused before anything was downloaded, so nothing is left behind.
+          test ! -e "$HOME/melete2"
+          # Under umask 077 every file it downloads would be its owner's alone;
+          # the service reads deploy/config as another user.
+          (umask 077 && curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete2" \
+            MELETE_PROJECT=melete2 MELETE_PORT=3200 MELETE_WEB_PORT=3201 MELETE_COMPUTER=0 bash) | tee "$RUNNER_TEMP/second.log"
+          grep -Fx 'Melete is running at http://localhost:3201' "$RUNNER_TEMP/second.log"
+          grep -F 'install.sh | MELETE_DIR=' "$RUNNER_TEMP/second.log" | grep -F 'MELETE_COMPUTER=1 bash'
+          env_file="$HOME/melete2/deploy/.env"
+          grep -qx 'COMPOSE_PROJECT_NAME=melete2' "$env_file"
+          grep -qx 'MELETE_SANDBOX_PROVIDER=' "$env_file"
+          test "$(stat -c %a "$env_file")" = 600
+          test "$(stat -c %a "$HOME/melete2/deploy/config")" = 755
+          test "$(stat -c %a "$HOME/melete2/deploy/config/connections.json")" = 644
+          curl -fsS http://localhost:3201/api/health | jq -e '.status == "ok" and .database == "ok"'
+          # The first installation is untouched and still answers.
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+          docker compose -f "$HOME/melete2/deploy/docker-compose.yml" down -v --remove-orphans
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+      - name: A moved installation keeps its containers, and a copy beside the original is refused
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/${{ github.repository }}/$REF/install.sh"
+          # A folder with the first one's deploy/.env, while the first one is still where it was,
+          # is a second installation under the same name.
+          mkdir -p "$HOME/melete-copy/deploy"
+          cp "$HOME/melete/deploy/.env" "$HOME/melete-copy/deploy/.env"
+          if curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete-copy" bash > "$RUNNER_TEMP/copy.log" 2>&1; then
+            echo "a copy beside the original took over its containers"
+            exit 1
+          fi
+          grep -F "Another installation, in $HOME/melete/deploy" "$RUNNER_TEMP/copy.log"
+          test ! -e "$HOME/melete-copy/deploy/docker-compose.yml"
+          rm -rf "$HOME/melete-copy"
+          # Moved, it is the same installation: its own containers are taken over, with its data.
+          mv "$HOME/melete" "$HOME/melete-moved"
+          curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete-moved" bash | tee "$RUNNER_TEMP/moved.log"
+          grep -F "were started from $HOME/melete/deploy" "$RUNNER_TEMP/moved.log"
+          if grep -F 'welcome?code=' "$RUNNER_TEMP/moved.log"; then exit 1; fi
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
+          docker ps --filter label=com.docker.compose.project=melete \
+            --format '{{.Label "com.docker.compose.project.working_dir"}}' | sort -u | tee "$RUNNER_TEMP/moved-dirs.txt"
+          # Compose recreates only the containers whose settings changed with the folder; the rest
+          # keep the folder they were started from, which no longer holds an installation.
+          grep -qx "$HOME/melete-moved/deploy" "$RUNNER_TEMP/moved-dirs.txt"
+          if grep -vx -e "$HOME/melete-moved/deploy" -e "$HOME/melete/deploy" "$RUNNER_TEMP/moved-dirs.txt"; then exit 1; fi
+          # And a later run from the new folder still counts them as its own.
+          curl -fsSL "$url" | MELETE_REF="$REF" MELETE_DIR="$HOME/melete-moved" bash > "$RUNNER_TEMP/moved-again.log"
+          curl -fsS http://localhost:3101/api/health | jq -e '.status == "ok" and .database == "ok"'
       - name: Logs
         if: failure()
         run: |
-          docker compose -f "$HOME/melete/deploy/docker-compose.yml" logs --tail=100 || true
+          for deploy in "$HOME/melete/deploy" "$HOME/melete-moved/deploy"; do
+            [ ! -f "$deploy/docker-compose.yml" ] || docker compose -f "$deploy/docker-compose.yml" logs --tail=100 || true
+          done
           docker logs --tail=100 "$(docker ps -aq --filter label=com.docker.compose.service=browser | head -n1)" || true
       - name: Remove it
         if: always()
         run: |
-          docker compose -f "$HOME/melete/deploy/docker-compose.yml" down -v --remove-orphans || true
+          for deploy in "$HOME/melete/deploy" "$HOME/melete-moved/deploy" "$HOME/melete2/deploy"; do
+            [ ! -f "$deploy/docker-compose.yml" ] || docker compose -f "$deploy/docker-compose.yml" down -v --remove-orphans || true
+          done
           docker rm -f install-registry || true

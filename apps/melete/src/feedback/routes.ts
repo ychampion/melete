@@ -8,6 +8,7 @@
 import type { FeedbackReport } from '@melete/contracts';
 import {
   createFeedbackRequest,
+  feedbackForwarding,
   feedbackListQuery,
   feedbackListResponse,
   feedbackResponse,
@@ -133,6 +134,11 @@ export function mountFeedback(
       }),
     );
   });
+
+  // Asked before a report is written, so the dialog can say where it goes.
+  app.get('/feedback/forwarding', (c) =>
+    c.json(feedbackForwarding.parse({ forwarded: deps.webhook !== undefined })),
+  );
 
   app.get('/feedback/:id', async (c) => {
     const report = await store.get(await scopeOf(c), c.req.param('id'));

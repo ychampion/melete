@@ -108,6 +108,12 @@ export type AppContextValue = {
   /** Reads the conversations, the open permissions and the open questions together. */
   refreshConversations: () => void;
   refreshAgents: () => void;
+  /**
+   * This browser is now signed in to a different account (an invite was used):
+   * everything kept for the previous one goes, setup starts over, and the
+   * profile is read again.
+   */
+  accountSwitched: () => void;
   /** Ends the session on the service and returns to sign-in. */
   signOut: () => Promise<void>;
   /**
@@ -115,6 +121,12 @@ export type AppContextValue = {
    * only those rooms and its own account. Every personal surface stays away.
    */
   guest?: boolean;
+  /**
+   * Signed in to a shared space someone else owns. A member chats, plans and
+   * keeps routines of their own there; the space's setup, apps, agents and
+   * rules are its owner's, so their screens stay out of a member's way.
+   */
+  member?: boolean;
 };
 
 export const AppContext = createContext<AppContextValue | null>(null);

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadEnv } from '../../apps/melete/src/env.ts';
 import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
+import { HOSTED_STARTING_VALUES } from '../../packages/cli/src/hosted-defaults.ts';
 import {
   addressSettings,
   ConfigureRefusal,
@@ -12,11 +13,13 @@ import {
   dockerSocketGroup,
   failureReport,
   fillTemplate,
+  hostedSettings,
   providerSettings,
   sandboxProject,
   setupCodeNote,
   voiceSettings,
 } from './configure.ts';
+import { parseEnvFile } from './provider-settings.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
 describe('the configuration generator options', () => {
@@ -31,6 +34,23 @@ describe('the configuration generator options', () => {
       fake: true,
       nodeName: 'desk',
     });
+  });
+
+  test('a second installation names its project and ports', () => {
+    expect(
+      configureOptions(['--project', 'melete-two', '--api-port', '3200', '--web-port', '3201']),
+    ).toEqual({
+      fake: false,
+      nodeName: null,
+      install: { COMPOSE_PROJECT_NAME: 'melete-two', MELETE_PORT: '3200', WEB_PORT: '3201' },
+    });
+    expect(() => configureOptions(['--project', 'Two'])).toThrow('--project takes');
+    expect(() => configureOptions(['--api-port', '70000'])).toThrow('--api-port takes a port');
+    expect(() => configureOptions(['--web-port'])).toThrow('--web-port needs a value');
+    expect(() => configureOptions(['--api-port', '3101'])).toThrow('both take port 3101');
+    expect(() => configureOptions(['--api-port', '3300', '--web-port', '3300'])).toThrow(
+      'both take port 3300',
+    );
   });
 
   test('a misspelt option is refused before anything is written', () => {
@@ -69,6 +89,23 @@ describe('the public address and a hosted installation', () => {
     expect(() =>
       configureOptions(['--public-url', 'http://assistant.example.net', '--hosted']),
     ).toThrow('https://');
+  });
+
+  test('--hosted writes starting cost guards; without it nothing is limited', async () => {
+    const hosted = configureOptions(['--public-url', 'https://assistant.example.net', '--hosted']);
+    expect(hostedSettings(hosted)).toEqual({ ...HOSTED_STARTING_VALUES });
+    expect(
+      hostedSettings(configureOptions(['--public-url', 'https://assistant.example.net'])),
+    ).toEqual({});
+    expect(hostedSettings(configureOptions([]))).toEqual({});
+    // Each one lands on its own line of the real template.
+    const template = await Bun.file(new URL('../.env.example', import.meta.url)).text();
+    const written = parseEnvFile(fillTemplate(template, hostedSettings(hosted)));
+    for (const [name, value] of Object.entries(HOSTED_STARTING_VALUES))
+      expect(written[name]).toBe(value);
+    // The template itself leaves every one of them empty: no limits by default.
+    const plain = parseEnvFile(template);
+    for (const name of Object.keys(HOSTED_STARTING_VALUES)) expect(plain[name] ?? '').toBe('');
   });
 
   test.each([
@@ -364,6 +401,9 @@ describe('what configure prints', () => {
     expect(note).toContain('  ABCD-EFGH-JKMN-PQRS-TVWX\n');
     expect(note).toContain('http://127.0.0.1:3101/#/welcome?code=ABCD-EFGH-JKMN-PQRS-TVWX');
     expect(note).toContain('melete account setup-code');
+    // The printed code follows an issued code's rules.
+    expect(note).toContain('It works once, for 72 hours');
+    expect(note).toContain('this one stops working');
   });
 
   test('a refusal, such as a second run, is its message alone, with no stack', () => {

@@ -166,6 +166,10 @@ export async function sweepOperational(
 /** Keyed to the space rather than to a job, and independent of each other. */
 const SPACE_KEYED_OPERATIONAL = [
   'browser_recipe_candidate',
+  // Saved sign-ins and the record of their uses. Their sealed passwords are
+  // secrets of the space, which go with the space's other secrets.
+  'saved_sign_in_use',
+  'saved_sign_in',
   'experience_profile',
   // How the person lets auto-review answer for them, and what it decided.
   // The decisions went with their jobs; named again so the phase is whole.
@@ -217,6 +221,9 @@ const SPACE_KEYED_OPERATIONAL = [
   // Files people sent in chat went with their chats; one uploaded and never
   // sent has no chat. Their bytes go in the blobs phase, by reference.
   'attachment',
+  // What each file saved in the space holds, counted against the person who
+  // saved it. Those in a chat's own folder went with their chats.
+  'stored_file',
   // Where each connected account's changes were last read, and the few fields
   // kept about each calendar occurrence. They name connections, which go next.
   'source_cursor',
@@ -236,6 +243,9 @@ const SPACE_KEYED_OPERATIONAL = [
   'triage_verdict',
   // Texts to and from a connected Twilio number. They name connections.
   'sms_text',
+  // What the space's work may use. An emptied space keeps its row, so the
+  // cascade from it never fires.
+  'space_policy',
 ] as const;
 
 /**

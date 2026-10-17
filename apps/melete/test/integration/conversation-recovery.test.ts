@@ -19,7 +19,7 @@ import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
 import { openDatabase } from '../../src/db/client.ts';
 import { holdingEventOrder } from '../../src/db/lock-guard.ts';
-import { action, connection, job, owner, space } from '../../src/db/schema.ts';
+import { action, connection, event, job, owner, space } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
@@ -27,9 +27,16 @@ import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../../src/jobs/limits.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
-import { AttemptRunner, LOST_NOTE } from '../../src/jobs/runner.ts';
+import {
+  AttemptRunner,
+  DISCONNECTED_NOTE,
+  ENGINE_IMAGE_NOTE,
+  LOST_NOTE,
+} from '../../src/jobs/runner.ts';
 import { CONVERSATION_BUDGET, DEFAULT_BUDGET, JobService } from '../../src/jobs/service.ts';
+import { EngineImageUnavailable } from '../../src/runtime/cell-host.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -162,6 +169,133 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     const [ended] = await sql`select payload from event
       where attempt_id = ${claimed.claims.attempt_id} and type = 'attempt_ended'`;
     expect(ended?.payload).toMatchObject({ kind: 'lost', turn_status: 'failed' });
+  });
+
+  /** A conversation's last allowed attempt, running, that has read the school's mailbox. */
+  async function readingTheMailbox() {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'Answer the latest mail from the school.')).status).toBe(200);
+    const sql = required(handle).sql;
+    await sql`update job set budget = jsonb_set(budget, '{max_attempts}', '1'::jsonb)
+      where id = ${chat.id}`;
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const mailbox = newId('conn');
+    await required(handle)
+      .db.insert(connection)
+      .values({ id: mailbox, spaceId, provider: 'imap', label: 'School mail' });
+    const read = newId('act');
+    await required(handle)
+      .db.insert(action)
+      .values({
+        id: read,
+        jobId: chat.id,
+        attemptId: claimed.claims.attempt_id,
+        connectionId: mailbox,
+        kind: 'email.search',
+        effectClass: 'read',
+        canonicalPayload: {},
+        payloadHash: 'd'.repeat(64),
+        idempotencyKey: read,
+        status: 'succeeded',
+      });
+    return { chat, claims: claimed.claims, mailbox };
+  }
+
+  async function lastTurnSays(chatId: string, attemptId: string, note: string) {
+    const turns = turnList.parse(await (await request(`/conversations/${chatId}/messages`)).json());
+    expect(turns.turns.at(-1)?.status).toBe('failed');
+    expect(turns.turns.at(-1)?.answer).toBe(note);
+    const view = conversationResponse.parse(
+      await (await request(`/conversations/${chatId}`)).json(),
+    ).conversation;
+    expect(view.status).toBe('failed');
+    expect(view.composer).toBe('send');
+    const [ended] = await required(handle).sql`select payload from event
+      where attempt_id = ${attemptId} and type = 'attempt_ended'`;
+    expect(ended?.payload).toMatchObject({
+      outcome: { kind: 'failed', reason: note },
+      turn_status: 'failed',
+    });
+  }
+
+  test('a turn stopped because an app it used was disconnected says so', async () => {
+    const { chat, claims, mailbox } = await readingTheMailbox();
+    await new PolicyService(required(jobs), required(runner)).changeConnection(mailbox, {
+      kind: 'revoke',
+      expected_generation: 0,
+    });
+    expect((await required(jobs).get(chat.id)).state).toBe('failed');
+    await lastTurnSays(chat.id, claims.attempt_id, DISCONNECTED_NOTE);
+  });
+
+  test('an attempt lost after a disconnection fenced it is told the same way', async () => {
+    const { chat, claims, mailbox } = await readingTheMailbox();
+    // The fence recorded against an attempt that was left open, as it is for
+    // one that was not running when the app was disconnected.
+    await required(handle)
+      .db.insert(event)
+      .values({
+        jobId: chat.id,
+        attemptId: claims.attempt_id,
+        type: 'context_invalidated',
+        payload: {
+          type: 'context_invalidated',
+          job_id: chat.id,
+          attempt_id: claims.attempt_id,
+          policy_generation: 1,
+          connection_id: mailbox,
+          reason: 'connection_revoked',
+        },
+        dedupKey: `${chat.id}:context:test`,
+      });
+    expect(await required(runner).loseAttempt(claims.attempt_id, 'context_invalidated')).toBe(true);
+    await lastTurnSays(chat.id, claims.attempt_id, DISCONNECTED_NOTE);
+  });
+
+  test('a turn whose engine image is gone says so plainly, and is not tried again', async () => {
+    // The engine image the service started with was removed from the engine.
+    class Imageless extends StubRuntimeAdapter {
+      override async start(): Promise<AttemptOutcome> {
+        throw new EngineImageUnavailable(
+          'melete-runtime:main',
+          `sha256:${'a'.repeat(64)}`,
+          'removed',
+        );
+      }
+    }
+    const imageless = new AttemptRunner(required(jobs), new Imageless(), {
+      key: 'conversation-recovery-signing-key-32b',
+    });
+    try {
+      const chat = await createConversation();
+      expect((await send(chat.id, 'Plan my week.')).status).toBe(200);
+      const row = await required(jobs).get(chat.id);
+      // Five attempts are allowed; every one would fail the same way.
+      expect(jobBudget.parse(row.budget).max_attempts).toBeGreaterThan(1);
+      await imageless.handleWake({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      });
+      const attempts = await required(handle).sql`select id from attempt where job_id = ${chat.id}`;
+      expect(attempts).toHaveLength(1);
+      expect((await required(jobs).get(chat.id)).state).toBe('failed');
+      await lastTurnSays(chat.id, String(attempts[0]?.id), ENGINE_IMAGE_NOTE);
+      const [ended] = await required(handle).sql`select payload from event
+        where attempt_id = ${String(attempts[0]?.id)} and type = 'attempt_ended'`;
+      expect(ended?.payload).toMatchObject({ kind: 'lost', reason: 'engine_image_unavailable' });
+    } finally {
+      await imageless.stop();
+    }
   });
 
   test('a turn run again after a lost attempt shows one answer, not two glued together', async () => {
@@ -363,6 +497,66 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     await required(runner).noteWaiting(wake, 3);
     const later = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
     expect(later.events.filter((event) => event.item.type === 'note')).toHaveLength(1);
+  });
+
+  test('a computer that could not start is told in plain words, and whose limit it was', async () => {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'Open the spreadsheet on my computer')).status).toBe(200);
+    for (const scope of ['person', 'installation'] as const)
+      await serviceTransaction(required(handle).db, (tx) =>
+        appendEvent(tx, {
+          jobId: chat.id,
+          type: 'notice',
+          payload: { kind: 'computer_limit', scope },
+          dedupKey: `${chat.id}:computer_limit:${scope}`,
+        }),
+      );
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    expect(
+      page.events.filter((event) => event.item.type === 'note').map((event) => event.item),
+    ).toEqual([
+      {
+        type: 'note',
+        text: 'Your computer is busy with another task right now. Ask again once that task finishes.',
+      },
+      { type: 'note', text: 'Every computer here is busy right now. Try again in a little while.' },
+    ]);
+  });
+
+  test("a wake waits in its person's line: the job's own person, else its space's owner", async () => {
+    const chat = await createConversation();
+    const db = required(handle).db;
+    const [row] = await db.select({ person: job.principalId }).from(job).where(eq(job.id, chat.id));
+    expect(await required(runner).personForWake(chat.id)).toBe(row?.person ?? undefined);
+    // With no person of its own, the space's owner.
+    const otherId = newId('own');
+    await required(handle)
+      .sql`insert into principal (id, email) values (${otherId}, 'other-wake@example.test')`;
+    await db.update(job).set({ principalId: null }).where(eq(job.id, chat.id));
+    await db.update(space).set({ ownerPrincipalId: otherId }).where(eq(space.id, spaceId));
+    try {
+      expect(await required(runner).personForWake(chat.id)).toBe(otherId);
+      // With neither, nobody's: it keeps its place in line.
+      await db.update(space).set({ ownerPrincipalId: null }).where(eq(space.id, spaceId));
+      expect(await required(runner).personForWake(chat.id)).toBeUndefined();
+    } finally {
+      await db.update(space).set({ ownerPrincipalId: null }).where(eq(space.id, spaceId));
+    }
+    // A job that is gone has nobody.
+    expect(await required(runner).personForWake(newId('job'))).toBeUndefined();
+    // The runner holds each person to MELETE_ATTEMPT_CONCURRENCY_PER_PERSON when it is set.
+    const limited = new AttemptRunner(required(jobs), new StubRuntimeAdapter(), {
+      key: 'conversation-recovery-signing-key-32b',
+      concurrency: 4,
+      concurrencyPerPerson: 1,
+    });
+    expect(limited.scheduler.perPerson).toBe(1);
+    expect(required(runner).scheduler.perPerson).toBe(Number.POSITIVE_INFINITY);
+    expect(
+      loadEnv({ MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: '2' }).MELETE_ATTEMPT_CONCURRENCY_PER_PERSON,
+    ).toBe(2);
+    expect(loadEnv({}).MELETE_ATTEMPT_CONCURRENCY_PER_PERSON).toBeUndefined();
+    expect(() => loadEnv({ MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: '0' })).toThrow();
   });
 
   test('a conversation from before conversations had their own limits gets them on its next turn', async () => {

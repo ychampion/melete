@@ -37,7 +37,7 @@ import type { Connector } from '../../src/connectors/types.ts';
 import { fakeProvider } from '../../src/gateway/fake.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { PostgresPrivacyStore, PrivacyRouter } from '../../src/privacy/index.ts';
-import { rejectionOf, seedJob } from '../helpers/broker.ts';
+import { failOnceFor, rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
 
 const fixture = await createPostgresFixture();
@@ -669,6 +669,61 @@ describe('audit and recovery', () => {
         outcome: 'escalated',
         reason: 'The review did not finish, so this one is yours to decide.',
       });
+    },
+  );
+
+  databaseTest(
+    'one cut-short review that cannot be escalated does not stop the others',
+    async () => {
+      const releases: Array<(verdict: ReviewVerdict) => void> = [];
+      const harnesses = [];
+      const proposals = [];
+      for (const title of ['First interrupted', 'Second interrupted']) {
+        const { reviewer } = scripted(
+          () => new Promise<ReviewVerdict>((resolve) => releases.push(resolve)),
+        );
+        const s = await setup({
+          reviewer,
+          settings: { classes: { app_changes: true } },
+          autoReview: { timeoutMs: 20_000 },
+        });
+        harnesses.push(s);
+        proposals.push(s.propose('tasks.create', { title }));
+      }
+      const ids: string[] = [];
+      for (const s of harnesses) {
+        let actionId = '';
+        await until(async () => {
+          const [row] = await s.sql`select a.id from action a join event e on e.job_id = a.job_id
+          and e.payload->>'kind' = 'auto_review_started' and e.payload->>'action_id' = a.id
+          where a.job_id = ${s.claims.job_id}`;
+          actionId = row ? String(row.id) : '';
+          return Boolean(actionId);
+        }, 'the review to start');
+        ids.push(actionId);
+      }
+      const [first] = harnesses;
+      if (!first) throw new Error('Expected a harness');
+      const broken = failOnceFor(
+        first.broker,
+        'setStatus',
+        (args) => (args[1] as { id: string }).id,
+        ids,
+      );
+      try {
+        expect(await first.broker.escalateStaleReviews(0)).toBeGreaterThanOrEqual(1);
+      } finally {
+        broken.restore();
+      }
+      const failed = broken.failed();
+      expect(failed).not.toBeNull();
+      expect(
+        await first.sql`select id from approval where action_id = ${failed ?? ''}`,
+      ).toHaveLength(0);
+      for (const id of ids.filter((id) => id !== failed))
+        expect(await first.sql`select id from approval where action_id = ${id}`).toHaveLength(1);
+      for (const release of releases) release(approve());
+      await Promise.allSettled(proposals);
     },
   );
 });

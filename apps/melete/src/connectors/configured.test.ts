@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
@@ -44,6 +44,23 @@ describe('the connection configuration file', () => {
       );
     });
   });
+
+  // Root reads any file, so the refusal only happens as another user; and on Windows a
+  // mode of 000 only sets the read-only attribute, which still lets the file be read.
+  test.skipIf(process.getuid?.() === 0 || process.platform === 'win32')(
+    'a file the service may not read names the cause, not a bare EACCES',
+    async () => {
+      await withFile('[]', async (path) => {
+        await chmod(path, 0o000);
+        const error = await readConnectionConfig(path).catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(Error);
+        const message = (error as Error).message;
+        expect(message).toStartWith(`${path} (MELETE_CONNECTIONS_FILE) cannot be read`);
+        expect(message).toContain('umask');
+        expect(message).toContain('chmod 644 deploy/config/*.json');
+      });
+    },
+  );
 
   test('an entry of the wrong shape names the file and the entry', async () => {
     await withFile(

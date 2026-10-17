@@ -48,6 +48,12 @@ import {
   personFileRestored,
 } from './artifacts.ts';
 import { attachmentContentQuery, attachmentLimits, attachmentResponse } from './attachments.ts';
+import {
+  AUDIT_EXPORT_MAX,
+  spaceAuditFilter,
+  spaceAuditQuery,
+  spaceAuditResponse,
+} from './audit.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -101,6 +107,7 @@ import { executionSettlement, executionStartResponse } from './execution-admissi
 import { experiencePaths } from './experience-openapi.ts';
 import {
   createFeedbackRequest,
+  feedbackForwarding,
   feedbackListQuery,
   feedbackListResponse,
   feedbackResponse,
@@ -191,8 +198,10 @@ import {
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from './model-settings.ts';
+import { operatorPaths } from './operator-openapi.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
+  accountAdminResponse,
   accountList,
   accountRemoval,
   accountRemovalPreview,
@@ -202,6 +211,7 @@ import {
   grantMembershipRequest,
   principal,
   spaceMembership,
+  updateAccountRequest,
 } from './principals.ts';
 import { processPreviewPaths } from './process-preview-openapi.ts';
 import {
@@ -311,6 +321,7 @@ import {
   roomThreadView,
   shareToRoomRequest,
   updateMeRequest,
+  updateRoomMemberRequest,
 } from './rooms.ts';
 import { runtimeEvent } from './runtime.ts';
 import {
@@ -320,6 +331,15 @@ import {
   sandboxControlResponse,
 } from './sandbox-computer.ts';
 import {
+  savedSignIn,
+  savedSignInCheck,
+  savedSignInCode,
+  savedSignInCreate,
+  savedSignInDeleted,
+  savedSignInList,
+  savedSignInUpdate,
+} from './sign-ins.ts';
+import {
   deadlineResponse,
   documentDeadlineRequest,
   situationList,
@@ -327,12 +347,14 @@ import {
 } from './situations.ts';
 import {
   deleteSpaceRequest,
+  spacePolicyResponse,
+  spacePolicyRules,
   spaceRemoval,
   spaceRemovalPreview,
   spaceRemovalReport,
 } from './spaces.ts';
 import { needsYouItemResponse, needsYouList } from './triage.ts';
-import { healthDetailResponse, usageResponse } from './usage.ts';
+import { healthDetailResponse, myUsageResponse, usageResponse } from './usage.ts';
 import {
   voiceAside,
   voiceAsideRequest,
@@ -355,6 +377,48 @@ const jsonResponse = <T extends z.ZodType>(description: string, schema: T) => ({
 });
 
 const problem = (description: string) => jsonResponse(description, errorResponse);
+
+/** A space's activity log and its CSV export. */
+const spaceAuditPaths = () => ({
+  '/spaces/{spaceId}/audit': {
+    get: {
+      tags: ['spaces'],
+      summary: 'Every effect the space’s work proposed, with who asked and who approved',
+      description:
+        'For the space’s owners, and for the person who set the installation up. Each ' +
+        'entry names the connection it went through, whose work it was, the member who ' +
+        'asked when it was a request of a room’s agent, and the answer to its permission. ' +
+        'What it said is never returned: the payload appears only as its hash. Newest ' +
+        'first; pass `next_cursor` back as `cursor` for the next page.',
+      requestParams: { ...idParam('spaceId', 'Space id'), query: spaceAuditQuery },
+      responses: {
+        '200': jsonResponse('A page of the log', spaceAuditResponse),
+        '400': problem('A filter or cursor that cannot be read'),
+        '403': problem('Only the space’s owners read its log'),
+      },
+    },
+  },
+  '/spaces/{spaceId}/audit/export': {
+    get: {
+      tags: ['spaces'],
+      summary: 'The same log as a CSV file',
+      description:
+        `The entries the same filters select, newest first, up to ${AUDIT_EXPORT_MAX} ` +
+        'rows. When the filters select more, the response carries ' +
+        '`X-Melete-Export-Truncated: true`; narrow `since` and `until` to export a ' +
+        'longer log in parts.',
+      requestParams: { ...idParam('spaceId', 'Space id'), query: spaceAuditFilter },
+      responses: {
+        '200': {
+          description: 'The log, one row per effect',
+          content: { 'text/csv': { schema: z.string() } },
+        },
+        '400': problem('A filter that cannot be read'),
+        '403': problem('Only the space’s owners read its log'),
+      },
+    },
+  },
+});
 
 /** The four routes of signing in with one account provider. */
 const accountSignInPaths = (
@@ -853,7 +917,9 @@ function roomsPaths() {
         tags: ['rooms'],
         summary: 'Add a person to a room',
         description:
-          'Who can read the room changes, so work under way in it starts again with the new people.',
+          'Who can read the room changes, so work under way in it starts again with the new people. ' +
+          'They join as a member unless `role` is `owner`; adding someone already in the room ' +
+          'with the other role changes it, as the PATCH does.',
         requestParams: room,
         requestBody: json(addRoomMemberRequest),
         responses: {
@@ -874,6 +940,26 @@ function roomsPaths() {
           '200': jsonResponse('Removed', roomLeaveResponse),
           '403': problem('Only an owner removes someone else; the owner cannot be removed'),
           '404': notIn,
+        },
+      },
+      patch: {
+        tags: ['rooms'],
+        summary: 'Make someone in a room an owner, or an owner a member again',
+        description:
+          'Owners only. An owner manages the room as its maker does: adds and removes people, ' +
+          'invites guests, sets how the room works and answers what the room leaves to its owners. ' +
+          'The room always keeps at least one owner, and the person who made it stays one. The ' +
+          "person's membership generation moves on, so work of theirs under way checks again " +
+          'with what they may now do.',
+        requestParams: { path: z.object({ id: z.string(), principalId: z.string() }) },
+        requestBody: json(updateRoomMemberRequest),
+        responses: {
+          '200': jsonResponse('Their place in the room now', roomMembershipResponse),
+          '403': problem('Only an owner of the room changes who owns it'),
+          '404': notIn,
+          '409': problem(
+            'The last owner, or the person who made the room, cannot become a member; a guest stays a guest',
+          ),
         },
       },
     },
@@ -956,7 +1042,8 @@ function roomsPaths() {
     '/people': {
       get: {
         tags: ['rooms'],
-        summary: 'People on this installation who can be added to a room',
+        summary:
+          'People who can be added to a room: those who share a space with you, or one whole email address',
         requestParams: { query: peopleQuery },
         responses: {
           '200': jsonResponse('People', peopleList),
@@ -1363,6 +1450,7 @@ export function buildOpenApiDocument() {
         { name: 'reach' },
         { name: 'assistants' },
         { name: 'feedback' },
+        { name: 'operator' },
       ],
       paths: {
         '/push/public-key': {
@@ -1971,6 +2059,22 @@ export function buildOpenApiDocument() {
           },
         },
         '/principals/{id}': {
+          patch: {
+            tags: ['spaces'],
+            summary: "Give another person's account admin, or take it away, for the setup owner",
+            description:
+              'An admin provisions accounts and chooses the installation’s model, as the setup ' +
+              'owner does. Only a person’s account can hold it. Only the setup owner grants or ' +
+              'takes it away, and the setup owner is always an admin.',
+            requestParams: idParam('id', 'Account id'),
+            requestBody: json(updateAccountRequest),
+            responses: {
+              '200': jsonResponse('The account now', accountAdminResponse),
+              '403': problem('Setup owner required'),
+              '404': problem('No such account, or one that cannot be an admin'),
+              '409': problem('The setup owner is always an admin'),
+            },
+          },
           delete: {
             tags: ['spaces'],
             summary: 'Delete an account, for the setup owner',
@@ -1988,19 +2092,19 @@ export function buildOpenApiDocument() {
         '/principals': {
           get: {
             tags: ['spaces'],
-            summary: 'The accounts on this Melete, for the account that set it up',
+            summary: 'The accounts on this Melete, for the setup owner and admins',
             responses: {
               '200': jsonResponse('Accounts', accountList),
-              '403': problem('Setup owner required'),
+              '403': problem('Setup owner or admin required'),
             },
           },
           post: {
             tags: ['spaces'],
-            summary: 'Provision an additional account as the setup owner',
+            summary: 'Provision an additional account, as the setup owner or an admin',
             requestBody: json(createPrincipalRequest),
             responses: {
               '201': jsonResponse('Principal created', z.object({ principal })),
-              '403': problem('Setup owner required'),
+              '403': problem('Setup owner or admin required'),
               '409': problem('Email already registered'),
             },
           },
@@ -2058,6 +2162,38 @@ export function buildOpenApiDocument() {
               '400': problem('The name does not match the space'),
               '403': problem('Space owner required, or no such space'),
               '409': problem('The browser worker uses this space'),
+            },
+          },
+        },
+        '/spaces/{id}/policy': {
+          get: {
+            tags: ['spaces'],
+            summary: 'What work in a space may use',
+            description:
+              'The models its work may run on and the kinds of connected app and tool it may ' +
+              'not use. Anyone the space admits may read them, and so may the setup owner. ' +
+              'Every list empty means nothing is restricted, which is the default.',
+            requestParams: idParam('id', 'Space id'),
+            responses: {
+              '200': jsonResponse('The rules', spacePolicyResponse),
+              '403': problem('No such space, or not one this person can see'),
+            },
+          },
+          put: {
+            tags: ['spaces'],
+            summary: 'Change what work in a space may use',
+            description:
+              "Set by the space's owner, or by the setup owner for any space. The lists given " +
+              'replace the ones there. A model outside `allowed_models` is not used: work falls ' +
+              'back to the first allowed model that is connected, or stops with a message saying ' +
+              'why. Denied connector and tool kinds are hidden from the agent and refused if ' +
+              'asked for, and a denied kind of connection cannot be installed.',
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(spacePolicyRules),
+            responses: {
+              '200': jsonResponse('The rules', spacePolicyResponse),
+              '400': problem('A model or kind is not written the way the rules need'),
+              '403': problem("Only the space's owner or the setup owner changes its rules"),
             },
           },
         },
@@ -3340,8 +3476,9 @@ export function buildOpenApiDocument() {
             tags: ['knowledge'],
             summary: 'Propose a knowledge write',
             description:
-              'The only write path an agent has. The proposal is validated and rendered as a diff the ' +
-              'owner applies or discards; applying is a git commit.',
+              'The only write path an agent has. The proposal is validated, staged in the space and ' +
+              'rendered as a diff. A staged write is discarded when the record it names is ' +
+              'retracted, deleted or forgotten, and after seven days if nothing has applied it.',
             requestBody: json(proposeKnowledgeRequest),
             responses: {
               '201': jsonResponse('Proposal', proposeKnowledgeResponse),
@@ -4201,6 +4338,21 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/feedback/forwarding': {
+          get: {
+            tags: ['feedback'],
+            summary: 'Whether new reports are also sent outside the app',
+            description:
+              'True when the installation forwards each new report, with the reporter’s email ' +
+              'address, to the webhook its operator set (`MELETE_FEEDBACK_WEBHOOK_URL`). The ' +
+              'report dialog asks before anything is sent, so it can say so.',
+            responses: {
+              '200': jsonResponse('Forwarding', feedbackForwarding),
+              '401': problem('A session is required'),
+            },
+          },
+        },
+
         '/feedback/{id}': {
           get: {
             tags: ['feedback'],
@@ -4247,6 +4399,24 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Usage', usageResponse),
               '401': problem('Not signed in'),
+            },
+          },
+        },
+
+        '/usage/mine': {
+          get: {
+            tags: ['model-providers'],
+            summary:
+              'This account’s own usage: the month by day and by kind, its limits, and its work',
+            description:
+              'Only the signed-in account’s own model calls, whoever else shares its spaces. ' +
+              '`caps` is null when the installation sets no limit for one person. Each run is a ' +
+              'piece of work this account’s calls went to this month, newest first. Days and ' +
+              'months are UTC.',
+            responses: {
+              '200': jsonResponse('Your usage', myUsageResponse),
+              '401': problem('Not signed in'),
+              '403': problem('A guest account uses only its rooms'),
             },
           },
         },
@@ -4581,6 +4751,111 @@ export function buildOpenApiDocument() {
         ...devicePaths(),
         ...appsPaths(),
         ...processPreviewPaths(),
+        ...operatorPaths(),
+        '/sign-ins': {
+          get: {
+            tags: ['browser'],
+            summary: 'List your saved sign-ins in this space',
+            description:
+              'Each sign-in you saved for Melete’s browser here: its site, label and username, ' +
+              'with the password always masked. Another person’s sign-ins are never listed, ' +
+              'even in a space you share.',
+            security: [{ session: [] }],
+            responses: {
+              '200': jsonResponse('Your saved sign-ins', savedSignInList),
+              '401': problem('A session is required'),
+              '403': problem('A guest cannot keep sign-ins'),
+            },
+          },
+          post: {
+            tags: ['browser'],
+            summary: 'Save a sign-in',
+            description:
+              'Seals the password, and the one-time code secret when given, under the ' +
+              'installation’s key. Only an https site is accepted. The answer carries the ' +
+              'username and a mask, never what was sealed.',
+            security: [{ session: [] }],
+            requestBody: json(savedSignInCreate),
+            responses: {
+              '201': jsonResponse('Saved', savedSignIn),
+              '400': problem('The site, the code secret or a field is not usable'),
+              '401': problem('A session is required'),
+              '403': problem('A guest cannot keep sign-ins'),
+              '409': problem('A sign-in for this site and username is already saved'),
+              '503': problem('This installation has no key to seal sign-ins with'),
+            },
+          },
+        },
+        '/sign-ins/{id}': {
+          patch: {
+            tags: ['browser'],
+            summary: 'Change a saved sign-in',
+            description:
+              'Changes its label, username, password, code secret or how it may be used. A new ' +
+              'password or code secret is sealed again under the current key. Its site never changes.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            requestBody: json(savedSignInUpdate),
+            responses: {
+              '200': jsonResponse('Changed', savedSignIn),
+              '400': problem('A field is not usable'),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours'),
+              '409': problem(
+                'Another sign-in for this site already has that username, or it cannot be opened under this installation’s key',
+              ),
+              '503': problem('This installation has no key to seal sign-ins with'),
+            },
+          },
+          delete: {
+            tags: ['browser'],
+            summary: 'Delete a saved sign-in',
+            description:
+              'Removes the sign-in and its sealed password and code secret for good, with the ' +
+              'record of its uses. Sites Melete’s browser is already signed in to stay signed in.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            responses: {
+              '200': jsonResponse('Deleted', savedSignInDeleted),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours'),
+            },
+          },
+        },
+        '/sign-ins/{id}/code': {
+          post: {
+            tags: ['browser'],
+            summary: 'Show the one-time code a saved sign-in makes now',
+            description:
+              'The current code and how many seconds it has left. The code secret itself is never sent.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            responses: {
+              '200': jsonResponse('The current code', savedSignInCode),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours, or it has no code'),
+              '409': problem('It cannot be opened under this installation’s key'),
+              '503': problem('This installation has no key to open sign-ins with'),
+            },
+          },
+        },
+        '/sign-ins/{id}/check': {
+          post: {
+            tags: ['browser'],
+            summary: 'Check a saved sign-in is ready to use',
+            description:
+              'Opens it under the installation’s key and checks its site and its code, without ' +
+              'sending anything anywhere. Says what is wrong in plain words.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            responses: {
+              '200': jsonResponse('What the checks found', savedSignInCheck),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours'),
+            },
+          },
+        },
+        ...spaceAuditPaths(),
       },
     },
     // Shared shapes such as `job` appear on many paths; emitting them once under

@@ -62,6 +62,8 @@ export type EngineInfo = {
   kernelVersion: string;
   memTotal: number;
   dockerRootDir: string;
+  /** The address pools daemon.json names; left out when it names none and Docker uses its own. */
+  defaultAddressPools?: { base: string; size: number }[];
 };
 
 export type LongPathFacts = {
@@ -102,12 +104,17 @@ export function parseDockerInfo(output: CommandOutput): EngineInfo | null {
   const fields = parsed as Record<string, unknown>;
   const text = (value: unknown) => (typeof value === 'string' ? value : '');
   if (!text(fields.OSType)) return null;
+  const pools = (Array.isArray(fields.DefaultAddressPools) ? fields.DefaultAddressPools : [])
+    .map((pool) => pool as { Base?: unknown; Size?: unknown })
+    .filter((pool) => typeof pool?.Base === 'string' && typeof pool.Size === 'number')
+    .map((pool) => ({ base: pool.Base as string, size: pool.Size as number }));
   return {
     osType: text(fields.OSType),
     operatingSystem: text(fields.OperatingSystem),
     kernelVersion: text(fields.KernelVersion),
     memTotal: typeof fields.MemTotal === 'number' ? fields.MemTotal : 0,
     dockerRootDir: text(fields.DockerRootDir),
+    ...(pools.length > 0 ? { defaultAddressPools: pools } : {}),
   };
 }
 

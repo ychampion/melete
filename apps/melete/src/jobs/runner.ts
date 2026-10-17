@@ -16,6 +16,8 @@ import {
   type JobState,
   type JsonObject,
   jobBudget,
+  type ProviderFailure,
+  providerFailure,
   type QuestioningRuntimeAdapter,
   type QuestionSpec,
   questionSpec,
@@ -46,8 +48,10 @@ import {
   experienceTurn,
   job,
   question,
+  space,
   trigger,
 } from '../db/schema.ts';
+import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { checkCitations, sourcesRead } from '../experience/citations.ts';
@@ -66,6 +70,7 @@ import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
+import { EngineImageUnavailable } from '../runtime/cell-host.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
 import { type AnswerJoin, answerJoin } from './answer-join.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
@@ -75,6 +80,7 @@ import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { LIMIT_REACHED_NOTE } from './limits.ts';
+import { PROVIDER_FAILURE_NOTES } from './provider-notes.ts';
 import { persistQuestions, resolveQuestions } from './questions.ts';
 import {
   ATTEMPT_QUEUES,
@@ -104,9 +110,26 @@ import { withdrawOpenQuestion, withdrawOutdatedPermissions } from './withdraw.ts
 
 export const HEARTBEAT_MS = 15_000;
 export const LEASE_MS = 45_000;
+/**
+ * What a conversation's turn ends with when its engine could not start because
+ * the engine image the service started with is gone or refused.
+ */
+export const ENGINE_IMAGE_NOTE =
+  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then send your message again.';
+/** What long work asks the person when its engine could not start that way. */
+export const ENGINE_IMAGE_QUESTION =
+  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then say "continue" to try again.';
+/** Why long work or a helper stopped that way, in its record. */
+const ENGINE_IMAGE_WHY =
+  'Its engine could not start: the engine image Melete started with is no longer available.';
+/** The reason an attempt lost that way is recorded with. */
+export const ENGINE_IMAGE_REASON = 'engine_image_unavailable';
 /** What a conversation's turn ends with when its work was cut off and could not be resumed. */
 export const LOST_NOTE =
   'This was interrupted before it could finish, for example because Melete restarted while it was working. Nothing more will happen here until you send another message.';
+/** The same, when the work stopped because an app it was using was disconnected. */
+export const DISCONNECTED_NOTE =
+  'This stopped because an app it was using was disconnected. Nothing more will happen here until you send another message.';
 
 /** How many attempts run at once unless the service is told otherwise. */
 export const DEFAULT_ATTEMPT_CONCURRENCY = 4;
@@ -120,17 +143,21 @@ export type RunnerOptions = {
    * owner chooses in the app applies from the next attempt without a restart.
    * Left out, `provider` and `model` decide. It is given the job, whose
    * person may have moved scheduled work to their secondary model.
+   * `refused`, set, is the sentence that says no model the space's rules
+   * allow can be used: the attempt then ends on it instead of starting.
    */
   resolveModel?: (
     tx: Transaction,
     row: JobRow,
     usageClass: UsageClass,
-  ) => Promise<{ provider: string; model: string; vision?: boolean }>;
+  ) => Promise<{ provider: string; model: string; vision?: boolean; refused?: string }>;
   scopes?: string[];
   liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
   /** How many attempts run at once; one more waits for a free slot. */
   concurrency?: number;
+  /** How many of them one person may run at once; unset, as many as there are slots. */
+  concurrencyPerPerson?: number;
   heartbeatMs?: number;
   leaseMs?: number;
   artifactRoots?: ArtifactRoots;
@@ -153,9 +180,68 @@ export type RunnerOptions = {
    * with that sentence rather than as a failure to retry. A background
    * attempt is also held to the person's background limits; an interactive
    * one never is.
+   *
+   * It may read the pool, so the runner asks it before a transaction takes
+   * the event order lock, never inside one.
    */
   spendingLimit?: (jobId: string, usageClass: UsageClass) => Promise<LimitReached | null>;
+  /**
+   * The first wait before an attempt the model provider turned away for being
+   * busy or limited runs again; each later one doubles, up to four times it.
+   */
+  retryBackoffMs?: number;
 };
+
+/** The spending limit a job's person has reached, for each class of work. */
+type ReachedLimits = Readonly<Record<UsageClass, LimitReached | null>>;
+
+const NO_LIMITS: ReachedLimits = { interactive: null, background: null };
+
+/** An outcome that ends on a reached spending limit, when one holds, rather than as a failure. */
+const endsOnLimit = (given: AttemptOutcome) =>
+  given.kind === 'failed' || given.kind === 'budget_exhausted';
+
+/** The first wait before a provider that was busy or limiting requests is asked again. */
+export const PROVIDER_RETRY_MS = 15_000;
+/** Provider failures that may clear on their own; every other one is not tried again. */
+const PASSING_FAILURES: readonly ProviderFailure[] = ['rate_limited', 'provider_down'];
+
+/**
+ * A failed attempt, with the provider's refusal named when one ended it. The
+ * engine may say so itself; otherwise the attempt's last model call, as the
+ * gateway recorded it, does. A refusal that will not clear by waiting is not
+ * tried again.
+ */
+async function namedFailure(
+  tx: Transaction,
+  attemptId: string,
+  given: AttemptOutcome,
+): Promise<AttemptOutcome> {
+  if (given.kind !== 'failed') return given;
+  let failure = given.failure;
+  if (!failure) {
+    const [last] = await tx
+      .select({ payload: event.payload })
+      .from(event)
+      .where(
+        and(
+          eq(event.attemptId, attemptId),
+          eq(event.type, 'notice'),
+          sql`${event.payload}->>'phase' = 'model_receipt'`,
+        ),
+      )
+      .orderBy(desc(event.seq))
+      .limit(1);
+    const recorded = providerFailure.safeParse((last?.payload as JsonObject | undefined)?.failure);
+    if (!recorded.success) return given;
+    failure = recorded.data;
+  }
+  return {
+    ...given,
+    failure,
+    retryable: given.retryable && PASSING_FAILURES.includes(failure),
+  };
+}
 
 /**
  * Past the broker's longest dispatch budget and its recovery sweep, so every
@@ -207,6 +293,8 @@ export class AttemptRunner {
   private stopping = false;
   scheduler: FairScheduler;
   private readonly wakes = new Set<Promise<void>>();
+  /** Wakes waiting in the scheduler for their person's own limit, by job, epoch and version. */
+  private readonly held = new Set<string>();
   /** Wait registration is supplied by the trigger service, inside the outcome transaction. */
   onWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   onApprovalWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
@@ -248,7 +336,7 @@ export class AttemptRunner {
   ) {
     if (Buffer.byteLength(options.key) < 32)
       throw new Error('MELETE_CAPABILITY_KEY must be at least 32 bytes');
-    this.scheduler = new FairScheduler(this.concurrency);
+    this.scheduler = new FairScheduler(this.concurrency, this.perPerson);
     jobs.onCancelled = (id) => this.interrupt(id);
     jobs.stopTurn = (tx, row) => this.stopTurn(tx, row);
   }
@@ -257,12 +345,58 @@ export class AttemptRunner {
     return this.options.concurrency ?? DEFAULT_ATTEMPT_CONCURRENCY;
   }
 
+  private get perPerson() {
+    return this.options.concurrencyPerPerson ?? Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Whose turn a wake is, for sharing slots fairly: the person whose calls it
+   * will make, as spending charges them (`PERSON_FOR_JOB` in
+   * gateway/spending.ts): whoever spoke last in its conversation, else the
+   * job's person, else its space's owner. A job that is gone has nobody, and
+   * its wake is dropped when it runs.
+   */
+  async personForWake(jobId: string): Promise<string | undefined> {
+    const [row] = await this.jobs.db
+      .select({
+        person: sql<string | null>`coalesce(
+          (select ${event.payload}->>'principal_id' from ${event}
+            where ${event.jobId} = ${job.id} and ${event.type} = 'notice'
+              and ${event.payload}->>'kind' = 'user_message'
+              and ${event.payload}->>'principal_id' is not null
+            order by ${event.seq} desc limit 1),
+          ${job.principalId}, ${space.ownerPrincipalId})`,
+      })
+      .from(job)
+      .innerJoin(space, eq(space.id, job.spaceId))
+      .where(eq(job.id, jobId));
+    return row?.person ?? undefined;
+  }
+
   private get leaseMs() {
     return this.options.leaseMs ?? LEASE_MS;
   }
 
+  /**
+   * The spending limits this job's person has reached, for either class of
+   * work. The totals are read on the pool, so this runs before a transaction
+   * takes the event order lock: a pool read while it is held waits behind
+   * every event writer queued on it. The guard keeps its totals for a moment
+   * anyway, so a reading taken just before the lock is as current as one
+   * taken under it.
+   */
+  private async reachedLimits(jobId: string): Promise<ReachedLimits> {
+    const read = this.options.spendingLimit;
+    if (!read) return NO_LIMITS;
+    // One after the other, so the second is answered from the totals the first read.
+    const interactive = await read(jobId, 'interactive');
+    const background = await read(jobId, 'background');
+    return { interactive, background };
+  }
+
   async claim(wake: AttemptWake): Promise<ClaimedAttempt | null> {
     const capabilities = await this.runtime.capabilities();
+    const limits = await this.reachedLimits(wake.job_id);
     return this.jobs.transaction(async (tx) => {
       let row = await this.jobs.lock(tx, wake.job_id, true);
       // pg-boss delivers a wake by the database clock; judge it by the same
@@ -307,7 +441,7 @@ export class AttemptRunner {
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
-      const chosen: { provider: string; model: string; vision?: boolean } =
+      const chosen: { provider: string; model: string; vision?: boolean; refused?: string } =
         (await this.options.resolveModel?.(tx, row, cause.usageClass)) ?? {
           provider: this.options.provider ?? 'stub',
           model: this.options.model ?? 'script',
@@ -375,6 +509,8 @@ export class AttemptRunner {
       await tx.insert(attempt).values({
         id: attemptId,
         principalId: access.principalId,
+        // A room request runs as the room; this keeps who asked for it.
+        requestedByPrincipalId: row.requestedByPrincipalId,
         membershipGeneration: access.generation,
         jobId: row.id,
         epoch,
@@ -443,7 +579,7 @@ export class AttemptRunner {
       const settled =
         this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
       if (settled) {
-        await this.finish(tx, row, attemptId, settled);
+        await this.finish(tx, row, attemptId, settled, limits);
         return null;
       }
       // An attempt that starts no engine reads none of its inputs: they are
@@ -455,24 +591,49 @@ export class AttemptRunner {
           .where(eq(attempt.id, attemptId));
       if (guarded) {
         await unread();
-        await this.finish(tx, row, attemptId, {
-          kind: 'waiting_for_input',
-          question: WAKE_GUARD_QUESTION,
-        });
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'waiting_for_input', question: WAKE_GUARD_QUESTION },
+          limits,
+        );
         await tellOnce(tx, row, WAKE_GUARD_QUESTION, `wake-guard:${row.id}:${attemptId}`);
+        return null;
+      }
+      // A space whose rules allow no model that can be used starts no engine
+      // either: the turn ends on the sentence that says so, as it would at a
+      // spending limit, rather than as a failure to run again.
+      if (chosen.refused) {
+        await unread();
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'budget_exhausted', summary: chosen.refused },
+          limits,
+          [],
+          chosen.refused,
+        );
         return null;
       }
       // Past a spending limit no engine is started: the turn, routine run or
       // background job ends at once with the sentence that says when it resets.
       // Background long work instead rests until then, keeping what arrives
       // for it, and the person is told the limit once, in its own words.
-      const capped = await this.options.spendingLimit?.(row.id, cause.usageClass);
+      const capped = limits[cause.usageClass];
       if (capped) await unread();
       if (capped && cause.usageClass === 'background' && isRunKind(row.kind)) {
-        await this.finish(tx, row, attemptId, {
-          kind: 'waiting_for_event_or_time',
-          wait: { kind: 'timer', wake_at: capped.resetsAt.toISOString() },
-        });
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          {
+            kind: 'waiting_for_event_or_time',
+            wait: { kind: 'timer', wake_at: capped.resetsAt.toISOString() },
+          },
+          limits,
+        );
         await tellOnce(
           tx,
           row,
@@ -483,10 +644,13 @@ export class AttemptRunner {
         return null;
       }
       if (capped) {
-        await this.finish(tx, row, attemptId, {
-          kind: 'budget_exhausted',
-          summary: capped.message,
-        });
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'budget_exhausted', summary: capped.message },
+          limits,
+        );
         return null;
       }
       // The skills went into the instructions, where no tool call shows them.
@@ -719,6 +883,9 @@ export class AttemptRunner {
     const envelope = isOutcomeEnvelope(input)
       ? responsibilityAttemptOutcome.parse(input)
       : { outcome: attemptOutcome.parse(input), questions: [] as QuestionSpec[] };
+    const limits = endsOnLimit(envelope.outcome)
+      ? await this.reachedLimits(claims.job_id)
+      : NO_LIMITS;
     return this.jobs.transaction(async (tx) => {
       const active = await requireCurrentAttempt(tx, claims, { settling: true });
       const row = await this.finish(
@@ -726,6 +893,7 @@ export class AttemptRunner {
         active.job,
         claims.attempt_id,
         envelope.outcome,
+        limits,
         envelope.questions,
       );
       return (await this.carrySteers(tx, row)) ?? row;
@@ -778,7 +946,8 @@ export class AttemptRunner {
   /**
    * The wait this attempt was told had been cancelled, if it can still fire:
    * its trigger is still registered and enabled on this job, or its timer is
-   * still ahead, and no effect is pending that a wait would have to outrank.
+   * still ahead (a conversation's reminder that fell due meanwhile fires at
+   * once), and no effect is pending that a wait would have to outrank.
    */
   private async restorableWait(
     tx: Transaction,
@@ -811,8 +980,14 @@ export class AttemptRunner {
       )
       .limit(1);
     if (pending) return null;
+    // A conversation's reminder is its own message to the person: one that came
+    // due while a reply was written is put back all the same and fires at once,
+    // late but never lost. Other work woken after its timer's time has nothing
+    // left to wait for.
     if (wait.kind === 'timer')
-      return Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime() ? wait : null;
+      return row.kind === 'chat' || Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime()
+        ? wait
+        : null;
     if (wait.kind !== 'event') return null;
     const [registration] = await tx
       .select({ id: trigger.id })
@@ -888,18 +1063,28 @@ export class AttemptRunner {
     row: JobRow,
     attemptId: string,
     given: AttemptOutcome,
+    /** The spending limits reached for this job, read before the transaction (`reachedLimits`). */
+    limits: ReachedLimits,
     raised: readonly QuestionSpec[] = [],
+    /**
+     * The sentence a conversation turn stopped short ends on, in place of the
+     * general one, when the reason is one the person can act on.
+     */
+    limitNote?: string,
   ): Promise<JobRow> {
     // An attempt whose model calls were refused at a spending limit ends on
     // that limit, not as a failure to run again while it still holds.
-    const capped =
-      (given.kind === 'failed' || given.kind === 'budget_exhausted') && this.options.spendingLimit
-        ? ((await this.options.spendingLimit(row.id, await usageClassOf(tx, attemptId)))?.message ??
-          null)
-        : null;
+    const capped = endsOnLimit(given)
+      ? (limits[await usageClassOf(tx, attemptId)]?.message ?? null)
+      : null;
     const original: AttemptOutcome = capped
       ? { kind: 'budget_exhausted', summary: capped }
-      : await this.citedOnlyWhatWasRead(tx, row, attemptId, given);
+      : await this.citedOnlyWhatWasRead(
+          tx,
+          row,
+          attemptId,
+          await namedFailure(tx, attemptId, given),
+        );
     let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
     const [counts] = await tx
@@ -984,6 +1169,7 @@ export class AttemptRunner {
         : shifted;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
+    let retryAfterMs = 0;
     let artifactFailures: string[] = [];
     switch (outcome.kind) {
       case 'completed': {
@@ -1032,6 +1218,13 @@ export class AttemptRunner {
         };
         // The retry is told again, from the wait its queued row still carries.
         if (cancelled && outcome.retryable && remaining > 0) wait = cancelled;
+        // A provider that is busy or limiting requests is given time before
+        // it is asked again, longer each time.
+        if (outcome.retryable && remaining > 0 && outcome.failure) {
+          const base = this.options.retryBackoffMs ?? PROVIDER_RETRY_MS;
+          const tried = Math.max(1, Number(counts?.n ?? 1));
+          retryAfterMs = Math.min(base * 4, base * 2 ** (tried - 1));
+        }
         break;
       case 'budget_exhausted':
         input = { kind: 'attempt_budget_exhausted' };
@@ -1129,7 +1322,14 @@ export class AttemptRunner {
     // The broker owns the parked state; drain only this attempt's output and lease.
     let updated = brokerParked
       ? row
-      : await this.jobs.move(tx, row, input, { attemptId, wait, payload: { outcome } });
+      : await this.jobs.move(tx, row, input, {
+          attemptId,
+          wait,
+          payload: { outcome },
+          ...(retryAfterMs > 0 ? { retryAfterMs } : {}),
+        });
+    // The work runs again by itself: the turn is still under way, not failed.
+    const retrying = outcome.kind === 'failed' && updated.state === 'queued';
     await tx
       .update(attempt)
       .set({
@@ -1142,13 +1342,14 @@ export class AttemptRunner {
       .where(eq(attempt.id, attemptId));
     // Where the turn ends up, decided once: the saved turn takes it, and the
     // event carries it so the conversation's stream says the same thing.
-    const turnStatus = row.currentTurnId
-      ? outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)
-        ? 'done'
-        : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
-          ? 'failed'
-          : 'needs_you'
-      : null;
+    const turnStatus =
+      row.currentTurnId && !retrying
+        ? outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)
+          ? 'done'
+          : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
+            ? 'failed'
+            : 'needs_you'
+        : null;
     await appendEvent(tx, {
       jobId: row.id,
       attemptId,
@@ -1159,6 +1360,11 @@ export class AttemptRunner {
           ? { experience_completed: completionVerified }
           : {}),
         ...(turnStatus ? { turn_status: turnStatus } : {}),
+        // A page following the turn live reads the sentence its saved copy ends on.
+        ...(outcome.kind === 'budget_exhausted' && (capped ?? limitNote)
+          ? { limit_note: capped ?? limitNote }
+          : {}),
+        ...(retrying && updated.nextWakeAt ? { retry_at: updated.nextWakeAt.toISOString() } : {}),
       },
       dedupKey: `${attemptId}:ended`,
     });
@@ -1185,14 +1391,19 @@ export class AttemptRunner {
           // ends with a plain sentence, not the name of the limit.
           ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
             ? {
-                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? LIMIT_REACHED_NOTE}
-                  else ${experienceTurn.answer} || ${`\n\n${capped ?? LIMIT_REACHED_NOTE}`} end`,
+                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? limitNote ?? LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${capped ?? limitNote ?? LIMIT_REACHED_NOTE}`} end`,
               }
-            : 'summary' in outcome
-              ? { answer: outcome.summary }
-              : outcome.kind === 'waiting_for_input' && outcome.draft
-                ? { answer: outcome.draft }
-                : {}),
+            : row.kind === 'chat' && outcome.kind === 'failed' && outcome.failure
+              ? {
+                  answer: sql`case when ${experienceTurn.answer} = '' then ${PROVIDER_FAILURE_NOTES[outcome.failure]}
+                  else ${experienceTurn.answer} || ${`\n\n${PROVIDER_FAILURE_NOTES[outcome.failure]}`} end`,
+                }
+              : 'summary' in outcome
+                ? { answer: outcome.summary }
+                : outcome.kind === 'waiting_for_input' && outcome.draft
+                  ? { answer: outcome.draft }
+                  : {}),
           finishedAt: new Date(),
         })
         .where(eq(experienceTurn.id, row.currentTurnId));
@@ -1392,7 +1603,8 @@ export class AttemptRunner {
         ? await this.runs.recordedFinish(tx, row, attemptId)
         : null;
     if (given) {
-      await this.finish(tx, row, attemptId, given);
+      // A recorded result is the work's own, never a refusal, so no spending limit applies.
+      await this.finish(tx, row, attemptId, given, NO_LIMITS);
       return true;
     }
     const [counts] = await tx
@@ -1418,11 +1630,22 @@ export class AttemptRunner {
       .where(eq(attempt.id, attemptId));
     await this.gap(tx, attemptId, row.id, 'lost');
     const run = this.runs && isRunKind(row.kind) ? this.runs : null;
-    const remaining = run
-      ? await run.failuresRemaining(tx, row, jobBudget.parse(row.budget))
-      : Math.max(0, jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0));
+    // Without its engine image every further attempt would fail the same way
+    // until the service starts again, so none is made.
+    const remaining =
+      reason === ENGINE_IMAGE_REASON
+        ? 0
+        : run
+          ? await run.failuresRemaining(tx, row, jobBudget.parse(row.budget))
+          : Math.max(0, jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0));
     // A routine whose run is lost for good goes back to its schedule.
     const rest = row.state === 'running' && remaining === 0 ? await routineRest(tx, row) : null;
+    // A wait the lost attempt was told had been set aside goes to its retry, as
+    // it does when an attempt fails and is tried again.
+    const setAside =
+      row.state === 'running' && remaining > 0
+        ? await this.restorableWait(tx, row, attemptId)
+        : null;
     const moved =
       row.state !== 'running'
         ? row
@@ -1437,7 +1660,9 @@ export class AttemptRunner {
                 wait: {
                   kind: 'user_input',
                   question:
-                    'My work on this keeps getting interrupted. Say "continue" to try again.',
+                    reason === ENGINE_IMAGE_REASON
+                      ? ENGINE_IMAGE_QUESTION
+                      : 'My work on this keeps getting interrupted. Say "continue" to try again.',
                 },
                 reason: 'recovery',
               },
@@ -1453,8 +1678,10 @@ export class AttemptRunner {
                 tx,
                 row,
                 { kind: 'attempt_failed', retryable: true, attempts_remaining: remaining },
-                { attemptId, reason: 'recovery' },
+                { attemptId, reason: 'recovery', ...(setAside ? { wait: setAside } : {}) },
               );
+    const why =
+      reason === ENGINE_IMAGE_REASON ? ENGINE_IMAGE_WHY : 'Its work kept getting interrupted.';
     // Long work that stops to ask gives the person what it has first.
     if (
       run &&
@@ -1462,17 +1689,20 @@ export class AttemptRunner {
       moved.kind === 'run' &&
       moved.state === 'waiting_for_input'
     )
-      await run.giveSoFar(tx, moved, attemptId, 'Its work kept getting interrupted.');
+      await run.giveSoFar(tx, moved, attemptId, why);
     if (run && moved.kind === 'run_step' && moved.state === 'failed')
-      await run.stepEnded(tx, moved, {
-        kind: 'failed',
-        retryable: false,
-        reason: 'Its work kept getting interrupted.',
-      });
+      await run.stepEnded(tx, moved, { kind: 'failed', retryable: false, reason: why });
     // A conversation whose last attempt was lost has ended: its turn says so,
     // in the saved copy and on the stream, instead of looking busy for ever.
     // So has a routine's run that went back to its schedule.
     const turnFailed = Boolean(row.currentTurnId) && (moved.state === 'failed' || rest !== null);
+    // A disconnected app is said as such, not as a restart; so is a missing engine image.
+    const note =
+      reason === ENGINE_IMAGE_REASON
+        ? ENGINE_IMAGE_NOTE
+        : turnFailed && (await disconnectedDuring(tx, row.id, attemptId))
+          ? DISCONNECTED_NOTE
+          : LOST_NOTE;
     await appendEvent(tx, {
       jobId: row.id,
       attemptId,
@@ -1482,7 +1712,7 @@ export class AttemptRunner {
         reason,
         ...(turnFailed
           ? {
-              outcome: { kind: 'failed', reason: LOST_NOTE, retryable: false },
+              outcome: { kind: 'failed', reason: note, retryable: false },
               turn_status: 'failed',
             }
           : {}),
@@ -1494,8 +1724,8 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({
           status: 'failed',
-          answer: sql`case when ${experienceTurn.answer} = '' then ${LOST_NOTE}
-            else ${experienceTurn.answer} || ${`\n\n${LOST_NOTE}`} end`,
+          answer: sql`case when ${experienceTurn.answer} = '' then ${note}
+            else ${experienceTurn.answer} || ${`\n\n${note}`} end`,
           finishedAt: new Date(),
         })
         .where(
@@ -1514,6 +1744,8 @@ export class AttemptRunner {
       .from(attempt)
       .where(and(isNull(attempt.endedAt), sql`${attempt.leaseExpiresAt} <= now()`));
     for (const candidate of expired) {
+      // A committed outcome finished below may be a refusal at a spending limit.
+      const limits = await this.reachedLimits(candidate.jobId);
       const fenced = await this.jobs
         .transaction(async (tx) => {
           const row = await this.jobs.lock(tx, candidate.jobId, true);
@@ -1570,14 +1802,22 @@ export class AttemptRunner {
             connection_generations: execution.connectionGenerations,
           });
           if (parsed.success && execution.revision === row.revision)
-            await this.finish(tx, row, execution.id, parsed.data);
+            await this.finish(tx, row, execution.id, parsed.data, limits);
           else await this.lose(tx, row, execution.id, 'lease_expired');
           return true;
         })
         .catch(async (error: unknown) => {
           // A rejected persisted outcome must not starve the remaining recovery candidates.
-          if (!(error instanceof ServiceError)) throw error;
-          return this.loseAttempt(candidate.id, error.code);
+          if (error instanceof ServiceError) return this.loseAttempt(candidate.id, error.code);
+          throw error;
+        })
+        .catch((error: unknown) => {
+          // Nor may any other failure: this one is logged and the rest are still recovered.
+          if (databaseUnreachable(error)) throw error;
+          process.stderr.write(
+            `attempt recovery: ${candidate.id} not recovered: ${failureMessage(error)}\n`,
+          );
+          return false;
         });
       if (fenced) this.interrupt(candidate.jobId, candidate.id);
     }
@@ -1591,19 +1831,29 @@ export class AttemptRunner {
         ),
       );
     for (const candidate of due) {
-      await this.jobs.transaction(async (tx) => {
-        const row = await this.jobs.lock(tx, candidate.id, true);
-        if (
-          !row?.nextWakeAt ||
-          row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime() ||
-          !['queued', 'waiting_for_event_or_time'].includes(row.state)
-        )
-          return;
-        const live = await tx.execute(
-          sql`select id from pgboss.job where name = ${attemptQueue(row.schedulingClass)} and state in ('created', 'retry', 'active') and data->>'job_id' = ${row.id} and (data->>'expected_epoch')::int = ${row.leaseEpoch} and (data->>'expected_version')::int = ${row.stateVersion} limit 1`,
-        );
-        if (live.length === 0) await this.jobs.enqueue(tx, row, 'recovery');
-      });
+      await this.jobs
+        .transaction(async (tx) => {
+          const row = await this.jobs.lock(tx, candidate.id, true);
+          if (
+            !row?.nextWakeAt ||
+            row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime() ||
+            !['queued', 'waiting_for_event_or_time'].includes(row.state)
+          )
+            return;
+          // Held here for its person's own limit: it starts from this process,
+          // and a copy would only be dropped (and kept by the queue for days).
+          if (this.held.has(`${row.id}:${row.leaseEpoch}:${row.stateVersion}`)) return;
+          const live = await tx.execute(
+            sql`select id from pgboss.job where name = ${attemptQueue(row.schedulingClass)} and state in ('created', 'retry', 'active') and data->>'job_id' = ${row.id} and (data->>'expected_epoch')::int = ${row.leaseEpoch} and (data->>'expected_version')::int = ${row.stateVersion} limit 1`,
+          );
+          if (live.length === 0) await this.jobs.enqueue(tx, row, 'recovery');
+        })
+        .catch((error: unknown) => {
+          if (databaseUnreachable(error)) throw error;
+          process.stderr.write(
+            `job recovery: ${candidate.id} not requeued: ${failureMessage(error)}\n`,
+          );
+        });
     }
     await this.settleOrphanTurns();
     await this.afterRecovery?.();
@@ -1838,7 +2088,11 @@ export class AttemptRunner {
       ) {
         await this.loseAttempt(
           claims.attempt_id,
-          error instanceof Error ? error.message : 'runtime_crashed',
+          error instanceof EngineImageUnavailable
+            ? ENGINE_IMAGE_REASON
+            : error instanceof Error
+              ? error.message
+              : 'runtime_crashed',
         );
       }
     } finally {
@@ -1942,11 +2196,12 @@ export class AttemptRunner {
     if (this.workerStarted) return;
     this.workerStarted = true;
     this.stopping = false;
-    this.scheduler = new FairScheduler(this.concurrency);
+    this.scheduler = new FairScheduler(this.concurrency, this.perPerson);
     await this.recover();
     // Each queue hands over more wakes than can run, so one that has to wait
     // waits here, in the scheduler's fair order, where its conversation can be
-    // told so, rather than unseen in the queue.
+    // told so, rather than unseen in the queue. One held by its person's own
+    // limit lets its worker go (`scheduledWake`).
     for (const [scheduling, queue] of Object.entries(ATTEMPT_QUEUES))
       await workQuiet<AttemptWake>(
         this.jobs.boss,
@@ -1978,14 +2233,49 @@ export class AttemptRunner {
   }
 
   private async scheduledWake(scheduling: SchedulingClass, wake: AttemptWake) {
+    const key = `${wake.job_id}:${wake.expected_epoch}:${wake.expected_version}`;
+    // A copy of a wake already held here (the recovery scan sent it again) is done.
+    if (this.held.has(key)) return;
     try {
-      const running = this.scheduler.activeCount;
-      if (running >= this.scheduler.capacity)
+      const person = await this.personForWake(wake.job_id);
+      const reason = this.scheduler.waitReason(person, scheduling);
+      if (reason) {
+        // What holds it back: every slot, or this person's own limit.
+        const running =
+          reason === 'person' ? this.scheduler.activeFor(person) : this.scheduler.activeCount;
         void this.noteWaiting(wake, running).catch((error: unknown) =>
           process.stderr.write(`waiting note not recorded: ${String(error)}
 `),
         );
-      await this.scheduler.run(scheduling, () => this.handleWake(wake));
+      }
+      if (this.held.has(key)) return;
+      if (this.scheduler.heldByOwnLimit(scheduling, person)) {
+        // It waits for its person's own limit, which could take as long as
+        // their running work does. It waits here instead of in the queue's
+        // fetch worker, so the worker goes on to fetch other people's wakes
+        // while slots are free. Its queue job is done; until it starts, the
+        // recovery scan sends it again each minute, as for any wake not in the
+        // queue, so one lost with this process is found again, and a copy that
+        // reaches this process is dropped above.
+        this.held.add(key);
+        void this.scheduler
+          .run(
+            scheduling,
+            () => {
+              this.held.delete(key);
+              return this.handleWake(wake);
+            },
+            person,
+          )
+          .catch((error: unknown) => {
+            if (!this.stopping)
+              process.stderr.write(`held wake for ${wake.job_id} failed: ${String(error)}
+`);
+          })
+          .finally(() => this.held.delete(key));
+        return;
+      }
+      await this.scheduler.run(scheduling, () => this.handleWake(wake), person);
     } catch (error) {
       if (!this.stopping) throw error;
     }
@@ -2031,4 +2321,21 @@ export class AttemptRunner {
     await Promise.allSettled([...this.wakes]);
     await this.scheduler.idle();
   }
+}
+
+/** Whether this attempt was fenced because a connection its job used was revoked. */
+async function disconnectedDuring(tx: Transaction, jobId: string, attemptId: string) {
+  const [fenced] = await tx
+    .select({ seq: event.seq })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        eq(event.type, 'context_invalidated'),
+        sql`${event.payload}->>'attempt_id' = ${attemptId}`,
+        sql`${event.payload}->>'reason' = 'connection_revoked'`,
+      ),
+    )
+    .limit(1);
+  return Boolean(fenced);
 }

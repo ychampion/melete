@@ -5,6 +5,7 @@ import {
   isTerminal,
   jobState,
   planCreate,
+  scheduleWords,
   triggerSpec,
   unavailable,
 } from '@melete/contracts';
@@ -24,6 +25,7 @@ import {
   trigger,
 } from '../db/schema.ts';
 import { newId } from '../ids.ts';
+import { checkRoutineRoom } from '../jobs/resting.ts';
 import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import { ownJob } from '../principals/authority.ts';
@@ -465,7 +467,9 @@ export class ExperiencePlanning {
       title: plainText(title, 'Routine'),
       schedule:
         spec.kind === 'schedule'
-          ? scheduleSentence(spec.cron, spec.timezone)
+          ? spec.rrule !== undefined
+            ? `${scheduleWords(spec, { clock: '12h' })} (${spec.timezone})`
+            : scheduleSentence(spec.cron ?? '', spec.timezone)
           : 'When the connected app has an update',
       enabled: row.enabled && !isTerminal(jobState.parse(state)),
       ended: isTerminal(jobState.parse(state)),
@@ -651,6 +655,8 @@ export class ExperiencePlanning {
         },
         { kind: 'routine', agentId: routine.agentId, dormant: true },
       );
+      // An ended routine no longer counts, so starting it again is one more too.
+      await checkRoutineRoom(tx, row.principalId, jobs.standingWork.routinesPerPerson, row.id);
       const [registration] = await tx
         .insert(trigger)
         .values({ id: newId('trg'), jobId: row.id, kind: 'schedule', spec: routine.spec })

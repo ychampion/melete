@@ -5,15 +5,15 @@ import {
   type JobState,
   spaceMembership as membershipContract,
 } from '@melete/contracts';
-import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { requireStrongPassword } from '../api/password-policy.ts';
+import { forgetSealedSignIns } from '../connectors/sign-in-vault.ts';
 import type { Database } from '../db/client.ts';
 import {
   attempt,
   experienceTurn,
   job,
-  owner,
   principal,
   space,
   spaceMembership,
@@ -23,7 +23,11 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
+import { installationRole } from './admin.ts';
 import { principalContext, spaceAuthority } from './authority.ts';
+
+/** The two places an owner gives a person with an account in a room. */
+export type MemberRole = 'owner' | 'member';
 
 export const membershipView = (row: typeof spaceMembership.$inferSelect) =>
   membershipContract.parse({
@@ -42,9 +46,12 @@ export class PrincipalService {
   ) {}
 
   async create(actor: string, email: string, password: string) {
-    const [installation] = await this.db.select().from(owner).limit(1);
-    if (installation?.id !== actor)
-      throw new ServiceError('scope_denied', 'Only the setup owner can provision an account.', 403);
+    if (!(await installationRole(this.db, actor)).admin)
+      throw new ServiceError(
+        'scope_denied',
+        'Only the setup owner or an admin can provision an account.',
+        403,
+      );
     requireStrongPassword(password, email);
     const passwordHash = await Bun.password.hash(password, { algorithm: 'argon2id' });
     return serviceTransaction(this.db, async (tx) => {
@@ -115,7 +122,45 @@ export class PrincipalService {
     });
   }
 
-  async grant(actor: string, spaceId: string, memberId: string) {
+  /**
+   * Make or take back an admin: the setup owner only, for another person's
+   * account that can still sign in. The setup owner is always an admin.
+   */
+  async setAdmin(actor: string, principalId: string, admin: boolean) {
+    const standing = await installationRole(this.db, actor);
+    if (!standing.setupOwner)
+      throw new ServiceError(
+        'scope_denied',
+        'Only the account that set Melete up makes or removes admins.',
+        403,
+      );
+    if (principalId === actor)
+      throw new ServiceError(
+        'setup_owner',
+        'The account that set Melete up is always an admin.',
+        409,
+      );
+    const [row] = await this.db
+      .update(principal)
+      .set({ admin })
+      .where(
+        and(
+          eq(principal.id, principalId),
+          eq(principal.kind, 'person'),
+          isNull(principal.disabledAt),
+        ),
+      )
+      .returning({ id: principal.id, admin: principal.admin });
+    if (!row)
+      throw new ServiceError(
+        'not_found',
+        'No such account, or one that cannot be an admin: only a person’s account that can sign in can.',
+        404,
+      );
+    return { account: row };
+  }
+
+  async grant(actor: string, spaceId: string, memberId: string, role?: MemberRole) {
     const jobs = this.jobs;
     const result = await serviceTransaction(this.db, async (tx) => {
       await tx.select({ id: space.id }).from(space).where(eq(space.id, spaceId)).for('update');
@@ -127,8 +172,9 @@ export class PrincipalService {
           403,
         );
       const [target] = await tx.select().from(principal).where(eq(principal.id, memberId));
-      // A room's own principal, or any account that is not a person, is never added.
-      if (target?.kind !== 'person')
+      // A room's own principal, any account that is not a person, and one that
+      // is turned off, as an account being deleted is, are never added.
+      if (target?.kind !== 'person' || target.disabledAt)
         throw new ServiceError('not_found', 'Principal not found.', 404);
       const [existing] = await tx
         .select()
@@ -136,14 +182,32 @@ export class PrincipalService {
         .where(
           and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)),
         );
-      if (existing && !existing.revokedAt)
-        return { membership: membershipView(existing), controls: [] as ContextInvalidated[] };
+      if (existing && !existing.revokedAt) {
+        // Someone already in the room keeps their place, unless they were
+        // added again as the other of owner and member. Added again without a
+        // role, they keep the one they have.
+        const membership =
+          !role ||
+          existing.role === role ||
+          (existing.role !== 'owner' && existing.role !== 'member')
+            ? existing
+            : await changeRole(tx, spaceId, existing, role, access.ownerId);
+        return { membership: membershipView(membership), controls: [] as ContextInvalidated[] };
+      }
+      // Someone coming back starts afresh: the role they are given now, a
+      // member's unless one is named, with no end date left from an earlier place.
+      const given = role ?? 'member';
       const [row] = await tx
         .insert(spaceMembership)
-        .values({ spaceId, principalId: memberId, role: 'member' })
+        .values({ spaceId, principalId: memberId, role: given })
         .onConflictDoUpdate({
           target: [spaceMembership.principalId, spaceMembership.spaceId],
-          set: { generation: sql`${spaceMembership.generation} + 1`, revokedAt: null },
+          set: {
+            role: given,
+            expiresAt: null,
+            generation: sql`${spaceMembership.generation} + 1`,
+            revokedAt: null,
+          },
         })
         .returning();
       if (!row) throw new Error('Membership insert returned no row');
@@ -153,6 +217,34 @@ export class PrincipalService {
     });
     for (const control of result.controls) jobs?.onCancelled?.(control.job_id);
     return result.membership;
+  }
+
+  /**
+   * Make someone in a room an owner, or an owner a member again. Owners only.
+   * A room always keeps an owner, and the person who made it stays one.
+   */
+  async setRole(actor: string, spaceId: string, memberId: string, role: MemberRole) {
+    return serviceTransaction(this.db, async (tx) => {
+      await tx.select({ id: space.id }).from(space).where(eq(space.id, spaceId)).for('update');
+      const access = await spaceAuthority(tx, spaceId, actor, true);
+      if (access.space.kind !== 'shared' || access.role !== 'owner')
+        throw new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
+      const [existing] = await tx
+        .select()
+        .from(spaceMembership)
+        .where(and(eq(spaceMembership.spaceId, spaceId), eq(spaceMembership.principalId, memberId)))
+        .for('update');
+      if (!existing || existing.revokedAt || existing.role === 'agent')
+        throw new ServiceError('not_found', 'They are not in this room.', 404);
+      if (existing.role === 'guest')
+        throw new ServiceError(
+          'guest_role',
+          'A guest stays a guest. Add them with an account of their own to make them a member or owner.',
+          409,
+        );
+      if (existing.role === role) return membershipView(existing);
+      return membershipView(await changeRole(tx, spaceId, existing, role, access.ownerId));
+    });
   }
 
   /**
@@ -175,6 +267,7 @@ export class PrincipalService {
       return this.endMembership(tx, jobs, spaceId, memberId, access.space.policyGeneration);
     });
     settled(jobs, result);
+    await this.forgetSignIns(spaceId, result.signInSecrets);
     return { membership: result.membership, policy_generation: result.policy_generation };
   }
 
@@ -204,6 +297,7 @@ export class PrincipalService {
         controls: [] as ContextInvalidated[],
         cancelled: [] as string[],
         policy_generation: policyGeneration,
+        signInSecrets: [] as string[],
       };
     const [updated] = await tx
       .update(spaceMembership)
@@ -243,6 +337,12 @@ export class PrincipalService {
     // What they asked Melete to see through here ends with their place in it.
     await tx.execute(
       sql`delete from intent where space_id = ${spaceId} and principal_id = ${memberId}`,
+    );
+    // So do the sign-ins they saved here, which they could no longer see or
+    // delete. Their sealed secrets go once this commits (`forgetSignIns`).
+    const signIns = await tx.execute<{ secret_ref: string }>(
+      sql`delete from saved_sign_in where space_id = ${spaceId} and principal_id = ${memberId}
+        returning secret_ref`,
     );
     const generation = policyGeneration + 1;
     // The copies of what memory handed the member's own actions, kept to say
@@ -314,7 +414,23 @@ export class PrincipalService {
       controls,
       cancelled,
       policy_generation: generation,
+      signInSecrets: [...signIns].map((row) => row.secret_ref),
     };
+  }
+
+  /**
+   * The sealed secrets of the sign-ins a membership's end deleted, once that
+   * has committed: the secret store may be another database role's, outside
+   * the transaction. One that cannot go now is left to the daily sweep of
+   * sealed secrets nothing points at, and never fails the change.
+   */
+  private async forgetSignIns(spaceId: string, refs: readonly string[]): Promise<void> {
+    if (!refs.length) return;
+    await forgetSealedSignIns(this.db.$client, spaceId, refs).catch((error: unknown) =>
+      process.stderr.write(
+        `membership end: saved sign-in secrets in ${spaceId} were left to the daily sweep (${error instanceof Error ? error.message : String(error)})\n`,
+      ),
+    );
   }
 
   /**
@@ -418,6 +534,7 @@ export class PrincipalService {
         });
       if (!result) continue;
       settled(jobs, result);
+      await this.forgetSignIns(entry.spaceId, result.signInSecrets);
       ended += 1;
     }
     return ended;
@@ -431,6 +548,59 @@ function settled(
 ) {
   for (const id of result.cancelled) jobs.onCancelled?.(id);
   for (const control of result.controls) jobs.onCancelled?.(control.job_id);
+}
+
+/**
+ * Change an owner's or a member's role, inside the caller's transaction with
+ * the room locked. Their membership generation moves on, so a capability
+ * minted for their old place is refused and work of theirs under way checks
+ * again with what they may now do. Nobody else's place changes.
+ */
+async function changeRole(
+  tx: Transaction,
+  spaceId: string,
+  existing: typeof spaceMembership.$inferSelect,
+  role: MemberRole,
+  maker: string | null,
+) {
+  if (role === 'member') {
+    if (existing.principalId === maker)
+      throw new ServiceError(
+        'room_maker',
+        'The person who made this room stays one of its owners.',
+        409,
+      );
+    const [another] = await tx
+      .select({ principalId: spaceMembership.principalId })
+      .from(spaceMembership)
+      .where(
+        and(
+          eq(spaceMembership.spaceId, spaceId),
+          eq(spaceMembership.role, 'owner'),
+          isNull(spaceMembership.revokedAt),
+          ne(spaceMembership.principalId, existing.principalId),
+        ),
+      )
+      .limit(1);
+    if (!another)
+      throw new ServiceError(
+        'last_owner',
+        'A room needs an owner. Make someone else an owner first.',
+        409,
+      );
+  }
+  const [row] = await tx
+    .update(spaceMembership)
+    .set({ role, generation: existing.generation + 1 })
+    .where(
+      and(
+        eq(spaceMembership.spaceId, spaceId),
+        eq(spaceMembership.principalId, existing.principalId),
+      ),
+    )
+    .returning();
+  if (!row) throw new Error('Locked membership disappeared');
+  return row;
 }
 
 /** The address a room principal is created with: `.invalid` is never routable (RFC 2606). */

@@ -1,0 +1,2 @@
+ALTER TABLE "attempt" ADD COLUMN "requested_by_principal_id" text;--> statement-breakpoint
+ALTER TABLE "attempt" ADD CONSTRAINT "attempt_requested_by_principal_id_principal_id_fk" FOREIGN KEY ("requested_by_principal_id") REFERENCES "public"."principal"("id") ON DELETE no action ON UPDATE no action;

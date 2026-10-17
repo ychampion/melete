@@ -8,7 +8,12 @@ import type { ArtifactRoots } from '../artifact/content.ts';
 import { type ArtifactCritic, createArtifactRecorder } from '../artifact/record.ts';
 import { schema } from '../db/schema.ts';
 import { serviceTransaction } from '../db/transaction.ts';
-import { createModelGateway, type GatewayOptions, type GatewayProvider } from '../gateway/index.ts';
+import {
+  createModelGateway,
+  type GatewayOptions,
+  type GatewayProvider,
+  gatewayLog,
+} from '../gateway/index.ts';
 import { EngineSkillService } from '../learning/engine-skills.ts';
 import { learningRuntimeFetch } from '../learning/runtime-route.ts';
 import { withPlaceholderResolution } from '../privacy/broker.ts';
@@ -44,6 +49,7 @@ export function createInternalServer(options: {
   memorySearch?: BrokerOptions['memorySearch'];
   autoReview?: BrokerOptions['autoReview'];
   sendHoldMs?: BrokerOptions['sendHoldMs'];
+  storagePerPerson?: BrokerOptions['storagePerPerson'];
   /** A broker the service already built, shared with its own routes. */
   broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
@@ -102,6 +108,7 @@ export function createInternalServer(options: {
       memorySearch: options.memorySearch,
       autoReview: options.autoReview,
       sendHoldMs: options.sendHoldMs,
+      storagePerPerson: options.storagePerPerson ?? null,
     });
   const app = createBrokerApp({
     broker,
@@ -176,7 +183,7 @@ export function createInternalServer(options: {
         router: () => options.privacy,
       },
     ),
-    onError: (error) => process.stderr.write(`model gateway: ${error.message}\n`),
+    onError: gatewayLog('model'),
   });
   return { server, broker, budget };
 }

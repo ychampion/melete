@@ -24,6 +24,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
+import { limitsWithCaps, PersonLimitStore } from './person-limits.ts';
 import { PriceTable, parseModelPrices } from './prices.ts';
 import {
   GatewayError,
@@ -51,6 +52,19 @@ export type SpendingLimits = {
 };
 
 export const NO_LIMIT: SpendingWindow = { usd: null, tokens: null };
+
+/** Whether a window has a limit in dollars or in tokens. */
+export const isSet = (window: SpendingWindow) => window.usd !== null || window.tokens !== null;
+
+/** Whether any installation or per-person limit is set. */
+const anyLimit = (limits: SpendingLimits) =>
+  [limits.installation.day, limits.installation.month, limits.person.day, limits.person.month].some(
+    isSet,
+  );
+
+/** Whether a per-person background limit is set. */
+const anyBackgroundLimit = (limits: SpendingLimits) =>
+  limits.background ? [limits.background.day, limits.background.month].some(isSet) : false;
 
 export function spendingLimitsFromEnv(env: Env): SpendingLimits {
   const window = (usd: number | undefined, tokens: number | undefined): SpendingWindow => ({
@@ -226,26 +240,56 @@ const HOLD_TTL_MS = 10 * 60_000;
 /**
  * The person who caused a job's calls: whoever spoke last in its conversation;
  * for a job nobody has written in (a routine, a background job), whoever
- * created it; else the space's owner.
+ * created it; else the space's owner. `disabled` is whether the installation's
+ * owner has turned that person's account off.
  */
-const PERSON_FOR_JOB = (sql: Sql, jobId: string) => sql`select j.space_id, coalesce(
-    (select e.payload->>'principal_id' from event e
-      where e.job_id = j.id and e.type = 'notice' and e.payload->>'kind' = 'user_message'
-        and e.payload->>'principal_id' is not null
-      order by e.seq desc limit 1),
-    j.principal_id, s.owner_principal_id) as person_id
-  from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+const PERSON_FOR_JOB = (sql: Sql, jobId: string) => sql`select w.space_id, w.person_id,
+    exists (select 1 from principal p where p.id = w.person_id and p.disabled_at is not null)
+      as disabled
+  from (select j.space_id, coalesce(
+      (select e.payload->>'principal_id' from event e
+        where e.job_id = j.id and e.type = 'notice' and e.payload->>'kind' = 'user_message'
+          and e.payload->>'principal_id' is not null
+        order by e.seq desc limit 1),
+      j.principal_id, s.owner_principal_id) as person_id
+    from job j join space s on s.id = j.space_id where j.id = ${jobId}) w`;
+
+/** The sentence work reads when its person's account is turned off. */
+export const ACCOUNT_OFF_MESSAGE =
+  "This account is turned off, so its work doesn't run until the installation's owner turns it back on.";
+
+/**
+ * A turned-off account's work, as a reached limit: it is looked at again the
+ * next UTC day, so background work that rests until then starts again once
+ * the account is back on.
+ */
+const accountOff = (now: Date): LimitReached => ({
+  message: ACCOUNT_OFF_MESSAGE,
+  resetsAt: periodBounds(now).nextDay,
+});
+
+/** The UTC month and day `spend_counter` keys a moment by. */
+export function counterPeriods(now: Date) {
+  const iso = now.toISOString();
+  return { month: iso.slice(0, 7), day: iso.slice(0, 10) };
+}
 
 export class SpendingGuard implements GatewaySpending {
   private readonly scopes = new WeakMap<GatewayPrincipal, Promise<SpendingScope>>();
   private readonly holds = new Map<GatewayPrincipal, Hold[]>();
   private readonly cached = new Map<string, { at: number; totals: Totals }>();
+  /** Bumped when a call is recorded: a read begun before it is not kept. */
+  private generation = 0;
+  /** Whether each person's account is turned off, as read a moment ago. */
+  private readonly off = new Map<string, { at: number; off: boolean }>();
   /** The admission now being judged; the next waits for it. */
   private admitting: Promise<void> = Promise.resolve();
   /** Told when a job's call is refused, so its attempt can end at once. */
   onRefused?: (scope: SpendingScope, principal: GatewayPrincipal, message: string) => void;
   /** Told the first time in a period that a limit passes the notice level. */
   onNotice?: (notice: SpendingNotice, personId: string | null) => void;
+  /** The caps of their own the installation's owner gave people, when it gave any. */
+  overrides?: PersonLimitStore;
 
   constructor(
     private readonly sql: Sql,
@@ -254,24 +298,35 @@ export class SpendingGuard implements GatewaySpending {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  /** Whether any limit is set at all; without one, admission reads nothing. */
+  /**
+   * Whether any installation-wide limit is set; without one, and without a
+   * person's own cap, admission reads nothing.
+   */
   get limited(): boolean {
-    const windows = [
-      this.limits.installation.day,
-      this.limits.installation.month,
-      this.limits.person.day,
-      this.limits.person.month,
-    ];
-    return windows.some((window) => window.usd !== null || window.tokens !== null);
+    return anyLimit(this.limits);
   }
 
   /** Whether the operator set a background limit for each person. */
   get backgroundLimited(): boolean {
-    const background = this.limits.background;
-    if (!background) return false;
-    return [background.day, background.month].some(
-      (window) => window.usd !== null || window.tokens !== null,
-    );
+    return anyBackgroundLimit(this.limits);
+  }
+
+  /** Whether a call of this class could be limited for anyone. */
+  private async mayLimit(usageClass: UsageClass): Promise<boolean> {
+    if (this.limited || (usageClass === 'background' && this.backgroundLimited)) return true;
+    return (await this.overrides?.any()) ?? false;
+  }
+
+  /**
+   * The limits that hold for this person: the installation's, with any caps
+   * of their own in place of its per-person ones.
+   */
+  async limitsFor(personId: string | null): Promise<SpendingLimits> {
+    if (!this.overrides || !personId) return this.limits;
+    const caps = await this.overrides.of(personId);
+    return Object.values(caps).every((value) => value === null)
+      ? this.limits
+      : limitsWithCaps(this.limits, caps);
   }
 
   /** Whose spending a principal's calls count against, read once per principal. */
@@ -349,49 +404,53 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   /**
-   * The person's and the installation's totals for today and this month. A
-   * read is reused for a moment, so a busy conversation does not scan the
-   * month on every call; recording a call reads afresh.
+   * The person's and the installation's totals for today and this month, read
+   * from the running counters `model_usage` keeps (`spend_counter`): a few
+   * rows by key, however many calls the month holds. A read is reused for a
+   * moment; recording a call drops every reuse, so the next admission reads
+   * the totals with that call in them.
    */
   async totals(personId: string | null, now = this.now(), fresh = false): Promise<Totals> {
     const key = personId ?? '';
     const hit = this.cached.get(key);
     if (!fresh && hit && now.getTime() - hit.at < TOTALS_TTL_MS) return hit.totals;
-    const { monthStart, dayStart } = periodBounds(now);
-    const day = dayStart.toISOString();
-    const [row] = await this.sql`select
-        coalesce(sum(cost_usd), 0)::float8 as im_usd,
-        coalesce(sum(input_tokens + output_tokens), 0)::float8 as im_tokens,
-        coalesce(sum(cost_usd) filter (where created_at >= ${day}::timestamptz), 0)::float8 as id_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where created_at >= ${day}::timestamptz), 0)::float8 as id_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId}), 0)::float8 as pm_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId}), 0)::float8 as pm_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and created_at >= ${day}::timestamptz), 0)::float8 as pd_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and class = 'background'), 0)::float8 as bm_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and class = 'background'), 0)::float8 as bm_tokens,
-        coalesce(sum(cost_usd) filter (where principal_id = ${personId} and class = 'background' and created_at >= ${day}::timestamptz), 0)::float8 as bd_usd,
-        coalesce(sum(input_tokens + output_tokens) filter (where principal_id = ${personId} and class = 'background' and created_at >= ${day}::timestamptz), 0)::float8 as bd_tokens
-      from model_usage where created_at >= ${monthStart.toISOString()}::timestamptz`;
-    const total = (usd: unknown, tokens: unknown): SpendingTotals => ({
-      usd: round(Number(usd ?? 0)),
-      tokens: Number(tokens ?? 0),
-    });
-    const totals: Totals = {
-      installation: {
-        month: total(row?.im_usd, row?.im_tokens),
-        day: total(row?.id_usd, row?.id_tokens),
-      },
-      person: personId
-        ? { month: total(row?.pm_usd, row?.pm_tokens), day: total(row?.pd_usd, row?.pd_tokens) }
-        : null,
-      background: personId
-        ? { month: total(row?.bm_usd, row?.bm_tokens), day: total(row?.bd_usd, row?.bd_tokens) }
-        : null,
+    const generation = this.generation;
+    const { month, day } = counterPeriods(now);
+    const scopes = personId
+      ? ['installation', `person:${personId}`, `background:${personId}`]
+      : ['installation'];
+    const rows = await this.sql<{ period: string; scope: string; usd: number; tokens: number }[]>`
+      select period, scope, usd::float8 as usd, tokens::float8 as tokens from spend_counter
+      where period in (${month}, ${day}) and scope in ${this.sql(scopes)}`;
+    const total = (scope: string, period: string): SpendingTotals => {
+      const row = rows.find((entry) => entry.scope === scope && entry.period === period);
+      return { usd: round(Number(row?.usd ?? 0)), tokens: Number(row?.tokens ?? 0) };
     };
-    if (this.cached.size > 1000) this.cached.clear();
-    this.cached.set(key, { at: now.getTime(), totals });
+    const both = (scope: string) => ({ month: total(scope, month), day: total(scope, day) });
+    const totals: Totals = {
+      installation: both('installation'),
+      person: personId ? both(`person:${personId}`) : null,
+      background: personId ? both(`background:${personId}`) : null,
+    };
+    // A call recorded while this read was under way may be missing from it.
+    if (generation === this.generation) {
+      if (this.cached.size > 1000) this.cached.clear();
+      this.cached.set(key, { at: now.getTime(), totals });
+    }
     return totals;
+  }
+
+  /** Whether the installation's owner has turned this person's account off. */
+  async isOff(personId: string | null): Promise<boolean> {
+    if (!personId) return false;
+    const now = this.now().getTime();
+    const hit = this.off.get(personId);
+    if (hit && now - hit.at < TOTALS_TTL_MS) return hit.off;
+    const [row] = await this.sql`select disabled_at from principal where id = ${personId}`;
+    const off = Boolean(row?.disabled_at);
+    if (this.off.size > 1000) this.off.clear();
+    this.off.set(personId, { at: now, off });
+    return off;
   }
 
   /** The totals with the calls still running in this process added. */
@@ -441,7 +500,12 @@ export class SpendingGuard implements GatewaySpending {
    * warning, and a month before a day, since it lasts longer. `installation` false leaves
    * warnings about the installation's limits out, for a person who may not see them.
    */
-  noticeFor(totals: Totals, now = this.now(), installation = true): SpendingNotice | null {
+  noticeFor(
+    totals: Totals,
+    now = this.now(),
+    installation = true,
+    limits: SpendingLimits = this.limits,
+  ): SpendingNotice | null {
     const { nextMonth, nextDay } = periodBounds(now);
     let best: SpendingNotice | null = null;
     const rank = (notice: SpendingNotice) =>
@@ -467,7 +531,7 @@ export class SpendingGuard implements GatewaySpending {
           message: limitMessage(period, resets),
           resets_at: resets.toISOString(),
         };
-      else if (fraction * 100 >= this.limits.noticePercent && (installation || scope === 'person'))
+      else if (fraction * 100 >= limits.noticePercent && (installation || scope === 'person'))
         notice = {
           level: 'warning',
           period,
@@ -477,18 +541,22 @@ export class SpendingGuard implements GatewaySpending {
         };
       if (notice && (!best || rank(notice) > rank(best))) best = notice;
     };
-    consider('installation', 'month', totals.installation.month, this.limits.installation.month);
-    consider('installation', 'day', totals.installation.day, this.limits.installation.day);
+    consider('installation', 'month', totals.installation.month, limits.installation.month);
+    consider('installation', 'day', totals.installation.day, limits.installation.day);
     if (totals.person) {
-      consider('person', 'month', totals.person.month, this.limits.person.month);
-      consider('person', 'day', totals.person.day, this.limits.person.day);
+      consider('person', 'month', totals.person.month, limits.person.month);
+      consider('person', 'day', totals.person.day, limits.person.day);
     }
     return best;
   }
 
   /** A reached background limit, the month's before the day's, or null. */
-  private backgroundReached(totals: Totals, now: Date): LimitReached | null {
-    const limits = this.limits.background;
+  private backgroundReached(
+    totals: Totals,
+    now: Date,
+    all: SpendingLimits = this.limits,
+  ): LimitReached | null {
+    const limits = all.background;
     if (!limits || !totals.background) return null;
     const { nextMonth, nextDay } = periodBounds(now);
     const over = (used: SpendingTotals, limit: SpendingWindow) =>
@@ -510,14 +578,15 @@ export class SpendingGuard implements GatewaySpending {
     personId: string | null,
     usageClass: UsageClass = 'interactive',
   ): Promise<LimitReached | null> {
-    const background = usageClass === 'background' && this.backgroundLimited;
-    if (!this.limited && !background) return null;
+    const limits = await this.limitsFor(personId);
+    const background = usageClass === 'background' && anyBackgroundLimit(limits);
+    if (!anyLimit(limits) && !background) return null;
     const now = this.now();
     const totals = this.withHolds(await this.totals(personId, now), personId, now.getTime());
-    const notice = this.noticeFor(totals, now);
+    const notice = this.noticeFor(totals, now, true, limits);
     if (notice?.level === 'reached')
       return { message: notice.message, resetsAt: new Date(notice.resets_at) };
-    return background ? this.backgroundReached(totals, now) : null;
+    return background ? this.backgroundReached(totals, now, limits) : null;
   }
 
   /** The sentence for a reached limit that applies to this person, or null. */
@@ -536,8 +605,10 @@ export class SpendingGuard implements GatewaySpending {
     jobId: string,
     usageClass: UsageClass = 'interactive',
   ): Promise<LimitReached | null> {
-    if (!this.limited && !(usageClass === 'background' && this.backgroundLimited)) return null;
     const [row] = await PERSON_FOR_JOB(this.sql, jobId);
+    // A turned-off account's work does not run, whatever limits are set.
+    if (row?.disabled) return accountOff(this.now());
+    if (!(await this.mayLimit(usageClass))) return null;
     return this.reachedLimit(row?.person_id ? String(row.person_id) : null, usageClass);
   }
 
@@ -550,13 +621,15 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   async admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void> {
-    if (!this.limited && !this.backgroundLimited) return;
+    if (!this.limited && !this.backgroundLimited && !(await this.overrides?.any())) return;
     const scope = await this.scopeOf(principal);
     // Reading the totals and holding this call's most are one step: admissions
     // in this process take their turn, so calls started side by side are
     // judged one after another, each with the ones before it held.
     const message = await this.inTurn(async () => {
-      const reached = await this.reached(scope.personId, scope.usageClass);
+      const reached = (await this.isOff(scope.personId))
+        ? ACCOUNT_OFF_MESSAGE
+        : await this.reached(scope.personId, scope.usageClass);
       // While it runs, the call's most it can cost is held against the limits,
       // so calls running side by side cannot all slip in under one.
       if (!reached && call) {
@@ -605,7 +678,6 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
-    this.release(principal);
     try {
       const scope = await this.scopeOf(principal);
       const usage = settlement.usage ?? settlement.spendEstimate ?? null;
@@ -630,10 +702,17 @@ export class SpendingGuard implements GatewaySpending {
           ${scope.usageClass}, ${scope.tier}, ${scope.triggerId}, ${scope.situationId},
           ${usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0},
           ${usage?.cacheWriteInputTokens ?? 0})`;
-      if (this.limited) await this.noticeOnce(scope.personId);
-      // The next admission reads the totals with this call in them.
-      else if (this.backgroundLimited) await this.totals(scope.personId, this.now(), true);
+      // Every total read before now lacks this call, the installation's in
+      // other people's included: none is reused, nor one being read now.
+      this.generation += 1;
+      this.cached.clear();
+      // Only now that the call is in the totals does its hold go, so neither
+      // is missing in between from what the next admission reads.
+      this.release(principal);
+      const limits = await this.limitsFor(scope.personId);
+      if (anyLimit(limits)) await this.noticeOnce(scope.personId, limits);
     } catch (error) {
+      this.release(principal);
       process.stderr.write(
         `spending: a model call was not recorded (${error instanceof Error ? error.message : 'error'})\n`,
       );
@@ -641,9 +720,9 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   /** Tell the person once per period that a limit is close or reached. */
-  private async noticeOnce(personId: string | null): Promise<void> {
+  private async noticeOnce(personId: string | null, limits: SpendingLimits): Promise<void> {
     const now = this.now();
-    const notice = this.noticeFor(await this.totals(personId, now, true), now);
+    const notice = this.noticeFor(await this.totals(personId, now, true), now, true, limits);
     if (!notice) return;
     const owner = notice.scope === 'person' ? `person:${personId}` : 'installation';
     const period = notice.resets_at;
@@ -664,6 +743,7 @@ export class SpendingGuard implements GatewaySpending {
     const { monthStart, nextMonth, nextDay } = periodBounds(now);
     const month = monthStart.toISOString();
     const totals = await this.totals(personId, now, true);
+    const limits = await this.limitsFor(personId);
     const models = await this.sql`select provider, model, count(*)::int as calls,
         coalesce(sum(cost_usd), 0)::float8 as usd,
         coalesce(sum(input_tokens + output_tokens), 0)::float8 as tokens
@@ -694,8 +774,8 @@ export class SpendingGuard implements GatewaySpending {
       person: totals.person,
       background: totals.background,
       installation: installation ? totals.installation : null,
-      limits: this.limits,
-      notice: this.noticeFor(totals, now, installation),
+      limits,
+      notice: this.noticeFor(totals, now, installation, limits),
       models: models.map((row) => ({
         provider: String(row.provider),
         model: String(row.model),
@@ -713,9 +793,11 @@ export class SpendingGuard implements GatewaySpending {
 
 /** The installation's spending guard, from its environment. */
 export function spendingFromEnv(sql: Sql, env: Env): SpendingGuard {
-  return new SpendingGuard(
+  const guard = new SpendingGuard(
     sql,
     spendingLimitsFromEnv(env),
     new PriceTable(parseModelPrices(env.MELETE_MODEL_PRICES)),
   );
+  guard.overrides = new PersonLimitStore(sql);
+  return guard;
 }

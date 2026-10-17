@@ -19,7 +19,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import { UNREACHABLE } from '../connectors/public-fetch.ts';
-import { ownsSessionSpace } from '../principals/session-space.ts';
+import { ownsSessionSpace, requireSessionSpace } from '../principals/session-space.ts';
 import { assertLocalEndpoint, checkLocalModel, isLocalUrl, PrivacyError } from './local.ts';
 import type { PrivacyRouter } from './router.ts';
 import { newKnownId, type PlainSettings, type SealedSettings, sameAddress } from './store.ts';
@@ -33,6 +33,7 @@ export type PrivacyRouteOptions = {
 function spaceOf(c: Context): string {
   const spaceId = c.get('experienceSpaceId');
   if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+  requireSessionSpace(c, spaceId);
   return spaceId;
 }
 

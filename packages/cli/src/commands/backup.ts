@@ -5,8 +5,8 @@
  * By default the backup is online and whole: the database as a custom-format
  * dump, checked with `pg_restore --list` while it is written, the restriction
  * journal on its own under a timestamped name, deploy/.env, deploy/config/ and
- * deploy/melete.deploy.json; then the people's files (files.ts): the spaces,
- * the local blob store, the shared /work and each agent computer's two
+ * deploy/melete.deploy.json; then the people's files (files.ts): the spaces
+ * (without their search indexes, rebuilt from the files), the local blob store, the shared /work and each agent computer's two
  * volumes, each as its own archive, with contents.json saying what they are;
  * and a SHA256SUMS list of all of them. Each backup is a new directory,
  * melete-<time>, readable only by the account that made it (0700, files 0600).
@@ -48,9 +48,18 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { backupNoteStatement } from '../../../../apps/melete/src/operator/backup-note.ts';
+import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
+import { lastBackupPath, recordBackup } from '../backup-age.ts';
 import type { Context, Endpoint, Source } from '../context.ts';
 import { clientCommand, databaseShell, psqlLine } from '../database.ts';
-import { composeCommand, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
+import {
+  composeCommand,
+  DEPLOY_FILE,
+  type DeployConfig,
+  PROJECT_NAME,
+  parseDeployConfig,
+} from '../deploy-config.ts';
 import {
   archiveCommand,
   CELLS_SERVICE,
@@ -65,11 +74,14 @@ import {
   type FileSettings,
   FilesRefusal,
   fileSettings,
+  LEFT_OUT,
   listComputerVolumes,
   measureFiles,
   PART_NAMES,
   partFile,
   stopCellsCommand,
+  type UnclaimedVolumes,
+  volumePresence,
 } from '../files.ts';
 import { lastSwitched, readHistory } from '../history.ts';
 import { readInstallation, shellOverrideMessage, shellOverrides } from '../installation.ts';
@@ -331,8 +343,12 @@ async function backupFiles(
     );
   let computers: ComputerVolume[];
   const skipped: string[] = [];
+  const unclaimed: UnclaimedVolumes = { unattributed: [], elsewhere: [] };
+  const { unattributed, elsewhere } = unclaimed;
+  /** Computers' volumes the engine no longer has: their computer ended after they were listed. */
+  const gone: string[] = [];
   try {
-    computers = listComputerVolumes(context, settings.sandboxProject, skipped);
+    computers = listComputerVolumes(context, settings, skipped, unclaimed);
   } catch (error) {
     if (!(error instanceof FilesRefusal)) throw error;
     return fail(
@@ -348,6 +364,24 @@ async function backupFiles(
       detail: `${skipped.length} volume(s) labelled for this installation's computers are not a computer's /work or home volume, so this backup leaves them out: ${skipped.join(', ')}.`,
       fix: 'Check that this checkout is at the release the installation runs (bun run melete history): a newer release may keep more of a computer, and its backup takes it.',
     });
+  if (unattributed.length > 0) {
+    const projects = [...new Set(unattributed.map((each) => each.project || '(none)'))];
+    results.push({
+      id: 'backup.computer_volumes_unattributed',
+      level: 'warn',
+      detail: `${unattributed.length} agent computer volume(s) under sandbox project${projects.length === 1 ? '' : 's'} ${projects.join(', ')}, which this installation does not run with now, were made before computers named the installation that made them. Whether they are this installation's (made before MELETE_SANDBOX_PROJECT changed) or another's cannot be told, so this backup leaves them out: ${unattributed.map((each) => each.volume).join(', ')}.`,
+      fix: 'For each one that belongs to this installation, archive it by hand with its labels, outside this backup, as docs/DEPLOYMENT.md shows ("Computers a backup leaves out"): a restore does not put it back. Each stays on this engine as it is.',
+    });
+  }
+  if (elsewhere.length > 0) {
+    const named = [...new Set(elsewhere.map((each) => each.installation))];
+    results.push({
+      id: 'backup.computer_volumes_other_installation',
+      level: 'warn',
+      detail: `${elsewhere.length} agent computer volume(s) name the installation${named.length === 1 ? '' : 's'} ${named.join(', ')}, which ha${named.length === 1 ? 's' : 've'} no Melete service container on this engine: made by this installation before its COMPOSE_PROJECT_NAME changed, or by one that was removed or is down. Whose they are cannot be told, so this backup leaves them out: ${elsewhere.map((each) => each.volume).join(', ')}.`,
+      fix: 'For each one that belongs to this installation, archive it by hand and make it again named for this installation, as docs/DEPLOYMENT.md shows ("Computers a backup leaves out"); its later backups then take it. Each stays on this engine as it is until then.',
+    });
+  }
   for (const each of FILE_PARTS) {
     const volume = composeVolume(config.project, each);
     if (context.run(['docker', 'volume', 'inspect', '--format', '{{.Name}}', volume]).code !== 0)
@@ -362,7 +396,12 @@ async function backupFiles(
     for (const each of FILE_PARTS)
       if (
         !(await part(`backup.${each}`, partFile(each), {
-          command: archiveCommand(image, composeVolume(config.project, each), mode === 'online'),
+          command: archiveCommand(
+            image,
+            composeVolume(config.project, each),
+            mode === 'online',
+            LEFT_OUT[each],
+          ),
         }))
       )
         return false;
@@ -388,6 +427,21 @@ async function backupFiles(
       let resumed = true;
       try {
         for (const volume of volumes) {
+          // Mounting a volume that is gone would make a new, empty one with no labels.
+          const presence = volumePresence(context, volume.volume);
+          if (presence === 'absent') {
+            gone.push(volume.volume);
+            continue;
+          }
+          if (presence !== 'present') {
+            results.push({
+              id: 'backup.computer',
+              level: 'fail',
+              detail: `Whether ${volume.volume} is still on this engine could not be read (${presence.unreadable}), so ${computer} was not copied.`,
+            });
+            copied = false;
+            break;
+          }
           // Online, a computer the service resumes during its copy can change a file under
           // tar, which exits 1 for it; the archive is still whole, and a warning below says
           // so. Offline nothing resumes it, so a change is an error.
@@ -469,11 +523,17 @@ async function backupFiles(
     if (started.code !== 0) ok = false;
   } else ok = await archive();
   if (!ok) return null;
+  if (gone.length > 0)
+    results.push({
+      id: 'backup.computer_gone',
+      level: 'warn',
+      detail: `${gone.join(', ')} ${gone.length === 1 ? 'was' : 'were'} removed while the backup ran, as the service removes a computer whose time is up, so this backup does not hold ${gone.length === 1 ? 'it' : 'them'}.`,
+    });
   return {
     format: 1,
     taken: mode,
     parts: FILE_PARTS.map((each) => ({ part: each, file: partFile(each) })),
-    computers,
+    computers: computers.filter((volume) => !gone.includes(volume.volume)),
     blobs: settings.blobs.store,
   };
 }
@@ -527,7 +587,8 @@ export async function takeBackup(
 ): Promise<BackupRun> {
   const compose = composeCommand(context.deployDir, config);
   const suffix = encryptedSuffix(encryption);
-  const name = `melete-${stamp(context.now())}`;
+  const started = context.now();
+  const name = `melete-${stamp(started)}`;
   const results: Result[] = [];
   const sums: string[] = [];
   /** Archives taken online in which a file changed while it was read. */
@@ -650,9 +711,13 @@ export async function takeBackup(
   if (ok && mode !== 'database') {
     contents = await backupFiles(context, config, compose, mode, settings, part, results);
     ok = contents !== null;
+    // It names the installation, readable even when the rest is encrypted, so another
+    // installation that keeps its backups in the same folder never removes this one.
     if (ok)
       ok = await part('backup.contents', CONTENTS_FILE, {
-        bytes: new TextEncoder().encode(`${JSON.stringify(contents, null, 2)}\n`),
+        bytes: new TextEncoder().encode(
+          `${JSON.stringify({ ...contents, project: config.project }, null, 2)}\n`,
+        ),
       });
   }
 
@@ -707,26 +772,380 @@ export async function takeBackup(
       fix: 'For a copy where nothing changes underneath, back up with --offline: it stops the writers while the files are copied.',
     });
 
-  if (destination.kind === 'dir') {
-    // The backup the last deploy took is the one rollback restores from: it is never pruned.
-    const named = lastSwitched(readHistory(context.deployDir))?.backup;
-    const kept = readdirSync(destination.dir)
-      .filter((entry) => BACKUP_NAME.test(entry))
-      .filter((entry) => statSync(join(destination.dir, entry)).isDirectory())
-      .sort();
-    const removed = kept
-      .slice(0, Math.max(0, kept.length - config.backup.keep))
-      .filter((entry) => !named || resolve(join(destination.dir, entry)) !== resolve(named));
-    for (const entry of removed)
-      rmSync(join(destination.dir, entry), { recursive: true, force: true });
-    if (removed.length > 0)
-      results.push({
-        id: 'backup.keep',
-        level: 'ok',
-        detail: `Kept the newest ${config.backup.keep}; removed ${removed.join(', ')}.`,
-      });
+  const fingerprint = stripped.key === null ? null : masterKeyFingerprint(stripped.key);
+  results.push(
+    ...(destination.kind === 'dir'
+      ? pruneBackups(context, config, destination.dir, name, fingerprint)
+      : pruneRemote(context, config, destination.target, name, fingerprint)),
+  );
+  // Noted for check and status, which judge how old the newest backup is. The
+  // backup is whole whatever becomes of the note, so a note that cannot be
+  // written is said, never taken for a failed backup.
+  try {
+    recordBackup(context.deployDir, started, location);
+  } catch (error) {
+    const said = error instanceof Error ? error.message.split('\n')[0]?.slice(0, 200) : '';
+    results.push({
+      id: 'backup.recorded',
+      level: 'warn',
+      detail: `The backup is whole, but its time was not noted in ${lastBackupPath(context.deployDir)}, so check and status may judge the newest backup older than it is${said ? `: ${said}` : '.'}`,
+    });
+  }
+  // And in the database, where the operator console reads it.
+  const noted = context.run(psqlLine(compose, config, backupNoteStatement(name, started)));
+  if (noted.code !== 0) {
+    const said = (noted.stderr || noted.stdout).trim().split('\n')[0]?.slice(0, 200);
+    results.push({
+      id: 'backup.noted',
+      level: 'warn',
+      detail: `The backup is whole, but the database did not take the note of it, so the web app's operator console may show an older backup${said ? `: ${said}` : '.'}`,
+    });
   }
   return { ok: true, location, results };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** When a backup named `melete-<time>` was made, by its name. */
+export const madeAt = (entry: string): number => {
+  const [, y, mo, d, h, mi, s] =
+    /^melete-(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/.exec(entry) ?? [];
+  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+};
+
+/**
+ * The Compose project of the installation a set is a backup of, from its own
+ * files, as ownerOf reads them: contents.json, or, in a set from before it
+ * named one, the set's unencrypted contract or its deploy/.env. Null when
+ * none of them says.
+ */
+export function setInstallation(set: string): string | null {
+  const read = (file: string) => {
+    try {
+      return readFileSync(join(set, file), 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  const named = (value: unknown) =>
+    typeof value === 'string' && PROJECT_NAME.test(value) ? value : null;
+  const contents = read(CONTENTS_FILE);
+  if (contents !== null) {
+    try {
+      const project = named(JSON.parse(contents)?.project);
+      if (project) return project;
+    } catch {
+      // Read as unnamed; the files below may still say.
+    }
+  }
+  const contract = read(DEPLOY_FILE);
+  const loaded = contract === null ? null : parseDeployConfig(contract);
+  if (loaded?.kind === 'found') return named(loaded.config.project);
+  const env = read('deploy.env');
+  return env === null ? null : named(parseEnvFile(env).COMPOSE_PROJECT_NAME?.trim() || 'melete');
+}
+
+/**
+ * Whose backup a set is, from its own files: contents.json names the
+ * installation's Compose project; an unencrypted set's contract, or its
+ * deploy/.env when it has none, names it too; and a set made under this
+ * installation's master key is this installation's. A set named for this
+ * project but made under another master key is from another machine's
+ * installation of the same name, or from before the key was replaced:
+ * `unknown`, as is a set in which nothing says. A set that holds no file is
+ * no one's backup.
+ */
+function ownerOf(set: string, project: string, fingerprint: string | null): Owner {
+  const read = (file: string) => {
+    try {
+      return readFileSync(join(set, file), 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  let files: string[];
+  try {
+    files = readdirSync(set);
+  } catch {
+    return 'unknown';
+  }
+  return ownerFrom(files.length, read, project, fingerprint);
+}
+
+type Owner = 'ours' | 'another' | 'unknown';
+
+/** ownerOf's reading, from a set's file count and a reader of its files, wherever it is. */
+function ownerFrom(
+  count: number,
+  read: (file: string) => string | null,
+  project: string,
+  fingerprint: string | null,
+): Owner {
+  if (count === 0) return 'ours';
+  const recorded = read(FINGERPRINT_FILE)?.trim() || null;
+  const sameKey = recorded === null || fingerprint === null || recorded === fingerprint;
+  const named = (value: unknown) =>
+    typeof value === 'string' && PROJECT_NAME.test(value)
+      ? value !== project
+        ? 'another'
+        : sameKey
+          ? 'ours'
+          : 'unknown'
+      : null;
+  const contents = read(CONTENTS_FILE);
+  if (contents !== null) {
+    try {
+      const owner = named(JSON.parse(contents)?.project);
+      if (owner) return owner;
+    } catch {
+      // Read as unnamed; the files below may still say.
+    }
+  }
+  const contract = read(DEPLOY_FILE);
+  const loaded = contract === null ? null : parseDeployConfig(contract);
+  if (loaded?.kind === 'found') return named(loaded.config.project) ?? 'unknown';
+  const env = read('deploy.env');
+  if (env !== null)
+    return named(parseEnvFile(env).COMPOSE_PROJECT_NAME?.trim() || 'melete') ?? 'unknown';
+  if (fingerprint !== null && recorded === fingerprint) return 'ours';
+  return 'unknown';
+}
+
+/**
+ * Removes, from the directory a backup was just written to, this
+ * installation's backups beyond the newest `backup.keep`, and every one of
+ * them older than `backup.max_age_days`. Backups another installation made
+ * there are left alone, and so is one that does not say who made it. The one
+ * just made always stays. The backup the last deploy took is the one rollback
+ * restores from, so `keep` never removes it; the age limit does, since it is
+ * what bounds how long a removed thing survives in a backup. A backup is as
+ * old as the earlier of its name and the last change to its directory, so one
+ * named while the clock was ahead still ages.
+ */
+function pruneBackups(
+  context: Context,
+  config: DeployConfig,
+  dir: string,
+  made: string,
+  fingerprint: string | null,
+): Result[] {
+  const named = lastSwitched(readHistory(context.deployDir))?.backup;
+  const isNamed = (entry: string) => !!named && resolve(join(dir, entry)) === resolve(named);
+  const sets = readdirSync(dir)
+    .filter((entry) => BACKUP_NAME.test(entry))
+    .filter((entry) => statSync(join(dir, entry)).isDirectory())
+    .map((entry) => ({
+      entry,
+      owner: entry === made ? 'ours' : ownerOf(join(dir, entry), config.project, fingerprint),
+      changedMs: statSync(join(dir, entry)).mtimeMs,
+    }));
+  const plan = prunePlan(sets, made, config, context.now().getTime(), isNamed);
+  for (const entry of plan.removed) rmSync(join(dir, entry), { recursive: true, force: true });
+  return pruneResults(plan, dir, config, isNamed);
+}
+
+/**
+ * The same for backups streamed to another machine: the sets there are
+ * listed, and judged by the same files, over ssh, and the ones beyond keep
+ * and max_age_days removed there. A listing that fails prunes nothing.
+ */
+function pruneRemote(
+  context: Context,
+  config: DeployConfig,
+  target: SshTarget,
+  made: string,
+  fingerprint: string | null,
+): Result[] {
+  const where = `ssh://${target.host}:${target.path}`;
+  const named = lastSwitched(readHistory(context.deployDir))?.backup;
+  const isNamed = (entry: string) => named === `${where}/${entry}`;
+  const listed = context.run(sshCommand(target, remoteListing(target.path)));
+  const sets = listed.code === 0 ? parseRemoteListing(listed.stdout) : null;
+  if (sets === null)
+    return [
+      {
+        id: 'backup.keep',
+        level: 'warn',
+        detail: `The backups in ${where} could not be listed, so keep and max_age_days removed none of them this time${
+          listed.stderr.trim() ? `: ${listed.stderr.trim().split('\n').at(-1)}` : '.'
+        }`,
+      },
+    ];
+  const plan = prunePlan(
+    sets.map((set) => ({
+      entry: set.entry,
+      owner:
+        set.entry === made
+          ? 'ours'
+          : ownerFrom(
+              set.count,
+              (file) => set.files.get(file) ?? null,
+              config.project,
+              fingerprint,
+            ),
+      changedMs: set.changedMs,
+    })),
+    made,
+    config,
+    context.now().getTime(),
+    isNamed,
+  );
+  if (plan.removed.length > 0) {
+    const gone = context.run(
+      sshCommand(
+        target,
+        `rm -rf -- ${plan.removed.map((entry) => `${target.path}/${entry}`).join(' ')}`,
+      ),
+    );
+    if (gone.code !== 0)
+      return [
+        {
+          id: 'backup.keep',
+          level: 'warn',
+          detail: `Could not remove ${plan.removed.join(', ')} from ${where}, which keep and max_age_days leave out: ${
+            gone.stderr.trim().split('\n').at(-1) || `exit ${gone.code}`
+          }`,
+        },
+      ];
+  }
+  return pruneResults(plan, where, config, isNamed);
+}
+
+/** The files ownerOf reads, as a listing carries them. */
+const OWNER_FILES = [CONTENTS_FILE, FINGERPRINT_FILE, DEPLOY_FILE];
+
+/**
+ * A script that lists the backup sets in a remote folder: for each, its name,
+ * when its folder last changed and how many files it holds, then the files
+ * ownerOf reads, base64 encoded. Of deploy.env, which holds service keys,
+ * only its COMPOSE_PROJECT_NAME line leaves the machine. It ends with `end`,
+ * so a listing cut short is never taken for a whole one.
+ */
+export function remoteListing(path: string): string {
+  const owned = OWNER_FILES.map(
+    (file) =>
+      `[ -f "$d/${file}" ] && echo "file $d ${file} $(head -c 65536 "$d/${file}" | base64 | tr -d '\\n')"; `,
+  ).join('');
+  return (
+    `cd ${path} || exit 1; for d in melete-*; do [ -d "$d" ] || continue; ` +
+    `t=$(stat -c %Y "$d" 2>/dev/null || stat -f %m "$d" 2>/dev/null || echo -); ` +
+    `echo "set $d $t $(ls -A "$d" | wc -l)"; ${owned}` +
+    `[ -f "$d/deploy.env" ] && echo "file $d deploy.env $(grep -m 1 '^COMPOSE_PROJECT_NAME=' "$d/deploy.env" | base64 | tr -d '\\n')"; ` +
+    'done; echo end'
+  );
+}
+
+type RemoteSet = {
+  entry: string;
+  changedMs: number | null;
+  count: number;
+  files: Map<string, string>;
+};
+
+/** The sets a remote listing names, or null when it is not a whole listing. */
+export function parseRemoteListing(stdout: string): RemoteSet[] | null {
+  const lines = stdout.split('\n').map((line) => line.trim());
+  while (lines.at(-1) === '') lines.pop();
+  if (lines.pop() !== 'end') return null;
+  const sets = new Map<string, RemoteSet>();
+  for (const line of lines) {
+    const [kind, entry = '', first = '', second = ''] = line.split(/\s+/);
+    if (!BACKUP_NAME.test(entry)) continue;
+    if (kind === 'set') {
+      const seconds = Number(first);
+      sets.set(entry, {
+        entry,
+        changedMs: first !== '-' && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null,
+        count: Number(second) || 0,
+        files: new Map(),
+      });
+    } else if (kind === 'file' && (OWNER_FILES.includes(first) || first === 'deploy.env'))
+      sets.get(entry)?.files.set(first, Buffer.from(second, 'base64').toString('utf8'));
+  }
+  return [...sets.values()];
+}
+
+type PrunePlan = { removed: string[]; kept: string[]; unknown: string[]; now: number };
+
+/**
+ * Which sets keep and max_age_days remove, wherever they are: this
+ * installation's beyond the newest `keep`, except the one the last deploy
+ * took, and any of this installation's older than `max_age_days`, never the
+ * one just made. A set is as old as the earlier of its name and the last
+ * change to its folder.
+ */
+export function prunePlan(
+  sets: { entry: string; owner: Owner; changedMs: number | null }[],
+  made: string,
+  config: Pick<DeployConfig, 'backup'>,
+  now: number,
+  isNamed: (entry: string) => boolean,
+): PrunePlan {
+  const { keep, max_age_days: days } = config.backup;
+  const oldest = days === null ? null : now - days * DAY_MS;
+  const sorted = [...sets].sort((a, b) => (a.entry < b.entry ? -1 : a.entry > b.entry ? 1 : 0));
+  const kept = sorted.filter((set) => set.owner === 'ours');
+  const age = (set: (typeof sets)[number]) =>
+    Math.min(madeAt(set.entry), set.changedMs ?? Number.POSITIVE_INFINITY);
+  const beyond = new Set(kept.slice(0, Math.max(0, kept.length - keep)).map((set) => set.entry));
+  const removed = kept
+    .filter(
+      (set) =>
+        set.entry !== made &&
+        ((beyond.has(set.entry) && !isNamed(set.entry)) || (oldest !== null && age(set) < oldest)),
+    )
+    .map((set) => set.entry);
+  return {
+    removed,
+    kept: kept.map((set) => set.entry),
+    unknown: sorted.filter((set) => set.owner === 'unknown').map((set) => set.entry),
+    now,
+  };
+}
+
+/** What a pruning says: what it removed, names from a clock ahead, and sets it left alone. */
+function pruneResults(
+  { removed, kept, unknown, now }: PrunePlan,
+  dir: string,
+  config: DeployConfig,
+  isNamed: (entry: string) => boolean,
+): Result[] {
+  const { keep, max_age_days: days } = config.backup;
+  const results: Result[] = [];
+  if (removed.length > 0) {
+    const rule =
+      days === null
+        ? `Kept the newest ${keep}`
+        : `Kept the newest ${keep}, none older than ${days} days`;
+    const lost = removed.some(isNamed);
+    results.push({
+      id: 'backup.keep',
+      level: lost ? 'warn' : 'ok',
+      detail: `${rule}; removed ${removed.join(', ')}.${
+        lost
+          ? ' One of them was the backup the last deploy took, so rollback can no longer restore from it.'
+          : ''
+      }`,
+    });
+  }
+  const one = (count: number, singular: string, plural: string) =>
+    count === 1 ? singular : plural;
+  const ahead = kept.filter((entry) => !removed.includes(entry) && madeAt(entry) > now + DAY_MS);
+  if (ahead.length > 0)
+    results.push({
+      id: 'backup.future_name',
+      level: 'warn',
+      detail: `${ahead.join(', ')} ${one(ahead.length, 'is', 'are')} named for more than a day after this machine's clock, so a clock was wrong when ${one(ahead.length, 'it was', 'they were')} made. ${one(ahead.length, 'It ages', 'They age')} from the last change to ${one(ahead.length, 'its', 'their')} folder instead.`,
+      fix: "Check this machine's clock (timedatectl on Linux).",
+    });
+  if (unknown.length > 0)
+    results.push({
+      id: 'backup.keep_unknown',
+      level: 'warn',
+      detail: `${unknown.join(', ')} in ${dir} ${one(unknown.length, 'does', 'do')} not show which installation made ${one(unknown.length, 'it', 'them')}, or ${one(unknown.length, 'was', 'were')} made under another master key, so keep and max_age_days leave ${one(unknown.length, 'it', 'them')} alone.`,
+      fix: 'Remove a backup no installation needs by hand. Give an installation on another machine its own backup.dir.',
+    });
+  return results;
 }
 
 /**

@@ -45,6 +45,29 @@ export type CellHandle = {
   release(): Promise<void>;
 };
 
+/**
+ * The engine image this service pinned when it started is no longer one a
+ * cell can run: removed from the engine, or refused by the cell service. Every
+ * attempt fails the same way until the service starts again and pins the image
+ * its configured name stands for then, so the person is told that plainly.
+ */
+export class EngineImageUnavailable extends Error {
+  constructor(
+    /** The configured image name. */
+    readonly reference: string,
+    /** The image id pinned at start. */
+    readonly imageId: string,
+    readonly why: 'removed' | 'refused',
+  ) {
+    super(
+      why === 'removed'
+        ? `The engine image ${imageId} this service started with (${reference}) is no longer on the Docker engine; restart the service to use the image ${reference} names now, or update it when that is a newer release`
+        : `melete-cells refused the engine image ${imageId} this service started with (${reference}); restart melete-cells and then the service so both use the image ${reference} names now`,
+    );
+    this.name = 'EngineImageUnavailable';
+  }
+}
+
 export interface CellHost {
   /** 'local', or 'remote:<name>'. */
   readonly id: string;

@@ -24,6 +24,7 @@ import type {
   CatalogEntry,
   ConnectionItemField,
   ConnectionKind,
+  ConnectionLifecycle,
   McpSignInStart,
   ProviderAccess,
 } from '../experience/types.ts';
@@ -588,15 +589,34 @@ function accessOf<T extends { label: string; effect_class: string; asks_first: b
 /** Why a catalog sign-in did not finish, by the code the service gave. */
 /** What a disconnection did at the provider, said after it. */
 const DISCONNECTED: Record<ProviderAccess | 'none', string | null> = {
-  withdrawn: 'Its saved sign-in is deleted, and the provider has withdrawn Melete’s access too.',
+  withdrawn: 'Melete has deleted its copy, and the provider has withdrawn Melete’s access too.',
   kept_for_other_connections:
-    'Its saved sign-in is deleted. Your other connections to the same account still use that sign-in, so the account keeps Melete’s access until you disconnect them too.',
+    'Melete has deleted its copy. Your other connections to the same account still use that sign-in, so the account keeps Melete’s access until you disconnect them too.',
   not_offered:
-    'Its saved sign-in is deleted. To be sure Melete has no access left, remove it in that account’s own security settings.',
+    'Melete has deleted its copy. To cancel the token itself, delete it in that account’s own security settings.',
   not_confirmed:
-    'Its saved sign-in is deleted, but the provider didn’t confirm withdrawing Melete’s access. You can remove it in that account’s own security settings.',
+    'Melete has deleted its copy, but the provider didn’t confirm withdrawing Melete’s access. To be sure, remove it in that account’s own security settings.',
   none: null,
 };
+
+/** The same, when the answer names the provider's page for cancelling the credential. */
+export function disconnectedNote(
+  answer: Pick<ConnectionLifecycle, 'provider_access' | 'revoke_at'>,
+): { sub: string | null; link?: { name: string; url: string } } {
+  const access = answer.provider_access ?? 'none';
+  const at = answer.revoke_at;
+  if (at && access === 'not_offered')
+    return {
+      sub: `Melete has deleted its copy. To cancel the token itself, delete it at ${at.url}`,
+      link: at,
+    };
+  if (at && access === 'not_confirmed')
+    return {
+      sub: `Melete has deleted its copy, but the provider didn’t confirm withdrawing Melete’s access. To be sure, remove it at ${at.url}`,
+      link: at,
+    };
+  return { sub: DISCONNECTED[access] };
+}
 
 const SIGN_IN_ENDED: Record<string, string> = {
   catalog_tools_unavailable: 'You signed in, but the app offers none of the tools Melete uses.',
@@ -1237,8 +1257,20 @@ export function ConnectionActions({
           });
           return;
         }
-        const sub = DISCONNECTED[result.data.provider_access ?? 'none'];
-        toast({ kind: 'ok', title: `${label} was disconnected`, ...(sub ? { sub } : {}) });
+        const { sub, link } = disconnectedNote(result.data);
+        toast({
+          kind: 'ok',
+          title: `${label} was disconnected`,
+          ...(sub ? { sub } : {}),
+          // A step left for the person stays on screen until they close it.
+          ...(link
+            ? {
+                action: `Open ${link.name}`,
+                onAction: () => window.open(link.url, '_blank', 'noopener,noreferrer'),
+                persist: true,
+              }
+            : {}),
+        });
         onChanged();
       })
       .finally(() => {

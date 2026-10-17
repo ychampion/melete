@@ -34,6 +34,7 @@ import { trackModelCall } from './inflight.ts';
 import { withLongTurnNote } from './long-turn.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import { PriceTable } from './prices.ts';
+import { classifyProviderFailure, providerFailureError } from './provider-failure.ts';
 import {
   checkConnectTarget,
   PROVIDER_HOSTS,
@@ -51,6 +52,7 @@ import {
   structuredRefused,
   supportsStructuredOutput,
 } from './structured.ts';
+import { encodeToolNames, ToolNameStream, toolNameDecoder } from './tool-names.ts';
 import {
   type GatewayBudget,
   GatewayError,
@@ -221,6 +223,46 @@ function positiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
+/**
+ * One log line for a provider's refusal: who refused, the status, and the
+ * provider's own error type and message, short, with every given secret taken out.
+ */
+export function providerRejection(
+  target: string,
+  status: number,
+  text: string,
+  secrets: readonly (string | null | undefined)[],
+): string {
+  let reason = text.trim();
+  try {
+    const body = JSON.parse(reason) as {
+      error?: { type?: unknown; code?: unknown; message?: unknown } | string;
+      message?: unknown;
+    };
+    const error = typeof body.error === 'object' && body.error ? body.error : undefined;
+    const kind = error?.type ?? error?.code;
+    const message = error?.message ?? (typeof body.error === 'string' ? body.error : body.message);
+    if (typeof message === 'string')
+      reason = typeof kind === 'string' && kind ? `${kind}: ${message}` : message;
+  } catch {
+    // Not JSON: the text itself, shortened below.
+  }
+  for (const secret of secrets)
+    if (secret && secret.length >= 8) reason = reason.split(secret).join('[redacted]');
+  reason = reason.replace(/\s+/g, ' ');
+  if (reason.length > 400) reason = `${reason.slice(0, 400)}…`;
+  return `provider_rejected: ${target} answered ${status}${reason ? ` (${reason})` : ''}`;
+}
+
+/**
+ * The operator's log for one gateway: every error it reports (a provider's refusal, a ledger
+ * failure), one line each, under the gateway's name. The lines carry no keys: a refusal is
+ * already redacted by providerRejection, and the rest are codes.
+ */
+export function gatewayLog(name: string): (error: Error) => void {
+  return (error) => process.stderr.write(`${name} gateway: ${error.message}\n`);
+}
+
 /** At most `limit` bytes of a response's text; the rest is not read. */
 async function cappedText(response: Response, limit: number): Promise<string> {
   const reader = response.body?.getReader();
@@ -319,6 +361,8 @@ export function createModelGateway(options: GatewayOptions): Server {
     // What the call that is answering was prepared with, for the reply below.
     let prepared: PreparedRequest | null = null;
     let local: PreparedRequest['local'] = null;
+    // The real names of the tools renamed for the provider, by wire name.
+    let toolNames: ReadonlyMap<string, string> | null = null;
     let signedIn: Awaited<ReturnType<SignedInCredential['current']>> | undefined;
     let result: Response | undefined;
     try {
@@ -569,7 +613,14 @@ export function createModelGateway(options: GatewayOptions): Server {
                   scope: promptCacheScope(principal),
                   ...(options.promptCacheSecret ? { secret: options.promptCacheSecret } : {}),
                 }).headers;
-          encoded = JSON.stringify(outbound);
+          // Anthropic refuses a tool name with a dot in it; such tools leave
+          // under a name it takes and get their own name back in the reply.
+          const renamed =
+            protocol === 'messages' && !local && !callProvider.fake
+              ? encodeToolNames(outbound)
+              : null;
+          toolNames = renamed?.names ?? null;
+          encoded = JSON.stringify(renamed?.body ?? outbound);
           // A picture is charged as the flat count the engine compacts by, and a
           // document by its pages, not as the base64 text either travels in.
           const pictures = mediaTokens(outbound);
@@ -677,7 +728,13 @@ export function createModelGateway(options: GatewayOptions): Server {
                   ),
                 );
         } catch (error) {
-          if (abort.signal.aborted || !alternatives) throw error;
+          if (abort.signal.aborted) throw error;
+          if (!alternatives) {
+            // Nothing else to try: the engine and the person hear that the
+            // provider is not answering, and the receipt says so too.
+            settlement.failure = 'provider_down';
+            throw providerFailureError('provider_down');
+          }
           // The provider could not be reached; the next model is tried.
           settlement.status = 'failed';
           settlement.latencyMs = Math.round(performance.now() - started);
@@ -691,19 +748,41 @@ export function createModelGateway(options: GatewayOptions): Server {
         heard();
         if (!answer.ok || !answer.body) {
           // Provider errors may contain injected keys or internal request
-          // diagnostics. A 400's text is read here only to tell a refused
-          // schema from anything else; it is never passed on.
-          let errorText = '';
-          if (answer.status === 400 && schemaCarried && !schemaStripped)
-            errorText = await cappedText(answer, 16 * 1024);
-          else await answer.body?.cancel();
-          settlement.status = 'failed';
-          if (signedIn && answer.status === 401)
-            callProvider.signedIn?.rejected(signedIn.generation);
-          const failure = new GatewayError(
-            answer.status === 429 ? 429 : 502,
-            'provider_rejected_request',
+          // diagnostics, so the text is never passed on to the engine. The
+          // operator's log gets the provider's own reason, with every key this
+          // gateway holds taken out, because without it a refused call names
+          // nothing to fix.
+          const rejectionText = await cappedText(answer, 16 * 1024);
+          options.onError?.(
+            new Error(
+              providerRejection(`${callProvider.name}/${callModel}`, answer.status, rejectionText, [
+                ...secrets,
+                signedIn?.token,
+                local?.apiKey,
+                credential,
+              ]),
+            ),
           );
+          // A 400's text is read only to tell a refused schema from anything else.
+          const errorText =
+            answer.status === 400 && schemaCarried && !schemaStripped ? rejectionText : '';
+          settlement.status = 'failed';
+          // A sign-in's 401 is an expired token: it is refreshed here, and the
+          // engine's next try goes with the new one, so it is not named a
+          // refused key. A token got by that very refresh, and a key typed in
+          // the app, have nothing newer to try: their 401 is a refused key,
+          // named as one like an install's own key.
+          const refreshable =
+            !!signedIn && !!callProvider.signedIn?.refreshes && answer.status === 401;
+          if (signedIn && refreshable) callProvider.signedIn?.rejected(signedIn.generation);
+          const refreshed = refreshable && !signedIn?.retried;
+          // The refusal's class, read from its status and text, is all that
+          // goes on: the engine gets a status and code that mean the same.
+          const failed = refreshed ? null : classifyProviderFailure(answer.status, rejectionText);
+          if (failed) settlement.failure = failed;
+          const failure = failed
+            ? providerFailureError(failed)
+            : new GatewayError(answer.status === 429 ? 429 : 502, 'provider_rejected_request');
           // A model that refuses the answer schema is asked once more without
           // it, every other field kept, and is not sent one again in this
           // process. That 400 is the schema's, so the effort stays.
@@ -768,6 +847,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       // Real values go back in before the reply leaves the gateway; the
       // provider's placeholders are all the provider ever saw.
       const rehydrator = prepared?.rehydrator ?? null;
+      const renamed = toolNames && streaming ? new ToolNameStream(toolNames) : null;
       const buffered: string[] = [];
       if (streaming) {
         response.writeHead(result.status, {
@@ -785,7 +865,8 @@ export function createModelGateway(options: GatewayOptions): Server {
           settlement.modelActual = collector.modelActual;
           const output = redactor.feed(value);
           if (streaming) {
-            const visible = rehydrator && output ? rehydrator.push(output) : output;
+            const rehydrated = rehydrator && output ? rehydrator.push(output) : output;
+            const visible = renamed && rehydrated ? renamed.push(rehydrated) : rehydrated;
             if (visible) await writeChunk(response, visible, abort.signal);
           } else buffered.push(output);
         }
@@ -794,7 +875,9 @@ export function createModelGateway(options: GatewayOptions): Server {
         await reader.cancel().catch(() => {});
       }
       const rest = redactor.feed(new Uint8Array(), true);
-      const tail = streaming && rehydrator ? rehydrator.push(rest) + rehydrator.end() : rest;
+      const rehydratedTail =
+        streaming && rehydrator ? rehydrator.push(rest) + rehydrator.end() : rest;
+      const tail = renamed ? renamed.push(rehydratedTail) + renamed.end() : rehydratedTail;
       settlement.modelActual = collector.modelActual;
       // Cached input in full-price-equivalent tokens, from the price table the
       // spending caps use; nothing is discounted on the person's own model.
@@ -830,7 +913,8 @@ export function createModelGateway(options: GatewayOptions): Server {
           'cache-control': 'no-store',
         });
         const whole = buffered.join('') + tail;
-        response.end(rehydrator ? rehydrator.json(whole) : whole);
+        const reply = rehydrator ? rehydrator.json(whole) : whole;
+        response.end(toolNames ? toolNameDecoder(toolNames)(reply) : reply);
       }
     } catch (error) {
       // Rejections can answer before the POST body was read, and an unread body

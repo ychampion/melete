@@ -731,6 +731,166 @@ withDb('rooms', () => {
     ).toBe(404);
   }, 60_000);
 
+  test('people find only who they share a space with, or one whole email; the owner finds everyone', async () => {
+    const make = async (name: string): Promise<Person> => {
+      const made = await ok<{ principal: { id: string } }>(
+        send(world.alice.cookie, '/principals', 'POST', {
+          email: `${name}@example.test`,
+          password,
+        }),
+        201,
+      );
+      return { id: made.principal.id, cookie: await login(`${name}@example.test`) };
+    };
+    const dan = await make('dan');
+    const erin = await make('erin');
+    const found = async (person: Person, query?: string) => {
+      const listed = await ok<{ people: Record<string, unknown>[] }>(
+        send(
+          person.cookie,
+          `/people${query === undefined ? '' : `?query=${encodeURIComponent(query)}`}`,
+        ),
+      );
+      for (const one of listed.people)
+        expect(Object.keys(one).sort()).toEqual(['display_name', 'email', 'id']);
+      return listed.people.map((one) => one.id as string).sort();
+    };
+    const roomId = await makeRoom('Dan and Alice', [dan]);
+    // A member finds themselves and the people of their rooms, nobody else.
+    expect(await found(dan)).toEqual([dan.id, world.alice.id].sort());
+    expect(await found(dan, 'erin')).toEqual([]);
+    expect(await found(dan, 'example.test')).toEqual([dan.id, world.alice.id].sort());
+    // Someone who shares nothing finds only themselves, and another person only
+    // by their whole email address, in any case.
+    expect(await found(erin)).toEqual([erin.id]);
+    expect(await found(erin, 'dan')).toEqual([]);
+    expect(await found(erin, 'dan@example')).toEqual([]);
+    expect(await found(erin, ' DAN@example.test ')).toEqual([dan.id]);
+    // The person who set the installation up finds everyone.
+    expect(await found(world.alice)).toEqual(
+      expect.arrayContaining([world.alice.id, world.bob.id, world.carol.id, dan.id, erin.id]),
+    );
+    // Once they share nothing, they no longer find each other.
+    await ok(send(world.alice.cookie, `/rooms/${roomId}/members/${dan.id}`, 'DELETE'));
+    expect(await found(dan)).toEqual([dan.id]);
+  }, 60_000);
+
+  test('an account that is turned off, or being deleted, is not found and is not added', async () => {
+    const { sql } = database();
+    const make = async (name: string) => {
+      const made = await ok<{ principal: { id: string } }>(
+        send(world.alice.cookie, '/principals', 'POST', {
+          email: `${name}@example.test`,
+          password,
+        }),
+        201,
+      );
+      return made.principal.id;
+    };
+    const gus = await make('gus');
+    const hal = await make('hal');
+    const roomId = await makeRoom('Gus and Hal', [world.bob]);
+    for (const id of [gus, hal])
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/members`, 'POST', { principal_id: id }),
+        201,
+      );
+    // Gus is turned off; Hal's deletion has begun, which leaves his row disabled
+    // under an address nothing receives mail for until his rooms let him go.
+    await sql`update principal set disabled_at = now() where id = ${gus}`;
+    await sql`update principal set email = 'removed+' || lower(id) || '@removed.invalid',
+      display_name = null, disabled_at = now() where id = ${hal}`;
+    const found = async (cookie: string, query?: string) =>
+      (
+        await ok<{ people: { id: string }[] }>(
+          send(
+            cookie,
+            `/people${query === undefined ? '' : `?query=${encodeURIComponent(query)}`}`,
+          ),
+        )
+      ).people.map((one) => one.id);
+    for (const cookie of [world.bob.cookie, world.alice.cookie]) {
+      const listed = await found(cookie);
+      expect(listed).toContain(world.bob.id);
+      expect(listed).not.toContain(gus);
+      expect(listed).not.toContain(hal);
+      expect(await found(cookie, 'gus@example.test')).toEqual([]);
+      expect(await found(cookie, `removed+${hal.toLowerCase()}@removed.invalid`)).toEqual([]);
+    }
+    // Neither is added to another room, by id, nor invited there as a guest.
+    const other = await makeRoom('Elsewhere again', []);
+    for (const id of [gus, hal]) {
+      const refused = await send(world.alice.cookie, `/rooms/${other}/members`, 'POST', {
+        principal_id: id,
+      });
+      expect([id, refused.status]).toEqual([id, 404]);
+    }
+    const [inOther] = await sql`select count(*)::int as count from space_membership
+      where space_id = ${other} and principal_id = any(${[gus, hal]})`;
+    expect(inOther?.count).toBe(0);
+    for (const email of ['gus@example.test', `removed+${hal.toLowerCase()}@removed.invalid`]) {
+      const refused = await send(world.alice.cookie, `/rooms/${other}/invites`, 'POST', { email });
+      expect([
+        email,
+        refused.status,
+        ((await refused.json()) as { error?: { message?: string } }).error?.message,
+      ]).toEqual([email, 409, 'That email has a full account here. Add them from People instead.']);
+    }
+    // The same answer as for an account that is on, so an invite does not tell which are off.
+    const on = await send(world.alice.cookie, `/rooms/${other}/invites`, 'POST', {
+      email: 'bob@example.test',
+    });
+    expect(on.status).toBe(409);
+    // Turned on again, Gus is found and added as before.
+    await sql`update principal set disabled_at = null where id = ${gus}`;
+    expect(await found(world.bob.cookie)).toContain(gus);
+    await ok(
+      send(world.alice.cookie, `/rooms/${other}/members`, 'POST', { principal_id: gus }),
+      201,
+    );
+  }, 60_000);
+
+  test('a NUL in a query is refused as invalid, never a server error', async () => {
+    const people = await send(world.bob.cookie, `/people?query=${encodeURIComponent('bob\u0000')}`);
+    expect(people.status).toBe(400);
+    const nul = encodeURIComponent('a\u0000b');
+    // Searches, and ids compared for equality, on every route alike.
+    for (const path of [
+      `/search?q=${nul}`,
+      `/runs?conversation_id=${nul}`,
+      `/connections?space_id=${nul}`,
+      `/actions?job_id=${nul}`,
+      `/operations?job_id=${nul}`,
+      `/principals?space_id=${nul}`,
+      `/search?${nul}=x`,
+    ]) {
+      const answer = await send(world.alice.cookie, path);
+      expect([
+        path,
+        answer.status,
+        ((await answer.json()) as { error?: { code?: string } }).error?.code,
+      ]).toEqual([path, 400, 'invalid_request']);
+    }
+    // The characters "%00" typed into a search are not a NUL.
+    const typed = await send(world.alice.cookie, `/search?q=${encodeURIComponent('%00')}`);
+    expect(typed.status).toBe(200);
+    expect(((await typed.json()) as { results: unknown[] }).results).toEqual([]);
+  }, 60_000);
+
+  test("a room's name is not a person's, so anyone may go by it", async () => {
+    // Carol is not in this room, and its own account carries its name.
+    const roomId = await makeRoom('Quiet Corner', [world.bob]);
+    const [room] = await database().sql`select p.display_name from space_membership m
+      join principal p on p.id = m.principal_id where m.space_id = ${roomId} and p.kind = 'room'`;
+    expect(room?.display_name).toBe('Quiet Corner');
+    await ok(send(world.carol.cookie, '/me', 'PATCH', { display_name: 'quiet corner' }));
+    // A person's name is still refused.
+    expect((await send(world.carol.cookie, '/me', 'PATCH', { display_name: 'Bob' })).status).toBe(
+      409,
+    );
+    await ok(send(world.carol.cookie, '/me', 'PATCH', { display_name: 'Carol' }));
+  }, 60_000);
+
   test("room jobs appear on no personal surface, the room owner's included", async () => {
     const { sql } = database();
     const roomId = await makeRoom('Private plans');

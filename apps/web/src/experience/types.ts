@@ -41,6 +41,9 @@ export type AgentDeleted = Success<Ok<paths['/agents/{id}'], 'delete'>>;
 export type ActivityList = Success<Ok<paths['/activity'], 'get'>>;
 export type SpaceMembers = Success<Ok<paths['/space/members'], 'get'>>;
 export type SpaceMember = SpaceMembers['members'][number];
+/** What work in a space may use, and whether the person asking may change it. */
+export type SpaceRulesView = Ok<paths['/spaces/{id}/policy'], 'get'>;
+export type SpaceRulesChange = Body<paths['/spaces/{id}/policy'], 'put'>;
 export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
 export type DeliveryState = NonNullable<Turn['delivery']>;
 export type MessageAcceptance = Success<Ok<paths['/conversations/{id}/messages'], 'post'>>;
@@ -112,6 +115,8 @@ export type SkillProhibition = Ok<
 >['prohibitions'][number];
 /** One file Melete holds for the person, and what a delete of one gives back. */
 export type PersonFile = Ok<paths['/files'], 'get'>['files'][number];
+/** How much the person keeps against their limit; only where the installation sets one. */
+export type PersonStorage = NonNullable<Ok<paths['/files'], 'get'>['storage']>;
 export type PersonFileDeleted = Ok<paths['/files/{id}'], 'delete'>;
 /** One of the person's own skills, read whole, with the version a change must name. */
 export type OwnSkill = Ok<paths['/own-skills'], 'get'>['skills'][number];
@@ -130,6 +135,7 @@ export type Belief = Success<Ok<paths['/memory/beliefs'], 'get'>>['beliefs'][num
 export type BeliefCategory = Belief['category'];
 export type BeliefHistory = Success<Ok<paths['/memory/beliefs/{id}/history'], 'get'>>;
 export type BeliefBlock = Success<Ok<paths['/memory/blocks'], 'get'>>['blocks'][number];
+export type BeliefBlockScope = BeliefBlock['scope'];
 export type AgentNote = Success<Ok<paths['/memory/notes'], 'get'>>['notes'][number];
 export type MemoryTimeline = Success<Ok<paths['/memory/timeline'], 'get'>>;
 export type MemoryDay = MemoryTimeline['days'][number];
@@ -151,6 +157,8 @@ export type PlanCreate = Body<paths['/plans'], 'post'>;
 export type Task = Success<Ok<paths['/tasks'], 'get'>>['tasks'][number];
 export type TaskInput = Body<paths['/tasks'], 'post'>;
 export type Home = Success<Ok<paths['/home'], 'get'>>;
+export type Starters = Success<Ok<paths['/starters'], 'get'>>;
+export type Starter = Starters['starters'][number];
 export type CalendarEvent = Success<Home['upcoming']>[number];
 export type Profile = Success<Ok<paths['/profile'], 'get'>>['profile'];
 /** What a profile save sends: the sending address is read from the mailbox, not set. */
@@ -197,10 +205,24 @@ export type AccountRemoval = Ok<paths['/principals/{id}/removal'], 'get'>['remov
 export type AccountSummary = Ok<paths['/principals'], 'get'>['accounts'][number];
 export type SpaceRemovalPreview = Ok<paths['/spaces/{id}/removal/preview'], 'get'>['preview'];
 export type SpaceRemovalReport = Ok<paths['/removals/{id}'], 'get'>;
+
+/** The operator console: the installation's owner running Melete for other people. */
+export type OperatorOverview = Ok<paths['/operator/overview'], 'get'>;
+export type OperatorPeople = Ok<paths['/operator/people'], 'get'>;
+export type OperatorPerson = OperatorPeople['people'][number];
+export type OperatorCaps = OperatorPerson['caps']['own'];
+export type OperatorOneTimeLink = Ok<paths['/operator/people'], 'post'>['invite'];
+export type OperatorAuditEntry = Ok<paths['/operator/audit'], 'get'>['entries'][number];
 /** A removal as it started; the same record its progress reports. */
 export type SpaceRemovalStarted = SpaceRemovalReport['removal'];
 /** A site the agent's browser is signed in to. */
 export type BrowserSite = Ok<paths['/browser/sites'], 'get'>['sites'][number];
+/** A sign-in saved for the agent's browser, with its password masked. */
+export type SavedSignIn = Ok<paths['/sign-ins'], 'get'>['sign_ins'][number];
+export type SavedSignInCreate = Body<paths['/sign-ins'], 'post'>;
+export type SavedSignInUpdate = Body<paths['/sign-ins/{id}'], 'patch'>;
+export type SavedSignInCode = Ok<paths['/sign-ins/{id}/code'], 'post'>;
+export type SavedSignInCheck = Ok<paths['/sign-ins/{id}/check'], 'post'>;
 /** What a conversation's agent is doing on its computer: its browser and its terminal. */
 export type AgentComputer = Success<Ok<paths['/conversations/{id}/computer'], 'get'>>;
 export type ComputerBrowser = NonNullable<AgentComputer['browser']>;
@@ -295,6 +317,7 @@ export type FeedbackList = Ok<paths['/feedback'], 'get'>;
 export type FeedbackReport = FeedbackList['reports'][number];
 export type FeedbackStatus = FeedbackReport['status'];
 export type FeedbackCreate = Body<paths['/feedback'], 'post'>;
+export type FeedbackForwarding = Ok<paths['/feedback/forwarding'], 'get'>;
 
 /* ---------- voice ---------- */
 

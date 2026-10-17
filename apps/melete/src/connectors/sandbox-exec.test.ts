@@ -817,9 +817,20 @@ withDb('a command in a remote sandbox', () => {
     const second = await action({ command: 'printf second' }, await scope.attempt());
     const refused = await connector.execute(second, context(second));
     if (refused.outcome !== 'failed') throw new Error(JSON.stringify(refused));
-    expect(refused.reason).toContain('which is its limit');
-    expect(refused.retryable).toBe(true);
+    // Said in plain words for the model to pass on, and not tried again blind.
+    expect(refused.reason).toBe(
+      'every computer this installation runs is in use right now (1). Nothing ran. Tell the person, in plain words, that the computers are all busy and to try again in a little while, or carry on without the computer',
+    );
+    expect(refused.retryable).toBe(false);
     expect(provider.calls.create).toBe(1);
+    // The conversation tells the person too, once for the action.
+    await connector.execute(second, context(second));
+    if (!handle) throw new Error('Postgres is unavailable');
+    const notices = await handle.sql`select payload from event
+      where job_id = ${second.job_id} and payload->>'kind' = 'computer_limit'`;
+    expect(notices.map((row) => row.payload)).toEqual([
+      { kind: 'computer_limit', scope: 'installation' },
+    ]);
   }, 60_000);
 
   test('concurrent attempts cannot race past the limit', async () => {
@@ -835,7 +846,9 @@ withDb('a command in a remote sandbox', () => {
     const refused = outcomes.filter((one) => one.outcome === 'failed');
     expect(refused).toHaveLength(3);
     for (const one of refused)
-      expect(one.outcome === 'failed' && one.reason).toContain('which is its limit');
+      expect(one.outcome === 'failed' && one.reason).toContain(
+        'every computer this installation runs is in use',
+      );
     // Exactly two sandboxes were ever created, not five.
     expect(provider.calls.create).toBe(2);
   }, 60_000);
@@ -852,8 +865,16 @@ withDb('a command in a remote sandbox', () => {
     const again = await first.action({ command: 'printf two' }, await first.scope.attempt());
     const refused = await first.connector.execute(again, first.context(again));
     if (refused.outcome !== 'failed') throw new Error(JSON.stringify(refused));
-    expect(refused.reason).toContain('this connection already has');
-    expect(refused.retryable).toBe(true);
+    // Each person's computer is their own connection: the limit reached is theirs.
+    expect(refused.reason).toContain(
+      'the person already has 1 computer running for their other tasks, which is as many as they may have at once',
+    );
+    expect(refused.reason).toContain('their computer is busy with another task');
+    expect(refused.retryable).toBe(false);
+    if (!handle) throw new Error('Postgres is unavailable');
+    const [notice] = await handle.sql`select payload from event
+      where job_id = ${again.job_id} and payload->>'kind' = 'computer_limit'`;
+    expect(notice?.payload).toEqual({ kind: 'computer_limit', scope: 'person' });
 
     // The second's allowance is untouched by the first being full.
     expect((await second.run({ command: 'printf three' })).result.outcome).toBe('succeeded');
@@ -889,8 +910,10 @@ withDb('a command in a remote sandbox', () => {
     const again = await first.action({ command: 'printf three' }, await first.scope.attempt());
     const refused = await first.connector.execute(again, first.context(again));
     if (refused.outcome !== 'failed') throw new Error(JSON.stringify(refused));
-    expect(refused.reason).toContain('this installation already has');
-    expect(refused.retryable).toBe(true);
+    expect(refused.reason).toContain(
+      'every computer this installation runs is in use right now (2)',
+    );
+    expect(refused.retryable).toBe(false);
     expect(first.provider.calls.create).toBe(1);
   }, 60_000);
   /** A second conversation of the same agent, holding the agent's computer. */

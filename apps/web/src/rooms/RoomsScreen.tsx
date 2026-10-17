@@ -1,7 +1,8 @@
 /**
  * Rooms: shared spaces where several people talk to one agent. This is the
  * list of rooms the person is in, and where a new one is made. `#/rooms/{id}`
- * opens a room, and `#/rooms/{id}/{thread}` one of its threads.
+ * opens a room, `#/rooms/{id}/{thread}` one of its threads, and
+ * `#/rooms/{id}/activity` its activity log.
  */
 import { useState } from 'react';
 import { Icon } from '../design/icons.tsx';
@@ -9,6 +10,7 @@ import { Button, Count, Dialog, Field, Input } from '../design/primitives.tsx';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { ActivityLog } from './ActivityLog.tsx';
 import { roomsApi } from './api.ts';
 import { RoomView } from './RoomView.tsx';
 import './rooms.css';
@@ -19,6 +21,8 @@ const ROLE_WORDS = { owner: 'Owner', member: 'Member', guest: 'Guest' } as const
 export function RoomsRoute({ parts }: { parts: string[] }) {
   const [, roomId, threadId] = parts;
   if (!roomId) return <RoomsScreen />;
+  // Thread ids always carry their prefix, so this word is never one.
+  if (threadId === 'activity') return <ActivityLog key={roomId} roomId={roomId} />;
   return <RoomView key={roomId} roomId={roomId} threadId={threadId ?? null} />;
 }
 

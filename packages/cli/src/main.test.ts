@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LogsRefusal, logsArguments, runLogs } from './commands/logs.ts';
-import { main, parseArguments } from './main.ts';
+import { interruption, main, parseArguments } from './main.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
 describe('melete logs', () => {
@@ -36,20 +36,49 @@ describe('melete logs', () => {
   });
 
   const ATTEMPT = 'att_01m4k68ytkpakvwpf4ta2hgnyg';
-  const attempts = () => {
+  /** Every agent computer on the engine, with the sandbox project and installation each names. */
+  const COMPUTERS = [
+    'melete-sbx-desk\tUp 3 hours\tdesk\t"melete-1a2b3c4d"\t""',
+    // This installation's, made before MELETE_SANDBOX_PROJECT changed.
+    'melete-sbx-old-sbx_a\tExited (0) 1 day ago\tmelete-sbx-old-sbx_a\t"old"\t"melete"',
+    // Another installation's, under the same sandbox project.
+    'melete-sbx-melete-1a2b3c4d-sbx_b\tUp 1 hour\tmelete-sbx-melete-1a2b3c4d-sbx_b\t"melete-1a2b3c4d"\t"other"',
+    // Made before computers named their installation, under another sandbox project.
+    'melete-sbx-theirs-sbx_c\tUp 2 hours\tmelete-sbx-theirs-sbx_c\t"theirs"\t""',
+  ];
+  const attempts = (
+    env: Record<string, string> = { MELETE_SANDBOX_PROJECT: 'melete-1a2b3c4d' },
+  ) => {
     const deployDir = temporaryDeployDir();
-    writeEnv(deployDir, { MELETE_SANDBOX_PROJECT: 'melete-1a2b3c4d' });
+    writeEnv(deployDir, env);
     return testContext(deployDir, [
       [
         'docker ps --all --filter label=com.melete.project=melete --filter label=com.melete.attempt',
         { code: 0, stdout: `melete-${ATTEMPT}\tExited (0) 2 minutes ago\t${ATTEMPT}\n` },
       ],
       [
-        'docker ps --all --filter label=com.melete.sandbox --filter label=melete.project=melete-1a2b3c4d',
-        { code: 0, stdout: 'melete-sbx-desk\tUp 3 hours\tdesk\n' },
+        'docker ps --all --filter label=com.melete.sandbox --format ',
+        { code: 0, stdout: `${COMPUTERS.join('\n')}\n` },
       ],
     ]);
   };
+
+  test("--computers lists this installation's computers, those of an earlier sandbox project too, and no other's", async () => {
+    const context = attempts();
+    expect(await runLogs(context, ['--computers'])).toBe(0);
+    const printed = context.printed();
+    expect(printed).toContain('melete-sbx-desk\tUp 3 hours');
+    expect(printed).toContain('melete-sbx-old-sbx_a\tExited (0) 1 day ago');
+    expect(printed).not.toContain('sbx_b');
+    expect(printed).not.toContain('sbx_c');
+    expect(await runLogs(context, ['--computers', 'sbx_b'])).toBe(2);
+
+    // Without a sandbox project, those that name this installation are still its own.
+    const blank = attempts({ MELETE_SANDBOX_PROJECT: '' });
+    expect(await runLogs(blank, ['--computers'])).toBe(0);
+    expect(blank.printed()).toContain('melete-sbx-old-sbx_a');
+    expect(blank.printed()).not.toContain('melete-sbx-desk');
+  });
 
   test("--attempts lists this installation's attempt containers, found by its labels", async () => {
     const context = attempts();
@@ -66,7 +95,7 @@ describe('melete logs', () => {
     ]);
   });
 
-  test("--computers finds the agents' computers by the installation's sandbox label", async () => {
+  test("--computers finds a computer by its name among this installation's", async () => {
     const context = attempts();
     expect(await runLogs(context, ['--computers', 'desk', '-f'])).toBe(0);
     expect(context.attached).toEqual([['docker', 'logs', '--follow', 'melete-sbx-desk']]);
@@ -97,6 +126,38 @@ describe('the melete command', () => {
     const make = () => testContext(deployDir);
     expect(await main(['deploy-everything'], make)).toBe(2);
     expect(await main(['check', 'extra'], make)).toBe(2);
+  });
+
+  test('Ctrl-C says which command it stopped and what may have changed', () => {
+    const stopped = (command: string, signal: 'SIGINT' | 'SIGTERM', hint?: string) => {
+      const written: string[] = [];
+      const codes: number[] = [];
+      const handler = interruption(
+        command,
+        (text) => written.push(text),
+        (code) => codes.push(code),
+      );
+      if (hint !== undefined) handler.hint(hint);
+      handler.handle(signal);
+      return { text: written.join(''), codes };
+    };
+    // A restore's own hint, which it registers while its steps run.
+    const restore = stopped(
+      'restore',
+      'SIGINT',
+      'Running the same restore --yes again is safe: it starts over from the backup.',
+    );
+    expect(restore.codes).toEqual([130]);
+    expect(restore.text).toBe(
+      '\nCtrl-C stopped melete restore. Running the same restore --yes again is safe: it starts over from the backup.\n',
+    );
+    // Without one, the line still names the command and what may have changed.
+    const backup = stopped('backup', 'SIGTERM');
+    expect(backup.codes).toEqual([143]);
+    expect(backup.text).toMatch(/^\nSIGTERM stopped melete backup\. .+\n$/);
+    expect(stopped('status', 'SIGINT').text).toBe(
+      '\nCtrl-C stopped melete status. It changes nothing.\n',
+    );
   });
 
   test("a directory that is not a checkout's deploy directory is refused", async () => {

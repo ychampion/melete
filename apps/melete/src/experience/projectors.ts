@@ -23,7 +23,7 @@ import type { action, artifact, connection } from '../db/schema.ts';
 import { namesLocalNetwork } from '../devices/paths.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { ENDED_NOTE, OUTDATED_NOTE } from '../jobs/withdraw.ts';
-import { answerText, hideSecrets, isInternalRecord } from './answer-filter.ts';
+import { answerText, HIDDEN, hideSecrets, isInternalRecord } from './answer-filter.ts';
 
 export type ActionRow = Pick<
   typeof action.$inferSelect,
@@ -151,6 +151,7 @@ const LABELS: Record<string, string> = {
   'browser.fill': 'Filled in a field in its browser',
   'browser.select': 'Chose an option in its browser',
   'browser.submit': 'Submitted a form',
+  'browser.sign_in': 'Signed in to a site in its browser',
 };
 /** What an open that left the window where it was reads as. */
 export const NOT_OPENED = 'Tried to open a page in its computer; the window did not change';
@@ -189,6 +190,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'browser.select': ['Choosing an option', 'Chose an option'],
   'browser.read': ['Reading the page', 'Read the page'],
   'browser.submit': ['Submitting a form', 'Submitted a form'],
+  'browser.sign_in': ['Signing in', 'Signed in'],
   'artifact.publish': ['Publishing a file', 'Published a file'],
   'notes.write': ['Noting this for later', 'Noted this for later'],
   'skills.create': ['Saving a skill', 'Saved a skill'],
@@ -343,6 +345,18 @@ export function stepAsk(kind: string, payload: Record<string, unknown>): string 
     case 'browser.submit': {
       const host = hostOf(intent.url);
       return `Submit ${named(intent.name) ?? 'a form'}${host ? ` to ${host}` : ''}`;
+    }
+    case 'browser.sign_in': {
+      // Only what was bound when it was proposed: the site and a masked username.
+      const saved =
+        payload.saved && typeof payload.saved === 'object'
+          ? (payload.saved as Record<string, unknown>)
+          : {};
+      const host = hostOf(saved.origin);
+      const account = typeof saved.account === 'string' ? saved.account.slice(0, 40) : null;
+      return host
+        ? `Sign in to ${host}${account ? ` as ${account}` : ''} in ${AGENT} browser with your saved sign-in`
+        : `Sign in with your saved sign-in in ${AGENT} browser`;
     }
     case 'device.open_url':
       return page('on your computer', payload.url);
@@ -761,11 +775,73 @@ function connectionsFact(files: unknown) {
   ];
 }
 
-export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
+const MCP_TOOL = /^mcp_[^.]+\.(.+)$/;
+/**
+ * Fields of a request that name what a tool acted on, the most telling first.
+ * A body, a message or a file's contents is never one of them.
+ */
+const TARGET_KEYS = [
+  'title',
+  'name',
+  'subject',
+  'path',
+  'file_path',
+  'filename',
+  'repo',
+  'repository',
+  'project',
+  'channel',
+  'page',
+  'url',
+];
+const TARGET_LIMIT = 80;
+
+/** What a tool acted on, in a few words, or nothing when the request names nothing safe to show. */
+function toolTarget(payload: Record<string, unknown>): string | null {
+  for (const key of TARGET_KEYS) {
+    const value = payload[key];
+    if (typeof value !== 'string') continue;
+    const link = key === 'url' ? safeUrl(value) : undefined;
+    if (key === 'url' && !link) continue;
+    const raw = link ? new URL(link).host : value;
+    const text = plainText(raw.replace(/\s+/g, ' '), '', 400);
+    if (!text || text.includes(HIDDEN)) continue;
+    return text.length > TARGET_LIMIT ? `${text.slice(0, TARGET_LIMIT - 1).trimEnd()}…` : text;
+  }
+  return null;
+}
+
+/**
+ * A tool from an installed server, named by the tool and what it acted on:
+ * "Ran create issue in GitHub on “Fix the login page”".
+ */
+function serverToolLabel(
+  row: ActionRow,
+  connection: ConnectionRow | undefined,
+  target: boolean,
+): string | null {
+  const tool = MCP_TOOL.exec(row.kind)?.[1];
+  const words = tool ? plainText(tool.replace(/[_-]+/g, ' ').replace(/\s+/g, ' '), '', 60) : '';
+  if (!words || words.includes(HIDDEN)) return null;
+  const app = connection ? ` in ${plainText(connection.label, appName(connection), 60)}` : '';
+  const what = target ? toolTarget(object(row.canonicalPayload)) : null;
+  return `Ran ${words}${app}${what ? ` on “${what}”` : ''}`;
+}
+
+/**
+ * What a finished step did. `target: false` leaves out what a tool from an
+ * installed server acted on, for a line that names many steps at once.
+ */
+export function actionLabel(
+  row: ActionRow,
+  connection?: ConnectionRow,
+  options: { target?: boolean } = {},
+): string {
   if (openDidNotNavigate(row)) return NOT_OPENED;
   return (
     LABELS[row.kind] ??
     ACTION_VERBS[row.kind]?.[1] ??
+    serverToolLabel(row, connection, options.target ?? true) ??
     (connection
       ? `Used ${plainText(connection.label, appName(connection), 60)}`
       : 'Completed a step')
@@ -871,8 +947,12 @@ export function projectActionGroup(
 ): Extract<TrailStep, { type: 'action' }> | null {
   const succeeded = rows.filter(({ action }) => action.status === 'succeeded');
   if (!succeeded.length) return null;
+  // One line for the whole run: each change's target is on its own receipt, and
+  // naming every one here would grow the line with every change made.
   const labels = [
-    ...new Set(succeeded.map(({ action, connection }) => actionLabel(action, connection))),
+    ...new Set(
+      succeeded.map(({ action, connection }) => actionLabel(action, connection, { target: false })),
+    ),
   ];
   const sources = succeeded.flatMap(({ action, connection }) => actionSources(action, connection));
   return {

@@ -210,6 +210,12 @@ describe('labels', () => {
     expect(subjectLabel(null, 'work.employer')).toBe('Work employer');
     expect(subjectLabel(null, 'pref.tea:exception:2026-01-01:2026-01-02')).toBe('Tea');
   });
+  test('a detail filed under the person alone reads as about them', () => {
+    expect(subjectLabel(null, 'self.about.works_nurse')).toBe('About you');
+    expect(subjectLabel(null, 'self.about')).toBe('About you');
+    expect(subjectLabel(null, 'self')).toBe('About you');
+    expect(subjectLabel(null, 'self.city')).toBe('Your city');
+  });
   test('a relation and a name read as one person, never as a key', () => {
     // Labels a memory page showed in real use: "Sister's lena city", "Landlord's patel",
     // "Pref diet shellfish allergy".
@@ -217,6 +223,12 @@ describe('labels', () => {
     expect(subjectLabel(null, 'person.landlord.patel')).toBe('Landlord Patel');
     expect(subjectLabel(null, 'person.sister.city')).toBe("Sister's city");
     expect(subjectLabel(null, 'pref.diet.shellfish_allergy')).toBe('Diet shellfish allergy');
+    // Someone's relative's detail is the relative's: "Sam's brother's city".
+    expect(subjectLabel(null, 'person.sam.brother.city')).toBe("Sam's brother's city");
+    expect(subjectLabel(null, 'person.friend.sam.brother.city')).toBe(
+      "Friend Sam's brother's city",
+    );
+    expect(subjectLabel(null, 'person.sam.mother')).toBe("Sam's mother");
   });
   test('a detail about the person themself reads as theirs, never as "the owner"', () => {
     expect(subjectLabel('contact.owner.availability', 'contact.owner.availability')).toBe(
@@ -234,6 +246,25 @@ describe('labels', () => {
     // Someone else who owns something stays as written.
     expect(beliefLabel(null, 'person.cafe', 'The owner of the café is Ana')).toBe(
       'The owner of the café is Ana',
+    );
+  });
+  test('"the owner" outside a detail filed under the person is someone else, and stays as written', () => {
+    expect(beliefLabel(null, 'home.rent', 'The owner said the rent goes up')).toBe(
+      'The owner said the rent goes up',
+    );
+    expect(beliefLabel(null, 'home.flat', "The owner's dog barks at night")).toBe(
+      "The owner's dog barks at night",
+    );
+    expect(
+      beliefLabel(null, 'person.owner.home', 'The owner of my flat said the rent goes up'),
+    ).toBe('The owner of my flat said the rent goes up');
+    // Filed under the person themself, "the owner" is them, as older details say.
+    expect(beliefLabel(null, 'self.home', 'The owner lives in a flat in Lisbon')).toBe(
+      'Lives in a flat in Lisbon',
+    );
+    // "The user" is the person wherever it is filed.
+    expect(beliefLabel(null, 'home.rent', 'The user said the rent goes up')).toBe(
+      'Said the rent goes up',
     );
   });
   test("a belief's own line is its sentence, and its subject when the detail is a bare value", () => {

@@ -52,6 +52,7 @@ import type {
   Run,
 } from '../experience/types.ts';
 import { isWaiting, waitingOn } from '../experience/waiting.ts';
+import { roomsApi } from '../rooms/api.ts';
 import { RoomHandoffs } from '../rooms/Handoffs.tsx';
 import { href, navigate } from '../router.ts';
 import { InProgress } from '../runs/RunCards.tsx';
@@ -62,6 +63,7 @@ import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
 import { FirstSteps } from './FirstSteps.tsx';
 import { NeedsYouSection } from './NeedsYouSection.tsx';
+import { StarterList, starterSelection } from './Starters.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
 import { WhatImOnSection } from './WhatImOnSection.tsx';
 
@@ -128,7 +130,7 @@ export function greetingWith(greeting: string, name: string): string {
 
 /** Until the person gives a name, the greeting offers to learn it, once, in place. */
 function AskName({ onSaved }: { onSaved: () => void }) {
-  const { profile, refreshProfile } = useApp();
+  const { profile, refreshProfile, member } = useApp();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -147,22 +149,29 @@ function AskName({ onSaved }: { onSaved: () => void }) {
         const name = draft.trim();
         if (!name || busy) return;
         setBusy(true);
-        void adapter
-          .saveProfile({ name, time_zone: profile.time_zone, day_hours: profile.day_hours })
-          .then((result) => {
-            setBusy(false);
-            if (result.data === null) {
-              toast({
-                kind: 'err',
-                title: 'Couldn’t save your name',
-                sub: result.error ?? result.unavailable ?? '',
-              });
-              return;
-            }
-            setOpen(false);
-            refreshProfile();
-            onSaved();
-          });
+        // A member's name is their account's own; the space's profile is its owner's.
+        void (
+          member
+            ? roomsApi.rename(name)
+            : adapter.saveProfile({
+                name,
+                time_zone: profile.time_zone,
+                day_hours: profile.day_hours,
+              })
+        ).then((result) => {
+          setBusy(false);
+          if (result.data === null) {
+            toast({
+              kind: 'err',
+              title: 'Couldn’t save your name',
+              sub: result.error ?? result.unavailable ?? '',
+            });
+            return;
+          }
+          setOpen(false);
+          refreshProfile();
+          onSaved();
+        });
       }}
     >
       <Input
@@ -1053,8 +1062,10 @@ function DayColumn({ now }: { now: number }) {
 /* ---------- the screen ---------- */
 
 export function HomeScreen() {
-  const { agents, profile, refreshConversations, capabilities } = useApp();
+  const { agents, profile, refreshConversations, capabilities, member } = useApp();
   const home = useLoad(() => adapter.home(), []);
+  const starters = useLoad(() => adapter.starters(), []);
+  const [startersHidden, setStartersHidden] = useState(false);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
   const [text, setText] = useState('');
@@ -1135,19 +1146,34 @@ export function HomeScreen() {
     map?.currency ?? 'GBP',
   );
   const suggestions = suggestionsOf(map, now);
-  const prompts = promptChips(Array.isArray(home.data?.upcoming)).slice(
-    0,
-    Math.max(0, 3 - suggestions.length),
-  );
-  // A chip's words go into the box with the cursor after them, ready to finish.
-  const begin = (words: string) => {
+  const offered = !startersHidden && starters.data?.show ? starters.data.starters : [];
+  // While the starters are offered they stand in for the general chips.
+  const prompts = offered.length
+    ? []
+    : promptChips(Array.isArray(home.data?.upcoming)).slice(0, Math.max(0, 3 - suggestions.length));
+  // A chip's words go into the box with the cursor after them, ready to
+  // finish; a starter's blank is selected, so typing replaces it.
+  const begin = (words: string, select = { start: words.length, end: words.length }) => {
     setText(words);
     requestAnimationFrame(() => {
       const box = composeRef.current?.querySelector('textarea');
       if (!box) return;
       box.focus();
-      box.setSelectionRange(words.length, words.length);
+      box.setSelectionRange(select.start, select.end);
     });
+  };
+  const putStartersAway = async () => {
+    setStartersHidden(true);
+    composeRef.current?.querySelector('textarea')?.focus();
+    const result = await adapter.dismissStarters();
+    if (result.data === null) {
+      setStartersHidden(false);
+      toast({
+        kind: 'err',
+        title: 'Couldn’t hide the starters',
+        sub: result.error ?? result.unavailable ?? '',
+      });
+    }
   };
   const data = home.data;
 
@@ -1161,6 +1187,7 @@ export function HomeScreen() {
               {data ? greetingWith(data.greeting, givenName(profile)) : ' '}
             </h1>
             {line ? <p className="brief-line voice">{line}</p> : null}
+            {data?.routines_back ? <p className="brief-line">{data.routines_back}</p> : null}
             {data ? <AskName onSaved={home.reload} /> : null}
           </header>
           {home.error ? (
@@ -1201,6 +1228,12 @@ export function HomeScreen() {
                 </button>
               ))}
             </div>
+            <StarterList
+              starters={offered}
+              disabled={busy}
+              onPick={(starter) => begin(starter.text, starterSelection(starter))}
+              onDismiss={() => void putStartersAway()}
+            />
             {agents.some((agent) => !agent.is_default) ? (
               <nav className="home-agents" aria-label="Your agents">
                 <span className="home-agents-label">Or start with</span>
@@ -1220,7 +1253,8 @@ export function HomeScreen() {
               </nav>
             ) : null}
           </div>
-          <FirstSteps calendar={data ? Array.isArray(data.upcoming) : null} />
+          {/* The space's apps and calendar are its owner's to connect. */}
+          <FirstSteps calendar={member ? null : data ? Array.isArray(data.upcoming) : null} />
           <PushOffer />
           <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <NeedsYouSection now={now} onStart={(text, attached) => start(text, attached)} />
@@ -1233,7 +1267,7 @@ export function HomeScreen() {
           <InProgress now={now} />
           <InMotion now={now} />
         </div>
-        <DayColumn now={now} />
+        {member ? null : <DayColumn now={now} />}
       </div>
     </Shell>
   );

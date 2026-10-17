@@ -29,12 +29,12 @@ import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
-import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
+import { createModelGateway, type GatewayOptions, gatewayLog } from '../gateway/index.ts';
 import {
   type ModelSettingsService,
   type ServiceModel,
   type ServiceModelSource,
-  serviceModelSource,
+  sideCallSource,
 } from '../gateway/model-settings.ts';
 import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
 import {
@@ -368,6 +368,7 @@ export async function openVoiceCompanion(options: CompanionGatewayOptions) {
     timeoutMs: COMPANION_LIMITS.timeout_ms,
     maxRequestBytes: 64 * 1024,
     maxResponseBytes: 64 * 1024,
+    onError: gatewayLog('voice'),
     async authenticate(token) {
       const call = tokens.get(token);
       if (!call) throw new GatewayError(401, 'voice_principal_denied');
@@ -483,7 +484,7 @@ export function configuredVoiceCompanion(
     model: env.MELETE_DEFAULT_MODEL,
     providers: configuredProviders(env, () => {}, connected.signIn),
     // An aside is short and must come back quickly: the fast model when there is one.
-    source: serviceModelSource({ env, settings: connected.settings, fast: routing.fast }),
+    source: sideCallSource('voice', { env, settings: connected.settings, routing }),
     fake,
     privacy,
     spending: connected.spending,

@@ -15,12 +15,13 @@ export class BrowserWorkerClient {
     readonly url: string,
     private readonly token: string,
   ) {}
-  async request<T>(path: string, body?: unknown): Promise<T> {
+  /** `timeoutMs` is longer only for a step the worker bounds itself, such as a sign-in. */
+  async request<T>(path: string, body?: unknown, timeoutMs = 30_000): Promise<T> {
     const response = await fetch(new URL(path, this.url), {
       method: body === undefined ? 'GET' : 'POST',
       headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await response.text();
     let value: unknown;

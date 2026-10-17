@@ -100,6 +100,7 @@ type Overrides = {
   stopJobs?: (jobIds: readonly string[]) => Promise<void>;
   /** Null runs the removal with no blob store at all. */
   blobs?: BlobStore | null;
+  withdrawAccess?: (spaceId: string) => Promise<void>;
 };
 
 /** One blob store for every removal here, as an installation has. */
@@ -123,6 +124,7 @@ async function service(overrides: Overrides = {}) {
     ...(overrides.runtimeHomes ? { runtimeHomes: overrides.runtimeHomes } : {}),
     ...(overrides.onPhase ? { onPhase: overrides.onPhase } : {}),
     ...(overrides.connectors ? { connectors: overrides.connectors } : {}),
+    ...(overrides.withdrawAccess ? { withdrawAccess: overrides.withdrawAccess } : {}),
     ...(overrides.blobs === null ? {} : { blobs: overrides.blobs ?? blobs }),
   });
 }
@@ -371,6 +373,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   sandbox_process: 'operational',
   sandbox_session: 'operational',
   egress_record: 'operational',
+  // What each file saved in the space holds, counted against who saved it.
+  stored_file: 'operational',
   // Where each account's changes were last read, and what was kept about its calendar.
   source_cursor: 'operational',
   subject_state: 'operational',
@@ -388,6 +392,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   sandbox_work_file: 'operational',
   sandbox_work_read: 'operational',
   sandbox_work_removal: 'operational',
+  saved_sign_in: 'operational',
+  saved_sign_in_use: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
   privacy_settings: 'operational',
@@ -400,6 +406,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   room_policy: 'operational',
   room_message: 'operational',
   room_thread: 'operational',
+  space_policy: 'operational',
   // After the jobs and actions that `restrict` them.
   agent: 'principals',
   connection: 'principals',
@@ -605,6 +612,27 @@ describe.if(handle !== null)('removing a space', () => {
     expect(await countOf(sql, 'space_membership', sql`space_id = ${seeded.spaceId}`)).toBe(0);
   });
 
+  test('removal_withdraws_provider_access_first — while the sealed tokens are still there, and a failure there stops nothing', async () => {
+    const seeded = await seed('shared');
+    const seen: Array<{ spaceId: string; connections: number; secrets: number }> = [];
+    const { finished } = await removeCompletely(seeded, {
+      withdrawAccess: async (spaceId) => {
+        seen.push({
+          spaceId,
+          connections: await countOf(sql, 'connection', sql`space_id = ${spaceId}`),
+          secrets: await countOf(sql, 'secret', sql`space_id = ${spaceId}`),
+        });
+        throw new Error('the provider did not answer');
+      },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.spaceId).toBe(seeded.spaceId);
+    expect(seen[0]?.connections).toBeGreaterThan(0);
+    expect(seen[0]?.secrets).toBeGreaterThan(0);
+    expect(outcome(finished)).toBe('complete');
+    expect(await countOf(sql, 'secret', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+  });
+
   test('removal_deletes_survivor_rows — the four that outlive a job go, content and all', async () => {
     const seeded = await seed('shared');
     // Each is checked by its own key, never by job_id: a row whose job_id was
@@ -720,6 +748,15 @@ describe.if(handle !== null)('removing a space', () => {
     // The time that process kept the computer running after its turn ended.
     await sql`insert into sandbox_awake_day (space_id, day, seconds)
       values (${seeded.spaceId}, current_date, 600)`;
+    // A sign-in saved for the agent's browser, and the record of one use of it.
+    await sql`insert into saved_sign_in (id, space_id, principal_id, origin, label, username,
+        secret_ref, key_id)
+      values (${`ssi_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId},
+        'https://example.com', 'Example', 'jo', ${`sec_${seeded.spaceId}`}, 'k1:0')`;
+    await sql`insert into saved_sign_in_use (id, sign_in_id, space_id, principal_id, job_id,
+        origin, outcome)
+      values (${`ssu_${seeded.spaceId}`}, ${`ssi_${seeded.spaceId}`}, ${seeded.spaceId},
+        ${seeded.principalId}, ${seeded.jobId}, 'https://example.com', 'signed_in')`;
     // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
     const conversation = `job_privacy_${seeded.spaceId}`;
     await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;
@@ -733,6 +770,9 @@ describe.if(handle !== null)('removing a space', () => {
     await sql`insert into attachment (id, space_id, principal_id, name, media_type, kind, size, blob_key)
       values (${`file_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, 'notes.txt',
         'text/plain', 'text', 5, ${`sha256/${'0'.repeat(64)}`})`;
+    // What a file saved in the space's Files holds.
+    await sql`insert into stored_file (space_id, place, principal_id, bytes)
+      values (${seeded.spaceId}, 'files:notes.md', ${seeded.principalId}, 5)`;
     // Where a connected calendar was last read, and one occurrence kept from it.
     await sql`insert into source_cursor (connection_id, stream, space_id, cursor)
       values (${seeded.connectionId}, 'calendar', ${seeded.spaceId}, '{}'::jsonb)`;

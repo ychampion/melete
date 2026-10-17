@@ -1,0 +1,286 @@
+/* Settings › Usage: your allowance, the month by day, where it went, and recent work. */
+
+.your-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 720px;
+  min-width: 0;
+}
+.yu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  min-width: 0;
+}
+.yu-heading {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.yu-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.yu-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--sand-ink);
+  background: var(--sand);
+}
+
+/* ---------- allowance ---------- */
+
+.yu-caps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.yu-cap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  --meter: var(--primary);
+}
+.yu-cap[data-tone="near"] {
+  --meter: var(--rating);
+}
+.yu-cap[data-tone="reached"] {
+  --meter: var(--sand-ink);
+}
+.yu-cap-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.yu-cap-label {
+  font-size: 13px;
+  color: var(--secondary);
+}
+.yu-cap-figure {
+  font-size: 13px;
+  color: var(--muted);
+}
+.yu-cap-figure strong {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--heading);
+  font-variant-numeric: tabular-nums;
+}
+.yu-meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  overflow: hidden;
+}
+.yu-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--meter);
+}
+.yu-cap-reset {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- the month by day ---------- */
+
+.yu-chart {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.yu-chart svg {
+  display: block;
+  width: 100%;
+  height: 96px;
+}
+.yu-chart-top,
+.yu-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.yu-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.yu-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+.yu-swatch[data-kind="chats"],
+.yu-bar-chats {
+  background: var(--primary);
+  fill: var(--primary);
+}
+.yu-swatch[data-kind="background"],
+.yu-bar-background {
+  background: var(--blue-line);
+  fill: var(--blue-line);
+}
+.yu-bar-none {
+  fill: var(--control);
+}
+.yu-bar-later {
+  fill: var(--line);
+}
+.yu-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ---------- where it went ---------- */
+
+.yu-kinds,
+.yu-runs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.yu-kinds li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.yu-kinds li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.yu-kind-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.yu-kind-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.yu-kind-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+.yu-kind-value {
+  font-size: 14px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- recent work ---------- */
+
+.yu-run {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 6px;
+  border-top: 1px solid var(--line);
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+.yu-runs li:first-child .yu-run {
+  border-top-color: transparent;
+}
+a.yu-run:hover {
+  background: var(--row-hover);
+  text-decoration: none;
+}
+a.yu-run:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.yu-run-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.yu-run-title {
+  font-size: 14px;
+  color: var(--heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.yu-run-when {
+  font-size: 12px;
+  color: var(--muted);
+}
+.yu-run-cost {
+  min-width: 56px;
+  text-align: right;
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 480px) {
+  .yu-section {
+    padding: 14px 12px;
+  }
+  .yu-run {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .yu-run-text {
+    flex-basis: 100%;
+  }
+  .yu-run-cost {
+    margin-left: auto;
+  }
+}
+
+/* ---------- the limit banner in chat ---------- */
+
+.cap-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--sand-ink);
+  background: var(--sand);
+  border: 1px solid var(--line-strong);
+}
+.cap-banner > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.cap-banner a {
+  color: inherit;
+  text-decoration: underline;
+  white-space: nowrap;
+}

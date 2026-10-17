@@ -33,6 +33,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, readdir, rename, rmdir } from 'node:fs/promises';
+import { ItemFailures } from '../ops/item-failures.ts';
 import { segmentsFor } from '../paths.ts';
 import { TRASH_DIRECTORY } from '../runtime/workspace-fs.ts';
 import {
@@ -592,40 +593,59 @@ async function restoreFromTrashNow(place: TrashPlace, id: string): Promise<Resto
 /**
  * Remove every trash folder kept longer than `days`, in the work root and in
  * every space. Returns how many went. Anything that is not a trash folder is
- * left alone.
+ * left alone. A folder that cannot be removed is left for the next sweep and
+ * never stops the rest: every other folder, in that space and in every space
+ * after it, is still swept. A space that keeps failing is said in the log a
+ * few times, not every hour, and is listed in the operator's health detail.
  */
 export async function sweepTrash(
   roots: { workRoot: string; spacesRoot: string },
   days: number,
   now = Date.now(),
+  // A sweep run once on its own: kept out of the health detail, which reads the loop's.
+  failures = trashSweepFailures(undefined, false),
 ): Promise<number> {
   let swept = 0;
-  const sweepJobs = async (base: string, trash: string[]) => {
+  // Answers the first thing in this trash that could not be removed, if any.
+  const sweepJobs = async (base: string, trash: string[]): Promise<unknown> => {
+    let first: unknown;
     let held: HeldDirectory;
     try {
       held = await holdBeneath(base, trash);
     } catch (error) {
-      if (codeOf(error) === 'ENOENT') return;
+      if (codeOf(error) === 'ENOENT') return undefined;
       throw error;
     }
     try {
       for (const job of await readdir(held.self)) {
         if (!/^job_[A-Za-z0-9]+$/.test(job) && job !== SPACE_FILES_TRASH) continue;
-        const folder = await holdWithin(held, job);
+        let folder: HeldDirectory;
+        try {
+          folder = await holdWithin(held, job);
+        } catch (error) {
+          first ??= error;
+          continue;
+        }
         try {
           for (const id of await readdir(folder.self)) {
             if (!TRASH_ID.test(id)) continue;
-            // Kept until the time its receipt promised, whatever the setting is now.
-            const manifest = await readManifest(
-              { area: 'work', base, origin: [], trash: [...trash, job] },
-              id,
-            ).catch(() => null);
-            const until = manifest ? Date.parse(manifest.expires_at) : madeAt(id) + days * DAY_MS;
-            if (now < until) continue;
-            await removeIn(folder, id);
-            swept += 1;
+            try {
+              // Kept until the time its receipt promised, whatever the setting is now.
+              const manifest = await readManifest(
+                { area: 'work', base, origin: [], trash: [...trash, job] },
+                id,
+              ).catch(() => null);
+              const until = manifest ? Date.parse(manifest.expires_at) : madeAt(id) + days * DAY_MS;
+              if (now < until) continue;
+              await removeIn(folder, id);
+              swept += 1;
+            } catch (error) {
+              first ??= error;
+            }
           }
           if (!(await readdir(folder.self)).length) await rmdir(held.at(job)).catch(() => {});
+        } catch (error) {
+          first ??= error;
         } finally {
           await folder.close();
         }
@@ -633,8 +653,18 @@ export async function sweepTrash(
     } finally {
       await held.close();
     }
+    return first;
   };
-  await sweepJobs(roots.workRoot, [TRASH_DIRECTORY]);
+  const sweepOne = async (id: string, base: string, trash: string[]) => {
+    try {
+      const failed = await sweepJobs(base, trash);
+      if (failed === undefined) failures.succeeded(id);
+      else failures.failed(id, failed);
+    } catch (error) {
+      failures.failed(id, error);
+    }
+  };
+  await sweepOne('work folder', roots.workRoot, [TRASH_DIRECTORY]);
   let spaces: string[] = [];
   try {
     spaces = await readdir(roots.spacesRoot);
@@ -643,8 +673,21 @@ export async function sweepTrash(
   }
   for (const space of spaces)
     if (/^sp_[A-Za-z0-9]+$/.test(space))
-      await sweepJobs(roots.spacesRoot, [space, TRASH_DIRECTORY]);
+      await sweepOne(space, roots.spacesRoot, [space, TRASH_DIRECTORY]);
   return swept;
+}
+
+/**
+ * A space whose trash failed is tried again on the very next sweep, since what
+ * it holds was promised to go; only the log and the health detail are spared.
+ */
+function trashSweepFailures(say?: (line: string) => void, reported = true) {
+  return new ItemFailures('trash sweep', {
+    firstMs: 60 * 60_000,
+    maxMs: 60 * 60_000,
+    reported,
+    ...(say ? { say } : {}),
+  });
 }
 
 /** Sweep the trash now and every hour; the returned function stops it. */
@@ -654,9 +697,10 @@ export function startTrashSweep(
   leads: () => boolean | Promise<boolean> = () => true,
   say: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
 ): () => void {
+  const failures = trashSweepFailures(say);
   const sweep = () =>
     void Promise.resolve(leads())
-      .then((leading) => (leading ? sweepTrash(roots, days) : undefined))
+      .then((leading) => (leading ? sweepTrash(roots, days, Date.now(), failures) : undefined))
       .catch((error: unknown) =>
         say(`trash sweep failed: ${String((error as Error)?.message ?? error)}`),
       );

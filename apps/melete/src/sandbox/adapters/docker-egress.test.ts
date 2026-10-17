@@ -7,15 +7,18 @@
  */
 import { afterEach, expect, test } from 'bun:test';
 import { connect, createServer, type Server, type Socket } from 'node:net';
+import { NO_PRIVATE_HOSTS, onNetworks, parsePrivateHosts } from '../../connectors/private-hosts.ts';
 import type { ResolvedAddress } from '../../connectors/web.ts';
 import type { EgressRecordClose, EgressRecordOpen } from '../../egress/records.ts';
 import { type EgressAttribution, MAX_RECEIPT_HOSTS, OTHER_HOSTS } from '../../egress/tokens.ts';
 import {
   clientAddress,
   hostListed,
+  OWN_NETWORKS_MS,
   proxyToken,
   SandboxEgressGuard,
   type SandboxEgressOptions,
+  serviceNetworks,
 } from './docker-egress.ts';
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -52,6 +55,8 @@ async function guarded(
       closed: (id, totals) => closed.push({ id, ...totals }),
       counted: (id, count) => counted.set(id, count),
     },
+    // The machine running the test sits on networks of its own; a test names the ones it means.
+    ownNetworks: () => [],
     ...extra,
     resolve: async (host) => {
       const found = names[host];
@@ -319,6 +324,173 @@ test('a host list that cannot be read lets nothing through', async () => {
   guard.allow('127.0.0.1', 'melete-sbx-a', { mode: 'connected_hosts_only' });
   const answer = await ask(port, connectTo('github.com:443'));
   expect([answer.status, answer.reason]).toEqual([403, 'host_not_connected']);
+  expect(dialled).toEqual([]);
+});
+
+test('a range the operator opened is reached like a public address, and only that range', async () => {
+  const listed = parsePrivateHosts('*.corp.internal, 10.20.0.0/16');
+  const { guard, port, dialled } = await guarded(
+    {
+      'git.corp.internal': [{ address: '10.20.0.5', family: 4 }],
+      // A listed name that answers outside the listed range reaches nothing.
+      'rebound.corp.internal': [{ address: '10.30.0.5', family: 4 }],
+      'mixed.corp.internal': [
+        { address: '10.20.0.5', family: 4 },
+        { address: '127.0.0.1', family: 4 },
+      ],
+      'metadata.corp.internal': [{ address: '169.254.169.254', family: 4 }],
+      'example.com': PUBLIC,
+    },
+    undefined,
+    { privateHosts: () => listed, connectedHosts: () => ['git.corp.internal'] },
+  );
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  for (const [target, status, reason] of [
+    ['git.corp.internal:443', 200, null],
+    ['10.20.3.3:443', 200, null],
+    ['example.com:443', 200, null],
+    ['git.corp.internal:80', 403, 'destination_denied'],
+    ['rebound.corp.internal:443', 403, 'address_denied'],
+    ['mixed.corp.internal:443', 403, 'address_denied'],
+    ['metadata.corp.internal:443', 403, 'address_denied'],
+    ['10.30.0.5:443', 403, 'address_denied'],
+    ['127.0.0.1:443', 403, 'address_denied'],
+  ] as const) {
+    const answer = await ask(port, connectTo(target));
+    expect([target, answer.status, answer.reason]).toEqual([target, status, reason]);
+  }
+  expect(dialled.map((each) => each.address)).toEqual(['10.20.0.5', '10.20.3.3', '93.184.215.14']);
+  // A computer held to its connected hosts reaches the internal one it lists.
+  dialled.length = 0;
+  guard.allow('127.0.0.1', 'melete-sbx-a', { mode: 'connected_hosts_only' });
+  expect((await ask(port, connectTo('git.corp.internal:443'))).status).toBe(200);
+  expect((await ask(port, connectTo('10.20.3.3:443'))).reason).toBe('host_not_connected');
+  expect(dialled.map((each) => each.address)).toEqual(['10.20.0.5']);
+});
+
+test("one person's computer never reaches another's, nor anything behind the service, whatever range is listed", async () => {
+  // The operator opened the whole of two private blocks for their team's hosts.
+  const listed = parsePrivateHosts('10.0.0.0/8, 172.16.0.0/12');
+  const { guard, port, dialled, opened } = await guarded(
+    {
+      'git.corp.internal': [{ address: '10.20.0.5', family: 4 }],
+      // Another computer by its container name, as the engine's DNS answers the service.
+      'melete-sbx-live-b': [{ address: '10.40.1.20', family: 4 }],
+      // The database on the deployment's own network.
+      postgres: [{ address: '172.18.0.4', family: 4 }],
+      'mixed.corp.internal': [
+        { address: '10.20.0.5', family: 4 },
+        { address: '10.40.1.20', family: 4 },
+      ],
+      'example.com': PUBLIC,
+    },
+    undefined,
+    {
+      privateHosts: () => listed,
+      // Two networks the service sits on: computer B's own, and the deployment's.
+      ownNetworks: () => ['10.40.1.18/28', '172.18.0.2/16'],
+    },
+  );
+  guard.allow('127.0.0.1', 'melete-sbx-live-a', { session: 'sbx_a', space: 'sp_a' });
+  // A third computer, let out through this guard on a network it does not list.
+  guard.allow('10.50.0.2', 'melete-sbx-live-c', { session: 'sbx_c', space: 'sp_c' });
+  for (const [target, status, reason] of [
+    ['10.40.1.20:443', 403, 'address_denied'],
+    ['10.40.1.29:443', 403, 'address_denied'],
+    ['melete-sbx-live-b:443', 403, 'address_denied'],
+    ['postgres:443', 403, 'address_denied'],
+    ['172.18.0.1:443', 403, 'address_denied'],
+    ['mixed.corp.internal:443', 403, 'address_denied'],
+    ['10.50.0.2:443', 403, 'address_denied'],
+    ['[::ffff:10.50.0.2]:443', 403, 'address_denied'],
+    ['git.corp.internal:443', 200, null],
+    ['10.20.3.3:443', 200, null],
+    ['example.com:443', 200, null],
+  ] as const) {
+    const answer = await ask(port, connectTo(target));
+    expect([target, answer.status, answer.reason]).toEqual([target, status, reason]);
+  }
+  expect(dialled.map((each) => each.address)).toEqual(['10.20.0.5', '10.20.3.3', '93.184.215.14']);
+  expect(
+    opened.filter((record) => record.verdict === 'refused').map((record) => record.host),
+  ).toEqual([
+    '10.40.1.20',
+    '10.40.1.29',
+    'melete-sbx-live-b',
+    'postgres',
+    '172.18.0.1',
+    'mixed.corp.internal',
+    '10.50.0.2',
+    '::ffff:10.50.0.2',
+  ]);
+});
+
+test("by default the service's own networks, loopback and the network pool stay out, even when listed", async () => {
+  const listed = parsePrivateHosts('127.0.0.0/8, 10.0.0.0/8');
+  const was = process.env.MELETE_NETWORK_POOL;
+  delete process.env.MELETE_NETWORK_POOL;
+  cleanups.push(() => {
+    if (was === undefined) delete process.env.MELETE_NETWORK_POOL;
+    else process.env.MELETE_NETWORK_POOL = was;
+  });
+  const own = serviceNetworks();
+  expect(own).toContain('127.0.0.1/8');
+  expect(own).toContain('10.215.0.0/16');
+  const { guard, port, dialled } = await guarded({}, undefined, {
+    privateHosts: () => listed,
+    ownNetworks: undefined,
+  });
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  for (const target of ['127.0.0.1:443', '10.215.7.3:443'])
+    expect((await ask(port, connectTo(target))).reason).toBe('address_denied');
+  expect(dialled).toEqual([]);
+  // A listed address on none of them is still reached.
+  if (!onNetworks('10.20.0.5', own))
+    expect((await ask(port, connectTo('10.20.0.5:443'))).status).toBe(200);
+});
+
+test("the service's networks are read again when a new computer is let out, not at every connection", async () => {
+  const listed = parsePrivateHosts('10.0.0.0/8');
+  let clock = 1_000_000;
+  let reads = 0;
+  const networks = ['172.18.0.2/16'];
+  const { guard, port, dialled } = await guarded({ 'example.com': PUBLIC }, undefined, {
+    privateHosts: () => listed,
+    now: () => clock,
+    ownNetworks: () => {
+      reads += 1;
+      return [...networks];
+    },
+  });
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  for (let each = 0; each < 5; each += 1)
+    expect((await ask(port, connectTo('example.com:443'))).status).toBe(200);
+  expect(reads).toBe(1);
+  // The service joins computer B's network, then lets B out: its network is refused at once.
+  networks.push('10.40.1.18/28');
+  guard.allow('10.40.1.20', 'melete-sbx-b');
+  expect((await ask(port, connectTo('10.40.1.29:443'))).reason).toBe('address_denied');
+  expect(reads).toBe(2);
+  // Another command in a computer already let out reads nothing again.
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  expect((await ask(port, connectTo('10.40.1.30:443'))).reason).toBe('address_denied');
+  expect(reads).toBe(2);
+  // A network joined some other way is refused once the networks are read again.
+  networks.push('10.60.0.2/24');
+  clock += OWN_NETWORKS_MS;
+  expect((await ask(port, connectTo('10.60.0.9:443'))).reason).toBe('address_denied');
+  expect(reads).toBe(3);
+  expect(dialled.map((each) => each.address)).toEqual(Array(5).fill('93.184.215.14'));
+});
+
+test('with no list, an internal address stays out of reach', async () => {
+  const { guard, port, dialled } = await guarded(
+    { 'git.corp.internal': [{ address: '10.20.0.5', family: 4 }] },
+    undefined,
+    { privateHosts: () => NO_PRIVATE_HOSTS },
+  );
+  guard.allow('127.0.0.1', 'melete-sbx-a');
+  expect((await ask(port, connectTo('git.corp.internal:443'))).reason).toBe('address_denied');
   expect(dialled).toEqual([]);
 });
 

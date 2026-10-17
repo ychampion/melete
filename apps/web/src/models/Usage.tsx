@@ -7,7 +7,13 @@ import { useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { useLoad } from '../experience/hooks.ts';
 import { modelDisplayName } from '../experience/model-name.ts';
+import { href, useRoute } from '../router.ts';
 import { type Usage, usage } from './api.ts';
+import { type CapBanner, capBanner, dayResetLine } from './your-usage.ts';
+
+export { dayResetLine };
+
+import './your-usage.css';
 
 const dollars = (value: number) =>
   value < 0.01 && value > 0 ? 'under $0.01' : `$${value.toFixed(2)}`;
@@ -19,22 +25,6 @@ const tokens = (value: number) =>
       : `${value} tokens`;
 const dayOf = (iso: string) =>
   new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
-
-/**
- * When the day's count starts again, in the reader's own time: "today at
- * 5:00 PM", "tomorrow at 5:30 AM", or a date if further off. The service's day
- * ends at midnight UTC, which is rarely midnight where the reader is.
- */
-export function dayResetLine(iso: string, now = new Date(), timeZone?: string) {
-  const at = new Date(iso);
-  const zone = timeZone ? { timeZone } : {};
-  const dateKey = (date: Date) => date.toLocaleDateString('en-CA', zone);
-  const time = at.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...zone });
-  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  if (dateKey(at) === dateKey(now)) return `today at ${time}`;
-  if (dateKey(at) === dateKey(tomorrow)) return `tomorrow at ${time}`;
-  return `on ${at.toLocaleDateString('en-US', { month: 'long', day: 'numeric', ...zone })} at ${time}`;
-}
 
 /**
  * A model as a person reads it on the usage list: "Kimi K3", not its provider
@@ -123,12 +113,16 @@ function dismissedKey(): string | null {
   }
 }
 
-/** A slim line above the page while a limit is close or reached; a warning can be put away. */
+/**
+ * A slim line above the page while a limit is close or reached; a warning can
+ * be put away. A chat shows its own, beside the composer, so not this one.
+ */
 export function UsageNotice() {
+  const route = useRoute();
   const loaded = useLoad(() => usage(), []);
   const [hidden, setHidden] = useState<string | null>(dismissedKey);
   const notice = loaded.data?.notice;
-  if (!notice) return null;
+  if (!notice || route.parts[0] === 'chat') return null;
   const id = `${notice.level}:${notice.period}:${notice.resets_at}`;
   if (notice.level === 'warning' && hidden === id) return null;
   return (
@@ -152,6 +146,31 @@ export function UsageNotice() {
           <Icon name="x" size={14} />
         </button>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The calm line above a chat's composer while a limit is close or reached,
+ * with when it starts again. Read once when the chat opens and once each time
+ * a turn ends, so it appears as soon as the turn that crossed the line ends;
+ * a turn starting reads nothing, since nothing has been spent yet.
+ */
+export function ChatCapBanner({ working }: { working: boolean }) {
+  const [seen, setSeen] = useState({ working, ended: 0 });
+  if (seen.working !== working) setSeen({ working, ended: working ? seen.ended : seen.ended + 1 });
+  const loaded = useLoad(() => usage(), [seen.ended]);
+  return <CapBannerLine banner={capBanner(loaded.data?.notice)} />;
+}
+
+export function CapBannerLine({ banner }: { banner: CapBanner | null }) {
+  if (!banner) return null;
+  return (
+    <div className="cap-banner" role="status" data-level={banner.level}>
+      <Icon name={banner.level === 'reached' ? 'clock' : 'info'} size={14} />
+      <span>
+        {banner.text} <a href={href('/settings/usage')}>See your usage</a>
+      </span>
     </div>
   );
 }

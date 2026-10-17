@@ -72,10 +72,12 @@ import {
   modelVision,
   modelVisionReport,
   owner,
+  providerCredential,
   space,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
+import { allowedChoices, modelAllowed, modelRefusal, readSpaceRules } from '../spaces/policy.ts';
 import type { ProviderSignIn } from './credentials.ts';
 import {
   CHATGPT_PROVIDER,
@@ -88,6 +90,7 @@ import {
 import {
   addressIsLocal,
   agentRoutes,
+  type ModelChoice,
   type ModelRouting,
   NO_ROUTING,
   type PersonRoles,
@@ -243,17 +246,30 @@ export class ModelSettingsService {
     return row ?? null;
   }
 
-  private async signedIn(provider: string): Promise<boolean> {
-    const signIn = this.options.signIn;
-    if (!signIn?.handles(provider)) return false;
-    return (await signIn.status(provider)).state === 'signed_in';
+  /**
+   * Whether the owner is signed in to this provider: its credential is there
+   * and still active, as the sign-in's own status says. Read through `db`, so
+   * an attempt's model is chosen inside its claim's transaction, which holds
+   * the event order lock, without waiting on the pool.
+   */
+  private async signedIn(provider: string, db: Runner = this.options.db): Promise<boolean> {
+    if (!this.options.signIn?.handles(provider)) return false;
+    const [row] = await db
+      .select({ status: providerCredential.status })
+      .from(providerCredential)
+      .where(eq(providerCredential.provider, provider));
+    return row?.status === 'active';
   }
 
   /** Whether a model call to this provider would carry a credential. */
-  private async connected(provider: string, rows: Map<string, KeyRow>): Promise<boolean> {
+  private async connected(
+    provider: string,
+    rows: Map<string, KeyRow>,
+    db: Runner = this.options.db,
+  ): Promise<boolean> {
     if (provider === 'fake') return this.env.MELETE_ENABLE_FAKE_PROVIDER;
     if (provider === CHATGPT_PROVIDER || this.operatorSignIn(provider))
-      return this.signedIn(provider);
+      return this.signedIn(provider, db);
     if (this.operatorKey(provider)) return true;
     return Boolean(this.usableRow(provider, rows));
   }
@@ -276,11 +292,11 @@ export class ModelSettingsService {
    * the OpenAI-compatible endpoint at a local address, as the operator or the
    * owner connected it.
    */
-  async servesLocally(provider: string): Promise<boolean> {
+  async servesLocally(provider: string, db: Runner = this.options.db): Promise<boolean> {
     if (provider !== OPENAI_COMPATIBLE) return false;
     const base =
       this.operatorBaseUrl() ??
-      this.usableRow(provider, await this.keyRows())?.baseUrl ??
+      this.usableRow(provider, await this.keyRows(db))?.baseUrl ??
       undefined;
     return addressIsLocal(base);
   }
@@ -306,29 +322,90 @@ export class ModelSettingsService {
    * agent's screenshots only when it reads pictures itself; a model that reads
    * none gets the screen's text, and no screenshot goes to another model for
    * it. A model the owner chose in the app is used exactly as chosen.
-   * Background work runs on the `background` role when one is filled: an
-   * attempt nobody is waiting on, as its cause says (`jobs/wake-guard.ts`
-   * `attemptCause`), the same reading that meters it as background.
+   * Background work runs on the background model when there is one
+   * (`backgroundModel`): an attempt nobody is waiting on, as its cause says
+   * (`jobs/wake-guard.ts` `attemptCause`), the same reading that meters it as
+   * background.
    */
   async routedChoice(
     routing: ModelRouting,
     db: Runner = this.options.db,
     work?: AttemptWork,
-  ): Promise<{ provider: string; model: string; vision: boolean }> {
+  ): Promise<{ provider: string; model: string; vision: boolean; refused?: string }> {
     const background =
       work?.usageClass === 'background'
-        ? (await this.routingFor(work.spaceId, routing, db)).background
+        ? await this.backgroundModel(work.spaceId, routing, db)
         : null;
-    if (background) {
-      const reads = effectiveVision(
-        background.provider,
-        background.model,
-        await this.visionSaid(background.provider, background.model, db),
-      );
-      return { ...background, vision: reads };
-    }
-    const { provider, model, vision } = await this.active(await this.chosen(db), db);
-    return { provider, model, vision };
+    const picked = background
+      ? {
+          ...background,
+          vision: effectiveVision(
+            background.provider,
+            background.model,
+            await this.visionSaid(background.provider, background.model, db),
+          ),
+        }
+      : await this.active(await this.chosen(db), db);
+    const { provider, model, vision } = picked;
+    if (!work) return { provider, model, vision };
+    // The space's rules have the last word: a model they leave out falls back
+    // to the first one they allow that is connected, and with none the attempt
+    // is told why instead of starting.
+    const allowed = await this.allowedModelFor(work.spaceId, { provider, model }, db);
+    if (allowed.refused) return { provider, model, vision, refused: allowed.refused };
+    if (allowed.provider === provider && allowed.model === model)
+      return { provider, model, vision };
+    return {
+      provider: allowed.provider,
+      model: allowed.model,
+      vision: effectiveVision(
+        allowed.provider,
+        allowed.model,
+        await this.visionSaid(allowed.provider, allowed.model, db),
+      ),
+    };
+  }
+
+  /**
+   * The model work in this space runs on in place of `picked`: `picked` itself
+   * when the space's rules allow it, else the first model they list whose
+   * provider is connected. With none connected, `refused` says why in words
+   * the person reads. Where the rules name models, `allowed` lists them, so a
+   * call's fallbacks keep to them too.
+   */
+  async allowedModelFor(
+    spaceId: string,
+    picked: { provider: string; model: string },
+    db: Runner = this.options.db,
+  ): Promise<{ provider: string; model: string; refused?: string; allowed?: readonly string[] }> {
+    const rules = await readSpaceRules(db, spaceId);
+    if (!rules.allowedModels.length) return { provider: picked.provider, model: picked.model };
+    const allowed = rules.allowedModels;
+    if (modelAllowed(rules, picked))
+      return { provider: picked.provider, model: picked.model, allowed };
+    const rows = await this.keyRows(db);
+    for (const choice of allowedChoices(rules))
+      if (await this.connected(choice.provider, rows, db)) return { ...choice, allowed };
+    return {
+      provider: picked.provider,
+      model: picked.model,
+      refused: modelRefusal(rules, picked),
+      allowed,
+    };
+  }
+
+  /**
+   * A side call's model as the space's rules allow it, carrying the list they
+   * allow so its fallbacks keep to it; throws the sentence that says why when
+   * none of them can be used.
+   */
+  async sideModelFor(
+    spaceId: string,
+    picked: { provider: string; model: string },
+  ): Promise<ServiceModel> {
+    const { provider, model, refused, allowed } = await this.allowedModelFor(spaceId, picked);
+    if (refused) throw new Error(refused);
+    return { provider, model, ...(allowed ? { allowed } : {}) };
   }
 
   /**
@@ -728,12 +805,35 @@ export class ModelSettingsService {
     if (!principalId || !(await this.isInstallationOwner(principalId, db))) return {};
     const row = await this.secondaryRow(principalId, db);
     if (!row?.provider || !row.model) return {};
-    if (!(await this.connected(row.provider, await this.keyRows(db)))) return {};
+    if (!(await this.connected(row.provider, await this.keyRows(db), db))) return {};
     const choice = { provider: row.provider, model: row.model };
     return {
       ...(row.sideTasks === 'secondary' ? { fast: choice } : {}),
       ...(row.scheduled === 'secondary' ? { background: choice } : {}),
     };
+  }
+
+  /**
+   * The model background work in this space runs on, or null for the primary:
+   * the owner's secondary when they moved scheduled work to it, else the
+   * operator's (MELETE_MODEL_BACKGROUND). The operator's never replaces a
+   * model the owner chose in the app, never takes work off a model on the
+   * owner's own machine or network, and is passed over while its provider has
+   * no credential, so that work runs on the primary rather than failing.
+   */
+  async backgroundModel(
+    spaceId: string,
+    routing: ModelRouting,
+    db: Runner = this.options.db,
+  ): Promise<ModelChoice | null> {
+    const own = (await this.personRoles(spaceId, db)).background;
+    if (own) return own;
+    const operator = routing.background;
+    if (!operator) return null;
+    const primary = await this.active(await this.chosen(db), db);
+    if (this.ownerChose(primary) || (await this.servesLocally(primary.provider, db))) return null;
+    if (!(await this.connected(operator.provider, await this.keyRows(db), db))) return null;
+    return operator;
   }
 
   /** The operator's routing for work in this space, with the roles the owner's secondary fills. */
@@ -742,7 +842,20 @@ export class ModelSettingsService {
     routing: ModelRouting,
     db: Runner = this.options.db,
   ): Promise<ModelRouting> {
-    return withPersonRoles(routing, await this.personRoles(spaceId, db));
+    const routed = withPersonRoles(routing, await this.personRoles(spaceId, db));
+    const rules = await readSpaceRules(db, spaceId);
+    if (!rules.allowedModels.length) return routed;
+    // A role filled by a model the space's rules leave out is left empty, so
+    // its work goes to the model chosen for the space instead.
+    const kept = (choice: ModelChoice | null | undefined) =>
+      choice && modelAllowed(rules, choice) ? choice : null;
+    return {
+      ...routed,
+      fast: kept(routed.fast),
+      vision: kept(routed.vision),
+      fallback: routed.fallback.filter((choice) => modelAllowed(rules, choice)),
+      ...(routed.background !== undefined ? { background: kept(routed.background) } : {}),
+    };
   }
 
   /** The primary model and this person's secondary, as usage labels them. */
@@ -1121,8 +1234,12 @@ export class ModelSettingsService {
   }
 }
 
-/** The provider and model one service-side model call uses. */
-export type ServiceModel = { provider: string; model: string };
+/**
+ * The provider and model one service-side model call uses. `allowed`, set,
+ * is the `provider/model` list the space's rules hold the call to, so its
+ * fallbacks take none outside it.
+ */
+export type ServiceModel = { provider: string; model: string; allowed?: readonly string[] };
 
 /** The attempt being claimed, as far as choosing its model needs it. */
 export type AttemptWork = { spaceId: string; usageClass: UsageClass };
@@ -1188,36 +1305,80 @@ export function serviceModelSource(options: {
     settings
       ? settings.servesLocally(provider)
       : provider === OPENAI_COMPATIBLE && addressIsLocal(env.OPENAI_COMPAT_BASE_URL);
+  const pick = async (whose?: SideCallOwner) => {
+    if (pinned)
+      return {
+        provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
+        model: pinned.model || env.MELETE_DEFAULT_MODEL,
+      };
+    // The fast role: the operator's, or the space owner's secondary filling it.
+    const fast =
+      sideTask && settings && whose
+        ? (
+            await settings.routingFor(whose.spaceId, {
+              ...NO_ROUTING,
+              fast: options.fast ?? null,
+            })
+          ).fast
+        : options.fast;
+    const chosen = settings
+      ? await settings.activeChoice()
+      : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };
+    // A model on the owner's own machine or network keeps the side calls on
+    // it; the fast model is for a cloud model's.
+    if (fast && !(await local(chosen.provider)))
+      return { provider: fast.provider, model: fast.model };
+    return { provider: chosen.provider, model: chosen.model };
+  };
   return {
     async current(whose) {
-      if (pinned)
-        return {
-          provider: pinned.provider || env.MELETE_DEFAULT_PROVIDER,
-          model: pinned.model || env.MELETE_DEFAULT_MODEL,
-        };
-      // The fast role: the operator's, or the space owner's secondary filling it.
-      const fast =
-        sideTask && settings && whose
-          ? (
-              await settings.routingFor(whose.spaceId, {
-                ...NO_ROUTING,
-                fast: options.fast ?? null,
-              })
-            ).fast
-          : options.fast;
-      const chosen = settings
-        ? await settings.activeChoice()
-        : { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL };
-      // A model on the owner's own machine or network keeps the side calls on
-      // it; the fast model is for a cloud model's.
-      if (fast && !(await local(chosen.provider)))
-        return { provider: fast.provider, model: fast.model };
-      return { provider: chosen.provider, model: chosen.model };
+      const picked = await pick(whose);
+      if (!settings || !whose) return picked;
+      // Work about a space keeps to the models its rules allow.
+      return settings.sideModelFor(whose.spaceId, picked);
     },
     providers: async (configured) => (settings ? settings.providers(configured) : configured),
     connected: async (provider) => (settings ? settings.isConnected(provider) : true),
     local,
   };
+}
+
+/** The service's own short model calls, by what each is for. */
+export type SideCallKind =
+  | 'memory'
+  | 'summary'
+  | 'triage'
+  | 'voice'
+  | 'review'
+  | 'companies'
+  | 'learning';
+
+/**
+ * The model source for one kind of side call. Every side call the service
+ * makes gets its model here, so a route for a kind of call is decided in one
+ * place and reaches every call of that kind. Today every kind takes the
+ * operator's fast model (MELETE_MODEL_FAST), or the space owner's secondary
+ * when they chose one; a model pinned for the use wins over both. A review
+ * decides whether a risky action runs, so no person's secondary takes it.
+ */
+export function sideCallSource(
+  kind: SideCallKind,
+  options: {
+    env: Pick<Env, 'MELETE_DEFAULT_PROVIDER' | 'MELETE_DEFAULT_MODEL'> & {
+      OPENAI_COMPAT_BASE_URL?: string;
+    };
+    settings?: ModelSettingsService;
+    routing: ModelRouting;
+    pinned?: { provider?: string; model?: string };
+  },
+): ServiceModelSource {
+  return serviceModelSource({
+    env: options.env,
+    settings: options.settings,
+    pinned: options.pinned,
+    fast: options.routing.fast,
+    sideTask: kind !== 'review',
+  });
 }
 
 const INVALID_ADDRESS =

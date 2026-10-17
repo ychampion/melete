@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { testDatabase } from '../../test/helpers/database.ts';
+import { recordId } from '../broker/records.ts';
 import { FakeSandboxProvider } from './fake.ts';
 import { SandboxRefusal } from './manifest.ts';
 import { runCommand } from './marker.ts';
@@ -543,6 +544,144 @@ withDb('sandbox sessions', () => {
       signal(),
     );
     expect(resumed.resumed).toBe(true);
+  });
+
+  test("a person's computer limit counts their own computers in every space, and nobody else's", async () => {
+    const { sql, scope: room, provider, sessions } = await setup();
+    // Two people; a room the first owns, which both work in through its one
+    // connection; and the first person's own space, with a connection of its own.
+    const [ana, ben] = [recordId('own'), recordId('own')];
+    for (const id of [ana, ben])
+      await sql`insert into principal (id, email) values (${id}, ${`${id.toLowerCase()}@example.test`})`;
+    const own = await seedSessionScope(sql);
+    await sql`update space set owner_principal_id = ${ana} where id in (${room.spaceId}, ${own.spaceId})`;
+    await sql`update job set principal_id = ${ana} where id in (${room.jobId}, ${own.jobId})`;
+    /** A job in the room for `whom`, as a room request when `asked` is set, and an attempt of it. */
+    const work = async (whom: string, asked = false) => {
+      const jobId = recordId('job');
+      await sql`insert into job (id, space_id, title, objective, principal_id, audience,
+          requested_by_principal_id)
+        values (${jobId}, ${room.spaceId}, 'Job', 'Run', ${asked ? null : whom},
+          ${asked ? 'room' : 'principal'}, ${asked ? whom : null})`;
+      const attemptId = recordId('att');
+      await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted')`;
+      return { jobId, attemptId };
+    };
+    const concurrency = { perConnection: 1, installation: 10 };
+    const open = (
+      scope: { connectionId: string; spaceId: string },
+      jobId: string,
+      attemptId: string,
+    ) =>
+      sessions.open(
+        {
+          connectionId: scope.connectionId,
+          spaceId: scope.spaceId,
+          jobId,
+          attemptId,
+          agentId: null,
+          concurrency,
+        },
+        provider,
+        sessionSpec('sessions-test', scope.spaceId, scope.connectionId),
+        signal(),
+      );
+    const scopeOf = (error: unknown) =>
+      error instanceof SandboxRefusal
+        ? `${error.code}:${error.scope}`
+        : `not a refusal: ${String(error)}`;
+
+    // Ana's computer in the room is hers alone: Ben, in the same room, still gets his.
+    expect((await open(room, room.jobId, await room.attempt())).status).toBe('ready');
+    const bens = await work(ben);
+    expect((await open(room, bens.jobId, bens.attemptId)).status).toBe('ready');
+    // A request Ben asked of the room is Ben's: he already has his one.
+    const asked = await work(ben, true);
+    expect(await open(room, asked.jobId, asked.attemptId).then(() => 'opened', scopeOf)).toBe(
+      'concurrency_exhausted:person',
+    );
+    // Ana's own space is another connection, and still her one computer: she
+    // cannot run one more by working somewhere else.
+    expect(await open(own, own.jobId, await own.attempt()).then(() => 'opened', scopeOf)).toBe(
+      'concurrency_exhausted:person',
+    );
+    // The name the setting has always had and the person's own both set the allowance.
+    expect(
+      await sessions
+        .open(
+          {
+            connectionId: own.connectionId,
+            spaceId: own.spaceId,
+            jobId: own.jobId,
+            attemptId: await own.attempt(),
+            agentId: null,
+            concurrency: { perPerson: 2, perConnection: 1, installation: 10 },
+          },
+          provider,
+          sessionSpec('sessions-test', own.spaceId, own.connectionId),
+          signal(),
+        )
+        .then((row) => row.status, scopeOf),
+    ).toBe('ready');
+  });
+
+  test('a computer counts against whoever’s turn opened it, as their calls and slots do', async () => {
+    const { sql, scope: shared, provider, sessions } = await setup();
+    // Ana owns a shared space and started a chat in it; Ben, a member, writes
+    // in that chat. Ana also has a space of her own.
+    const [ana, ben] = [recordId('own'), recordId('own')];
+    for (const id of [ana, ben])
+      await sql`insert into principal (id, email) values (${id}, ${`${id.toLowerCase()}@example.test`})`;
+    const own = await seedSessionScope(sql);
+    await sql`update space set owner_principal_id = ${ana} where id in (${shared.spaceId}, ${own.spaceId})`;
+    await sql`update job set principal_id = ${ana} where id in (${shared.jobId}, ${own.jobId})`;
+    const says = (who: string) =>
+      sql`insert into event (job_id, type, payload, dedup_key)
+        values (${shared.jobId}, 'notice',
+          ${JSON.stringify({ kind: 'user_message', text: 'look this up', principal_id: who })}::jsonb,
+          ${`said:${recordId('evt')}`})`;
+    const concurrency = { perPerson: 1, installation: 10 };
+    const open = (
+      scope: { connectionId: string; spaceId: string },
+      jobId: string,
+      attemptId: string,
+    ) =>
+      sessions
+        .open(
+          {
+            connectionId: scope.connectionId,
+            spaceId: scope.spaceId,
+            jobId,
+            attemptId,
+            agentId: null,
+            concurrency,
+          },
+          provider,
+          sessionSpec('sessions-test', scope.spaceId, scope.connectionId),
+          signal(),
+        )
+        .then(
+          (row) => row.status,
+          (error: unknown) =>
+            error instanceof SandboxRefusal ? `${error.code}:${error.scope}` : String(error),
+        );
+
+    // Ben's turn in Ana's chat opens a computer: it is Ben's, as his calls are.
+    await says(ben);
+    expect(await open(shared, shared.jobId, await shared.attempt())).toBe('ready');
+    // Once Ana speaks again it is still Ben's: it was his turn that opened it.
+    await says(ana);
+    // So Ana's own work still gets her one computer…
+    expect(await open(own, own.jobId, await own.attempt())).toBe('ready');
+    // …and Ben, who has his, gets no second one elsewhere.
+    const bens = recordId('job');
+    await sql`insert into job (id, space_id, title, objective, principal_id)
+      values (${bens}, ${shared.spaceId}, 'Job', 'Run', ${ben})`;
+    const attempt = recordId('att');
+    await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${attempt}, ${bens}, 1, 'fake', 'fake', 'scripted')`;
+    expect(await open(shared, bens, attempt)).toBe('concurrency_exhausted:person');
   });
 });
 

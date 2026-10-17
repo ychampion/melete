@@ -5,17 +5,22 @@
  *
  * - MELETE_MODEL_FAST: the service's own short calls (reading chat into
  *   memory, voice-mode asides, the auto-review classifier, the companies
- *   scan) use it instead of the default model.
+ *   scan, summaries, learning from corrections) use it instead of the
+ *   default model. Each kind of side call gets its model from
+ *   `sideCallSource` in model-settings.ts.
  * - MELETE_MODEL_VISION: an agent turn's request that carries a picture goes
  *   to it when the model the turn runs on does not read images.
  * - MELETE_MODEL_FALLBACK: tried in order when the provider rate-limits,
  *   fails or cannot be reached, before any of the reply has been sent.
+ * - MELETE_MODEL_BACKGROUND: scheduled and repeating work, and any attempt
+ *   nobody is waiting on, runs on it in every space. Unset, that work runs on
+ *   the primary.
  *
  * Two of these roles may be filled by the installation owner's secondary
  * model, chosen in Settings, for the work in the spaces they own: `fast` for
- * short side calls, and `background` for scheduled and repeating work, which
- * otherwise runs on the primary. With no secondary set, the operator's roles
- * apply as they are. Vision and fallback stay the operator's.
+ * short side calls, and `background` for scheduled and repeating work. With
+ * no secondary set, the operator's roles apply as they are. Vision and
+ * fallback stay the operator's.
  *
  * Each is written `provider/model`, the provider name before the first slash.
  * A model the owner chose in the app always wins for agent turns: those turns
@@ -75,10 +80,13 @@ export function routingFromEnv(env: {
   MELETE_MODEL_FAST?: string;
   MELETE_MODEL_VISION?: string;
   MELETE_MODEL_FALLBACK?: string;
+  MELETE_MODEL_BACKGROUND?: string;
 }): ModelRouting {
   const one = (value: string | undefined, setting: string) =>
     value?.trim() ? parseModelChoice(value, setting) : null;
+  const background = one(env.MELETE_MODEL_BACKGROUND, 'MELETE_MODEL_BACKGROUND');
   return {
+    ...(background ? { background } : {}),
     fast: one(env.MELETE_MODEL_FAST, 'MELETE_MODEL_FAST'),
     vision: one(env.MELETE_MODEL_VISION, 'MELETE_MODEL_VISION'),
     fallback: (env.MELETE_MODEL_FALLBACK ?? '')
@@ -143,10 +151,20 @@ export function agentRoutes(
   return { ...(vision ? { vision } : {}), ...(fallback.length ? { fallback } : {}) };
 }
 
-/** The fallbacks a call to `primary` may take: those that speak its protocol. */
-export function serviceFallback(routing: ModelRouting, primary: ModelChoice): ModelChoice[] {
+/**
+ * The fallbacks a call to `primary` may take: those that speak its protocol,
+ * and, where a space's rules hold the call to a list (`allowed`), only those
+ * on it.
+ */
+export function serviceFallback(
+  routing: ModelRouting,
+  primary: ModelChoice & { allowed?: readonly string[] },
+): ModelChoice[] {
   return routing.fallback.filter(
-    (choice) => !sameModel(choice, primary) && sameProtocol(choice, primary),
+    (choice) =>
+      !sameModel(choice, primary) &&
+      sameProtocol(choice, primary) &&
+      (!primary.allowed || primary.allowed.includes(`${choice.provider}/${choice.model}`)),
   );
 }
 
@@ -174,6 +192,9 @@ export function routingWarnings(
     ...(routing.fast ? [['MELETE_MODEL_FAST', routing.fast] as [string, ModelChoice]] : []),
     ...(routing.vision ? [['MELETE_MODEL_VISION', routing.vision] as [string, ModelChoice]] : []),
     ...routing.fallback.map((choice) => ['MELETE_MODEL_FALLBACK', choice] as [string, ModelChoice]),
+    ...(routing.background
+      ? [['MELETE_MODEL_BACKGROUND', routing.background] as [string, ModelChoice]]
+      : []),
   ];
   const warnings: string[] = [];
   for (const [setting, { provider }] of named) {

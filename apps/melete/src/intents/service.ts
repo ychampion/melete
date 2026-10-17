@@ -45,6 +45,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { requireCurrentAttempt } from '../jobs/fence.ts';
+import { personZone } from '../jobs/local-now.ts';
 import type { JobService } from '../jobs/service.ts';
 import { OUTDATED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
 import { principalContext } from '../principals/authority.ts';
@@ -52,7 +53,7 @@ import type { RunService } from '../runs/service.ts';
 import type { SituationService } from '../situations/service.ts';
 import { intentStateNow } from '../situations/service.ts';
 import { dueOf, GUESS, intentLeadSeconds, markOrigins, readBack } from './origins.ts';
-import type { Span } from './said.ts';
+import { pastedSpans } from './said.ts';
 import { intent, intentEffect } from './schema.ts';
 
 const HOUR = 3_600_000;
@@ -85,16 +86,6 @@ export type IntentDeps = {
 const rows = <T>(value: unknown) => value as T[];
 const iso = (at: Date | null | undefined) => (at ? at.toISOString() : null);
 const missing = () => new ServiceError('not_found', 'That was not found.', 404);
-
-/** The stretches a message records as pasted, as far as they read as stretches at all. */
-function pastedSpans(raw: unknown): Span[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((span) => {
-    const start = (span as { start?: unknown } | null)?.start;
-    const end = (span as { end?: unknown } | null)?.end;
-    return typeof start === 'number' && typeof end === 'number' ? [{ start, end }] : [];
-  });
-}
 
 /** What the run is asked to do, from the intent: the person's words, and every guess marked. */
 function goalOf(row: {
@@ -133,11 +124,13 @@ export class IntentService {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private async timeZone(tx: Transaction | Database, spaceId: string): Promise<string> {
-    const [row] = rows<{ time_zone: string }>(
-      await tx.execute(sql`select time_zone from experience_profile where space_id = ${spaceId}`),
-    );
-    return row?.time_zone ?? 'UTC';
+  /** The zone times are read in: the one the person's conversation was told it is in. */
+  private timeZone(
+    tx: Transaction | Database,
+    spaceId: string,
+    conversationId?: string | null,
+  ): Promise<string> {
+    return personZone(tx, spaceId, [conversationId]);
   }
 
   // ------------------------------------------------------------------------
@@ -210,7 +203,7 @@ export class IntentService {
           ),
         );
       if (kept) return { row: kept, clock: null, again: true };
-      const zone = await this.timeZone(tx, chat.spaceId);
+      const zone = await this.timeZone(tx, chat.spaceId, chat.id);
       const deadline = input.deadline_at ?? null;
       const due = deadline ? dueOf(deadline, zone) : null;
       if (due !== null && due <= this.now())
@@ -556,10 +549,11 @@ export class IntentService {
     const zones = new Map<string, string>();
     const out: IntentView[] = [];
     for (const row of list) {
-      let zone = zones.get(row.spaceId);
+      const key = `${row.spaceId} ${row.conversationId ?? ''}`;
+      let zone = zones.get(key);
       if (!zone) {
-        zone = await this.timeZone(this.db, row.spaceId);
-        zones.set(row.spaceId, zone);
+        zone = await this.timeZone(this.db, row.spaceId, row.conversationId);
+        zones.set(key, zone);
       }
       const constraints = intentConstraints.parse(row.constraints ?? {});
       const origins = row.origins as Record<string, ValueOrigin>;
@@ -661,7 +655,7 @@ export class IntentService {
           'This follows the reply itself, so it has no deadline of its own to change.',
           409,
         );
-      const zone = await this.timeZone(tx, row.spaceId);
+      const zone = await this.timeZone(tx, row.spaceId, row.conversationId);
       const constraints = structuredClone(intentConstraints.parse(row.constraints ?? {})) as Record<
         string,
         Record<string, unknown> | unknown

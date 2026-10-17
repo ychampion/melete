@@ -1,4 +1,5 @@
 import { REACT_TOOL_NAME, reactToolSchema, type ToolSpec } from '@melete/contracts';
+import { NO_RULES, type SpaceRules, toolAllowedHere } from '../spaces/policy.ts';
 import type { Connector } from './types.ts';
 
 /** The broker-owned reaction tool: no connection, no scope, always in the catalog. */
@@ -26,11 +27,16 @@ export function supersededExecution(provider: string, activeProviders: Iterable<
   return false;
 }
 
-/** Only active connection rows enter here; job scopes further narrow their grants. */
+/**
+ * Only active connection rows enter here; job scopes further narrow their
+ * grants, and the space's rules leave out the kinds of connection and tool
+ * they deny.
+ */
 export function grantedToolCatalog(
   connections: readonly ConnectionGrant[],
   registry: ConnectorLookup,
   scopes?: readonly string[],
+  rules: SpaceRules = NO_RULES,
 ): ToolSpec[] {
   const tools: ToolSpec[] = [structuredClone(REACT_TOOL)];
   const providers = connections.map((connection) => connection.provider);
@@ -44,6 +50,7 @@ export function grantedToolCatalog(
     )
       continue;
     for (const tool of connector.manifest.tools) {
+      if (!toolAllowedHere(rules, connection.provider, tool.name)) continue;
       if (
         ![tool.name, ...tool.required_scopes].every(
           (scope) =>

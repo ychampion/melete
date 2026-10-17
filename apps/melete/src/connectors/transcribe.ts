@@ -32,11 +32,20 @@ import {
   capabilityTool,
   receipt,
 } from '@melete/contracts';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import type { ProviderCheck } from './elevenlabs.ts';
 import { noLinks, openBeneath, segmentsFor } from './files.ts';
-import { atomicWrite, capabilityDirectory, digest, readBytes } from './tts.ts';
+import { alreadyInFiles } from './shared-files.ts';
+import {
+  atomicWrite,
+  capabilityDirectory,
+  digest,
+  readBytes,
+  refuseTakenOutput,
+  saveOutput,
+} from './tts.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 import { scriptFromWav, spokenDurationMs } from './wav.ts';
 
@@ -216,6 +225,8 @@ const transcriptEvidence = z.object({
 export type TranscriptionConnectorOptions = {
   workRoot: string;
   spacesRoot: string;
+  /** Where whose job it is is read, for the shared Files rule (`shared-files.ts`). */
+  sql?: Sql;
   adapter: TranscriptionAdapter | null;
   provider: string;
   unitCostUsd?: number;
@@ -277,6 +288,17 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
   return {
     manifest,
     capability,
+    async prepare(payload, ctx, tx) {
+      // In a shared space, anyone but its owner writes a transcript only as a new file.
+      let name: string | null = null;
+      try {
+        name = typeof payload.path === 'string' ? transcriptName(payload.path) : null;
+      } catch {
+        // A name that cannot be used is refused when the step runs, as before.
+      }
+      await refuseTakenOutput(tx, options.spacesRoot, ctx, name);
+      return payload;
+    },
     async execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult> {
       if (!options.adapter)
         return { outcome: 'failed', reason: 'no speech provider is configured', retryable: false };
@@ -300,7 +322,13 @@ export function createTranscriptionConnector(options: TranscriptionConnectorOpti
       const bytes = new TextEncoder().encode(
         transcriptMarkdown(transcript, media.name, options.adapter.model),
       );
-      await atomicWrite(await target(ctx, name), bytes);
+      const file = await target(ctx, name);
+      if (!(await saveOutput(options.sql, ctx, file, bytes)))
+        return {
+          outcome: 'failed',
+          reason: alreadyInFiles(transcriptName(name)),
+          retryable: false,
+        };
       const hash = digest(bytes);
       const proof: Receipt = {
         action_id: action.id,

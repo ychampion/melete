@@ -215,6 +215,8 @@ export class ExperienceMock {
   /** Setup finished or skipped, and a time zone chosen, as the service records them. */
   onboarded = false;
   timeZoneConfirmed = false;
+  /** The person put Home's starter tasks away. */
+  startersDismissed = false;
   /** The people in the session's space. Only a shared space has anyone but the person. */
   readonly members = new Map<string, C.SpaceMember>();
   /** What deleted chats did in the person's name, newest first. */
@@ -1782,6 +1784,7 @@ export class ExperienceMock {
       onboarded: this.onboarded || [...this.agents.values()].some((agent) => !agent.is_default),
       time_zone_confirmed: this.timeZoneConfirmed,
       sending_address: this.sendingAddress,
+      role: 'owner' as const,
     };
   }
   fill(text: string) {
@@ -2192,6 +2195,24 @@ export class ExperienceMock {
           handoffs: this.handoffsWaiting(),
         };
       }
+      case 'GET /starters': {
+        // The service's rule: after setup, until three chats or put away.
+        const visibility = C.starterVisibility({
+          onboarded: this.profileView().onboarded,
+          dismissed: this.startersDismissed,
+          chats: this.chats.size,
+        });
+        const city = C.cityFromTimeZone(this.profile.time_zone);
+        return {
+          ...visibility,
+          starters: visibility.show
+            ? C.DEFAULT_STARTERS.map((starter) => C.fillStarter(starter, city))
+            : [],
+        };
+      }
+      case 'POST /starters/dismiss':
+        this.startersDismissed = true;
+        return { status: 'ok' };
       case 'GET /tasks':
         return { tasks: [...this.tasks.values()] };
       case 'POST /tasks':
@@ -2457,13 +2478,14 @@ export function mountExperienceMock(
     app.on(method, path.replace(/\{([^}]+)\}/g, ':$1'), async (c) => {
       let input: Record<string, unknown> = {};
       if ('request' in operation) {
-        const parsed = operation.request.safeParse(await c.req.json().catch(() => null));
+        // An empty body is none, which only a request that may be left out accepts.
+        const parsed = operation.request.safeParse(await c.req.json().catch(() => undefined));
         if (!parsed.success)
           return c.json(
             { error: { code: 'invalid_request', message: 'Check the information and try again.' } },
             400,
           );
-        input = parsed.data;
+        input = parsed.data ?? {};
       }
       if ('query' in operation && !operation.query.safeParse(c.req.query()).success)
         return c.json(
