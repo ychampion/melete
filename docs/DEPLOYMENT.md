@@ -1949,16 +1949,22 @@ By default nobody is limited. To cap how much one person may keep, set
 What counts, across all of a person's spaces: the files they sent in chat, and
 every file their work saved, in their Files or in a chat's own folder,
 generated recordings and published files among them. A file a member's request
-saved in a shared space counts against that member, not the space's owner;
-work in a shared space that nobody asked for counts against its owner. A file
-deleted into the trash stops counting, and counts again if it is put back.
-Deleting a chat frees what its folder held and the files sent in it. Files the
-agent's computer made in its own `/work` are not counted until they are moved
-or saved into Files.
+saved in a shared space counts against that member, not the space's owner, and
+so does a file a member copies into a room from their own work; work in a
+shared space that nobody asked for counts against its owner. Someone who leaves
+a shared space, or is removed from it, stops being charged for what they kept
+there, since they can no longer delete it. A file deleted into the trash stops
+counting, and counts again if it is put back. Deleting a chat frees what its
+folder held and the files sent in it. Files the agent's computer made in its
+own `/work` are not counted until they are moved or saved into Files.
 
 The amounts are read from what the service recorded as each file was saved,
-moved and deleted, never by walking the disk. Files saved before this setting
-existed are not counted.
+moved and deleted, never by walking the disk. They are recorded whether or not
+a limit is set, from the version that added this setting on; files saved
+before that upgrade are not counted. The limit is checked as each upload
+begins and as each step is proposed, so uploads sent at the same moment, or
+steps proposed before the others landed, can take a person past it; once they
+are past it, nothing more is saved until they free space.
 
 Once a person reaches the limit, an upload is refused with a sentence that says
 how much they use and that deleting files in Files, or chats with files sent in

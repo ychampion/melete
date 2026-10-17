@@ -1788,15 +1788,6 @@ export class BrokerService implements BrokerOperations {
           );
           this.validatePayload(tool, canonical.canonical);
         }
-        // A step that would save past what its person may keep is refused
-        // before anyone is asked, with what they use and how to free space.
-        const full = await storageRefusal(tx, this.options.storagePerPerson, {
-          kind: request.kind,
-          jobId: job.id,
-          spaceId: job.space_id,
-          payload: canonical.canonical,
-        });
-        if (full) throw new BrokerFault('payload_invalid', full);
         // The identity of the effect itself, independent of which attempt is
         // alive. A runtime that died between proposing and hearing back proposes
         // the same key and is handed the action it already made.
@@ -1882,6 +1873,16 @@ export class BrokerService implements BrokerOperations {
         // makes two live attempts take their turn rather than race.
         const [prior] = await tx`select * from action where intent_key = ${key} for update`;
         if (prior) return { action: actionFromRow(prior), key, repeated: true, pending: null };
+        // A new step that would save past what its person may keep is refused
+        // before anyone is asked, with what they use and how to free space. A
+        // repeat was handed the action it already made above, never refused.
+        const full = await storageRefusal(tx, this.options.storagePerPerson, {
+          kind: request.kind,
+          jobId: job.id,
+          spaceId: job.space_id,
+          payload: canonical.canonical,
+        });
+        if (full) throw new BrokerFault('payload_invalid', full);
         // Only a proposal that is new is checked against what was read ahead:
         // a repeat is handed the action it already made, never refused over it.
         await connector.checkAhead?.(

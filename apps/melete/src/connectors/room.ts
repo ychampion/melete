@@ -540,7 +540,11 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
         };
       return {
         outcome: 'succeeded' as const,
-        receipt: receiptFor(action, { room_id: roomId, name, content_hash: hash }, name),
+        receipt: receiptFor(
+          action,
+          { room_id: roomId, name, content_hash: hash, bytes: bytes.byteLength },
+          name,
+        ),
       };
     }
     try {
@@ -681,10 +685,16 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
           const payload = action.canonical_payload;
           const name = nameOf(payload);
           const roomId = String(payload.room_id);
-          const copied = digest(await readFile(await roomFile(roomId, name, false)));
+          const content = await readFile(await roomFile(roomId, name, false));
+          const copied = digest(content);
           if (copied !== payload.content_hash)
             return { decision: 'undecided', reason: 'the room has a different file by that name' };
-          const detail = { room_id: roomId, name, content_hash: copied };
+          const detail = {
+            room_id: roomId,
+            name,
+            content_hash: copied,
+            bytes: content.byteLength,
+          };
           return {
             decision: 'succeeded',
             evidence: detail,

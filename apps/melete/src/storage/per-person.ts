@@ -12,7 +12,10 @@
  *
  * A file is counted against the person whose work saved it last: in a shared
  * space, a member's request of the room's agent counts against that member,
- * not the space's owner. Work nobody asked for counts against the space's owner.
+ * not the space's owner, and so does a file a member copies into a room from
+ * their own work. Work nobody asked for counts against the space's owner. What
+ * a person keeps in a space they have left, or one being removed, no longer
+ * counts against them: they can no longer delete it there.
  */
 import type { JsonValue } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
@@ -56,10 +59,17 @@ export function saveRefused(input: { used: number; quota: number; bytes: number 
 
 /** What one person keeps now, in bytes. */
 export async function storageUsed(query: Query, principalId: string): Promise<number> {
+  // Only spaces the person can still reach: not one they were removed from or
+  // left, and not one on its way out.
   const [row] = await query<{ used: number }[]>`select
-      (select coalesce(sum(bytes), 0) from stored_file
-        where principal_id = ${principalId} and trash_id is null)::float8
-      + (select coalesce(sum(size), 0) from attachment where principal_id = ${principalId})::float8
+      (select coalesce(sum(f.bytes), 0) from stored_file f join space s on s.id = f.space_id
+        where f.principal_id = ${principalId} and f.trash_id is null and s.removed_at is null
+          and not exists (select 1 from space_membership m where m.principal_id = ${principalId}
+            and m.space_id = f.space_id and m.revoked_at is not null))::float8
+      + (select coalesce(sum(a.size), 0) from attachment a join space s on s.id = a.space_id
+        where a.principal_id = ${principalId} and s.removed_at is null
+          and not exists (select 1 from space_membership m where m.principal_id = ${principalId}
+            and m.space_id = a.space_id and m.revoked_at is not null))::float8
       as used`;
   return Number(row?.used ?? 0);
 }
@@ -98,7 +108,8 @@ export function storedPlace(
 
 /** One change a receipt makes to what is kept. */
 export type StoredChange =
-  | { op: 'set'; place: string; jobId: string | null; bytes: number }
+  /** `spaceId` names another space than the step's own, as a room a file is copied into. */
+  | { op: 'set'; place: string; jobId: string | null; bytes: number; spaceId?: string }
   | { op: 'move'; from: string; place: string; jobId: string | null; bytes: number | null }
   | { op: 'trash'; place: string; trashId: string | null }
   | { op: 'restore'; trashId: string };
@@ -165,6 +176,15 @@ export function storedChanges(input: {
     const bytes = count(detail.bytes);
     return at && bytes !== null ? [{ op: 'set', ...at, bytes }] : [];
   }
+  if (kind === 'room.add_file') {
+    // A copy in the room's own Files (connectors/room.ts), kept by the room.
+    const room = detail.room_id;
+    const at = storedPlace('artifacts', detail.name, jobId);
+    const bytes = count(detail.bytes);
+    return typeof room === 'string' && at && bytes !== null
+      ? [{ op: 'set', ...at, bytes, spaceId: room }]
+      : [];
+  }
   return [];
 }
 
@@ -199,8 +219,11 @@ async function applyChange(
   change: StoredChange,
 ): Promise<void> {
   if (change.op === 'set') {
+    // Another space may have gone since the step ran; its copy went with it,
+    // and the receipt still lands.
     await tx`insert into stored_file (space_id, place, job_id, principal_id, bytes)
-      values (${spaceId}, ${change.place}, ${change.jobId}, ${person}, ${change.bytes})
+      select s.id, ${change.place}, ${change.jobId}, ${person}, ${change.bytes}
+      from space s where s.id = ${change.spaceId ?? spaceId}
       on conflict (space_id, place) do update set job_id = excluded.job_id,
         principal_id = excluded.principal_id, bytes = excluded.bytes, trash_id = null,
         updated_at = now()`;
@@ -314,6 +337,13 @@ export async function incomingBytes(
       where id = ${payload.artifact_id} and space_id = ${spaceId}`;
     return row ? Number(row.size) : null;
   }
+  if (kind === 'room.add_file') {
+    // The checked file the copy is made from, bound when it was proposed.
+    if (typeof payload.artifact_id !== 'string') return null;
+    const [row] = await query<{ size: number }[]>`select size from artifact
+      where id = ${payload.artifact_id} and space_id = ${spaceId}`;
+    return row ? Number(row.size) : null;
+  }
   return 'none';
 }
 
@@ -326,6 +356,7 @@ const STORING = new Set([
   'audio.synthesize',
   'audio.transcribe',
   'artifact.publish',
+  'room.add_file',
 ]);
 
 /**
