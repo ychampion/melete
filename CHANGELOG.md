@@ -6,6 +6,17 @@ What each version ships.
 
 ### Ships
 
+- **Logs can be shipped, and hold no one's words or secrets.** A test reads
+  every place the service writes a log line and fails on one that writes
+  message text, file contents, prompts, model output or a credential, and the
+  service and `melete-cells` take known secret shapes and email addresses out
+  of every line they write. The bundled Postgres logs an error's reason
+  without the failing row or statement. Each service's log line now names its
+  Compose project and service. `deploy/docker-compose.log-shipping.yml` is an
+  optional OpenTelemetry Collector that sends those lines to any OTLP/HTTP
+  endpoint you name in `MELETE_LOG_SHIP_ENDPOINT`, and never the logs of the
+  containers attempts and agents' computers run in; it is off unless you start
+  it. See [Shipping logs](docs/DEPLOYMENT.md#shipping-logs).
 - **The owner runs a hosted installation from the web app.** Settings ›
   Installation, shown to the installation's owner alone and refused by the
   service to everyone else, lists everyone with their status, last activity
@@ -17,7 +28,7 @@ What each version ships.
   against their limits, the newest backup, free disk, health and version, and
   a record of each change with who made it; deleting an account takes its
   email out of that record too. `melete backup` now notes each
-  backup in the database for it. Adds migration `0122_person_spend_limits`.
+  backup in the database for it. Adds migration `0124_person_spend_limits`.
 - **A new installation others can reach is claimed with a code.** An
   installation with no setup code whose `MELETE_PUBLIC_URL` or
   `MELETE_WEB_ORIGIN` names another machine no longer lets its first visitor
@@ -134,16 +145,19 @@ What each version ships.
    been taken in the last 26 hours. Run `bun run melete backup`, then schedule
    it ([Backups on a schedule](docs/DEPLOYMENT.md#backups-on-a-schedule)).
    `melete deploy` runs the same check, so take that backup before deploying.
-5. Five migrations run on start. `0122_person_spend_limits` keeps the
-   per-person spending limits the owner sets. `0123_sign_in_vault` adds the saved sign-ins
+5. Seven migrations for these changes run on start. `0124_person_spend_limits` keeps the
+   per-person spending limits the owner sets. `0125_sign_in_vault` adds the saved sign-ins
    and their record of use, and gives every existing browser connection that
    can watch pages (`browser.observe`) the new `browser.sign_in` scope as
    well, so agents with the browser can use a saved sign-in without the
    connection being granted again. Remove that scope from a connection that
-   should not sign in to sites. `0124_starter_dismissal` keeps who put Home's
-   starter tasks away. `0125_operator_action_index` and
-   `0126_chat_principal_index` add indexes for the owner's record of changes
-   and for Home's starter tasks.
+   should not sign in to sites. `0126_starter_dismissal` keeps who put Home's
+   starter tasks away. `0127_operator_action_index` and
+   `0128_chat_principal_index` add indexes for the owner's record of changes
+   and for Home's starter tasks. `0129_spend_counter` keeps running spending
+   totals for the caps and fills them in for the current month.
+   `0130_person_computers_and_indexes` records whose computer each one is and
+   adds indexes for the backup note, saved sign-in use and sign-in sessions.
 6. Backups made before this version still hold each space's search index, and
    any forgotten text in it, until they age out; restoring one leaves the
    index out and rebuilds it. The first backup after upgrading (`melete

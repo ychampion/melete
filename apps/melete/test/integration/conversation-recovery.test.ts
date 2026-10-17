@@ -29,8 +29,14 @@ import { createApp } from '../../src/index.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../../src/jobs/limits.ts';
 import { PolicyService } from '../../src/jobs/policy.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
-import { AttemptRunner, DISCONNECTED_NOTE, LOST_NOTE } from '../../src/jobs/runner.ts';
+import {
+  AttemptRunner,
+  DISCONNECTED_NOTE,
+  ENGINE_IMAGE_NOTE,
+  LOST_NOTE,
+} from '../../src/jobs/runner.ts';
 import { CONVERSATION_BUDGET, DEFAULT_BUDGET, JobService } from '../../src/jobs/service.ts';
+import { EngineImageUnavailable } from '../../src/runtime/cell-host.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { freshAgent } from '../helpers/agents.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -252,6 +258,44 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
       });
     expect(await required(runner).loseAttempt(claims.attempt_id, 'context_invalidated')).toBe(true);
     await lastTurnSays(chat.id, claims.attempt_id, DISCONNECTED_NOTE);
+  });
+
+  test('a turn whose engine image is gone says so plainly, and is not tried again', async () => {
+    // The engine image the service started with was removed from the engine.
+    class Imageless extends StubRuntimeAdapter {
+      override async start(): Promise<AttemptOutcome> {
+        throw new EngineImageUnavailable(
+          'melete-runtime:main',
+          `sha256:${'a'.repeat(64)}`,
+          'removed',
+        );
+      }
+    }
+    const imageless = new AttemptRunner(required(jobs), new Imageless(), {
+      key: 'conversation-recovery-signing-key-32b',
+    });
+    try {
+      const chat = await createConversation();
+      expect((await send(chat.id, 'Plan my week.')).status).toBe(200);
+      const row = await required(jobs).get(chat.id);
+      // Five attempts are allowed; every one would fail the same way.
+      expect(jobBudget.parse(row.budget).max_attempts).toBeGreaterThan(1);
+      await imageless.handleWake({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      });
+      const attempts = await required(handle).sql`select id from attempt where job_id = ${chat.id}`;
+      expect(attempts).toHaveLength(1);
+      expect((await required(jobs).get(chat.id)).state).toBe('failed');
+      await lastTurnSays(chat.id, String(attempts[0]?.id), ENGINE_IMAGE_NOTE);
+      const [ended] = await required(handle).sql`select payload from event
+        where attempt_id = ${String(attempts[0]?.id)} and type = 'attempt_ended'`;
+      expect(ended?.payload).toMatchObject({ kind: 'lost', reason: 'engine_image_unavailable' });
+    } finally {
+      await imageless.stop();
+    }
   });
 
   test('a turn run again after a lost attempt shows one answer, not two glued together', async () => {

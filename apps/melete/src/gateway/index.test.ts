@@ -752,6 +752,7 @@ describe('provider evidence parsing', () => {
         rejected.push(generation);
         token = 'signed-in-access-2';
       },
+      refreshes: true,
     };
     const seen: Headers[] = [];
     const chatgpt = {
@@ -787,6 +788,88 @@ describe('provider evidence parsing', () => {
     expect(seen[1]?.get('authorization')).toBe('Bearer signed-in-access-2');
     expect(seen[1]?.get('chatgpt-account-id')).toBe('account-fixture');
     expect(budget.reservations).toHaveLength(2);
+  });
+
+  test('a refreshed sign-in token that is refused again is named a refused key', async () => {
+    const rejected: number[] = [];
+    let generation = 1;
+    const chatgpt = {
+      ...(providersFromEnv({}).find((provider) => provider.name === 'chatgpt') ?? fakeProvider),
+      signedIn: {
+        current: async () => ({
+          token: `signed-in-access-${generation}`,
+          generation,
+          headers: {},
+          retried: generation > 1,
+        }),
+        rejected: (refused: number) => {
+          rejected.push(refused);
+          generation = refused + 1;
+        },
+        refreshes: true,
+      },
+    };
+    const { post, budget } = await start({
+      authenticate: async () => ({
+        ...principal,
+        allowedModels: [{ provider: 'chatgpt', model: 'gpt-5.1-codex' }],
+      }),
+      providers: [chatgpt],
+      fetch: async () => new Response('{"error":{"message":"invalid token"}}', { status: 401 }),
+    });
+    const call = () =>
+      post('/providers/chatgpt/v1/responses', { model: 'gpt-5.1-codex', input: 'hello' });
+    // The first refusal is an expired token, refreshed for the engine's next try.
+    expect((await call()).status).toBe(502);
+    expect(budget.settlements[0]?.failure).toBeUndefined();
+    // The refreshed token is refused too: nothing newer exists, so it is a refused key.
+    const second = await call();
+    expect(second.status).toBe(401);
+    expect(((await second.json()) as { error: { code: string } }).error.code).toBe(
+      'provider_key_refused',
+    );
+    expect(budget.settlements[1]).toMatchObject({ failure: 'key_refused', httpStatus: 401 });
+    expect(rejected).toEqual([1, 2]);
+  });
+
+  test('a key typed in the app that the provider refuses is named a refused key, not refreshed', async () => {
+    const rejected: number[] = [];
+    const openai = {
+      ...(providersFromEnv({}).find((provider) => provider.name === 'openai') ?? fakeProvider),
+      apiKey: undefined,
+      // The shape the app's saved keys reach the gateway in: no refresh behind it.
+      signedIn: {
+        current: async () => ({ token: 'sk-typed-in-app-0000', generation: 0, headers: {} }),
+        rejected: (generation: number) => {
+          rejected.push(generation);
+        },
+      },
+    };
+    let calls = 0;
+    const { post, budget } = await start({
+      providers: [openai],
+      fetch: async () => {
+        calls++;
+        return new Response(
+          '{"error":{"message":"Incorrect API key provided: sk-typed-in-app-0000","code":"invalid_api_key"}}',
+          { status: 401 },
+        );
+      },
+    });
+    const response = await post('/providers/openai/v1/chat/completions', {
+      model: 'fixture-chat',
+    });
+    expect(response.status).toBe(401);
+    const text = await response.text();
+    expect(text).not.toContain('sk-typed-in-app');
+    expect(JSON.parse(text).error.code).toBe('provider_key_refused');
+    expect(budget.settlements[0]).toMatchObject({
+      status: 'failed',
+      httpStatus: 401,
+      failure: 'key_refused',
+    });
+    expect(calls).toBe(1);
+    expect(rejected).toEqual([]);
   });
 
   test('a provider nobody is signed in to refuses the call before anything is reserved', async () => {

@@ -4,6 +4,7 @@ import {
   artifactReceiptDetail,
   type Receipt,
 } from '@melete/contracts';
+import { recordStoredFiles } from '../storage/per-person.ts';
 import type { LockedJob, Query } from './records.ts';
 
 /** The capabilities that write one file, and the extension that file must carry. */
@@ -12,13 +13,18 @@ const GENERATED: Record<string, string> = {
   'audio.transcribe': '.md',
 };
 
-/** Publish the retrieval row in the same transaction as the durable action receipt. */
+/**
+ * Publish the retrieval row in the same transaction as the durable action
+ * receipt, and record what the step keeps for its person (storage/per-person.ts).
+ * Every path that lands a succeeded receipt comes through here.
+ */
 export async function recordGeneratedArtifact(
   tx: Query,
   job: LockedJob,
   action: Action,
   receipt: Receipt,
 ): Promise<Receipt> {
+  await recordStoredFiles(tx, job, action, receipt);
   const extension = GENERATED[action.kind];
   if (!extension) return receipt;
   const detail = artifactReceiptDetail.parse(receipt.detail);

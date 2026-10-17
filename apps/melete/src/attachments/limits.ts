@@ -12,6 +12,7 @@
  */
 import { ATTACHMENT_LIMITS, type AttachmentLimits } from '@melete/contracts';
 import type { Env } from '../env.ts';
+import { storagePerPersonBytes } from '../storage/per-person.ts';
 
 export type AttachmentSettings = {
   /** The largest file one upload may carry. */
@@ -26,6 +27,11 @@ export type AttachmentSettings = {
   serverUploads: number;
   /** Bytes those uploads may hold between them while they are read. */
   serverUploadBytes: number;
+  /**
+   * The most one person may keep, in bytes, sent files and saved files
+   * together (storage/per-person.ts); null or left out is no limit.
+   */
+  storagePerPerson?: number | null;
 };
 
 /** Uploads the service holds in flight at once when the operator sets nothing. */
@@ -70,6 +76,7 @@ export function attachmentSettingsFromEnv(env: Env): AttachmentSettings {
       : null,
     serverUploads: env.MELETE_ATTACHMENT_SERVER_UPLOADS,
     serverUploadBytes: env.MELETE_ATTACHMENT_SERVER_UPLOAD_MB * 1024 * 1024,
+    storagePerPerson: storagePerPersonBytes(env),
   };
 }
 

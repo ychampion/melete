@@ -49,6 +49,7 @@ export function createInternalServer(options: {
   memorySearch?: BrokerOptions['memorySearch'];
   autoReview?: BrokerOptions['autoReview'];
   sendHoldMs?: BrokerOptions['sendHoldMs'];
+  storagePerPerson?: BrokerOptions['storagePerPerson'];
   /** A broker the service already built, shared with its own routes. */
   broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
@@ -107,6 +108,7 @@ export function createInternalServer(options: {
       memorySearch: options.memorySearch,
       autoReview: options.autoReview,
       sendHoldMs: options.sendHoldMs,
+      storagePerPerson: options.storagePerPerson ?? null,
     });
   const app = createBrokerApp({
     broker,

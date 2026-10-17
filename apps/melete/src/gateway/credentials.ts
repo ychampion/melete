@@ -535,6 +535,7 @@ export class ProviderSignIn {
       rejected: (generation) => {
         this.refused.set(provider, generation);
       },
+      refreshes: true,
     };
   }
 
@@ -556,7 +557,8 @@ export class ProviderSignIn {
       if (error instanceof GatewayError) throw error;
       throw new GatewayError(503, 'provider_credential_unavailable');
     }
-    if (!this.fresh(current.tokens) || this.refused.get(provider) === current.generation) {
+    const afterRefusal = this.refused.get(provider) === current.generation;
+    if (!this.fresh(current.tokens) || afterRefusal) {
       let flight = this.refreshing.get(provider);
       if (!flight) {
         flight = this.refresh(provider, current.generation).finally(() =>
@@ -572,6 +574,9 @@ export class ProviderSignIn {
     return {
       token: current.tokens.accessToken,
       generation: current.generation,
+      // Only the call that refreshed because of a refusal is the retry. A later
+      // use of the same token, after it has served, is refreshed again if refused.
+      retried: afterRefusal,
       headers: issuer.requestHeaders?.(current.tokens) ?? {},
     };
   }

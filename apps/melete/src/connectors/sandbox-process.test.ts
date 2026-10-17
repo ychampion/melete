@@ -14,7 +14,7 @@ import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '
 import { testDatabase } from '../../test/helpers/database.ts';
 import { awakeAllowanceNote } from '../experience/events.ts';
 import { PostgresComputerControls } from '../sandbox/computer-control.ts';
-import { type FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
+import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { FakeComputers } from '../sandbox/process-fixtures.ts';
 import { ProcessHelperLost } from '../sandbox/process-helper.ts';
 import { END_REASONS, type ProcessLimits, SandboxProcesses } from '../sandbox/processes.ts';
@@ -413,6 +413,61 @@ withDb('background processes in the agent computer', () => {
       reason: 'There is no process with that id in this computer',
     });
     expect(computers.all()[0]?.state).toBe('running');
+  }, 60_000);
+
+  test("a job in another person's space names none of this computer's processes, and reaches none", async () => {
+    // Two people, each with a personal space, an agent and a computer of their own, on one engine.
+    const engine = new FakeSandboxEngine();
+    const mine = await setup({ engine });
+    const theirs = await setup({ engine });
+    for (const [each, label] of [
+      [mine, 'mine'],
+      [theirs, 'theirs'],
+    ] as const) {
+      const person = `prn_${crypto.randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      await db()`insert into principal (id, email) values (${person}, ${`${label}-${person}@example.test`})`;
+      await db()`update space set kind = 'personal', owner_principal_id = ${person}
+        where id = ${each.scope.spaceId}`;
+      await db()`update job set principal_id = ${person} where id = ${each.scope.jobId}`;
+    }
+    const id = String(
+      mine.detail(await mine.run('process.start', { command: 'serve', ttl_minutes: 5 })).process_id,
+    );
+    expect(theirs.detail(await theirs.run('process.list', {})).processes).toEqual([]);
+    for (const [kind, payload] of [
+      ['process.read', { process_id: id, cursor: 0 }],
+      ['process.write', { process_id: id, text: 'hello' }],
+      ['process.signal', { process_id: id, signal: 'SIGTERM' }],
+      ['process.wait', { process_id: id, until: 'exit', timeout_seconds: 1 }],
+      ['process.wait', { process_id: id, until: 'exit', later: true }],
+      ['process.extend', { process_id: id, ttl_minutes: 600 }],
+      ['process.stop', { process_id: id }],
+    ] as const) {
+      const ran = await theirs.run(kind, payload);
+      expect([kind, ran.result]).toEqual([
+        kind,
+        expect.objectContaining({
+          outcome: 'failed',
+          reason: 'There is no process with that id in this computer',
+        }),
+      ]);
+    }
+    // Their attempt opened no computer of mine, nor any at all, and mine runs on untouched.
+    expect(theirs.computers.all()).toEqual([]);
+    expect(mine.computers.all()).toHaveLength(1);
+    expect(mine.computers.all()[0]?.state).toBe('running');
+    expect(mine.computers.all()[0]?.input ?? '').toBe('');
+    const [row] = await db()`select state, expires_at, coalesce(started_at, created_at) as began
+      from sandbox_process where id = ${id}`;
+    expect(row?.state).toBe('running');
+    expect(
+      new Date(row?.expires_at).getTime() - new Date(row?.began).getTime(),
+    ).toBeLessThanOrEqual(5 * 60_000 + 1000);
+    // Their own agent's computer is still theirs to use.
+    expect(
+      theirs.detail(await theirs.run('process.start', { command: 'theirs' })).process_id,
+    ).toMatch(/^prc_/);
+    expect(theirs.computers.all()).toHaveLength(1);
   }, 60_000);
 
   test("another person's job that started a process is not named in the list", async () => {

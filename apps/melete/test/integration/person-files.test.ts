@@ -29,7 +29,12 @@ const env = loadEnv({
   MELETE_WORK_DIR: workRoot,
   MELETE_ENABLE_FAKE_PROVIDER: 'true',
 });
-const app = createApp({ env, db: fixture?.db ?? null, checkDatabase: async () => 'ok' });
+const app = createApp({
+  env,
+  db: fixture?.db ?? null,
+  sql: fixture?.sql,
+  checkDatabase: async () => 'ok',
+});
 let cookie = '';
 let spaceId = '';
 let jobId = '';
@@ -232,11 +237,21 @@ databaseTest('another person’s files, and another space’s, are not listed or
 
 databaseTest('a delete goes to the trash, and the file comes back from there', async () => {
   const id = await savedInFiles('receipts/hotel.pdf', '%PDF hotel\n');
+  // What the file holds, as the broker records it when the save lands.
+  await sql()`insert into stored_file (space_id, place, job_id, bytes)
+    values (${spaceId}, 'files:receipts/hotel.pdf', null, 11)`;
+  const kept = async () => {
+    const [row] = await sql()`select trash_id from stored_file
+      where space_id = ${spaceId} and place = 'files:receipts/hotel.pdf'`;
+    return row?.trash_id as string | null | undefined;
+  };
   const deleted = await remove(id);
   expect(deleted.status).toBe(200);
   const body = (await deleted.json()) as { trash_id: string; restorable_until: string };
   expect(body.trash_id).toMatch(/^del_/);
   expect(Date.parse(body.restorable_until)).toBeGreaterThan(Date.now());
+  // In the trash it no longer counts against anyone's storage.
+  expect(await kept()).toBe(body.trash_id);
   await expect(stat(inFiles('receipts', 'hotel.pdf'))).rejects.toThrow();
   expect((await list()).files?.some((file) => file.id === id)).toBe(false);
   // Deleting it again finds nothing to delete.
@@ -246,6 +261,7 @@ databaseTest('a delete goes to the trash, and the file comes back from there', a
   const restored = await restore(id, body.trash_id);
   expect(restored.status).toBe(200);
   expect(await readFile(inFiles('receipts', 'hotel.pdf'), 'utf8')).toBe('%PDF hotel\n');
+  expect(await kept()).toBeNull();
   expect((await list()).files?.some((file) => file.id === id)).toBe(true);
 });
 

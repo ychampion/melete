@@ -1,5 +1,5 @@
 {
-  "id": "e5a6eda5-2b10-43a1-b09f-b8af389f383f",
+  "id": "da9e905a-b763-4102-ba0d-f2eefede77ea",
   "prevId": "410573b9-6d6a-4aa8-b662-503fc5eae0d6",
   "version": "7",
   "dialect": "postgresql",
@@ -4387,75 +4387,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.person_spend_limit": {
-      "name": "person_spend_limit",
-      "schema": "",
-      "columns": {
-        "principal_id": {
-          "name": "principal_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "day_usd": {
-          "name": "day_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "month_usd": {
-          "name": "month_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "background_day_usd": {
-          "name": "background_day_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "background_month_usd": {
-          "name": "background_month_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "person_spend_limit_principal_id_principal_id_fk": {
-          "name": "person_spend_limit_principal_id_principal_id_fk",
-          "tableFrom": "person_spend_limit",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "person_spend_limit_positive": {
-          "name": "person_spend_limit_positive",
-          "value": "coalesce(\"person_spend_limit\".\"day_usd\", 1) > 0 and coalesce(\"person_spend_limit\".\"month_usd\", 1) > 0\n        and coalesce(\"person_spend_limit\".\"background_day_usd\", 1) > 0 and coalesce(\"person_spend_limit\".\"background_month_usd\", 1) > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.plan_milestone": {
       "name": "plan_milestone",
       "schema": "",
@@ -4618,6 +4549,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "routines_resumed_at": {
+          "name": "routines_resumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},

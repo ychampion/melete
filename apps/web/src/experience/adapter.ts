@@ -97,6 +97,7 @@ import type {
   PermissionOutcome,
   PersonFile,
   PersonFileDeleted,
+  PersonStorage,
   Plan,
   PlanCreate,
   PrivacyPreview,
@@ -753,7 +754,8 @@ export const adapter = {
   saveMemorySettings: (capture: boolean) =>
     guard<{ capture: boolean }>(() => api.PUT('/memory/settings', { body: { capture } })),
   /* ---------- the person's files ---------- */
-  files: () => guard<{ files: PersonFile[] }>(() => api.GET('/files')),
+  files: () =>
+    guard<{ files: PersonFile[]; storage?: PersonStorage | null }>(() => api.GET('/files')),
   /** Into the trash; `trash_id` puts it back until `restorable_until`. */
   deleteFile: (id: string) => guard<PersonFileDeleted>(() => api.DELETE('/files/{id}', path(id))),
   restoreFile: (id: string, trashId: string) =>

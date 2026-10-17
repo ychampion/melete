@@ -6,8 +6,15 @@
  */
 import { prefixedId } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
+import { imageRefusal } from '../cells/policy.ts';
 import { type InstanceView, stoppedInstances } from '../ops/instance.ts';
-import type { CellHandle, CellHost, CellSpec, CellState } from './cell-host.ts';
+import {
+  type CellHandle,
+  type CellHost,
+  type CellSpec,
+  type CellState,
+  EngineImageUnavailable,
+} from './cell-host.ts';
 import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
 import { createPooledNetwork } from './network-pool.ts';
 import { ADOPTING, LocalWorkspaceFs, type Removable, SPARE_DIRECTORY } from './workspace-fs.ts';
@@ -40,7 +47,10 @@ export class DockerError extends Error {
     readonly status: number,
     method: Method,
     path: string,
-    /** The engine's own reason, kept only for networks, whose requests carry no Env. */
+    /**
+     * The engine's reason, kept only where it cannot hold an Env: for networks,
+     * whose requests carry none, and for a 403, the cell service's refusal.
+     */
     readonly reason?: string,
   ) {
     // Docker errors can include the submitted configuration. Never log its Env.
@@ -113,7 +123,11 @@ export class DockerSocketApi implements DockerApi, DockerVersionSource {
         response.status,
         method,
         path,
-        path.startsWith('/networks') ? await engineReason(response) : undefined,
+        // A 403 is the cell service's refusal: it names a rule, and at most an
+        // option key or a resource name, never an environment value.
+        path.startsWith('/networks') || response.status === 403
+          ? await engineReason(response)
+          : undefined,
       );
     const text = await response.text();
     return text ? JSON.parse(text) : null;
@@ -451,10 +465,8 @@ export class LocalCellHost implements CellHost {
     workspace: string,
     signal: AbortSignal,
   ): Promise<string> {
-    const created = (await this.docker.request(
-      'POST',
-      `/containers/create?name=${resources.container}`,
-      {
+    const created = (await this.docker
+      .request('POST', `/containers/create?name=${resources.container}`, {
         Image: this.image,
         User: '10001:10001',
         WorkingDir: '/work',
@@ -481,8 +493,10 @@ export class LocalCellHost implements CellHost {
           ],
         },
         NetworkingConfig: { EndpointsConfig: { [resources.network]: {} } },
-      },
-    )) as { Id: string };
+      })
+      .catch(async (error: unknown) => {
+        throw (await this.imageUnavailable(error)) ?? error;
+      })) as { Id: string };
     resources.containerId = created.Id;
     signal.throwIfAborted();
     await this.docker.request('POST', `/containers/${created.Id}/start`);
@@ -495,6 +509,30 @@ export class LocalCellHost implements CellHost {
     if (Object.keys(networks).length !== 1 || !address || !/^\d+\.\d+\.\d+\.\d+$/.test(address))
       throw new Error('The runtime must have exactly its private attempt network');
     return `http://${address}:8790`;
+  }
+
+  /**
+   * Why an engine container was not created, when the reason is its image:
+   * the image pinned at start was removed from the engine, or the cell service
+   * refuses it. Null for any other failure.
+   */
+  private async imageUnavailable(error: unknown): Promise<EngineImageUnavailable | null> {
+    if (!(error instanceof DockerError)) return null;
+    let why: EngineImageUnavailable['why'];
+    if (error.status === 403 && error.reason === imageRefusal('runtime')) why = 'refused';
+    else if (error.status === 404) {
+      // A create also answers 404 for a network that is gone: ask about the image itself.
+      try {
+        await this.docker.request('GET', `/images/${encodeURIComponent(this.image)}/json`);
+        return null;
+      } catch (missing) {
+        if (!(missing instanceof DockerError && missing.status === 404)) return null;
+      }
+      why = 'removed';
+    } else return null;
+    const unavailable = new EngineImageUnavailable(this.options.image, this.image, why);
+    process.stderr.write(`runtime: ${unavailable.message}\n`);
+    return unavailable;
   }
 
   private async remove(method: Method, path: string, body?: unknown) {

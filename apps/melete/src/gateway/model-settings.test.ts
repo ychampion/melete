@@ -8,6 +8,7 @@ import type { ProviderSignIn } from './credentials.ts';
 import { createModelGateway, type GatewayProvider, providersFromEnv } from './index.ts';
 import { checkedBaseUrl, ModelSettingsService, modelIds } from './model-settings.ts';
 import type { ModelRouting } from './routing.ts';
+import type { GatewaySettlement } from './types.ts';
 
 /** No keys stored and no model chosen: the tests here never reach the database. */
 const emptyDb = {
@@ -234,6 +235,83 @@ describe('the gateway reads its providers per call', () => {
     const text = await after.text();
     expect(text).not.toContain('sk-connected-in-app');
     expect(seen).toEqual(['Bearer sk-connected-in-app-9999']);
+  });
+
+  test('a saved key the provider refuses is named a refused key, after one call', async () => {
+    // The table of saved keys, kept in memory: what `saveKey` writes, the gateway reads.
+    const stored: unknown[] = [];
+    const db = {
+      insert: () => ({
+        values: (row: unknown) => ({
+          onConflictDoUpdate: async () => {
+            stored.splice(0, stored.length, row);
+          },
+        }),
+      }),
+      delete: () => ({ where: async () => {} }),
+      select: () => ({
+        from: () => Object.assign(Promise.resolve(stored), { where: async () => [] }),
+      }),
+    } as unknown as Database;
+    const settings = new ModelSettingsService({
+      db,
+      env: loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: 'ab'.repeat(32) }),
+      fetch: status(500),
+    });
+    await settings.saveKey('openai', 'owner', { api_key: 'sk-typed-in-app-4321' });
+    const settled: GatewaySettlement[] = [];
+    let calls = 0;
+    const server = createModelGateway({
+      authenticate: async () => ({
+        jobId: 'job',
+        attemptId: 'att',
+        privacy: { kind: 'job' as const },
+        epoch: 1,
+        revision: 1,
+        maxRequests: 5,
+        maxTokens: 5000,
+        allowedModels: [{ provider: 'openai', model: 'fixture-chat' }],
+      }),
+      budget: {
+        reserve: async () => ({ id: 'r' }),
+        settle: async (_reservation, settlement) => {
+          settled.push(settlement);
+        },
+      },
+      privacy: defaultPrivacyRouter(),
+      providers: providersFromEnv({}),
+      currentProviders: (configured) => settings.providers(configured),
+      fetch: async (request) => {
+        calls++;
+        expect(request.headers.get('authorization')).toBe('Bearer sk-typed-in-app-4321');
+        return new Response(
+          '{"error":{"message":"Incorrect API key provided","code":"invalid_api_key"}}',
+          { status: 401 },
+        );
+      },
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('expected TCP listener');
+    const answer = await fetch(
+      `http://127.0.0.1:${address.port}/providers/openai/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer melete-surrogate-test',
+          'x-melete-capability': 'cap',
+        },
+        body: JSON.stringify({ model: 'fixture-chat', max_tokens: 10, messages: [] }),
+      },
+    );
+    expect(answer.status).toBe(401);
+    const text = await answer.text();
+    expect(text).not.toContain('sk-typed-in-app');
+    expect(JSON.parse(text).error.code).toBe('provider_key_refused');
+    expect(settled).toMatchObject([{ failure: 'key_refused', httpStatus: 401 }]);
+    expect(calls).toBe(1);
   });
 });
 

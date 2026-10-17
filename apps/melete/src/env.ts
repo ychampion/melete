@@ -698,6 +698,22 @@ const variables = z.object({
     z.coerce.number().int().positive().optional(),
   ),
   /**
+   * Days a person may go unseen (no sign-in, no use of the app or of a
+   * channel) before their routines, watches and other standing work rest.
+   * They come back on the next time the person is seen, without running the
+   * times they missed. Unset or blank: standing work never rests.
+   */
+  MELETE_REST_ROUTINES_AFTER_DAYS: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(3650).optional(),
+  ),
+  /**
+   * How many routines and pieces of repeating work one person may keep at
+   * once. Unset or blank: no limit.
+   */
+  MELETE_ROUTINES_PER_PERSON_MAX: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(100_000).optional(),
+  ),
+  /**
    * When true, a job's model calls count against its dollar limit
    * (`max_usd_est`) as well as its actions do. Off, only actions and search
    * fees count there.
@@ -1104,6 +1120,13 @@ const variables = z.object({
   /** The most one conversation's trash holds, in MiB; older trash makes room first. */
   MELETE_TRASH_MAX_MB: unsetWhenBlank(z.coerce.number().int().min(1).max(1048576).default(1024)),
   /**
+   * The most one person may keep, in MiB, across their spaces: their Files,
+   * what their chats saved and what they sent in chat. Unset, nobody is limited.
+   */
+  MELETE_STORAGE_PER_PERSON_MB: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(1073741824).optional(),
+  ),
+  /**
    * How many days an observation read from a connected mailbox or calendar is
    * kept when no job, situation or listening trigger holds it.
    */
@@ -1117,6 +1140,13 @@ const variables = z.object({
   MELETE_OBSERVATION_TOMBSTONE_DAYS: unsetWhenBlank(
     z.coerce.number().int().min(1).max(3650).default(180),
   ),
+  /**
+   * How many days the record of each model call, and what connected accounts
+   * reported that no job took in, is kept. Unset keeps both; each day's calls
+   * are summed into the daily usage roll-up before they go. At least 35, so
+   * this month's spending and the roll-up still read whole days.
+   */
+  MELETE_RETENTION_DAYS: unsetWhenBlank(z.coerce.number().int().min(35).max(3650).optional()),
   /** How many days the record of where each computer connected is kept. */
   MELETE_EGRESS_RECORD_DAYS: unsetWhenBlank(z.coerce.number().int().min(1).max(3650).default(30)),
   /**

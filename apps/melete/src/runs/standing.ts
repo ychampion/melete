@@ -27,6 +27,7 @@ import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { personSetSchedule } from '../jobs/attention.ts';
 import { workZone } from '../jobs/local-now.ts';
+import { checkRoutineRoom } from '../jobs/resting.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import {
@@ -46,6 +47,9 @@ export const STANDING_MIN_GAP_MS = 5 * 60_000;
  * wakes. Every wake is a shift with model calls, and nobody chose the cost.
  */
 export const WORK_STANDING_MIN_GAP_MS = 60 * 60_000;
+
+/** What setting a run's trigger needs of the job service: its queue, and the operator's routine limit. */
+type StandingJobs = Pick<JobService, 'boss'> & Partial<Pick<JobService, 'standingWork'>>;
 
 /** How a checkpoint's handoff is marked when the run rests on its trigger. */
 export const ON_TRIGGER = 'on_trigger';
@@ -100,7 +104,7 @@ async function latestSeq(tx: Transaction): Promise<number> {
  */
 export async function stand(
   tx: Transaction,
-  jobs: Pick<JobService, 'boss'>,
+  jobs: StandingJobs,
   row: JobRow,
   wake: RunWake,
   setBy: 'person' | 'work',
@@ -154,6 +158,9 @@ export async function stand(
     checkTriggerScope(spec);
   }
   const before = await standingTrigger(tx, row.id);
+  // Work that starts to repeat is one more routine for its person.
+  if (!before)
+    await checkRoutineRoom(tx, row.principalId, jobs.standingWork?.routinesPerPerson, row.id);
   // The work standing again on the schedule the person asked for leaves it theirs.
   const asked =
     personAsked ||
@@ -224,7 +231,7 @@ export async function restOn(tx: Transaction, registration: TriggerRow): Promise
  */
 export async function checkpointNext(
   tx: Transaction,
-  jobs: Pick<JobService, 'boss'>,
+  jobs: StandingJobs,
   row: JobRow,
   helper: boolean,
   next: string | RunWake | undefined,
@@ -397,7 +404,7 @@ export async function standingBrief(tx: Transaction, row: JobRow): Promise<strin
       const zone =
         spec?.success && spec.data.kind === 'schedule'
           ? spec.data.timezone
-          : await profileZone(tx, row.spaceId);
+          : await defaultZone(tx, row);
       const words = spec?.success && spec.data.kind === 'schedule' ? scheduleWords(spec.data) : '';
       lines.push(
         `Why this shift started: it is the scheduled time${words ? ` (${words.toLowerCase()})` : ''}: ${formatAt(woke.createdAt, zone)}.`,

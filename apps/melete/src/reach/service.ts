@@ -56,6 +56,11 @@ export type ReachDeps = {
   config: ReachConfig;
   /** Marks a situation seen, as tapping its push does. */
   ack?: (principalId: string, situationId: string) => Promise<unknown>;
+  /**
+   * The person answered a text or a call: they were seen. An opt-out is not
+   * using Melete and does not count. Failing to record it changes no answer.
+   */
+  seen?: (principalId: string) => Promise<unknown>;
   now?: () => number;
 };
 
@@ -705,6 +710,7 @@ export class ReachService {
       if (confirm === null) return { outcome: 'ignored' };
       return confirm ? { outcome: 'stop', reply: OPT_OUT_CONFIRMATION } : { outcome: 'stop' };
     }
+    await this.wasSeen(owner.principal_id);
     if (kind === 'start') {
       await this.db.transaction(async (tx) => {
         await tx.execute(sql`update reach_number set opted_out_at = null, updated_at = now()
@@ -720,6 +726,16 @@ export class ReachService {
     await this.acknowledgeClimbing(owner.principal_id);
     await markSeen(this.db);
     return { outcome: 'acknowledged' };
+  }
+
+  private async wasSeen(principalId: string) {
+    await this.deps
+      .seen?.(principalId)
+      .catch((error: unknown) =>
+        process.stderr.write(
+          `reach: last seen not recorded (${error instanceof Error ? error.message : 'error'})\n`,
+        ),
+      );
   }
 
   /** The one confirmation an opt-out gets, recorded and counted like any other text. */
@@ -819,6 +835,7 @@ export class ReachService {
     );
     if (!contact) return null;
     const digit = params.get('Digits') ?? '';
+    if (digit !== '9') await this.wasSeen(contact.principal_id);
     if (digit === '9') {
       await this.db.transaction((tx) => this.optOut(tx, contact.principal_id, 'keypress'));
       if (contact.situation_id)

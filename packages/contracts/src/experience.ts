@@ -1196,6 +1196,8 @@ export const homeResponse = z.strictObject({
   routine_results: z.array(routineResult),
   /** Work rooms asked the person to run with their own setup, work of theirs running for a room, and results waiting to be shared or kept. */
   handoffs: z.array(roomHandoff).optional(),
+  /** Said for a while after the person's routines came back on from resting while they were away. */
+  routines_back: z.string().max(300).optional(),
 });
 export const experienceAutomation = z.strictObject({
   id,

@@ -64,12 +64,16 @@ export async function rollupFinishedDays(
   const from = since
     ? new Date(`${since}T00:00:00.000Z`)
     : new Date(today.getTime() - ROLLUP_LOOKBACK_DAYS * DAY_MS);
-  const missing = await sql`select to_char(d at time zone 'UTC', 'YYYY-MM-DD') as day
-    from generate_series(${from.toISOString()}::timestamptz,
-      ${today.toISOString()}::timestamptz - interval '1 day', interval '1 day') as d
-    where not exists (select 1 from usage_day u where u.day = to_char(d at time zone 'UTC', 'YYYY-MM-DD'))
+  // The days are counted on UTC clock times, not in the database's own time
+  // zone: there, a day after a change of the clocks is 23 or 25 hours long,
+  // and every day after it would be read an hour off.
+  const missing = await sql`select to_char(d, 'YYYY-MM-DD') as day
+    from generate_series(${utcDay(from)}::date::timestamp,
+      ${utcDay(today)}::date::timestamp - interval '1 day', interval '1 day') as d
+    where not exists (select 1 from usage_day u where u.day = to_char(d, 'YYYY-MM-DD'))
       and exists (select 1 from model_usage m
-        where m.created_at >= d and m.created_at < d + interval '1 day')`;
+        where m.created_at >= d at time zone 'UTC'
+          and m.created_at < (d + interval '1 day') at time zone 'UTC')`;
   const days = new Set(missing.map((row) => String(row.day)));
   days.add(utcDay(new Date(today.getTime() - DAY_MS)));
   const written = [...days].sort();

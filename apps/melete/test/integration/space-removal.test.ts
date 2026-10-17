@@ -373,6 +373,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   sandbox_process: 'operational',
   sandbox_session: 'operational',
   egress_record: 'operational',
+  // What each file saved in the space holds, counted against who saved it.
+  stored_file: 'operational',
   // Where each account's changes were last read, and what was kept about its calendar.
   source_cursor: 'operational',
   subject_state: 'operational',
@@ -768,6 +770,9 @@ describe.if(handle !== null)('removing a space', () => {
     await sql`insert into attachment (id, space_id, principal_id, name, media_type, kind, size, blob_key)
       values (${`file_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, 'notes.txt',
         'text/plain', 'text', 5, ${`sha256/${'0'.repeat(64)}`})`;
+    // What a file saved in the space's Files holds.
+    await sql`insert into stored_file (space_id, place, principal_id, bytes)
+      values (${seeded.spaceId}, 'files:notes.md', ${seeded.principalId}, 5)`;
     // Where a connected calendar was last read, and one occurrence kept from it.
     await sql`insert into source_cursor (connection_id, stream, space_id, cursor)
       values (${seeded.connectionId}, 'calendar', ${seeded.spaceId}, '{}'::jsonb)`;

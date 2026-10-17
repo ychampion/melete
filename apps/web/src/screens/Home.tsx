@@ -1187,6 +1187,7 @@ export function HomeScreen() {
               {data ? greetingWith(data.greeting, givenName(profile)) : ' '}
             </h1>
             {line ? <p className="brief-line voice">{line}</p> : null}
+            {data?.routines_back ? <p className="brief-line">{data.routines_back}</p> : null}
             {data ? <AskName onSaved={home.reload} /> : null}
           </header>
           {home.error ? (

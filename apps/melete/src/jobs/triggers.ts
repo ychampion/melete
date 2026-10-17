@@ -37,6 +37,7 @@ import { ItemFailures } from '../ops/item-failures.ts';
 import { personSetSchedule } from './attention.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
+import { alreadyStanding, checkRoutineRoom, personResting } from './resting.ts';
 import type { AttemptRunner } from './runner.ts';
 import { jobMayUseConnection } from './scopes.ts';
 import type { JobRow, JobService } from './service.ts';
@@ -59,6 +60,9 @@ export type TriggerRow = typeof trigger.$inferSelect;
  * transaction, and the cursor means none of them is tested twice.
  */
 export const WATCH_SCAN_LIMIT = 200;
+
+/** An operation event that is the result of an operation the job started (see operations.ts). */
+const OPERATION_RESULT = sql`${event.payload} ? 'operation_id'`;
 
 function knownTimeZone(zone: string): boolean {
   try {
@@ -462,6 +466,11 @@ export class TriggerService {
     runner.afterRecovery = () => this.syncSchedules();
   }
 
+  /** Whether this job's standing work rests because its person has been away. */
+  private resting(tx: Transaction, row: JobRow): Promise<boolean> {
+    return personResting(tx, row.principalId, this.jobs.standingWork?.restAfterDays);
+  }
+
   async create(jobId: string, input: TriggerSpec): Promise<TriggerRow> {
     const spec = triggerSpec.parse(input);
     checkTriggerSpec(this.jobs, spec);
@@ -491,6 +500,14 @@ export class TriggerService {
         checkEventSource(source.provider, spec.event_name);
         checkTriggerScope(spec);
       }
+      // A first schedule or watch makes the work one more routine for its person.
+      if (watchedProcess(spec) === null && !(await alreadyStanding(tx, row.id)))
+        await checkRoutineRoom(
+          tx,
+          row.principalId,
+          this.jobs.standingWork?.routinesPerPerson,
+          row.id,
+        );
       const [start] = await tx
         .select({ seq: event.seq })
         .from(event)
@@ -589,13 +606,19 @@ export class TriggerService {
       return row;
     if (!registration?.enabled)
       throw new ServiceError('invalid_wait', 'Wait trigger is missing or disabled.');
+    // The person has been away long enough that their standing work rests:
+    // what its schedule or connection brings is let pass, and coming back
+    // counts from then. The result of an operation the work started is its
+    // work under way, and still reaches it.
+    const resting = watchedProcess(registration.spec) === null && (await this.resting(tx, row));
     const spec = triggerSpec.parse(registration.spec);
     // A trigger made before its connection stopped serving this job, or before
     // the rule existed, hears nothing more from it.
     if (spec.kind !== 'schedule' && !(await jobMayUseConnection(tx, row.id, spec.connection_id)))
       return row;
-    const source =
-      spec.kind === 'schedule'
+    const source = resting
+      ? sql`false`
+      : spec.kind === 'schedule'
         ? and(
             sql`${event.payload}->>'kind' = 'schedule_event'`,
             sql`${event.payload}->>'trigger_id' = ${registration.id}`,
@@ -621,6 +644,7 @@ export class TriggerService {
               eq(event.jobId, row.id),
               sql`${event.payload}->>'kind' = 'operation_event'`,
               sql`${event.payload}->>'trigger_id' = ${registration.id}`,
+              resting ? OPERATION_RESULT : undefined,
             ),
           ),
         ),
@@ -916,6 +940,8 @@ export class TriggerService {
       }
       const row = await this.jobs.lock(tx, registration.jobId);
       if (!row || isTerminal(jobState.parse(row.state))) return;
+      // An occurrence while the person is away is let pass, not kept for later.
+      if (!byPerson && (await this.resting(tx, row))) return;
       const received = await appendEvent(tx, {
         type: 'notice',
         payload: {
