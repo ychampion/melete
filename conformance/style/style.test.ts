@@ -99,8 +99,9 @@ describe('the identity file', () => {
   test('states the reply rules the style check measures', () => {
     expect(flat).toContain('Answer first');
     expect(flat).toContain('One to three sentences');
-    // One plain line before the first tool call, so the person hears back at once.
-    expect(flat).toContain("Before tools, say once in a line what you'll do");
+    // One plain line before the first tool call or a long draft, so the person
+    // hears back at once instead of waiting for the whole draft.
+    expect(flat).toContain("Before tools or a long reply, say in a line what you'll do");
     expect(flat).not.toContain('No preamble');
     expect(flat).toContain('never call yourself an AI');
     expect(flat).toContain('Contractions are fine');
