@@ -255,6 +255,7 @@ export function maritimeCapabilities(): SandboxCapabilities {
     maxUploadBytes: MARITIME_FILE_LIMIT,
     // A computer sleeps after five minutes without an action.
     keepAwake: false,
+    desktop: true,
   };
 }
 
@@ -467,6 +468,21 @@ export interface MaritimeProvider extends SandboxProvider {
     options: { mode: 'watch' | 'control'; ttlSeconds?: number; reason?: string },
     signal: AbortSignal,
   ): Promise<MaritimeViewer>;
+  /**
+   * End the computer's current session, which revokes the viewer links it
+   * handed out, so a link left open in a tab stops working. It does not end a
+   * takeover (see `holder`). The computer sleeps after a short grace unless
+   * the agent acts again.
+   */
+  endViewers(handle: SandboxHandle, signal: AbortSignal): Promise<void>;
+  /**
+   * Who holds the desktop as Maritime sees it: `human` from the moment a
+   * control link is minted (opened or not) until the person presses Done in
+   * the viewer, or a little after the link runs out; `agent` otherwise; null
+   * when Maritime does not say. Closing the session does not end it, and
+   * nothing else in Maritime's API hands it back early.
+   */
+  holder(handle: SandboxHandle, signal: AbortSignal): Promise<'human' | 'agent' | null>;
 }
 
 export const isMaritimeProvider = (provider: SandboxProvider): provider is MaritimeProvider =>
@@ -1260,6 +1276,18 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
         expiresAt: typeof answer.expiresAt === 'string' ? answer.expiresAt : '',
         mode: request.mode,
       };
+    },
+
+    async endViewers(handle, signal): Promise<void> {
+      const id = computerId(handle);
+      // A computer already gone has no link left to end.
+      await api('POST', `/${id}/sessions/close`, { json: {} }, [200, 202, 204, 404], signal);
+    },
+
+    async holder(handle, signal): Promise<'human' | 'agent' | null> {
+      const found = await record(computerId(handle), signal);
+      if (!found) throw new SandboxGone(`Maritime has no computer ${computerId(handle)}`);
+      return found.mode === 'human' || found.mode === 'agent' ? found.mode : null;
     },
   };
   return provider;

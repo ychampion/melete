@@ -55,6 +55,7 @@ export const FAKE_CAPABILITIES: SandboxCapabilities = {
   regions: [],
   maxUploadBytes: 8 * 1024 * 1024,
   keepAwake: true,
+  desktop: false,
 };
 
 // ---------------------------------------------------------------------------

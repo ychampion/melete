@@ -732,7 +732,7 @@ test('desktop commands map onto Maritime actions, and what has none is refused',
 });
 
 test('viewer links: watch to look, control to take the wheel', async () => {
-  const { provider, sent } = standinProvider();
+  const { provider, sent, standin } = standinProvider();
   const handle = await openSandbox(provider, spec(), signal());
   const watch = await provider.viewerLink(handle, { mode: 'watch' }, signal());
   expect(watch.mode).toBe('watch');
@@ -766,10 +766,26 @@ test('viewer links: watch to look, control to take the wheel', async () => {
   ).toBe('watch');
   const shot = await provider.screenshot(handle, signal());
   expect(shot).toMatchObject({ type: 'image/png', width: 1200, height: 750, frameId: 1 });
+  // Ending the session ends every link it handed out; a person holding the desktop lets go.
+  standin.hold(handle.providerSandboxId);
+  await provider.endViewers(handle, signal());
+  expect(sent.at(-1)?.url.pathname).toEndWith(`/${handle.providerSandboxId}/sessions/close`);
+  expect(standin.closed).toEqual([handle.providerSandboxId]);
+  // Closing the session leaves a person holding the desktop until they press Done.
+  expect(await provider.holder(handle, signal())).toBe('human');
+  standin.hold(handle.providerSandboxId, false);
+  expect(await provider.holder(handle, signal())).toBe('agent');
   expect(
     await provider.act(handle, maritimeActionsFor({ kind: 'key', keys: ['Return'] }), signal()),
   ).toMatchObject({ action: 'key', ok: true });
   await provider.destroy(handle, signal());
+});
+
+test('ending the viewers of a computer already gone is not an error', async () => {
+  const { provider } = standinProvider();
+  const handle = await openSandbox(provider, spec(), signal());
+  await provider.destroy(handle, signal());
+  await provider.endViewers(handle, signal());
 });
 
 test('the adapter reads no credential or setting from its own environment', async () => {

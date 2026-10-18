@@ -223,6 +223,7 @@ export type LiveInput = LiveUp['events'][number];
 /** The desktop in a job's sandbox, with who is driving it. */
 export type SandboxComputer = Ok<paths['/sandbox/computers'], 'get'>['computers'][number];
 export type SandboxControl = Ok<paths['/sandbox/sessions/{id}/takeover'], 'post'>;
+export type SandboxViewer = Ok<paths['/sandbox/sessions/{id}/viewer'], 'post'>;
 export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
 /**
  * An entry in the broker's action ledger. The interface reads it only for

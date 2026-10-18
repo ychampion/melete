@@ -510,6 +510,121 @@ function BrowserView({
   );
 }
 
+/** When a viewer link stops working, said the way a clock on the wall would. */
+const untilWords = (iso: string) => {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime())
+    ? null
+    : at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
+
+/**
+ * A desktop shown through its provider's own viewer, which this app cannot
+ * frame: each press asks the service for a fresh, short-lived link and opens
+ * it in a new tab. The link is held only while it works, and never stored.
+ * Watching needs nothing; driving needs control, taken over first. Handing
+ * the computer back ends every link the provider handed out.
+ */
+function ViewerLinkScreen({
+  sessionId,
+  agentName,
+  yours,
+}: {
+  sessionId: string;
+  agentName: string;
+  /** The person holds control: the link drives the desktop. */
+  yours: boolean;
+}) {
+  const mode = yours ? 'control' : 'watch';
+  const [opening, setOpening] = useState(false);
+  const [opened, setOpened] = useState<{ until: string | null; expiresAt: number } | null>(null);
+  // A link the browser would not open in a tab by itself, offered to press instead.
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!opened && !blocked) return;
+    const timer = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, [opened, blocked]);
+  const expired = opened !== null && opened.expiresAt <= now;
+  // Expiry drops a link that no longer works.
+  useEffect(() => {
+    if (expired) setBlocked(null);
+  }, [expired]);
+  const open = async () => {
+    setOpening(true);
+    setBlocked(null);
+    // Opened at the press, so the browser lets it through; pointed at the link once it arrives.
+    const tab = window.open('', '_blank');
+    const result = await adapter.sandboxViewer(sessionId, mode);
+    setOpening(false);
+    if (!result.data) {
+      tab?.close();
+      toast({
+        kind: 'err',
+        title:
+          result.error ??
+          result.unavailable ??
+          (yours ? 'Couldn’t open the desktop' : 'Couldn’t open the viewer'),
+      });
+      return;
+    }
+    const expiresAt = Date.parse(result.data.expires_at);
+    setOpened({
+      until: untilWords(result.data.expires_at),
+      expiresAt: Number.isNaN(expiresAt) ? Number.POSITIVE_INFINITY : expiresAt,
+    });
+    setNow(Date.now());
+    if (tab) {
+      tab.opener = null;
+      tab.location.replace(result.data.url);
+    } else setBlocked(result.data.url);
+  };
+  const label = yours
+    ? opened && !expired
+      ? 'Open a fresh link'
+      : 'Open the desktop'
+    : opened && !expired
+      ? 'Open a fresh link'
+      : 'Watch in a new tab';
+  return (
+    <div className="computer-screen computer-viewer">
+      <span className="computer-wait" role="status">
+        {expired
+          ? 'That link has expired. Open a fresh one to carry on.'
+          : opened
+            ? `Opened in a new tab${opened.until ? `. The link works until ${opened.until}` : ''}.${yours ? ' Opening a fresh one ends the one before. Press Done in the viewer before you hand it back.' : ''}`
+            : yours
+              ? `You have the computer. Open it in a new tab to use it yourself. When you are done, press Done in the viewer, then hand it back here.`
+              : `${agentName}’s desktop opens in its own viewer, in a new tab.`}
+      </span>
+      <span className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <Button
+          size="sm"
+          variant={yours && !(opened && !expired) ? 'primary' : 'outline'}
+          icon="arrowUpRight"
+          disabled={opening}
+          onClick={() => void open()}
+        >
+          {opening ? 'Opening…' : label}
+        </Button>
+        {blocked && !expired ? (
+          <a
+            className="section-link"
+            href={blocked}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setBlocked(null)}
+          >
+            The browser kept the tab from opening. Open it here
+            <Icon name="chevronRight" size={13} />
+          </a>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
 /**
  * The desktop in the agent's sandbox. While the agent drives it the person
  * may watch it live; taking over parks the job until it is handed back, and
@@ -579,6 +694,14 @@ function DesktopView({
         <div className="computer-screen">
           <span className="computer-wait">Handing the computer back…</span>
         </div>
+      ) : desktop.view === 'link' && (yours || desktop.running) ? (
+        <ViewerLinkScreen
+          // A change of hands starts from nothing: the links before it no longer work.
+          key={`${desktop.session_id}:${desktop.control_epoch}`}
+          sessionId={desktop.session_id}
+          agentName={agentName}
+          yours={yours}
+        />
       ) : yours || watching ? (
         <LiveScreen
           // Control moving changes the epoch, which ends a view; a new one opens.
@@ -622,7 +745,7 @@ function DesktopView({
           </Button>
         ) : (
           <>
-            {desktop.running ? (
+            {desktop.running && desktop.view !== 'link' ? (
               <Button
                 variant="ghost"
                 disabled={busy}

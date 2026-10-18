@@ -102,6 +102,7 @@ export function modalCapabilities(): SandboxCapabilities {
     regions: [],
     maxUploadBytes: 8 * MiB,
     keepAwake: false,
+    desktop: false,
   };
 }
 

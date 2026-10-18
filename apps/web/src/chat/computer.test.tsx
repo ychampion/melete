@@ -159,7 +159,11 @@ test('keys become page keys: typed characters carry text, shortcuts do not', () 
   expect(shownAddress('https://tables.example/')).toBe('tables.example');
 });
 
-const desktop = (control: 'agent' | 'human', running = true) => ({
+const desktop = (
+  control: 'agent' | 'human',
+  running = true,
+  view: 'stream' | 'link' = 'stream',
+) => ({
   session_id: 'sbx_1',
   job_id: 'job_1',
   agent_id: 'agent_1',
@@ -167,10 +171,15 @@ const desktop = (control: 'agent' | 'human', running = true) => ({
   running,
   control,
   control_epoch: 1,
-  viewport: { width: 1024 as const, height: 768 as const },
+  viewport: view === 'stream' ? { width: 1024, height: 768 } : { width: 1200, height: 750 },
   egress: 'open' as const,
+  view,
 });
-const renderDesktop = (control: 'agent' | 'human', running = true) =>
+const renderDesktop = (
+  control: 'agent' | 'human',
+  running = true,
+  view: 'stream' | 'link' = 'stream',
+) =>
   renderToStaticMarkup(
     <ComputerPanel
       agent={NOVA}
@@ -180,7 +189,7 @@ const renderDesktop = (control: 'agent' | 'human', running = true) =>
         processes: [],
         available: { browser: false, terminal: true },
       }}
-      desktop={desktop(control, running)}
+      desktop={desktop(control, running, view)}
       error={null}
       onClose={() => {}}
       onChanged={() => {}}
@@ -238,4 +247,26 @@ test('a stopped desktop says it starts again when used, and offers nothing to wa
   const html = renderDesktop('agent', false);
   expect(html).toContain('It starts again when Nova uses it');
   expect(html).not.toContain('>Watch<');
+});
+
+test('a desktop shown in its provider’s viewer is watched in a new tab, with no live view here', () => {
+  const html = renderDesktop('agent', true, 'link');
+  expect(html).toContain('Nova’s desktop opens in its own viewer, in a new tab.');
+  expect(html).toContain('Watch in a new tab');
+  expect(html).toContain('Take over');
+  // Nothing of the in-app live view, and no toggle that would open one.
+  expect(html).not.toContain('Opening the live view');
+  expect(html).not.toContain('>Watch<');
+  expect(html).not.toContain('role="application"');
+  // A link is asked for at the press, never rendered ahead of it.
+  expect(html).not.toContain('href="http');
+});
+
+test('a person holding a desktop shown in its viewer opens it to drive it, and can hand it back', () => {
+  const html = renderDesktop('human', true, 'link');
+  expect(html).toContain('You have the computer. Open it in a new tab to use it yourself');
+  expect(html).toContain('Open the desktop');
+  expect(html).toContain('Hand back');
+  expect(html).not.toContain('Opening the live view');
+  expect(html).not.toContain('Take over');
 });

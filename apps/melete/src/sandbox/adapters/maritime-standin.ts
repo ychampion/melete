@@ -73,11 +73,29 @@ const PIXEL = Uint8Array.from(
   ),
 );
 
+/** A PNG header of the given size: enough for anything that reads a screenshot's size. */
+function pngOfSize(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(64);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
 export function createMaritimeStandin() {
   const engine = new FakeSandboxEngine();
   const records = new Map<string, Held>();
   let refuseSleep = false;
   let viewers = 0;
+  /** Computers a person holds through a control link: every action is refused meanwhile. */
+  const held = new Set<string>();
+  /** Each action asked for, by computer, in order. */
+  const acted: { id: string; actions: Record<string, unknown>[] }[] = [];
+  /** Computers whose session was closed, in order. */
+  const closed: string[] = [];
+  /** The size screenshots come back at; the one-pixel PNG when unset. */
+  let frame: { width: number; height: number } | null = null;
 
   const out = (record: Held) => ({
     id: record.sandbox.id,
@@ -87,7 +105,7 @@ export function createMaritimeStandin() {
     name: record.name,
     status: record.status,
     screen: { width: 1280, height: 800, modelWidth: 1200 },
-    mode: 'agent',
+    mode: held.has(record.sandbox.id) ? 'human' : 'agent',
     modeReason: null,
     lastActionAt: record.lastActionAt,
     lastWakeMs: null,
@@ -251,11 +269,17 @@ export function createMaritimeStandin() {
     if (action === 'exec' && method === 'POST') return exec(record, init);
     if (action === 'files') return files(record, method, url, init);
     if (action === 'actions' && method === 'POST') {
+      if (held.has(record.sandbox.id))
+        return failure(409, 'human_in_control', 'a person holds the desktop', 15);
       wake(record);
       const body = JSON.parse(new TextDecoder().decode(bodyBytes(init.body)) || '{}') as {
         action?: unknown;
         actions?: { action?: unknown }[];
       };
+      acted.push({
+        id: record.sandbox.id,
+        actions: (Array.isArray(body.actions) ? body.actions : [body]) as Record<string, unknown>[],
+      });
       const one = (request: { action?: unknown }) =>
         typeof request.action === 'string'
           ? { action: request.action, ok: true, isError: false }
@@ -271,7 +295,7 @@ export function createMaritimeStandin() {
     }
     if (action === 'screenshot' && method === 'GET') {
       wake(record);
-      return new Response(PIXEL, {
+      return new Response(frame ? pngOfSize(frame.width, frame.height) : PIXEL, {
         status: 200,
         headers: {
           'content-type': 'image/png',
@@ -280,6 +304,12 @@ export function createMaritimeStandin() {
           'x-screen-height': '750',
         },
       });
+    }
+    if (action === 'sessions/close' && method === 'POST') {
+      // Every viewer link of the session is revoked with it. As on Maritime, a person
+      // holding the desktop keeps it until they press Done in the viewer.
+      closed.push(record.sandbox.id);
+      return json(200, { closed: true });
     }
     if (action === 'viewer' && method === 'POST') {
       const body = JSON.parse(new TextDecoder().decode(bodyBytes(init.body)) || '{}') as {
@@ -318,6 +348,17 @@ export function createMaritimeStandin() {
     /** The next sleep is refused the way Maritime refuses one while a person holds the computer. */
     refuseNextSleep() {
       refuseSleep = true;
+    },
+    acted,
+    closed,
+    /** A person takes the desktop through a control link, or lets it go. */
+    hold(id: string, on = true) {
+      if (on) held.add(id);
+      else held.delete(id);
+    },
+    /** Screenshots come back at this size from now on. */
+    frame(width: number, height: number) {
+      frame = { width, height };
     },
   };
 }

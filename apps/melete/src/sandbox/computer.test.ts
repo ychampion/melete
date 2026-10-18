@@ -12,6 +12,7 @@ import { BrokerService } from '../broker/service.ts';
 import { openDatabase } from '../db/client.ts';
 import { ExperienceEvents } from '../experience/events.ts';
 import type { DesktopCommand, DockerSandboxProvider } from './adapters/docker.ts';
+import type { MaritimeProvider } from './adapters/maritime.ts';
 import { mountSandboxComputers, SandboxComputerService } from './computer.ts';
 import { type ComputerControls, PostgresComputerControls } from './computer-control.ts';
 import { COMPUTER_CHECK_LEFT, handComputerToPerson } from './hand-off.ts';
@@ -45,6 +46,46 @@ function desktop() {
     touch() {},
   } as unknown as DockerSandboxProvider;
   return { provider, inputs };
+}
+
+/** A Maritime computer's viewer: the links it minted, and how often they were all ended. */
+function maritimeViewer() {
+  const minted: { mode: string; ttlSeconds?: number }[] = [];
+  let ended = 0;
+  let holder: 'human' | 'agent' = 'agent';
+  const provider = {
+    maritime: true,
+    capabilities: { adapter: 'maritime', desktop: true },
+    async inspect() {
+      return 'running';
+    },
+    async viewerLink(
+      _handle: unknown,
+      request: { mode: 'watch' | 'control'; ttlSeconds?: number },
+    ) {
+      minted.push(request);
+      return {
+        url: `https://viewer.example.test/${request.mode}/secret-${minted.length}`,
+        expiresAt: '2026-10-18T00:10:00.000Z',
+        mode: request.mode,
+      };
+    },
+    async endViewers() {
+      ended += 1;
+    },
+    async holder() {
+      return holder;
+    },
+  } as unknown as MaritimeProvider;
+  return {
+    provider,
+    minted,
+    ended: () => ended,
+    /** Maritime's own word on who holds the desktop. */
+    holds(now: 'human' | 'agent') {
+      holder = now;
+    },
+  };
 }
 
 /** The routes of one service instance, as the owner middleware would mount them. */
@@ -110,6 +151,8 @@ async function scene(
     wrap?: (controls: ComputerControls) => ComputerControls;
     /** Other connections this instance serves, with the same desktop. */
     serves?: string[];
+    /** A Maritime computer, shown through Maritime's own viewer, instead of Docker's desktop. */
+    maritime?: boolean;
   } = {},
 ) {
   if (!database) throw new Error('Postgres unavailable');
@@ -126,16 +169,19 @@ async function scene(
   await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id, agent_id,
       adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
     values (${sessionId}, ${scope.connectionId}, ${scope.spaceId}, ${scope.jobId}, ${attemptId},
-      ${scope.agentId}, 'docker', ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
+      ${scope.agentId}, ${options.maritime ? 'maritime' : 'docker'}, ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
       'pause', 'ready', now() + interval '1 hour')`;
-  const { provider, inputs } = desktop();
+  const docker = desktop();
+  const viewer = maritimeViewer();
+  const provider = options.maritime ? viewer.provider : docker.provider;
+  const inputs = docker.inputs;
   const stored = new PostgresComputerControls(sql);
   const controls = options.wrap ? options.wrap(stored) : stored;
   const providers = () =>
     new Map(
       [scope.connectionId, ...(options.serves ?? [])].map((id) => [
         id,
-        { adapter: 'docker' as const, provider },
+        { adapter: options.maritime ? ('maritime' as const) : ('docker' as const), provider },
       ]),
     );
   const service = new SandboxComputerService(sql, providers, { controls });
@@ -154,6 +200,7 @@ async function scene(
     sandbox,
     controls,
     inputs,
+    viewer,
     parked,
     call,
     as(id: string) {
@@ -179,6 +226,7 @@ withDb('the computer a person steers', () => {
           control_epoch: 0,
           viewport: { width: 1024, height: 768 },
           egress: 'deny_all',
+          view: 'stream',
         },
       ],
     });
@@ -663,5 +711,128 @@ withDb('the computer a person steers', () => {
     // The sweep runs before the view's first tick.
     expect(await s.controls.handBackUnwatched()).not.toContain(s.sandbox);
     expect((await s.controls.state(s.sandbox)).control).toBe('human');
+  });
+});
+
+withDb('a computer shown through its provider’s own viewer', () => {
+  test('it is listed with its own screen and how it is shown, and has no live view here', async () => {
+    const s = await scene({ maritime: true });
+    const listed = (await (
+      await s.call('GET', `/sandbox/computers?job_id=${s.scope.jobId}`)
+    ).json()) as { computers: Record<string, unknown>[] };
+    expect(listed.computers).toEqual([
+      expect.objectContaining({
+        session_id: s.sessionId,
+        running: true,
+        control: 'agent',
+        viewport: { width: 1200, height: 750 },
+        view: 'link',
+      }),
+    ]);
+    const live = await s.call('POST', `/sandbox/sessions/${s.sessionId}/live`);
+    expect([live.status, await codeOf(live)]).toEqual([409, 'own_viewer']);
+  });
+
+  test('watching takes a link at any time; driving takes one only after taking over', async () => {
+    const s = await scene({ maritime: true });
+    const viewer = `/sandbox/sessions/${s.sessionId}/viewer`;
+    const watch = await s.call('POST', viewer, { mode: 'watch' });
+    expect(watch.status).toBe(200);
+    expect(watch.headers.get('cache-control')).toBe('no-store');
+    expect(await watch.json()).toEqual({
+      mode: 'watch',
+      url: 'https://viewer.example.test/watch/secret-1',
+      expires_at: '2026-10-18T00:10:00.000Z',
+    });
+    const early = await s.call('POST', viewer, { mode: 'control' });
+    expect([early.status, await codeOf(early)]).toEqual([409, 'agent_control']);
+    expect(s.viewer.minted).toEqual([{ mode: 'watch', ttlSeconds: 600 }]);
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`)).status).toBe(200);
+    // The job is parked as on Docker: the agent waits for the hand-back.
+    const [job] = await s.sql`select state from job where id = ${s.scope.jobId}`;
+    expect(job?.state).toBe('waiting_for_input');
+    const control = await s.call('POST', viewer, { mode: 'control' });
+    expect(control.status).toBe(200);
+    expect(((await control.json()) as { mode: string }).mode).toBe('control');
+    // A link to drive it lasts the provider's short default: no length is asked for.
+    expect(s.viewer.minted.at(-1)).toEqual({ mode: 'control' });
+    const refused = await s.call('POST', viewer, { mode: 'everything' });
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+  });
+
+  test('handing back ends every link, wakes the work, and no link is stored or logged', async () => {
+    const s = await scene({ maritime: true });
+    const written: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+      written.push(String(chunk));
+      return (write as (...args: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stderr.write;
+    const resumed: string[] = [];
+    s.service.onHandedBack = async (jobId) => {
+      resumed.push(jobId);
+    };
+    try {
+      await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, { mode: 'watch' });
+      await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+      await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, { mode: 'control' });
+      expect(s.viewer.ended()).toBe(0);
+      const back = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
+      expect(back.status).toBe(200);
+      expect(s.viewer.ended()).toBe(1);
+      expect(resumed).toEqual([s.scope.jobId]);
+      expect(await s.controls.state(s.sandbox)).toMatchObject({ control: 'agent' });
+      // Driving needs control again.
+      const after = await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, {
+        mode: 'control',
+      });
+      expect(after.status).toBe(409);
+    } finally {
+      process.stderr.write = write;
+    }
+    const events = await s.sql`select type, payload from event where job_id = ${s.scope.jobId}`;
+    expect(events.length).toBeGreaterThan(0);
+    const stored = JSON.stringify(events);
+    expect(stored).toContain('computer_handback');
+    expect(stored).not.toContain('viewer.example.test');
+    expect(stored).not.toContain('secret-');
+    expect(written.join('')).not.toContain('viewer.example.test');
+  });
+
+  test('it is not handed back while the person still holds it in the viewer', async () => {
+    const s = await scene({ maritime: true });
+    await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+    await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, { mode: 'control' });
+    s.viewer.holds('human');
+    const early = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
+    expect([early.status, await codeOf(early)]).toEqual([409, 'finish_in_viewer']);
+    expect((await s.controls.state(s.sandbox)).control).toBe('human');
+    expect(s.viewer.ended()).toBe(0);
+    // Done pressed in the viewer: now it goes back.
+    s.viewer.holds('agent');
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(200);
+    expect((await s.controls.state(s.sandbox)).control).toBe('agent');
+  });
+
+  test('another person can get no link to it, to watch or to drive', async () => {
+    const s = await scene({ maritime: true });
+    s.as(recordId('own'));
+    for (const mode of ['watch', 'control']) {
+      const response = await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, { mode });
+      expect([mode, response.status, await codeOf(response)]).toEqual([
+        mode,
+        404,
+        'session_not_found',
+      ]);
+    }
+    expect(s.viewer.minted).toEqual([]);
+  });
+
+  test('a Docker computer has no viewer link to give', async () => {
+    const s = await scene();
+    const response = await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, {
+      mode: 'watch',
+    });
+    expect([response.status, await codeOf(response)]).toEqual([409, 'live_view_only']);
   });
 });

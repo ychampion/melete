@@ -30,13 +30,16 @@ import {
   type DesktopCommand,
   type DesktopDisplay,
   DOCKER_DESKTOP,
-  type DockerSandboxProvider,
 } from '../sandbox/adapters/docker.ts';
 import type { ComputerControls } from '../sandbox/computer-control.ts';
 import { displayKey } from '../sandbox/displays.ts';
 import type { SessionRow } from '../sandbox/sessions.ts';
 import { sessionHandle } from '../sandbox/sessions.ts';
+import type { DesktopDriver, DesktopScreen } from './sandbox-desktop.ts';
 import { screenText } from './screen-text.ts';
+
+const screenOf = (driver: DesktopDriver | null | undefined): DesktopScreen =>
+  driver?.screen ?? DOCKER_DESKTOP;
 
 /**
  * Every computer action names its step. The broker treats a proposal with the
@@ -50,8 +53,6 @@ const step = {
   description:
     'Counts your computer actions in this job: 1, 2, 3 and so on. A number used before repeats nothing and returns the earlier result.',
 };
-const x = { type: 'integer', minimum: 0, maximum: DOCKER_DESKTOP.width - 1 };
-const y = { type: 'integer', minimum: 0, maximum: DOCKER_DESKTOP.height - 1 };
 const schema = (properties: Record<string, unknown>, required: string[] = []) => ({
   type: 'object',
   additionalProperties: false,
@@ -86,91 +87,140 @@ const keys = {
 };
 const amount = { type: 'integer', minimum: -50, maximum: 50 };
 
-const SCREEN = `The screen is ${DOCKER_DESKTOP.width}x${DOCKER_DESKTOP.height}, origin top left.`;
-/** What every look at the screen gives back. */
+/** What every look at the screen gives back, where the screen can be read as text. */
 const LOOK =
   'It carries screen_text: each element on screen with role, name, value and box in screen pixels (from the page’s accessibility tree, else OCR); read it rather than guess from pixels.';
-/** Said of every action that ends with a screenshot. */
-const AFTER = ' A screenshot taken after it, with screen_text, comes with the result.';
+/** The same, where it cannot. */
+const LOOK_PICTURE =
+  'This computer does not give its screen as text, so read the picture itself before you act on it.';
 
 /** The most steps one `computer.batch` carries. */
 export const MAX_BATCH_ACTIONS = 5;
 /** What a step of a batch may do; looking is what every batch ends with. */
 const BATCH_ACTIONS = ['open', 'click', 'type', 'key', 'scroll'] as const;
 
-export const COMPUTER_TOOLS: ToolManifest[] = [
-  tool(
-    'computer.screenshot',
-    `Capture the sandbox desktop. The PNG is kept in the job workspace; the result names it and the window in front. ${LOOK} Every step already ends with one. ${SCREEN}`,
-    schema({}),
-    'read',
-  ),
-  tool(
-    'computer.open',
-    `Open an http or https address in the sandbox browser, the one the person sees and can take over, starting it if needed. Public HTTPS sites load when the sandbox may reach the internet. It succeeds only once the page in front shows the address (a redirect counts); otherwise it fails and says what the window shows.${AFTER}`,
-    schema({ url }, ['url']),
-    'write_reversible',
-  ),
-  tool(
-    'computer.click',
-    `Click at a point on the sandbox desktop. ${SCREEN}${AFTER}`,
-    schema({ x, y, button, clicks }, ['x', 'y']),
-    'write_reversible',
-  ),
-  tool(
-    'computer.type',
-    `Type text into whatever has focus on the sandbox desktop.${AFTER}`,
-    schema({ text }, ['text']),
-    'write_reversible',
-  ),
-  tool(
-    'computer.key',
-    `Press keys on the sandbox desktop, in order: names such as Return, Tab, Escape, BackSpace, or combinations such as ctrl+l.${AFTER}`,
-    schema({ keys }, ['keys']),
-    'write_reversible',
-  ),
-  tool(
-    'computer.scroll',
-    `Scroll at a point: a positive amount scrolls down, a negative one up, in wheel steps. ${SCREEN}${AFTER}`,
-    schema({ x, y, amount }, ['x', 'y', 'amount']),
-    'write_reversible',
-  ),
-  tool(
-    'computer.batch',
-    `Do up to ${MAX_BATCH_ACTIONS} steps in order in one call, such as click a field, type, press Tab, type; it stops at the first that fails. Each step is {"action": open, click, type, key or scroll} plus that tool's fields, without step. ${SCREEN}${AFTER}`,
-    schema(
-      {
-        actions: {
-          type: 'array',
-          minItems: 1,
-          maxItems: MAX_BATCH_ACTIONS,
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['action'],
-            properties: {
-              action: { type: 'string', enum: [...BATCH_ACTIONS] },
-              url,
-              x,
-              y,
-              button,
-              clicks,
-              text,
-              keys,
-              amount,
+/** What a desktop offers the tools: its screen, and whether it opens addresses and reads as text. */
+export type ComputerToolOptions = {
+  screen: DesktopScreen;
+  opens: boolean;
+  screenText: boolean;
+};
+
+/** The computer tools for one desktop: positions within its screen, and only what it can do. */
+export function computerToolsFor(options: ComputerToolOptions): ToolManifest[] {
+  const { screen, opens } = options;
+  const x = { type: 'integer', minimum: 0, maximum: screen.width - 1 };
+  const y = { type: 'integer', minimum: 0, maximum: screen.height - 1 };
+  const SCREEN = `The screen is ${screen.width}x${screen.height}, origin top left.`;
+  const look = options.screenText ? LOOK : LOOK_PICTURE;
+  const AFTER = options.screenText
+    ? ' A screenshot taken after it, with screen_text, comes with the result.'
+    : ' A screenshot taken after it comes with the result.';
+  const batchActions = BATCH_ACTIONS.filter((each) => opens || each !== 'open');
+  return [
+    tool(
+      'computer.screenshot',
+      `Capture the sandbox desktop. The PNG is kept in the job workspace; the result names it${options.screenText ? ' and the window in front' : ''}. ${look} Every step already ends with one. ${SCREEN}`,
+      schema({}),
+      'read',
+    ),
+    ...(opens
+      ? [
+          tool(
+            'computer.open',
+            `Open an http or https address in the sandbox browser, the one the person sees and can take over, starting it if needed. Public HTTPS sites load when the sandbox may reach the internet. It succeeds only once the page in front shows the address (a redirect counts); otherwise it fails and says what the window shows.${AFTER}`,
+            schema({ url }, ['url']),
+            'write_reversible',
+          ),
+        ]
+      : []),
+    tool(
+      'computer.click',
+      `Click at a point on the sandbox desktop. ${SCREEN}${AFTER}`,
+      schema({ x, y, button, clicks }, ['x', 'y']),
+      'write_reversible',
+    ),
+    tool(
+      'computer.type',
+      `Type text into whatever has focus on the sandbox desktop.${AFTER}`,
+      schema({ text }, ['text']),
+      'write_reversible',
+    ),
+    tool(
+      'computer.key',
+      `Press keys on the sandbox desktop, in order: names such as Return, Tab, Escape, BackSpace, or combinations such as ctrl+l.${AFTER}`,
+      schema({ keys }, ['keys']),
+      'write_reversible',
+    ),
+    tool(
+      'computer.scroll',
+      `Scroll at a point: a positive amount scrolls down, a negative one up, in wheel steps. ${SCREEN}${AFTER}`,
+      schema({ x, y, amount }, ['x', 'y', 'amount']),
+      'write_reversible',
+    ),
+    tool(
+      'computer.batch',
+      `Do up to ${MAX_BATCH_ACTIONS} steps in order in one call, such as click a field, type, press Tab, type; it stops at the first that fails. Each step is {"action": ${batchActions.slice(0, -1).join(', ')} or ${batchActions.at(-1)}} plus that tool's fields, without step. ${SCREEN}${AFTER}`,
+      schema(
+        {
+          actions: {
+            type: 'array',
+            minItems: 1,
+            maxItems: MAX_BATCH_ACTIONS,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['action'],
+              properties: {
+                action: { type: 'string', enum: [...batchActions] },
+                ...(opens ? { url } : {}),
+                x,
+                y,
+                button,
+                clicks,
+                text,
+                keys,
+                amount,
+              },
             },
           },
         },
-      },
-      ['actions'],
+        ['actions'],
+      ),
+      'write_reversible',
     ),
-    'write_reversible',
-  ),
-];
+  ];
+}
+
+/** The computer tools of Melete's own desktop, on a Docker computer. */
+export const COMPUTER_TOOLS: ToolManifest[] = computerToolsFor({
+  screen: DOCKER_DESKTOP,
+  opens: true,
+  screenText: true,
+});
+
+/** The computer tools a desktop offers. */
+export const computerToolsOf = (driver: DesktopDriver): ToolManifest[] =>
+  driver.screen === undefined && driver.opens !== false && driver.screenText !== false
+    ? COMPUTER_TOOLS
+    : computerToolsFor({
+        screen: screenOf(driver),
+        opens: driver.opens !== false,
+        screenText: driver.screenText !== false,
+      });
 
 export const COMPUTER_TOOL_NAMES = new Set(COMPUTER_TOOLS.map((each) => each.name));
 
 const BUTTONS = { left: 1, middle: 2, right: 3 } as const;
+
+/** The screen positions are checked against, and whether an address may be opened. */
+export type Desk = { screen: DesktopScreen; opens: boolean };
+const DOCKER_DESK: Desk = { screen: DOCKER_DESKTOP, opens: true };
+/** What a desktop's tools are checked against. */
+export const deskOf = (driver: DesktopDriver): Desk => ({
+  screen: screenOf(driver),
+  opens: driver.opens !== false,
+});
 
 function integer(value: unknown, min: number, max: number, what: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max)
@@ -181,10 +231,11 @@ function integer(value: unknown, min: number, max: number, what: string): number
 /** The desktop command an admitted single-step payload asks for; anything else is refused. */
 export function desktopCommandFor(
   action: Pick<Action, 'kind' | 'canonical_payload'>,
+  desk: Desk = DOCKER_DESK,
 ): DesktopCommand {
   const payload = action.canonical_payload as Record<string, unknown>;
   integer(payload.step, 1, 1_000_000, 'step');
-  return commandOf(action.kind, payload);
+  return commandOf(action.kind, payload, desk);
 }
 
 /**
@@ -194,8 +245,10 @@ export function desktopCommandFor(
  */
 export function desktopCommandsFor(
   action: Pick<Action, 'kind' | 'canonical_payload'>,
+  desk: Desk = DOCKER_DESK,
 ): DesktopCommand[] {
-  if (action.kind !== 'computer.batch') return [desktopCommandFor(action)];
+  if (action.kind !== 'computer.batch') return [desktopCommandFor(action, desk)];
+  const offered = BATCH_ACTIONS.filter((each) => desk.opens || each !== 'open');
   const payload = action.canonical_payload as Record<string, unknown>;
   integer(payload.step, 1, 1_000_000, 'step');
   const steps = payload.actions;
@@ -207,13 +260,13 @@ export function desktopCommandsFor(
       !step ||
       typeof step !== 'object' ||
       Array.isArray(step) ||
-      !(BATCH_ACTIONS as readonly unknown[]).includes(step.action)
+      !(offered as readonly unknown[]).includes(step.action)
     )
       throw new ComputerPayloadRefusal(
-        `step ${index + 1} of the batch names no action: one of ${BATCH_ACTIONS.join(', ')}`,
+        `step ${index + 1} of the batch names no action: one of ${offered.join(', ')}`,
       );
     try {
-      return commandOf(`computer.${step.action}`, step);
+      return commandOf(`computer.${step.action}`, step, desk);
     } catch (error) {
       if (error instanceof ComputerPayloadRefusal)
         throw new ComputerPayloadRefusal(`step ${index + 1} of the batch: ${error.message}`);
@@ -222,11 +275,16 @@ export function desktopCommandsFor(
   });
 }
 
-function commandOf(kind: string, payload: Record<string, unknown>): DesktopCommand {
+function commandOf(kind: string, payload: Record<string, unknown>, desk: Desk): DesktopCommand {
+  const { width, height } = desk.screen;
   switch (kind) {
     case 'computer.screenshot':
       return { kind: 'screenshot' };
     case 'computer.open':
+      if (!desk.opens)
+        throw new ComputerPayloadRefusal(
+          'this computer cannot open an address by itself; click the browser’s address bar, type the address and press Return',
+        );
       if (typeof payload.url !== 'string' || !/^https?:\/\//i.test(payload.url))
         throw new ComputerPayloadRefusal('an address must start with http:// or https://');
       return { kind: 'open', url: payload.url };
@@ -236,8 +294,8 @@ function commandOf(kind: string, payload: Record<string, unknown>): DesktopComma
         throw new ComputerPayloadRefusal('a button is left, middle or right');
       return {
         kind: 'click',
-        x: integer(payload.x, 0, DOCKER_DESKTOP.width - 1, 'x'),
-        y: integer(payload.y, 0, DOCKER_DESKTOP.height - 1, 'y'),
+        x: integer(payload.x, 0, width - 1, 'x'),
+        y: integer(payload.y, 0, height - 1, 'y'),
         button: BUTTONS[button as keyof typeof BUTTONS],
         count: integer(payload.clicks ?? 1, 1, 3, 'clicks') as 1 | 2 | 3,
       };
@@ -260,8 +318,8 @@ function commandOf(kind: string, payload: Record<string, unknown>): DesktopComma
       if (amount === 0) throw new ComputerPayloadRefusal('a scroll of nothing does nothing');
       return {
         kind: 'scroll',
-        x: integer(payload.x, 0, DOCKER_DESKTOP.width - 1, 'x'),
-        y: integer(payload.y, 0, DOCKER_DESKTOP.height - 1, 'y'),
+        x: integer(payload.x, 0, width - 1, 'x'),
+        y: integer(payload.y, 0, height - 1, 'y'),
         dy: amount,
       };
     }
@@ -345,13 +403,13 @@ type CaptureOptions = {
 
 async function capture(
   options: CaptureOptions,
-  provider: DockerSandboxProvider,
+  provider: DesktopDriver,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
 ): Promise<Record<string, JsonValue>>;
 async function capture(
   options: CaptureOptions,
-  provider: DockerSandboxProvider,
+  provider: DesktopDriver,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
   /** Asked once the picture is in hand; true discards it unsaved. */
@@ -359,7 +417,7 @@ async function capture(
 ): Promise<Record<string, JsonValue> | null>;
 async function capture(
   options: CaptureOptions,
-  provider: DockerSandboxProvider,
+  provider: DesktopDriver,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
   takenOver?: () => Promise<boolean>,
@@ -388,11 +446,13 @@ const said = (error: unknown) => (error instanceof Error ? error.message : Strin
 
 /** The screen as text, or why it could not be read; never a failure of the step. */
 async function readScreen(
-  provider: DockerSandboxProvider,
+  provider: DesktopDriver,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
   display?: DesktopDisplay | null,
 ): Promise<JsonValue> {
+  if (provider.screenText === false)
+    return { unavailable: 'this computer does not give its screen as text; read the screenshot' };
   try {
     return screenText(
       await provider.computer(handle, { kind: 'text' }, signal, display ?? undefined),
@@ -419,7 +479,7 @@ export function challengeShown(screen: JsonValue): string | null {
 /** The screen read again after a check had its moment, unless a person took the computer. */
 async function lookPastChallenge(
   screen: JsonValue,
-  provider: DockerSandboxProvider,
+  provider: DesktopDriver,
   handle: ReturnType<typeof sessionHandle>,
   signal: AbortSignal,
   waitMs: number,
@@ -444,7 +504,7 @@ export async function runComputerAction(options: {
   jobId: string;
   workRoot: string;
   session: SessionRow;
-  provider: DockerSandboxProvider;
+  provider: DesktopDriver;
   /** Who drives each computer, as every service instance sees it. */
   controls: ComputerControls;
   signal: AbortSignal;
@@ -457,7 +517,7 @@ export async function runComputerAction(options: {
 }): Promise<Record<string, JsonValue>> {
   const { action, session, provider, signal, controls } = options;
   const display = options.display ?? null;
-  const commands = desktopCommandsFor(action);
+  const commands = desktopCommandsFor(action, deskOf(provider));
   const handle = sessionHandle(session);
   // Who drives this display, not the computer: a person on another chat's
   // display holds that one only.

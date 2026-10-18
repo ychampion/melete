@@ -22,11 +22,26 @@ export const sandboxComputer = z
     running: z.boolean(),
     control: sandboxControl,
     control_epoch: z.number().int().nonnegative(),
+    /** The desktop's screen: the live view's for Melete's own desktop, the provider's otherwise. */
     viewport: z.strictObject({
-      width: z.literal(LIVE_VIEWPORT.width),
-      height: z.literal(LIVE_VIEWPORT.height),
+      width: z
+        .number()
+        .int()
+        .positive()
+        .max(LIVE_VIEWPORT.width * 4),
+      height: z
+        .number()
+        .int()
+        .positive()
+        .max(LIVE_VIEWPORT.height * 4),
     }),
     egress: z.enum(['deny_all', 'connected_hosts_only', 'open']),
+    /**
+     * How a person sees and steers it: `stream`, through this API's live view;
+     * `link`, through the provider's own viewer, opened from a short-lived
+     * link that is asked for each time (`SandboxViewerRequest`).
+     */
+    view: z.enum(['stream', 'link']),
   })
   .meta({ id: 'SandboxComputer' });
 export type SandboxComputer = z.infer<typeof sandboxComputer>;
@@ -56,3 +71,23 @@ export const sandboxControlResponse = z
   })
   .meta({ id: 'SandboxControlResponse' });
 export type SandboxControlResponse = z.infer<typeof sandboxControlResponse>;
+
+/**
+ * A link to a desktop shown through its provider's own viewer: `watch` to look
+ * on, `control` to drive it while you hold it. Asked for each time it is
+ * opened and never kept: it is a credential for that computer until it expires.
+ */
+export const sandboxViewerRequest = z
+  .strictObject({ mode: z.enum(['watch', 'control']) })
+  .meta({ id: 'SandboxViewerRequest' });
+export type SandboxViewerRequest = z.infer<typeof sandboxViewerRequest>;
+
+export const sandboxViewerResponse = z
+  .strictObject({
+    mode: z.enum(['watch', 'control']),
+    url: z.string().url().max(4096),
+    /** When the link stops working; empty when the provider did not say. */
+    expires_at: z.string().max(64),
+  })
+  .meta({ id: 'SandboxViewerResponse' });
+export type SandboxViewerResponse = z.infer<typeof sandboxViewerResponse>;

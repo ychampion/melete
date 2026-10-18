@@ -42,6 +42,8 @@ import {
   sandboxComputerQuery,
   sandboxControlRequest,
   sandboxControlResponse,
+  sandboxViewerRequest,
+  sandboxViewerResponse,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -54,6 +56,7 @@ import {
   type DockerSandboxProvider,
   isDesktopProvider,
 } from './adapters/docker.ts';
+import { isMaritimeProvider, type MaritimeProvider } from './adapters/maritime.ts';
 import {
   type ComputerControlState,
   type ComputerControls,
@@ -77,7 +80,10 @@ export class ComputerFault extends Error {
       | 'agent_control'
       | 'epoch_changed'
       | 'slow_down'
-      | 'no_desktop',
+      | 'no_desktop'
+      | 'own_viewer'
+      | 'live_view_only'
+      | 'finish_in_viewer',
   ) {
     super(reason);
   }
@@ -93,6 +99,9 @@ const STATUS = {
   epoch_changed: 409,
   slow_down: 429,
   no_desktop: 409,
+  own_viewer: 409,
+  live_view_only: 409,
+  finish_in_viewer: 409,
 } as const;
 
 type Binding = {
@@ -107,8 +116,17 @@ type Binding = {
   agentId: string | null;
   status: 'ready' | 'paused';
   egress: 'deny_all' | 'connected_hosts_only' | 'open';
-  provider: DockerSandboxProvider;
-};
+} & (
+  | { view: 'stream'; provider: DockerSandboxProvider }
+  /** Shown through the provider's own viewer, from a link asked for each time. */
+  | { view: 'link'; provider: MaritimeProvider }
+);
+
+/** How long a link to watch a desktop lasts. A link to drive one lasts the provider's default. */
+const WATCH_LINK_SECONDS = 600;
+
+/** The screen of a desktop shown through its provider's viewer: its screenshots' frame. */
+const LINK_VIEWPORT = { width: 1200, height: 750 } as const;
 
 type Stream = { write: (event: LiveDown) => void; keepalive: () => void; close: () => void };
 
@@ -208,17 +226,25 @@ export class SandboxComputerService {
     return Boolean(owned);
   }
 
-  private providerOf(connectionId: string): DockerSandboxProvider | null {
+  private providerOf(
+    connectionId: string,
+  ):
+    | { view: 'stream'; provider: DockerSandboxProvider }
+    | { view: 'link'; provider: MaritimeProvider }
+    | null {
     const held = this.providers().get(connectionId)?.provider;
-    return held && isDesktopProvider(held) ? held : null;
+    if (!held) return null;
+    if (isDesktopProvider(held)) return { view: 'stream', provider: held };
+    if (isMaritimeProvider(held)) return { view: 'link', provider: held };
+    return null;
   }
 
   private bindingOf(row: Record<string, unknown>): Binding | null {
-    const provider = this.providerOf(String(row.connection_id));
+    const shownBy = this.providerOf(String(row.connection_id));
     const egress = (row.egress_policy as { kind?: string } | null)?.kind;
     const shown = typeof row.display_id === 'string';
     const jobId = shown ? (row.display_job ?? row.owner_job_id) : row.job_id;
-    if (!provider || !jobId) return null;
+    if (!shownBy || !jobId) return null;
     const sandbox = String(row.provider_sandbox_id);
     const number = shown ? Number(row.display) : 0;
     return {
@@ -231,7 +257,7 @@ export class SandboxComputerService {
       agentId: (row.agent_id as string | null) ?? null,
       status: row.status === 'ready' ? 'ready' : 'paused',
       egress: egress === 'open' || egress === 'connected_hosts_only' ? egress : 'deny_all',
-      provider,
+      ...shownBy,
     };
   }
 
@@ -331,12 +357,13 @@ export class SandboxComputerService {
     for (const row of rows) {
       const binding = this.bindingOf(row);
       if (!binding) continue;
-      const running = await binding.provider
-        .running(
-          { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
-          AbortSignal.timeout(10_000),
-        )
-        .catch(() => false);
+      const handle = { providerSandboxId: binding.sandbox, imageDigest: null, region: null };
+      const running = await (binding.view === 'stream'
+        ? binding.provider.running(handle, AbortSignal.timeout(10_000))
+        : binding.provider
+            .inspect(handle, AbortSignal.timeout(10_000))
+            .then((state) => state === 'running')
+      ).catch(() => false);
       const held = await this.controls.state(binding.key);
       computers.push({
         session_id: binding.sessionId,
@@ -346,8 +373,12 @@ export class SandboxComputerService {
         running,
         control: held.control,
         control_epoch: held.epoch,
-        viewport: { width: LIVE_VIEWPORT.width, height: LIVE_VIEWPORT.height },
+        viewport:
+          binding.view === 'stream'
+            ? { width: LIVE_VIEWPORT.width, height: LIVE_VIEWPORT.height }
+            : { ...LINK_VIEWPORT },
         egress: binding.egress,
+        view: binding.view,
       });
     }
     return computers;
@@ -370,6 +401,18 @@ export class SandboxComputerService {
     const located = await this.keyOf(sessionId);
     const before = located ? await this.controls.state(located) : undefined;
     const binding = await this.steerable(sessionId, principalId);
+    // Maritime gives the desktop back only when the person presses Done in its
+    // viewer: until then the agent would be refused at every step, so the
+    // computer is not handed back here first.
+    if (operation === 'handback' && binding.view === 'link') {
+      const holder = await binding.provider
+        .holder(
+          { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
+          AbortSignal.timeout(20_000),
+        )
+        .catch(() => null);
+      if (holder === 'human') throw new ComputerFault('finish_in_viewer');
+    }
     const from = seenEpoch ?? before?.epoch ?? (await this.controls.state(binding.key)).epoch;
     const next = await this.controls.change(
       binding.key,
@@ -379,6 +422,20 @@ export class SandboxComputerService {
     if (!next) throw new ComputerFault('epoch_changed');
     if (operation === 'takeover') await this.park(binding);
     else {
+      // A desktop shown through its provider's viewer: the links handed out end
+      // now, so one left open in a tab stops working once the agent has it back.
+      if (binding.view === 'link')
+        await binding.provider
+          .endViewers(
+            { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
+            AbortSignal.timeout(20_000),
+          )
+          .catch((error: unknown) => {
+            // Links end by themselves within minutes, and the agent is refused while one drives.
+            process.stderr.write(
+              `the viewer links of ${binding.sandbox} could not be ended: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+          });
       await this.sql.begin(async (tx) => {
         await lockEventOrderIn(tx);
         await appendEvent(tx, binding.jobId, null, 'notice', {
@@ -453,10 +510,49 @@ export class SandboxComputerService {
     if (fenced.length) this.onPark?.(binding.jobId, fenced);
   }
 
+  // ---- the provider's own viewer ----------------------------------------------
+
+  /**
+   * A fresh link to a desktop shown through its provider's viewer. Watching
+   * needs only the right to see the computer; driving needs control, taken
+   * over first, as input to the live view does. The link goes to the person
+   * who asked and nowhere else: it is not recorded on the timeline, kept or
+   * written to a log.
+   */
+  async viewer(
+    sessionId: string,
+    principalId: string,
+    mode: 'watch' | 'control',
+  ): Promise<{ mode: 'watch' | 'control'; url: string; expires_at: string }> {
+    const binding = await this.steerable(
+      sessionId,
+      principalId,
+      mode === 'control' ? 'steer' : 'watch',
+    );
+    if (binding.view !== 'link') throw new ComputerFault('live_view_only');
+    if (mode === 'control') {
+      if ((await this.controls.state(binding.key)).control !== 'human')
+        throw new ComputerFault('agent_control');
+      // Asking for a link to drive it is using it: the hold is not handed back as unwatched.
+      await this.controls.seen(binding.key);
+    }
+    const link = await binding.provider.viewerLink(
+      { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
+      mode === 'control' ? { mode } : { mode, ttlSeconds: WATCH_LINK_SECONDS },
+      AbortSignal.timeout(20_000),
+    );
+    // Control may have moved while the link was minted: a link to drive a
+    // computer the agent has again is not handed out.
+    if (mode === 'control' && (await this.controls.state(binding.key)).control !== 'human')
+      throw new ComputerFault('epoch_changed');
+    return { mode: link.mode, url: link.url, expires_at: link.expiresAt };
+  }
+
   // ---- live view ------------------------------------------------------------
 
   async open(sessionId: string, principalId: string, peer: string): Promise<LiveOpen> {
     const binding = await this.steerable(sessionId, principalId, 'watch');
+    if (binding.view !== 'stream') throw new ComputerFault('own_viewer');
     const held = await this.controls.state(binding.key);
     const current = this.bySandbox.get(binding.key);
     if (current && !current.ended) {
@@ -507,6 +603,7 @@ export class SandboxComputerService {
     if (!sameOrigin(c)) throw new ComputerFault('origin_refused');
     const principalId = c.get('owner').id as string;
     const binding = await this.steerable(sessionId, principalId, need);
+    if (binding.view !== 'stream') throw new ComputerFault('own_viewer');
     const channel = this.byId.get(id);
     if (!channel || channel.ended || channel.sessionId !== sessionId)
       throw new ComputerFault('live_closed');
@@ -566,7 +663,11 @@ export class SandboxComputerService {
   }
 
   /** Relays desktop frames to one attached viewer until it leaves or the channel ends. */
-  private async pump(channel: Channel, stream: Stream, binding: Binding): Promise<void> {
+  private async pump(
+    channel: Channel,
+    stream: Stream,
+    binding: Binding & { view: 'stream' },
+  ): Promise<void> {
     const controller = new AbortController();
     channel.pump?.abort();
     channel.pump = controller;
@@ -751,6 +852,10 @@ const REFUSAL_TEXT: Record<ComputerFault['reason'], string> = {
   epoch_changed: 'Control of the computer changed. Try again.',
   slow_down: 'Too many inputs at once. Slow down a little.',
   no_desktop: 'This computer has no desktop to show.',
+  own_viewer: 'This computer is shown in its own viewer. Open it from the computer panel.',
+  live_view_only: 'This computer is shown in the live view here, not through a link.',
+  finish_in_viewer:
+    'You still hold the computer in its viewer. Press Done there, or wait a minute or two after its link runs out, then hand it back here.',
 };
 
 function refused(error: unknown): never {
@@ -778,6 +883,16 @@ export function mountSandboxComputers(app: Hono, service: SandboxComputerService
         .catch((error: unknown) => refused(error));
       return c.json(sandboxControlResponse.parse(changed));
     });
+  app.post('/sandbox/sessions/:id/viewer', async (c) => {
+    if (!sameOrigin(c)) refused(new ComputerFault('origin_refused'));
+    const asked = sandboxViewerRequest.parse(await c.req.json().catch(() => ({})));
+    const link = await service
+      .viewer(id(c), c.get('owner').id, asked.mode)
+      .catch((error: unknown) => refused(error));
+    // A credential for the computer: never cached, by the browser or anything between.
+    c.header('cache-control', 'no-store');
+    return c.json(sandboxViewerResponse.parse(link));
+  });
   app.post('/sandbox/sessions/:id/live', async (c) => {
     if (!sameOrigin(c)) refused(new ComputerFault('origin_refused'));
     const opened = await service

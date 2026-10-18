@@ -185,8 +185,95 @@ export class ComputerMock {
     });
   }
 
+  /** `link`: each chat has a desktop shown through its provider's own viewer, as on Maritime. */
+  desktop: 'none' | 'link' = 'none';
+  private readonly desktops = new Map<
+    string,
+    { id: string; control: 'agent' | 'human'; epoch: number }
+  >();
+
+  /** The routes of a desktop shown through its provider's viewer; nothing when there is none. */
+  private mountDesktop(app: Hono): void {
+    if (this.desktop !== 'link' || !this.enabled) return;
+    const desktopOf = (jobId: string) => {
+      let found = this.desktops.get(jobId);
+      if (!found) {
+        found = { id: `sbx_${jobId}`, control: 'agent', epoch: 0 };
+        this.desktops.set(jobId, found);
+      }
+      return found;
+    };
+    const byId = (id: string) => [...this.desktops.values()].find((each) => each.id === id);
+    const refuse = (c: Context, status: 404 | 409, code: string, message: string) =>
+      c.json({ error: { code, message } }, status);
+    app.get('/sandbox/computers', (c) => {
+      const jobId = c.req.query('job_id') ?? '';
+      const found = desktopOf(jobId);
+      return c.json(
+        C.sandboxComputerList.parse({
+          computers: [
+            {
+              session_id: found.id,
+              job_id: jobId,
+              agent_id: null,
+              status: 'ready',
+              running: true,
+              control: found.control,
+              control_epoch: found.epoch,
+              viewport: { width: 1200, height: 750 },
+              egress: 'open',
+              view: 'link',
+            },
+          ],
+        }),
+      );
+    });
+    for (const operation of ['takeover', 'handback'] as const)
+      app.post(`/sandbox/sessions/:id/${operation}`, (c) => {
+        const found = byId(c.req.param('id') ?? '');
+        if (!found)
+          return refuse(c, 404, 'session_not_found', 'That computer is no longer running.');
+        found.control = operation === 'takeover' ? 'human' : 'agent';
+        found.epoch += 1;
+        return c.json(
+          C.sandboxControlResponse.parse({
+            session_id: found.id,
+            control: found.control,
+            control_epoch: found.epoch,
+          }),
+        );
+      });
+    app.post('/sandbox/sessions/:id/viewer', async (c) => {
+      const found = byId(c.req.param('id') ?? '');
+      if (!found) return refuse(c, 404, 'session_not_found', 'That computer is no longer running.');
+      const { mode } = C.sandboxViewerRequest.parse(await c.req.json().catch(() => ({})));
+      if (mode === 'control' && found.control !== 'human')
+        return refuse(
+          c,
+          409,
+          'agent_control',
+          'The agent is using the computer. Take over first to use it yourself.',
+        );
+      c.header('cache-control', 'no-store');
+      return c.json(
+        C.sandboxViewerResponse.parse({
+          mode,
+          url: `${new URL(c.req.url).origin}/mock-viewer/${mode}?t=${randomBytes(8).toString('hex')}`,
+          expires_at: new Date(Date.now() + (mode === 'control' ? 300 : 600) * 1000).toISOString(),
+        }),
+      );
+    });
+    // The page a viewer link opens: the provider's viewer, here a stand-in.
+    app.get('/mock-viewer/:mode', (c) =>
+      c.html(
+        `<!doctype html><meta charset="utf-8"><title>Desktop viewer</title><body style="font:16px system-ui;margin:2rem">The provider's ${c.req.param('mode') === 'control' ? 'control' : 'watch'} viewer would show the desktop here.</body>`,
+      ),
+    );
+  }
+
   mount(app: Hono): void {
     this.processes.mount(app);
+    this.mountDesktop(app);
     // The sites the browser stays signed in to, served only where there is a browser.
     if (this.enabled) {
       const sites = new Map(

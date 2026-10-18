@@ -129,6 +129,20 @@
   font-size: 13px;
   padding: 16px;
 }
+.computer-screen.computer-viewer {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  text-align: center;
+}
+.computer-viewer .computer-wait {
+  display: block;
+  max-width: 40ch;
+  padding: 4px 8px;
+  text-wrap: pretty;
+}
 .computer-live {
   display: flex;
   flex-direction: column;
