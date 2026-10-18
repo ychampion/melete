@@ -93,6 +93,7 @@ import {
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
 import { workQuiet } from './quiet.ts';
+import { RUNAWAY_NOTE, RunawayReply, runawayWatch } from './runaway.ts';
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
@@ -2068,6 +2069,9 @@ export class AttemptRunner {
     const acknowledgement = claim.turn?.interactive
       ? this.acknowledgeLater(claims, claim.turn, bundle)
       : null;
+    // A conversation's reply that starts saying the same thing over and over
+    // is stopped and cut back to its first copy (`runaway.ts`).
+    const runaway = claim.turn ? runawayWatch() : null;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let completed: Extract<AttemptOutcome, { kind: 'completed' }> | null = null;
     let abortListener = () => {};
@@ -2088,13 +2092,18 @@ export class AttemptRunner {
       const call = this.runtime.start(
         bundle,
         {
-          emit: (event) => {
+          emit: async (event) => {
             if (claim.turn && event.type === 'text_delta' && event.text.trim()) {
               // The agent's own words come first: no acknowledgement is needed.
               acknowledgement?.cancel();
               turnSpoke(claims.attempt_id);
             }
-            return this.emit(claims, event);
+            await this.emit(claims, event);
+            // Stopped only once the words that showed the loop are stored, so
+            // the turn's end, written next, is the last thing said.
+            const loop = runaway && event.type === 'text_delta' ? runaway.see(event.text) : null;
+            if (loop && !controller.signal.aborted)
+              controller.abort(new RunawayReply(loop.kept, loop.copies));
           },
         },
         controller.signal,
@@ -2121,34 +2130,15 @@ export class AttemptRunner {
       }
       await this.commitOutcome(claims, result);
     } catch (error) {
-      if (
+      if (controller.signal.reason instanceof RunawayReply) {
+        await this.endRunaway(claims, controller.signal.reason, controller.signal);
+      } else if (
         completed &&
         error instanceof ServiceError &&
         error.code === 'actions_not_terminal' &&
         !controller.signal.aborted
       ) {
-        // The work is done and its answer written; what it started is still
-        // out. Running the turn again would do every step a second time, so
-        // the turn rests on its answer until that action reports back.
-        // The person is asked what to do about it, with answers to press.
-        const draft = completed.summary;
-        const asked = namingSteps(
-          STILL_RUNNING_NOTE,
-          await this.jobs.transaction((tx) => this.openSteps(tx, claims.attempt_id)),
-        );
-        await this.commitOutcome(claims, {
-          outcome: {
-            kind: 'waiting_for_input',
-            question: asked,
-            ...(draft.trim() ? { draft } : {}),
-          },
-          questions: [unsettledQuestion(claims.attempt_id, asked)],
-        }).catch(async (failure: unknown) => {
-          await this.loseAttempt(
-            claims.attempt_id,
-            failure instanceof Error ? failure.message : 'runtime_crashed',
-          );
-        });
+        await this.restOnOpenSteps(claims, completed.summary);
       } else if (error instanceof AttemptBudgetExceeded) {
         await this.commitOutcome(claims, {
           kind: 'budget_exhausted',
@@ -2187,6 +2177,65 @@ export class AttemptRunner {
         }
       }
       finished();
+    }
+  }
+
+  /**
+   * The work is done and its answer written; what it started is still out.
+   * Running the turn again would do every step a second time, so the turn
+   * rests on its answer until that action reports back. The person is asked
+   * what to do about it, with answers to press.
+   */
+  private async restOnOpenSteps(claims: CapabilityClaims, draft: string): Promise<void> {
+    const asked = namingSteps(
+      STILL_RUNNING_NOTE,
+      await this.jobs.transaction((tx) => this.openSteps(tx, claims.attempt_id)),
+    );
+    await this.commitOutcome(claims, {
+      outcome: {
+        kind: 'waiting_for_input',
+        question: asked,
+        ...(draft.trim() ? { draft } : {}),
+      },
+      questions: [unsettledQuestion(claims.attempt_id, asked)],
+    }).catch(async (failure: unknown) => {
+      await this.loseAttempt(
+        claims.attempt_id,
+        failure instanceof Error ? failure.message : 'runtime_crashed',
+      );
+    });
+  }
+
+  /**
+   * A reply that kept repeating itself ends after its first copy, with a plain
+   * line saying why, as a finished answer: the conversation waits for the
+   * person's next message, and nothing is run again. The log line says only
+   * that it happened, never the words.
+   */
+  private async endRunaway(
+    claims: CapabilityClaims,
+    loop: RunawayReply,
+    signal: AbortSignal,
+  ): Promise<void> {
+    process.stderr.write(
+      `runaway_reply_stopped job=${claims.job_id} attempt=${claims.attempt_id} copies=${loop.copies}\n`,
+    );
+    const summary = loop.kept.trim() ? `${loop.kept}\n\n${RUNAWAY_NOTE}` : RUNAWAY_NOTE;
+    await this.awaitDispatched(claims, signal);
+    try {
+      await this.commitOutcome(claims, { kind: 'completed', summary, evidence: [] });
+    } catch (error) {
+      if (error instanceof ServiceError && error.code === 'actions_not_terminal')
+        await this.restOnOpenSteps(claims, summary);
+      else if (
+        !(
+          error instanceof ServiceError && ['stale_epoch', 'revision_mismatch'].includes(error.code)
+        )
+      )
+        await this.loseAttempt(
+          claims.attempt_id,
+          error instanceof Error ? error.message : 'runtime_crashed',
+        );
     }
   }
 

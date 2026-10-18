@@ -2403,6 +2403,16 @@ an attempt may spend is decided by the job's budget, and a run that has taken
 150 turns is looping. Lower it and long legitimate work is cut off in the
 middle; raise it and a loop runs longer before anything notices.
 
+A conversation's reply has one more runaway stop, which is fixed rather than a
+setting: a reply that writes the same block of prose, at least 600 characters
+of it, four times over is stopped there. The person keeps the text up to the
+end of the first copy and a line saying why, and the service logs
+`runaway_reply_stopped` with the job, the attempt and the number of copies,
+never the words. Copies are compared by their words, so spacing, punctuation
+and case do not hide one. Code blocks, tables, list items and short paragraphs
+never count, and the same letter written out for three people is three copies,
+one short of a stop.
+
 `MELETE_COMPACTION_MAX_TOKENS` (default `200000`) is the largest conversation,
 in tokens, that may build up before the engine summarises it and carries on with
 the summary. The engine would otherwise wait for half the model's context
