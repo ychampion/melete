@@ -423,6 +423,7 @@ complete file, and `init` writes each one out:
   "images": { "registry": "ghcr.io/ychampion", "tag": "main", "channel": "main" },
   "profiles": [],
   "overlays": [],
+  "compose_files": [],
   "disk": { "min_free_mb": 4096, "pull_margin_mb": 512 },
   "backup": { "dir": "~/melete-backups", "keep": 3, "max_age_days": 30 },
   "public_ports": false,
@@ -441,6 +442,15 @@ complete file, and `init` writes each one out:
 - `profiles` takes `sandbox`; `overlays` takes `browser`, `tailscale` and
   `tailscale-kernel` (with `tailscale`), which add their `docker-compose.*.yml`
   files to every Compose command in that order.
+- `compose_files` lists Compose files of your own, as paths relative to
+  `deploy/` with `/` between folders, such as `"../private/compose.extra.yml"`
+  or `"docker-compose.brand.yml"`. Every Compose command reads them after all
+  the files the other keys add, in the order listed, so they can add services
+  beside the stack or change one of its settings. Each must exist: a missing one
+  makes the file invalid, so `deploy` and `upgrade` refuse to run and `status`,
+  `doctor` and `check` fail until it is there. Those three name the files on the
+  contract line. A file the other keys already choose cannot be listed again. See
+  [Building on Melete](../FORKING.md).
 - `disk.min_free_mb` is the free space, in MB, below which `doctor` and
   `status` report the machine short of disk. A small host sets its own, below
   1 GB if it must. `pull_margin_mb` is the room an update keeps beyond the
@@ -1636,6 +1646,92 @@ when it is set; without it, the owner is given a path to open on the address
 people use for this installation. Only a digest of each invite's token is
 stored, and the token rides in the link's fragment, which no server log sees.
 A guest whose invite has run out is taken out of the room within a minute.
+
+## Names and look
+
+An installation can have its own name, an assistant with its own name, and its
+own icons, logo and colours: useful when you run it for your family, a school
+or a team.
+
+```bash
+bun run melete set MELETE_INSTANCE_NAME='Riverside Assistant' MELETE_ASSISTANT_NAME=Juniper
+```
+
+- `MELETE_INSTANCE_NAME` is what the installation calls itself: the page title,
+  the home-screen title, and the subject and text of sign-in and password reset
+  mail, which also ends with `MELETE_PUBLIC_URL` when it is set.
+- `MELETE_ASSISTANT_NAME` is what the assistant calls itself. The built-in
+  identity begins "You are Melete"; the name takes Melete's place there.
+- `MELETE_IDENTITY_FILE` replaces the built-in identity with a file of your own,
+  a path the service can read. It is used as written, so it names the assistant
+  itself, and it is held to the same cap as the built-in one, about 250 tokens,
+  because it is sent with every message. The service will not start with a file
+  over the cap.
+
+Both names default to Melete, are one line of at most 60 characters, and are in
+`GET /setup` as `instance_name` and `assistant_name`, so a sign-in page can
+show them before anyone signs in. The service and the web client read them at
+start, so after `melete set`, recreate the services it names. Other words in
+the app still say Melete for now.
+
+### A brand folder
+
+`deploy/docker-compose.brand.yml` mounts a folder read-only into the web client
+and the service, `deploy/brand` unless `MELETE_BRAND_SOURCE` names another. Add
+it to the [deploy file](#the-deploy-file):
+
+```json
+{ "contract": 1, "compose_files": ["docker-compose.brand.yml"] }
+```
+
+The web client serves these files from the folder ahead of its own, and nothing
+else in it:
+
+| File | Replaces |
+|---|---|
+| `favicon.ico`, `favicon.svg`, `favicon.png` | The tab icon |
+| `icons/<name>.png`, `.svg`, `.ico`, `.webp` | The home-screen icons, such as `icons/apple-touch-icon.png` |
+| `logo.png` | The mark the app draws (`/melete-logo.png`); `logo.svg` and `logo.webp` are served at their own names |
+| `manifest.webmanifest` | The installed app's name, colours and icons |
+| `brand.css` | Colours, corners and fonts; see below |
+
+A path that climbs out of the folder, or a symbolic link that points outside it,
+is not served. The service sees the same folder at `/brand`, so an identity file
+kept there is `MELETE_IDENTITY_FILE=/brand/identity.md`; the web client never
+serves it.
+
+`brand.css` is linked after the app's own styles and may set only the design
+tokens the web client declares in
+[`apps/web/src/design/tokens.css`](../apps/web/src/design/tokens.css), in the
+same rule sets that file uses:
+
+```css
+:root { --primary: #0b6e4f; --primary-hover: #095c42; --radius-card: 8px; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --primary: #6fd3a8; }
+}
+:root[data-theme="dark"] { --primary: #6fd3a8; }
+```
+
+The dark rule sets matter: without them, dark appearance keeps the app's own
+colours. Any other property, selector or at-rule, `url()`, or a backslash
+escape, and the web client neither serves nor links the file and logs why. With
+`url()` refused, a font must be one the browser has or one the app ships (DM
+Sans, Newsreader). The tokens are:
+
+- surfaces: `--canvas`, `--surface`, `--soft`, `--overlay`, `--chip-bg`, `--hover`, `--row-hover`;
+- text: `--text`, `--heading`, `--muted`, `--secondary`, `--placeholder`;
+- lines: `--line`, `--line-strong`, `--control`, `--ring`;
+- accent: `--primary`, `--primary-hover`, `--primary-fg`, `--blue-soft`, `--blue-ink`, `--blue-line`, `--bubble`, `--bubble-ink`;
+- tints: `--travel`, `--travel-ink`, `--sage`, `--sage-ink`, `--sand`, `--sand-ink`, `--lilac`, `--lilac-ink`, `--rose`, `--rose-ink`;
+- states: `--success`, `--success-soft`, `--danger`, `--danger-soft`, `--rating`;
+- dark panels: `--studio`, `--studio-panel`, `--studio-panel-2`, `--studio-line`, `--studio-text`, `--studio-muted`;
+- shape and depth: `--radius-sheet`, `--radius-card`, `--radius-block`, `--radius-button`, `--shadow-sheet`, `--shadow-lift`, `--shadow-pill`, `--elevated`, `--skeleton-a`, `--skeleton-b`;
+- fonts: `--font-body`, `--font-voice`, `--font-head`.
+
+These names are the contract: a release that renames one says so in
+[UPGRADING.md](UPGRADING.md). Check your colours against the surfaces they sit
+on in both appearances; the app's own are set to read at 4.5:1.
 
 ## Providers
 

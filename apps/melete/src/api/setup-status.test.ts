@@ -44,6 +44,8 @@ describe('GET /setup', () => {
       multiplayer: false,
       code_required: false,
       email_sign_in: false,
+      instance_name: 'Melete',
+      assistant_name: 'Melete',
     });
   });
 
@@ -89,7 +91,24 @@ describe('GET /setup', () => {
       multiplayer: false,
       code_required: false,
       email_sign_in: false,
+      instance_name: 'Melete',
+      assistant_name: 'Melete',
     });
+  });
+
+  test('it says what the installation and its assistant are called', async () => {
+    const response = await appWith([], {
+      MELETE_INSTANCE_NAME: '  Riverside Assistant ',
+      MELETE_ASSISTANT_NAME: 'Juniper',
+    }).request('/setup');
+    expect(setupStatusResponse.parse(await response.json())).toMatchObject({
+      instance_name: 'Riverside Assistant',
+      assistant_name: 'Juniper',
+    });
+    expect(() => loadEnv({ MELETE_INSTANCE_NAME: 'Two\nlines' })).toThrow('MELETE_INSTANCE_NAME');
+    expect(() => loadEnv({ MELETE_ASSISTANT_NAME: 'x'.repeat(61) })).toThrow(
+      'MELETE_ASSISTANT_NAME',
+    );
   });
 
   test('without a database it says the service is not configured', async () => {
@@ -134,6 +153,8 @@ describe('the multiplayer switch', () => {
       multiplayer: false,
       code_required: false,
       email_sign_in: false,
+      instance_name: 'Melete',
+      assistant_name: 'Melete',
     });
     for (const route of covered) {
       const response = await send(app, route);
@@ -158,6 +179,8 @@ describe('the multiplayer switch', () => {
       multiplayer: true,
       code_required: false,
       email_sign_in: false,
+      instance_name: 'Melete',
+      assistant_name: 'Melete',
     });
     for (const route of covered.filter(([, path]) => !path.startsWith('/invites/'))) {
       const response = await send(app, route);

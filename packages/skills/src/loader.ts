@@ -11,10 +11,11 @@
  * instructions arrive with it.
  */
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   BUILT_IN_SKILLS,
+  displayName,
   type Skill,
   type SkillFrontmatter,
   type SkillMatch,
@@ -46,7 +47,17 @@ export type LoadedSkills = {
 export const builtInDirectory = (): string =>
   fileURLToPath(new URL('../builtin/', import.meta.url));
 
-export const identityPath = (): string => join(builtInDirectory(), 'identity.md');
+/** The settings the identity reads: MELETE_IDENTITY_FILE and MELETE_ASSISTANT_NAME. */
+type IdentityEnv = Readonly<Record<string, string | undefined>>;
+
+/**
+ * The identity file: `MELETE_IDENTITY_FILE` when the installation names its
+ * own, otherwise the one that ships with the release.
+ */
+export const identityPath = (env: IdentityEnv = process.env): string => {
+  const own = env.MELETE_IDENTITY_FILE?.trim();
+  return own ? resolve(own) : join(builtInDirectory(), 'identity.md');
+};
 
 export type ParsedSkill =
   | { ok: true; frontmatter: SkillFrontmatter; body: string; tokens: number }
@@ -176,15 +187,28 @@ export function loadSkills(options: LoadOptions = {}): LoadedSkills {
   return { skills, failures: [...builtIn.failures, ...fromSpace.failures] };
 }
 
-/** Who Melete is. Short by contract, because it loads on every attempt. */
-export function loadIdentity(): string {
-  const text = readFileSync(identityPath(), 'utf8').trim();
+/** The name the assistant goes by: `MELETE_ASSISTANT_NAME`, or Melete. */
+export const assistantName = (env: IdentityEnv = process.env): string =>
+  displayName(env.MELETE_ASSISTANT_NAME, 'MELETE_ASSISTANT_NAME');
+
+/**
+ * Who the assistant is. Short by contract, because it loads on every attempt,
+ * and the cap holds for an installation's own file as for the built-in one.
+ * The built-in file opens with "You are Melete"; that name becomes the
+ * assistant's own. A file the installation wrote is used as written.
+ */
+export function loadIdentity(env: IdentityEnv = process.env): string {
+  const path = identityPath(env);
+  const own = Boolean(env.MELETE_IDENTITY_FILE?.trim());
+  let text = readFileSync(path, 'utf8').trim();
+  if (!own) text = text.replace(/^You are Melete\b/, () => `You are ${assistantName(env)}`);
   const tokens = estimateTokens(text);
   if (tokens > IDENTITY_MAX_TOKENS) {
     throw new Error(
-      `the identity file is about ${tokens} tokens; the cap is ${IDENTITY_MAX_TOKENS}`,
+      `the identity file${own ? ` ${path}` : ''} is about ${tokens} tokens; the cap is ${IDENTITY_MAX_TOKENS}`,
     );
   }
+  if (!text) throw new Error(`the identity file ${path} is empty`);
   return text;
 }
 

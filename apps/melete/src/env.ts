@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ATTACHMENT_LIMITS, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
+import { ATTACHMENT_LIMITS, displayName, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 import { formatRange, parsePrivateHosts, rangesOverlap } from './connectors/private-hosts.ts';
@@ -73,6 +73,20 @@ function brokerUrlMismatch(bind: string, url: string): string | null {
  */
 const unsetWhenBlank = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
+
+/** One of the installation's names (instance-name.ts): trimmed, one line, Melete when unset. */
+const nameSetting = (setting: string) =>
+  z
+    .string()
+    .optional()
+    .transform((value, context) => {
+      try {
+        return displayName(value, setting);
+      } catch (error) {
+        context.addIssue({ code: 'custom', message: (error as Error).message });
+        return z.NEVER;
+      }
+    });
 
 /**
  * Whether the Postgres client can read this address. It is judged here, the
@@ -165,6 +179,18 @@ const variables = z.object({
    * a self-hosted push server, or a test's stand-in.
    */
   MELETE_PUSH_EXTRA_ORIGINS: unsetWhenBlank(z.string().optional()),
+  /**
+   * What the installation calls itself: page titles, account mail, the setup
+   * status. Defaults to Melete. docs/DEPLOYMENT.md, "Names and look".
+   */
+  MELETE_INSTANCE_NAME: nameSetting('MELETE_INSTANCE_NAME'),
+  /** What the assistant calls itself in its identity. Defaults to Melete. */
+  MELETE_ASSISTANT_NAME: nameSetting('MELETE_ASSISTANT_NAME'),
+  /**
+   * A file that replaces the built-in identity, read once at start and held to
+   * the same token cap (packages/skills, loadIdentity).
+   */
+  MELETE_IDENTITY_FILE: unsetWhenBlank(z.string().max(4096).optional()),
   MELETE_PUBLIC_URL: unsetWhenBlank(
     z
       .url()

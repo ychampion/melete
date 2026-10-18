@@ -505,7 +505,13 @@ export function mountAuth(
 
   const signIn =
     deps.sql && deps.registry
-      ? new ExperienceSignIn(deps.sql, deps.registry, env.MELETE_PUBLIC_URL, deps.accountMail)
+      ? new ExperienceSignIn(
+          deps.sql,
+          deps.registry,
+          env.MELETE_PUBLIC_URL,
+          deps.accountMail,
+          env.MELETE_INSTANCE_NAME,
+        )
       : undefined;
   if (deps.sql) {
     const devicesEnded = deps.devicesEnded ? { devicesEnded: deps.devicesEnded } : {};
@@ -594,6 +600,10 @@ export function mountAuth(
         needed &&
         (claimRefused || (handle ? await setupCodeRequired(handle, setupCodeHash) : false)),
       email_sign_in: needed || !signIn ? false : await signIn.canSend(),
+      // What the installation and its assistant are called, for the sign-in
+      // and setup pages, which load before anyone is signed in.
+      instance_name: env.MELETE_INSTANCE_NAME,
+      assistant_name: env.MELETE_ASSISTANT_NAME,
     });
   });
 

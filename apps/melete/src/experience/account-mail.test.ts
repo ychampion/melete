@@ -1,6 +1,30 @@
 import { afterAll, expect, test } from 'bun:test';
 import { plainSmtpAvailable, plainSmtpServer } from '../../test/helpers/plain-smtp.ts';
-import { signInMail, smtpAccountMailer, smtpTransportOptions } from './account-mail.ts';
+import {
+  passwordResetMail,
+  signInMail,
+  smtpAccountMailer,
+  smtpTransportOptions,
+} from './account-mail.ts';
+
+test('account mail carries the installation name and closes with its public address', () => {
+  const plain = signInMail('person@example.test', 'https://x.test/#/welcome?token=x');
+  expect(plain.subject).toBe('Melete sign-in link');
+  expect(plain.text).toContain('sign in to Melete.');
+  expect(plain.text.endsWith('ignore this email.')).toBe(true);
+
+  const riverside = { name: 'Riverside Assistant', publicUrl: 'https://help.riverside.test/app' };
+  const link = signInMail('person@example.test', 'https://x.test/#/welcome?token=x', riverside);
+  expect(link.subject).toBe('Riverside Assistant sign-in link');
+  expect(link.text).toContain('sign in to Riverside Assistant.');
+  expect(link.text).not.toContain('Melete');
+  expect(link.text.endsWith('\n\nRiverside Assistant\nhttps://help.riverside.test/')).toBe(true);
+
+  const reset = passwordResetMail('person@example.test', 'https://x.test/#/r', 30, riverside);
+  expect(reset.subject).toBe('Reset your Riverside Assistant password');
+  expect(reset.text).toContain('choose a new Riverside Assistant password. It expires in 30');
+  expect(reset.text).not.toContain('Melete');
+});
 
 test('a mail server elsewhere must upgrade to TLS; one on this machine need not', () => {
   expect(smtpTransportOptions('smtp://user:pw@smtp.example.com:587').requireTLS).toBe(true);

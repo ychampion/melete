@@ -37,7 +37,9 @@ import { estimateTokens, indexLine, loadIdentity } from '@melete/skills';
 /**
  * Who Melete is, read from the one file that defines it rather than copied.
  * `loadIdentity` refuses a file over the 250-token cap, so a drifting identity
- * fails at the boundary instead of quietly eating the context budget.
+ * fails at the boundary instead of quietly eating the context budget. An
+ * installation names its own file with `MELETE_IDENTITY_FILE`, or only the
+ * assistant's name with `MELETE_ASSISTANT_NAME`; both are read once, at start.
  */
 export const IDENTITY: string = loadIdentity();
 
@@ -70,7 +72,7 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
       throw new Error("The conversation's persona exceeds its 250-token cap.");
     // Layered on top of the identity in SOUL.md, never instead of it.
     parts.push(
-      `# Who is speaking\n\n${bundle.identity}\n\nEverything in Melete's identity above still holds.`,
+      `# Who is speaking\n\n${bundle.identity}\n\nEverything in the identity above still holds.`,
     );
   }
 

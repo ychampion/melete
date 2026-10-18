@@ -10,6 +10,7 @@
  * connected accounts, through approvals, never through this sender.
  */
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_INSTANCE_NAME } from '@melete/contracts';
 import nodemailer from 'nodemailer';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import type { Env } from '../env.ts';
@@ -17,19 +18,37 @@ import type { Env } from '../env.ts';
 export type AccountMail = { to: string; subject: string; text: string };
 export type AccountMailer = { send(mail: AccountMail): Promise<void> };
 
-export function signInMail(to: string, url: string): AccountMail {
+/**
+ * Who account mail says it is from: the installation's name
+ * (`MELETE_INSTANCE_NAME`) and the address people open it at
+ * (`MELETE_PUBLIC_URL`), which closes the mail so a person can tell which
+ * installation wrote to them.
+ */
+export type MailInstance = { name: string; publicUrl?: string | undefined };
+
+const MELETE: MailInstance = { name: DEFAULT_INSTANCE_NAME };
+
+const signature = (instance: MailInstance) =>
+  instance.publicUrl ? `\n\n${instance.name}\n${new URL('/', instance.publicUrl).href}` : '';
+
+export function signInMail(to: string, url: string, instance: MailInstance = MELETE): AccountMail {
   return {
     to,
-    subject: 'Melete sign-in link',
-    text: `Use this link to sign in to Melete. It expires in ten minutes and can be used once.\n\n${url}\n\nIf you did not request this link, ignore this email.`,
+    subject: `${instance.name} sign-in link`,
+    text: `Use this link to sign in to ${instance.name}. It expires in ten minutes and can be used once.\n\n${url}\n\nIf you did not request this link, ignore this email.${signature(instance)}`,
   };
 }
 
-export function passwordResetMail(to: string, url: string, minutes: number): AccountMail {
+export function passwordResetMail(
+  to: string,
+  url: string,
+  minutes: number,
+  instance: MailInstance = MELETE,
+): AccountMail {
   return {
     to,
-    subject: 'Reset your Melete password',
-    text: `Use this link to choose a new Melete password. It expires in ${minutes} minutes and can be used once. Choosing a new password signs you out everywhere.\n\n${url}\n\nIf you did not ask for this, ignore this email; your password stays as it is.`,
+    subject: `Reset your ${instance.name} password`,
+    text: `Use this link to choose a new ${instance.name} password. It expires in ${minutes} minutes and can be used once. Choosing a new password signs you out everywhere.\n\n${url}\n\nIf you did not ask for this, ignore this email; your password stays as it is.${signature(instance)}`,
   };
 }
 
