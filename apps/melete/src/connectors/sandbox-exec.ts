@@ -395,11 +395,14 @@ export const sandboxManifestFor = (provider: SandboxProvider): ConnectorManifest
   isDesktopProvider(provider) ? sandboxExecManifest : sandboxTerminalManifest;
 
 /**
- * Why nothing ran, as the model reads it: a full computer is said in plain
- * words, and is not tried again by itself.
+ * Why nothing ran, as the model reads it: a full computer, or a provider at
+ * the operator's cap, is said in plain words and is not tried again by itself.
  */
 function refusedBefore(error: unknown) {
-  if (error instanceof SandboxRefusal && error.code === 'computer_full')
+  if (
+    error instanceof SandboxRefusal &&
+    (error.code === 'computer_full' || error.code === 'provider_capacity')
+  )
     return { outcome: 'failed' as const, reason: error.message, retryable: false };
   return {
     outcome: 'failed' as const,

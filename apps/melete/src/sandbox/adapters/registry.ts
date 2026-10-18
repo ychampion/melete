@@ -9,10 +9,12 @@
  */
 import type { SandboxAdapter } from '@melete/contracts';
 import type { OpenedSandboxProvider, SandboxProviderOptions } from '../connection.ts';
+import { cappedSandboxProvider } from '../provider-caps.ts';
 import type { EgressPolicy, SandboxCapabilities } from '../types.ts';
 import { createDaytonaProvider, daytonaCapabilities, daytonaEgressRefusal } from './daytona.ts';
 import { dockerCapabilities, dockerSandboxHost } from './docker.ts';
 import { createE2bProvider, e2bCapabilities } from './e2b.ts';
+import { createMaritimeProvider, MARITIME_IDLE_SECONDS, maritimeCapabilities } from './maritime.ts';
 import { createModalProvider, modalCapabilities } from './modal.ts';
 import { createModalSdkTransport } from './modal-sdk.ts';
 
@@ -87,6 +89,34 @@ export const SANDBOX_ADAPTER_PLUGINS: Record<SandboxAdapter, SandboxAdapterPlugi
           : { snapshotTtlSeconds: options.snapshotTtlSeconds }),
       });
       return { provider, close: async () => provider.close() };
+    },
+  },
+  maritime: {
+    capabilities: () => maritimeCapabilities(),
+    open(options) {
+      const provider = createMaritimeProvider({
+        credential: (use) =>
+          options.credential((value) =>
+            'api_key' in value
+              ? use(value.api_key)
+              : Promise.reject(new Error('this connection holds no Maritime key')),
+          ),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+      });
+      const caps = options.maritimeCaps;
+      return {
+        provider: caps
+          ? cappedSandboxProvider(provider, {
+              sql: caps.sql,
+              caps: {
+                maxComputers: caps.maxComputers,
+                maxAwake: caps.maxAwake,
+                idleSeconds: MARITIME_IDLE_SECONDS,
+              },
+            })
+          : provider,
+        close: async () => {},
+      };
     },
   },
   docker: {

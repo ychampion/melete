@@ -1983,7 +1983,7 @@ it still sends the message once.
 
 ## Sandboxes
 
-Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
+Sandboxes: connect E2B, Modal, Daytona or Maritime in Settings → Connections → Sandbox.
 The provider's key is entered there and sealed with `MELETE_MASTER_KEY`. Or give
 every agent a computer of its own on this host's Docker engine, with no account
 and no key: see [sandbox-docker.md](sandbox-docker.md).
@@ -1991,6 +1991,84 @@ and no key: see [sandbox-docker.md](sandbox-docker.md).
 installation's sandboxes at the provider; keep it. The other `MELETE_SANDBOX_*`
 settings and `MELETE_E2B_PLAN` are optional, with their defaults listed in
 `deploy/.env.example`. Set them in `deploy/.env` and recreate the service.
+
+### Computers on Maritime
+
+[Maritime](https://maritime.sh/docs/computers) runs each agent's computer as a
+persistent Linux desktop in a micro-VM of its own. It is an option for an
+operator who would rather not run computers on their own Docker host.
+
+**Setting it up.** Make a Maritime API key whose only scope is `computers`.
+In Settings → Connections → Sandbox, choose *Maritime computers*, paste the key
+as the provider key, and set:
+
+- *Image*: `linux` (x86_64) or `linux-arm64`. Maritime runs its own desktop
+  image; a custom image is refused.
+- *What the sandbox may reach*: *Anything*. Maritime documents no egress
+  control for computers, so *Nothing at all* and allow-lists are refused when
+  the connection is saved, before any computer is made.
+- *What a sandbox keeps*: *Files kept between attempts* to keep one computer per
+  agent across attempts, or *Nothing* for a fresh computer each time.
+- *Region*: leave it empty. Maritime offers no region choice.
+
+The key is sealed with `MELETE_MASTER_KEY` like any provider key. It is sent
+only to `api.maritime.sh` as a bearer token, never into a computer, a command's
+environment, a log, a receipt or the model.
+
+**What works.** Commands, with Melete's exit records, so a command whose answer
+is lost is never run twice. Commands longer than Maritime's 30-second `exec`
+run in the background and are polled until they finish. Files in and out of
+the workspace, kept on the computer's `/data` disk. Maritime's desktop user is
+not root and cannot make `/work`, so the workspace lives at `/data/work` and the
+adapter respells `/work` at its edge: in a command's folder, in file paths, and
+in a command's words wherever `/work` stands as a path of its own. A command
+that means the text `/work` itself, such as `grep /work notes.txt`, sees
+`/data/work` instead, and `pwd` prints `/data/work`. Sleep and wake for a kept
+workspace. Each computer is found again by a hash of this installation's ids,
+never by a person's name or email, and reconciliation removes only this
+installation's own computers.
+
+**What does not.** No egress control, no preview URLs or inbound ports, no
+region choice, no custom images, and no live terminal stream. A single file
+transfer is at most 8 MiB: a larger upload is refused with a message that says
+so, and a larger download is read up to 8 MiB only when the caller asks for no
+more than that. The agent's `computer.*` desktop tools still run on the Docker
+computer; Maritime's screen, clicks and viewer links are in the adapter but
+not yet wired to the app.
+
+**Sizing.** Maritime limits how many computers an account keeps and how many
+are awake at once; a sleeping computer counts only toward the first. An account
+serves as many agents as it keeps computers, and as many of them as it lets be
+awake can run commands at the same moment.
+
+**Caps.** Two settings in `deploy/.env` keep this installation inside the
+account's limits, so it never asks for computers the account does not allow.
+Both are unset by default, which means no cap:
+
+- `MELETE_MARITIME_MAX_COMPUTERS`: the most computers kept at Maritime, asleep
+  or awake. Past it, a new computer is refused, and the agent tells the person
+  in a plain sentence. No computer is made.
+- `MELETE_MARITIME_MAX_AWAKE`: the most awake at once. A computer that would
+  wake past it waits up to 30 seconds for a place, then is refused the same
+  way. A sleeping computer is never swapped for a new one to get round it.
+
+Set them to your Maritime account's limits. The counts are kept in the
+database, so several service instances share them and concurrent requests
+cannot pass a cap. Computers made before the caps were set are counted once
+they are next checked or used. Lowering a cap below what is in use refuses new
+computers and wakes until enough are deleted or asleep; computers already awake
+keep working. A create whose answer was lost keeps its place for up to fifteen
+minutes, since Maritime may have made the computer; reconciliation removes such
+a computer. Each computer has 2 GB of memory and 5 GB of disk unless the account
+raises them.
+
+**How sleep works.** Maritime puts a computer to sleep after five minutes with
+no action, keeping its memory and its disk. Melete
+wakes it before every command and touches it every four minutes while a
+command runs, so a long command is not put to sleep under it. After seven days
+asleep the memory snapshot is dropped and the next wake boots fresh on the same
+disk: files stay, running programs do not. Deleting the connection's workspaces
+deletes their computers and disks.
 
 ## Storage
 

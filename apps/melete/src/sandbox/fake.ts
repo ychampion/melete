@@ -11,8 +11,9 @@
  * not finished writing stays unfinished.
  *
  * What it does not model is said here: there is one user, no resource limits,
- * no pipes, no background jobs, and the network answers without leaving the
- * process. A command it does not know exits 127, the way a shell would.
+ * no job control (a background job started with `&` is a process of its own,
+ * reached by its pid, and nothing more), and the network answers without
+ * leaving the process. A command it does not know exits 127, the way a shell would.
  */
 import { isIP } from 'node:net';
 import { LABEL_SESSION, ownedLabels } from './manifest.ts';
@@ -66,7 +67,7 @@ type FsNode =
 
 export class FsError extends Error {
   constructor(
-    readonly code: 'ENOENT' | 'EEXIST' | 'ENOTDIR' | 'EISDIR' | 'ELOOP' | 'EINVAL',
+    readonly code: 'ENOENT' | 'EEXIST' | 'ENOTDIR' | 'EISDIR' | 'ELOOP' | 'EINVAL' | 'EACCES',
     readonly path: string,
   ) {
     super(`${code}: ${path}`);
@@ -80,6 +81,21 @@ export class FakeFs {
   private readonly nodes = new Map<string, FsNode>();
   /** When each entry last changed, as `changes` counted it. */
   private readonly stamps = new Map<string, number>();
+  /**
+   * Directories owned by root, as on a computer whose one user is not root:
+   * nothing can be made, renamed or removed directly inside them.
+   */
+  private readonly sealed = new Set<string>();
+
+  /** Make dir root's: its entries can no longer be added, renamed or removed. */
+  seal(dir: string): void {
+    this.sealed.add(FakeFs.normalize(dir));
+  }
+
+  /** The parent of an entry about to be made, renamed or removed must not be root's. */
+  private writable(parent: string): void {
+    if (this.sealed.has(parent)) throw new FsError('EACCES', parent);
+  }
 
   private touch(target: string): void {
     changes += 1;
@@ -107,6 +123,7 @@ export class FakeFs {
         node.kind === 'file' ? { ...node, bytes: node.bytes.slice() } : { ...node },
       );
     for (const [key, stamp] of this.stamps) copy.stamps.set(key, stamp);
+    for (const dir of this.sealed) copy.sealed.add(dir);
     return copy;
   }
 
@@ -176,7 +193,7 @@ export class FakeFs {
     if (!parents) {
       const target = this.resolve(value, false);
       if (this.nodes.has(target)) throw new FsError('EEXIST', target);
-      this.parentOf(target);
+      this.writable(this.parentOf(target));
       this.nodes.set(target, { kind: 'dir', mode });
       this.touch(target);
       return;
@@ -189,7 +206,7 @@ export class FakeFs {
       const existing = this.nodes.get(target);
       if (existing?.kind === 'dir') continue;
       if (existing) throw new FsError('EEXIST', target);
-      this.parentOf(target);
+      this.writable(this.parentOf(target));
       // As `mkdir -p -m`: the mode is the last directory's; the ones made on the way get the default.
       this.nodes.set(target, { kind: 'dir', mode: index === parts.length - 1 ? mode : 0o755 });
       this.touch(target);
@@ -206,9 +223,10 @@ export class FakeFs {
       this.mkdir(normalized.slice(0, normalized.lastIndexOf('/')) || '/', true);
     }
     const target = this.resolve(value, true);
-    this.parentOf(target);
+    const parent = this.parentOf(target);
     const existing = this.nodes.get(target);
     if (existing?.kind === 'dir') throw new FsError('EISDIR', target);
+    if (!existing) this.writable(parent);
     const previous = existing?.kind === 'file' && options.append ? existing.bytes : EMPTY;
     const next = new Uint8Array(previous.byteLength + bytes.byteLength);
     next.set(previous);
@@ -232,7 +250,7 @@ export class FakeFs {
   symlink(targetText: string, value: string): void {
     const link = this.resolve(value, false);
     if (this.nodes.has(link)) throw new FsError('EEXIST', link);
-    this.parentOf(link);
+    this.writable(this.parentOf(link));
     this.nodes.set(link, { kind: 'symlink', target: targetText });
     this.touch(link);
   }
@@ -250,7 +268,8 @@ export class FakeFs {
     const target = this.resolve(to, false);
     const node = this.nodes.get(source);
     if (!node) throw new FsError('ENOENT', source);
-    this.parentOf(target);
+    this.writable(this.parentOf(source));
+    this.writable(this.parentOf(target));
     for (const [key, value] of [...this.nodes]) {
       if (key === source || key.startsWith(`${source}/`)) {
         this.nodes.delete(key);
@@ -265,6 +284,7 @@ export class FakeFs {
     const target = this.resolve(value, false);
     const node = this.nodes.get(target);
     if (!node) throw new FsError('ENOENT', target);
+    this.writable(this.parentOf(target));
     if (node.kind === 'dir') {
       const children = [...this.nodes.keys()].filter((key) => key.startsWith(`${target}/`));
       if (children.length && !recursive) throw new FsError('EISDIR', target);
@@ -390,7 +410,8 @@ type Command =
   | { kind: 'subshell'; body: List; redirects: Redirect[] }
   | { kind: 'group'; body: List; redirects: Redirect[] }
   | { kind: 'pipeline'; left: Command; right: Command; redirects: Redirect[] };
-type List = { command: Command; next: ';' | '&&' | '||' }[];
+/** `&` runs the command as a background job and goes on at once. */
+type List = { command: Command; next: ';' | '&&' | '||' | '&' }[];
 
 class ShellSyntaxError extends Error {}
 
@@ -450,7 +471,8 @@ function tokenize(script: string): Token[] {
       endWord();
       tokens.push({ type: 'op', value: '|' });
     } else if (char === '&') {
-      throw new ShellSyntaxError(`${char} is not supported`);
+      endWord();
+      tokens.push({ type: 'op', value: '&' });
     } else if (char === '(' || char === ')') {
       endWord();
       tokens.push({ type: 'op', value: char });
@@ -578,8 +600,11 @@ function parse(tokens: Token[]): List {
         parsed = { kind: 'pipeline', left: parsed, right, redirects: [] };
       }
       const separator = tokens[position];
-      let next: ';' | '&&' | '||' = ';';
-      if (separator?.type === 'op' && (separator.value === '&&' || separator.value === '||')) {
+      let next: ';' | '&&' | '||' | '&' = ';';
+      if (
+        separator?.type === 'op' &&
+        (separator.value === '&&' || separator.value === '||' || separator.value === '&')
+      ) {
         next = separator.value;
         position += 1;
       }
@@ -656,9 +681,10 @@ function expand(word: Word, shell: Shell): string {
       part.quoted === 'single'
         ? part.text
         : part.text.replace(
-            /\$(\?|#|@|[0-9]|\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/g,
+            /\$(\?|#|@|!|[0-9]|\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/g,
             (_, name: string) => {
               if (name === '?') return String(shell.status);
+              if (name === '!') return shell.vars.get('!') ?? '';
               if (name === '#') return String(Math.max(0, shell.positional.length - 1));
               if (name === '@') return shell.positional.slice(1).join(' ');
               if (/^[0-9]$/.test(name)) return shell.positional[Number(name)] ?? '';
@@ -716,6 +742,7 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
   const path = (value: string) => fs.absolute(shell.cwd, value);
   switch (name) {
     case 'true':
+    case ':':
       return 0;
     case 'false':
       return 1;
@@ -874,6 +901,26 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     case 'setsid':
       // `-w` waits for the program, which is all the fake does anyway.
       return program(args[0] === '-w' ? args.slice(1) : args, shell, io);
+    case 'wc': {
+      const operands = args.filter((arg) => arg !== '--');
+      if (operands[0] !== '-c' || operands.length > 2)
+        return fail('only -c [FILE] is supported', 2);
+      const file = operands[1];
+      let count = 0;
+      if (file !== undefined) {
+        try {
+          count = fs.readFile(path(file)).byteLength;
+        } catch {
+          return fail(`${file}: No such file or directory`, 1);
+        }
+      } else if (io.read) {
+        for (let chunk = await io.read(); chunk; chunk = await io.read()) count += chunk.byteLength;
+      } else {
+        count = (await (io.in ? io.in() : shell.process.readStdin())).byteLength;
+      }
+      io.out(encode(file === undefined ? `${count}\n` : `${count} ${file}\n`));
+      return 0;
+    }
     case 'head': {
       const operands = args.filter((arg) => arg !== '--');
       if (operands[0] !== '-c' || operands[1] === undefined)
@@ -1160,15 +1207,63 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
 
 async function runList(list: List, shell: Shell, io: Io): Promise<number> {
   let skip: '&&' | '||' | null = null;
-  for (const item of list) {
+  for (let index = 0; index < list.length; index += 1) {
+    // `a && b &` sends the whole and-or list to the background, as sh does.
+    const end = list.findIndex(
+      (item, at) => at >= index && (item.next === ';' || item.next === '&'),
+    );
+    if (skip === null && end >= 0 && list[end]?.next === '&') {
+      const chain = list
+        .slice(index, end + 1)
+        .map((item, at, all) => (at === all.length - 1 ? { ...item, next: ';' as const } : item));
+      shell.vars.set('!', String(background(chain, shell, io)));
+      shell.status = 0;
+      index = end;
+      continue;
+    }
+    const item = list[index] as List[number];
     const run =
       skip === null ||
       (skip === '&&' && shell.status === 0) ||
       (skip === '||' && shell.status !== 0);
     if (run) shell.status = await runCommand(item.command, shell, io);
-    skip = item.next === ';' ? null : item.next;
+    skip = item.next === ';' || item.next === '&' ? null : item.next;
   }
   return shell.status;
+}
+
+/**
+ * A background job: a process of its own in the sandbox, with its own pid, that
+ * outlives the shell that started it and is ended only by its own end, a kill
+ * sent to its pid, or the sandbox going. Returns the pid, as `$!` reads it.
+ */
+function background(list: List, shell: Shell, io: Io): number {
+  const { sandbox } = shell;
+  sandbox.nextPid += 1;
+  const pid = sandbox.nextPid;
+  let settle: (value: { exitCode: number | null; killed: boolean }) => void = () => {};
+  const job = new FakeProcess(
+    pid,
+    new Promise((resolve) => {
+      settle = resolve;
+    }),
+  );
+  job.closeStdin();
+  sandbox.processes.set(pid, job);
+  const child: Shell = { ...shell, process: job, vars: new Map(shell.vars) };
+  void (async () => {
+    let result: { exitCode: number | null; killed: boolean };
+    try {
+      result = { exitCode: await runList(list, child, io), killed: false };
+    } catch (error) {
+      if (error instanceof ExitSignal) result = { exitCode: error.code, killed: false };
+      else result = { exitCode: null, killed: true };
+    }
+    job.finished = true;
+    sandbox.processes.delete(pid);
+    settle(result);
+  })();
+  return pid;
 }
 
 async function runScript(

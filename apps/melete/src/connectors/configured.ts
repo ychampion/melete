@@ -338,6 +338,8 @@ export type SandboxRuntimeOptions = {
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   /** The engine the docker adapter runs sandboxes on, and their limits. */
   docker?: DockerSandboxSettings;
+  /** The operator's caps on Maritime computers; unset, Maritime is uncapped. */
+  maritimeCaps?: { maxComputers: number | null; maxAwake: number | null };
 };
 
 /** What a connector is built from: the persisted row, never a request payload. */
@@ -431,6 +433,9 @@ export class ConnectorFactory {
       modalRefusal: sandbox.modalRefusal,
       ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
       ...(sandbox.docker ? { docker: sandbox.docker } : {}),
+      ...(sandbox.maritimeCaps
+        ? { maritimeCaps: { sql: this.options.sql, ...sandbox.maritimeCaps } }
+        : {}),
     });
   }
 
@@ -623,6 +628,9 @@ export class ConnectorFactory {
         snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
         ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
         ...(sandbox.docker ? { docker: sandbox.docker } : {}),
+        ...(sandbox.maritimeCaps
+          ? { maritimeCaps: { sql: options.sql, ...sandbox.maritimeCaps } }
+          : {}),
       });
       this.sandboxProviders.set(row.id, {
         adapter: config.adapter,
@@ -1207,6 +1215,10 @@ function sandboxOptions(sql: Sql, env: Env): NonNullable<ConnectorOptions['sandb
     maxPerConnection:
       env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
     modalRefusal: modalEnvironmentRefusal(process.env, env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT),
+    maritimeCaps: {
+      maxComputers: env.MELETE_MARITIME_MAX_COMPUTERS ?? null,
+      maxAwake: env.MELETE_MARITIME_MAX_AWAKE ?? null,
+    },
     // The idle stop asks the process records which containers are in use.
     docker: { ...dockerWithEgress(sql, env), awake: () => sessions.awakeSandboxes('docker') },
   };

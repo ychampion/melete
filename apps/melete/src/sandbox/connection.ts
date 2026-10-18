@@ -63,6 +63,15 @@ export type SandboxProviderOptions = {
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   /** The engine and limits the docker adapter uses; it holds no key. */
   docker?: DockerSandboxSettings;
+  /**
+   * The operator's caps on Maritime computers, counted in this database.
+   * Absent, or with both caps null, Maritime is uncapped.
+   */
+  maritimeCaps?: {
+    sql: Sql;
+    maxComputers: number | null;
+    maxAwake: number | null;
+  };
 };
 
 /** A sandbox id no provider will have, for asking whether a key is accepted at all. */
@@ -347,7 +356,7 @@ export function sandboxCredentialValue(
     throw new Error(NOT_A_SANDBOX_KEY);
   }
   if (sandboxCredentialRefusal(adapter, api_key)) throw new Error(NOT_A_SANDBOX_KEY);
-  if (adapter === 'e2b' || adapter === 'daytona') return { api_key };
+  if (adapter === 'e2b' || adapter === 'daytona' || adapter === 'maritime') return { api_key };
   const parts = modalTokenParts(api_key);
   if (!parts) throw new Error(NOT_A_SANDBOX_KEY);
   return parts;

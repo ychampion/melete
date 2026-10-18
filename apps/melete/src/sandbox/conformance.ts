@@ -142,7 +142,13 @@ export function sandboxConformance(
           provider: subject.provider,
           workRoot,
           spec,
-          async open(egress = { kind: 'deny_all' }) {
+          // The narrowest policy the adapter enforces: deny-all where it can,
+          // and open egress for an adapter that enforces nothing narrower.
+          async open(
+            egress = subject.provider.capabilities.egress.includes('deny_all')
+              ? { kind: 'deny_all' }
+              : { kind: 'open' },
+          ) {
             const key = JSON.stringify(egress);
             const existing = options.reuseSandboxes ? pool.get(key) : undefined;
             if (existing) {
@@ -440,8 +446,25 @@ export function sandboxConformance(
     });
 
     scenario('a manifest without deny_all refuses a deny_all connection', async (context) => {
-      expect(context.provider.capabilities.egress).toContain('deny_all');
       let created = 0;
+      if (!context.provider.capabilities.egress.includes('deny_all')) {
+        // This adapter's own manifest is such a manifest: the real provider
+        // must be refused before any sandbox is made.
+        const counted = Object.create(context.provider) as SandboxProvider;
+        counted.create = async (spec, abort) => {
+          created += 1;
+          return context.provider.create(spec, abort);
+        };
+        const refused = await openSandbox(
+          counted,
+          context.spec({ kind: 'deny_all' }, 'sbx_CONFORMANCE0'),
+          signal(),
+        ).catch((error: unknown) => error);
+        expect(refused).toBeInstanceOf(SandboxRefusal);
+        expect((refused as SandboxRefusal).code).toBe('egress_unsupported');
+        expect(created).toBe(0);
+        return;
+      }
       const narrowed = {
         capabilities: {
           ...context.provider.capabilities,
@@ -506,6 +529,9 @@ export function sandboxConformance(
     );
 
     scenario('deny-all egress holds from inside the sandbox', async (context) => {
+      // An adapter that cannot enforce deny-all declares so, and is refused a
+      // deny-all connection by the scenario above; there is nothing to probe.
+      if (!context.provider.capabilities.egress.includes('deny_all')) return;
       // Blocked connections can look open at the TCP level, so the probe asks
       // for an application answer and for a name to resolve, not for a socket.
       const probe = [

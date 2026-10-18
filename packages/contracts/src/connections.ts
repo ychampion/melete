@@ -134,7 +134,7 @@ export const icsConnectionConfig = z
   .strict();
 export type IcsConnectionConfig = z.infer<typeof icsConnectionConfig>;
 
-export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal', 'docker'] as const;
+export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal', 'docker', 'maritime'] as const;
 export const sandboxAdapter = z.enum(SANDBOX_ADAPTERS);
 export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
 
@@ -216,6 +216,7 @@ export function modalTokenParts(key: string): { token_id: string; token_secret: 
 export const SANDBOX_CREDENTIAL_FORMAT: Record<SandboxAdapter, string> = {
   e2b: 'the API key on its own, which has no colon in it',
   daytona: 'the API key on its own, which has no colon in it',
+  maritime: 'an API key with the computers scope, on its own, which has no colon in it',
   modal: 'the token id and the token secret as one value, `token_id:token_secret`',
   docker: "nothing: it runs on this service's own Docker engine and takes no key",
 };
@@ -234,7 +235,7 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
   const wrong =
     adapter === 'modal'
       ? !modalTokenParts(key)
-      : // An E2B or Daytona key carries no colon. One here is a Modal token in
+      : // An E2B, Daytona or Maritime key carries no colon. One here is a Modal token in
         // the wrong connection, and the provider would be handed it as a key.
         key.includes(':');
   return wrong
@@ -1497,19 +1498,20 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           { value: 'e2b', label: 'E2B' },
           { value: 'daytona', label: 'Daytona' },
           { value: 'modal', label: 'Modal' },
+          { value: 'maritime', label: 'Maritime computers' },
           { value: 'docker', label: 'This server (Docker)' },
         ],
         default: 'e2b',
       }),
       text('sandbox.image', 'Image or template', {
         placeholder: 'base',
-        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal, an image on this server for Docker.',
+        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal, linux or linux-arm64 on Maritime, an image on this server for Docker.',
       }),
       text('credentials.api_key', 'Provider key', {
         input: 'password',
         secret: true,
         required: false,
-        help: `E2B or Daytona: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}. Docker: leave it empty.`,
+        help: `E2B, Daytona or Maritime: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}. Docker: leave it empty.`,
       }),
       text('sandbox.egress', 'What the sandbox may reach', {
         input: 'select',
