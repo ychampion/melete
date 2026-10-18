@@ -79,7 +79,7 @@ without asking, except pay. The broker holds a step of `computer.click`,
 
 The card says "Your agent is about to pay on shop.example.com", followed by the
 amount when the button or the page states one plainly (otherwise no amount is
-shown). The step
+shown). The amount is the page's own figure, not a checked charge. The step
 goes ahead only with a fresh step-up made for it. Typing the card and pressing
 Pay are two steps, so a checkout usually asks twice.
 
