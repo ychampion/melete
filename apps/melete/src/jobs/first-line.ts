@@ -12,17 +12,22 @@
  *   known what it is. The agent's model request was often already on its way
  *   when the line was shown, so it could not be told, and a line saying what
  *   it is about to do would say the same thing twice. Such a line is dropped:
- *   what the agent wrote before its first step, or a one-sentence plan line
- *   ("Drafting the reply to Sam.") before the rest of its answer or as the
- *   first words after steps it took in silence. Anything else is the answer,
- *   and goes out as it came, a moment later.
+ *   the agent's first words, when they read as a plan ("Drafting the reply to
+ *   Sam.") and end at its next step or at the end of their line. Anything else
+ *   is the answer, and goes out as it came, a moment later. Only the opening is
+ *   judged, once; a whole reply is never dropped.
  *
  * The runtime's events keep their order and their sequence numbers: a dropped
- * line goes out as empty text, so the record has no gap.
+ * line goes out as empty text, so the record has no gap. A line dropped from
+ * the reply the attempt ends on is left out of its saved answer too, so a page
+ * read later shows what the person saw live.
+ *
+ * What reads as a plan is English: a line in another language is never
+ * dropped, so at worst the person reads two first lines.
  */
-import type { RuntimeEvent } from '@melete/contracts';
+import type { AttemptOutcome, RuntimeEvent } from '@melete/contracts';
 
-/** A plan line is one short sentence; past this, held text is the answer. */
+/** A plan line is one or two short sentences; past this, held text is the answer. */
 export const OPENING_MAX_CHARACTERS = 200;
 
 /** Events that show the agent has moved on to work: what it wrote first was its plan. */
@@ -33,19 +38,92 @@ const WORK = new Set<RuntimeEvent['type']>([
   'turn_started',
 ]);
 
+/** A few words a person says before getting on with it: "Sure —", "On it.", "Got it,". */
+const LEAD_IN =
+  /^(?:sure|okay|ok|got it|on it|alright|all right|of course|no problem|will do|right|great|good question|happy to help)\b[\s,.!—–-]*/i;
+
+/**
+ * Words in -ing that open a line without being the agent at work: "Nothing
+ * changed", "Meeting moved to 3", "According to the ECB", "Interesting".
+ */
+const NOT_AT_WORK = new Set([
+  'according',
+  'amazing',
+  'anything',
+  'boring',
+  'bring',
+  'ceiling',
+  'confusing',
+  'during',
+  'evening',
+  'everything',
+  'exciting',
+  'existing',
+  'funding',
+  'including',
+  'incoming',
+  'interesting',
+  'king',
+  'meeting',
+  'missing',
+  'morning',
+  'nothing',
+  'ongoing',
+  'outgoing',
+  'parking',
+  'pending',
+  'pricing',
+  'regarding',
+  'remaining',
+  'ring',
+  'shipping',
+  'sing',
+  'something',
+  'spring',
+  'sting',
+  'string',
+  'surprising',
+  'swing',
+  'thing',
+  'things',
+  'timing',
+  'upcoming',
+  'wedding',
+  'wing',
+]);
+
+/** A second word that makes the first one the subject of a sentence: "Booking confirmed". */
+const STATES =
+  /^(?:is|are|was|were|has|have|had|will|would|can|could|should|may|might|must|does|did|do|isn't|aren't|wasn't|won't|can't|[a-z]+ed)$/;
+
+/** One sentence of a plan: the agent saying what it is doing or will do. */
+function planSentence(sentence: string): boolean {
+  const text = sentence.replace(LEAD_IN, '').trim();
+  // "On it." alone says nothing beyond the line already shown.
+  if (!text) return true;
+  // A colon, a semicolon or a comma carries a fact or a condition: content.
+  if (/[:;,]/.test(text)) return false;
+  if (/^let me know\b/i.test(text)) return false;
+  if (/^(?:let me|let's|i'll|i will|i'm going to|i am going to)\s/i.test(text)) return true;
+  if (/^(?:i'm|i’m|i am)\s+[a-z]+ing\b/i.test(text)) return true;
+  const [first = '', second = ''] = text.split(/\s+/);
+  const verb = first.replace(/[^A-Za-z]/g, '');
+  if (!/^[A-Z][a-z]+ing$/.test(verb) || NOT_AT_WORK.has(verb.toLowerCase())) return false;
+  return !STATES.test(second.toLowerCase().replace(/[^a-z']/g, ''));
+}
+
 /**
  * A line that says what the agent is about to do: "Checking the ECB rate.",
- * "Drafting the cover letter.", "Let me look up the forecast.", "I'll set
- * that reminder now." One sentence, opening with a verb in -ing or with the
- * agent saying what it will do.
+ * "Drafting the cover letter. I'll check the word count first.", "Let me look
+ * up the forecast.", "Sure — I'll set that reminder now." One or two short
+ * sentences, each of them a plan. It fails toward content: a line it is not
+ * sure of is said.
  */
 export function isPlanLine(line: string): boolean {
-  const text = line.trim();
+  const text = line.replace(/’/g, "'").trim();
   if (!text || text.length > OPENING_MAX_CHARACTERS) return false;
-  // One sentence: a second one is content, not a plan.
-  if (/[.!?…:;]\s+\S/.test(text)) return false;
-  const first = text.split(/\s+/)[0]?.replace(/[^A-Za-z']/g, '') ?? '';
-  return /^[A-Z][a-z]+ing$/.test(first) || /^(?:let me|i'll|i will|i'm going to)\b/i.test(text);
+  const sentences = text.split(/(?<=[.!?…])\s+/).filter(Boolean);
+  return sentences.length <= 2 && sentences.every(planSentence);
 }
 
 type State =
@@ -63,9 +141,16 @@ const textOf = (event: RuntimeEvent): string => (event.type === 'text_delta' ? e
 export class FirstLine {
   private state: State;
   private held: RuntimeEvent[] = [];
-  /** A step went by before the agent wrote anything. */
-  private stepped = false;
   private chain: Promise<void> = Promise.resolve();
+  /** Settles when the acknowledgement being written has been shown, or not. */
+  private shown: Promise<void> = Promise.resolve();
+  private settleShown = () => {};
+  /**
+   * A plan line dropped from the start of the agent's latest message, while
+   * no step has followed it: if that message is the reply the attempt ends on,
+   * its saved copy leaves the line out too.
+   */
+  private cut: string | null = null;
 
   /**
    * `pass` records one event, in order. With `acknowledging` false there is
@@ -86,15 +171,20 @@ export class FirstLine {
   /**
    * The acknowledgement is about to be written. False when the agent has
    * spoken first or the acknowledgement was called off: then it is not shown.
+   * Every true is followed by `endShow`.
    */
   beginShow(): boolean {
     if (this.state !== 'waiting') return false;
     this.state = 'showing';
+    this.shown = new Promise<void>((resolve) => {
+      this.settleShown = resolve;
+    });
     return true;
   }
 
   /** The acknowledgement was written, or was not and the agent's words go out as they came. */
   endShow(shown: boolean): Promise<void> {
+    this.settleShown();
     if (this.state !== 'showing') return Promise.resolve();
     if (!shown) {
       this.state = 'open';
@@ -122,16 +212,36 @@ export class FirstLine {
   }
 
   /**
-   * The attempt is ending: what is still held goes out as it came, and every
-   * event handed in has been recorded (or failed) when this resolves.
+   * The attempt is ending: a line being shown is waited for, so it comes
+   * before what the agent said and the opening is judged against it; then
+   * what is still held goes out as it came (the whole of a short reply), and
+   * every event handed in has been recorded (or failed) when this resolves.
    */
   async drain(): Promise<void> {
     if (this.state === 'waiting') this.state = 'open';
+    if (this.state === 'showing') await this.shown;
     if (this.state === 'holding' || this.state === 'showing') {
       this.state = 'open';
       await this.release(this.held.length);
     }
     await this.chain;
+  }
+
+  /**
+   * The attempt's outcome as the person saw it: a plan line dropped from the
+   * start of the reply it ends on is left out of the reply's saved copy.
+   */
+  settled(outcome: AttemptOutcome): AttemptOutcome {
+    const cut = this.cut;
+    if (!cut) return outcome;
+    const trimmed = (text: string) => {
+      const start = text.trimStart();
+      return start.startsWith(cut) ? start.slice(cut.length).trimStart() : text;
+    };
+    if ('summary' in outcome) return { ...outcome, summary: trimmed(outcome.summary) };
+    if ('draft' in outcome && typeof outcome.draft === 'string')
+      return { ...outcome, draft: trimmed(outcome.draft) };
+    return outcome;
   }
 
   /** Looks at what is held, in order, and lets it go once the opening is known. */
@@ -154,26 +264,26 @@ export class FirstLine {
         const opening = text.trim();
         if (!opening) {
           // A model call or a step before any words: those go out now, and the
-          // agent's first line after them is still judged, so a plan line in a
-          // response already on its way is not said twice. After a real step,
-          // only a line that reads as a plan is dropped.
-          if (event.type !== 'turn_started') this.stepped = true;
+          // agent's first words after them are still judged, so a plan line in
+          // a response already on its way is not said twice.
           released.push(this.release(index + 1));
           index = 0;
           text = '';
           continue;
         }
-        // What the agent wrote before its first step said what the line said.
-        if (opening.length <= OPENING_MAX_CHARACTERS && (!this.stepped || isPlanLine(opening)))
-          this.blank(index, '');
+        // The agent's first words, up to its next step, said what the line said.
+        if (isPlanLine(opening)) this.blank(index, '');
         return done(this.held.length);
       }
       text += textOf(event);
       const opening = text.trimStart();
       const lineEnd = opening.search(/\n\s*\S/);
       if (lineEnd >= 0) {
-        if (isPlanLine(opening.slice(0, lineEnd)))
+        const line = opening.slice(0, lineEnd).trim();
+        if (isPlanLine(line)) {
           this.blank(index + 1, opening.slice(lineEnd).trimStart());
+          this.cut = line;
+        }
         return done(this.held.length);
       }
       if (opening.length > OPENING_MAX_CHARACTERS) return done(this.held.length);
@@ -201,7 +311,11 @@ export class FirstLine {
 
   /** Each event is recorded after the one before it; one that fails does not stop the next. */
   private enqueue(event: RuntimeEvent): Promise<void> {
-    const recorded = this.chain.then(() => this.pass(event));
+    // A step after the dropped line: the message it opened was not the last one.
+    if (WORK.has(event.type)) this.cut = null;
+    const out =
+      event.type === 'attempt_outcome' ? { ...event, outcome: this.settled(event.outcome) } : event;
+    const recorded = this.chain.then(() => this.pass(out));
     this.chain = recorded.catch(() => undefined);
     return recorded;
   }

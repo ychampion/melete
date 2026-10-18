@@ -20,7 +20,7 @@ import {
 } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
-import { event, job, owner, question, space } from '../../src/db/schema.ts';
+import { event, experienceTurn, job, owner, question, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import type { AckCall } from '../../src/experience/ack.ts';
@@ -308,6 +308,57 @@ withDb('first words', () => {
       .join('');
     expect(words).not.toContain('Drafting the reply');
     expect(words.trim()).toBe('Hi Sam,\n\nI can’t make Thursday.\n\nRiya');
+  });
+
+  test('turned off, no line is asked for and the agent’s words go out as written', async () => {
+    const options = required(runner).options;
+    const before = options.acknowledge;
+    options.acknowledge = { afterMs: 0, writer };
+    try {
+      const chatId = await runTurn('What is the euro to dollar rate today?', async (say) => {
+        await pause(300);
+        await say({ type: 'text_delta', text: 'Checking the ECB rate.' });
+        await say({
+          type: 'tool_call_proposed',
+          tool: 'web_search',
+          call_id: 's#0',
+          arguments: {},
+        });
+        await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+        await say({ type: 'text_delta', text: 'It is 1.08.' });
+        return { kind: 'completed', summary: 'It is 1.08.', evidence: [] };
+      });
+      // No model call for a line that is off.
+      expect(writer.calls).toEqual([]);
+      expect(await acknowledgements(chatId)).toEqual([]);
+      const words = (await items(chatId))
+        .filter((item) => item.type === 'text_delta')
+        .map((item) => (item as { text: string }).text)
+        .join('');
+      expect(words).toContain('Checking the ECB rate.');
+    } finally {
+      options.acknowledge = before;
+    }
+  });
+
+  test('the saved answer is what was shown: a dropped plan line is not in it', async () => {
+    const reply = 'Drafting the reply to Sam.\n\nHi Sam,\n\nI can’t make Thursday.';
+    const chatId = await runTurn('Write a short reply to Sam declining Thursday', async (say) => {
+      await pause(300);
+      await say({ type: 'text_delta', text: reply });
+      // The engine's final output is the whole last message, plan line included.
+      return { kind: 'completed', summary: reply, evidence: [] };
+    });
+    const words = (await items(chatId))
+      .filter((item) => item.type === 'text_delta')
+      .map((item) => (item as { text: string }).text)
+      .join('');
+    expect(words.trim()).toBe('Hi Sam,\n\nI can’t make Thursday.');
+    const [saved] = await required(handle)
+      .db.select({ answer: experienceTurn.answer })
+      .from(experienceTurn)
+      .where(eq(experienceTurn.jobId, chatId));
+    expect(saved?.answer).toBe('Hi Sam,\n\nI can’t make Thursday.');
   });
 
   test('the line is written as the turn starts, so it is ready by the deadline', async () => {

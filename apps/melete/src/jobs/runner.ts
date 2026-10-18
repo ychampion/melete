@@ -2126,12 +2126,16 @@ export class AttemptRunner {
       // outcome does. A failure to record one was the runtime's to report.
       acknowledgement?.cancel();
       await firstLine.drain().catch(() => undefined);
-      const outcome = isOutcomeEnvelope(result) ? result.outcome : result;
+      // The answer is saved as the person saw it, without a line dropped from it.
+      const outcome = firstLine.settled(isOutcomeEnvelope(result) ? result.outcome : result);
       if (outcome.kind === 'completed') {
         completed = outcome;
         await this.awaitDispatched(claims, controller.signal);
       }
-      await this.commitOutcome(claims, result);
+      await this.commitOutcome(
+        claims,
+        isOutcomeEnvelope(result) ? { ...result, outcome } : outcome,
+      );
     } catch (error) {
       if (
         completed &&
