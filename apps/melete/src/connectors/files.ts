@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, lstatSync } from 'node:fs';
 import {
+  access,
   type FileHandle,
   link,
   lstat,
@@ -662,7 +663,7 @@ export const filesManifest: ConnectorManifest = {
     {
       name: 'files.write',
       description:
-        'Write a UTF-8 file, only when the person asks for a file or the work is a document to keep. Answers, drafts, tables and plans go in the reply instead. Declare expect to make it a checked deliverable.',
+        'Write a UTF-8 file, only when the person asks for a file or the work is a document to keep. Answers, drafts, tables and plans go in the reply instead. Declare expect to make it a checked deliverable. Content is text only: a file you made with code (a presentation, document, spreadsheet, PDF, picture or archive) goes to the person with files.move.',
       input_schema: inputSchema(
         {
           path: pathSchema,
@@ -681,7 +682,7 @@ export const filesManifest: ConnectorManifest = {
     {
       name: 'files.move',
       description:
-        'Move a file to an unused path. Include content_hash to verify a lost acknowledgement.',
+        "Move a file to an unused path. A file of any kind you made on your computer, text or binary, reaches the person's Files this way: from its workspace path (area work) to to_area artifacts. Include content_hash to verify a lost acknowledgement.",
       input_schema: inputSchema(
         {
           from: pathSchema,
@@ -1786,6 +1787,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
         if (area === 'work') await notLeftOnComputer(ctx, source);
         const target = await resolveFile(ctx, toArea, to);
         let movedBytes: number | null = null;
+        let workspaceCopyKept = false;
         // The file checked is the file moved: in or out of the space's Files,
         // nothing else saves over or replaces it from the check to the move.
         hash = await changing(
@@ -1837,6 +1839,15 @@ export function createFilesConnector(options: FilesOptions): Connector {
                   await createWith(targetAt, target.target, content);
                   await unlink(sourceAt).catch(async (error: unknown) => {
                     if (missing(error)) return;
+                    // A folder the agent's own code made can be one the
+                    // service may read but not change. The person's file is
+                    // already whole in their Files, so it stays there and the
+                    // workspace copy is left, said on the receipt.
+                    const code = codeOf(error);
+                    if (code === 'EACCES' || code === 'EPERM') {
+                      workspaceCopyKept = true;
+                      return;
+                    }
                     await unlink(targetAt).catch(() => {});
                     throw error;
                   });
@@ -1866,7 +1877,13 @@ export function createFilesConnector(options: FilesOptions): Connector {
         detail = { from, to, area, to_area: toArea, content_hash: hash };
         // What the file holds, so what each person keeps follows it (storage/per-person.ts).
         if (movedBytes !== null) detail.bytes = movedBytes;
-        if (area === 'work' && toArea === 'artifacts')
+        if (workspaceCopyKept)
+          detail = {
+            ...detail,
+            workspace_copy: 'kept',
+            workspace_note: `The file is in the person's Files. Its copy at /work/${source.segments.join('/')} could not be removed (permission denied); remove it on your computer if it is no longer needed.`,
+          };
+        else if (area === 'work' && toArea === 'artifacts')
           detail = { ...detail, ...(await removeFromComputer(action, ctx, source, target, hash)) };
       } else {
         const relative = requiredString(payload, 'path');
@@ -2103,19 +2120,38 @@ export function createFilesConnector(options: FilesOptions): Connector {
           };
         if (actual !== expected) return { decision: 'undecided', reason: NOT_LANDED.differs };
         if (action.kind === 'files.move') {
-          const source = await resolveFile(
-            ctx,
-            areaFor(payload.area),
-            requiredString(payload, 'from'),
-          );
+          const fromArea = areaFor(payload.area);
+          const source = await resolveFile(ctx, fromArea, requiredString(payload, 'from'));
           try {
             // Looked up inside the walked folder, so a parent swapped for a
             // link cannot make a source that is still there look gone.
             const folder = await holdBeneath(source.base, source.segments.slice(0, -1));
+            let removable = true;
             try {
               await lstat(folder.at(path.basename(source.target)));
+              // Into Files from a workspace folder the service may not change,
+              // the copy left behind is what execute keeps and says so: the
+              // file in Files holding the bytes moved is the move delivered.
+              if (fromArea === 'work' && area === 'artifacts')
+                removable = await access(folder.self, constants.W_OK).then(
+                  () => true,
+                  () => false,
+                );
             } finally {
               await folder.close();
+            }
+            if (!removable) {
+              const evidence = {
+                path: relative,
+                area,
+                content_hash: actual,
+                workspace_copy: 'kept',
+              };
+              return {
+                decision: 'succeeded',
+                evidence,
+                receipt: receiptFor(action, evidence, actual),
+              };
             }
             return { decision: 'undecided', reason: 'the move source still exists' };
           } catch (error) {
