@@ -13,6 +13,7 @@ import {
   HERMES_PINNED_COMMIT,
   renderEngineConfig,
   renderSoul,
+  soulEnvironment,
   VISION_ENV,
 } from '@melete/runtime-hermes';
 import { stringify } from 'yaml';
@@ -806,6 +807,8 @@ export class DockerRuntimeSupervisor implements RuntimeSupervisor {
       API_SERVER_HOST: '0.0.0.0',
       API_SERVER_PORT: '8790',
       HERMES_HOME: '/var/lib/hermes',
+      // The image's SOUL.md is the release's; the entrypoint writes this one.
+      ...soulEnvironment(),
     };
     let creation: Promise<string> | undefined;
     let stopPromise: Promise<void> | undefined;

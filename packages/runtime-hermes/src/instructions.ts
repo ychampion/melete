@@ -49,6 +49,20 @@ export const IDENTITY: string = loadIdentity();
  */
 export const renderSoul = (): string => `${IDENTITY}\n`;
 
+/** The variable that hands an engine container its `SOUL.md` (entrypoint.sh). */
+export const SOUL_ENV = 'MELETE_ENGINE_SOUL';
+
+/**
+ * `renderSoul()` for an engine container. The image carries the release's own
+ * SOUL.md, which knows nothing of `MELETE_ASSISTANT_NAME` or
+ * `MELETE_IDENTITY_FILE`, so the service passes the identity it renders and
+ * the entrypoint writes it in place of the image's copy. Base64, so the line
+ * breaks arrive as they were written.
+ */
+export const soulEnvironment = (): Record<string, string> => ({
+  [SOUL_ENV]: Buffer.from(renderSoul(), 'utf8').toString('base64'),
+});
+
 /** Facts about where the attempt runs, known only once its engine is launched. */
 export type RunPlacement = {
   /**

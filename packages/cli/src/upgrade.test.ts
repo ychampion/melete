@@ -41,7 +41,7 @@ describe('the upgrade reads the same Compose files and profiles as a deploy', ()
       "the installation's own files, after everything else",
       {
         ...EVERYTHING,
-        compose_files: ['../private/compose.control.yml', 'docker-compose.brand.yml'],
+        compose_files: ['../private/compose.extra.yml', 'docker-compose.brand.yml'],
       },
     ],
     ['everything at once', EVERYTHING],

@@ -13,7 +13,7 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { z } from 'zod';
 
 export const DEPLOY_FILE = 'melete.deploy.json';
@@ -134,7 +134,7 @@ const BUILT_IN_FILES = new Set<string>([
 
 /**
  * A Compose file of the installation's own, relative to deploy/, such as
- * `../private/compose.control.yml` or `docker-compose.brand.yml`. Letters,
+ * `../private/compose.extra.yml` or `docker-compose.brand.yml`. Letters,
  * digits and `. _ - /` only, with `/` as the separator, so the same contract
  * reads the same on every machine.
  */
@@ -145,6 +145,11 @@ const composeFile = z
     /^[A-Za-z0-9._-][A-Za-z0-9._/-]*\.ya?ml$/,
     'a path relative to deploy/ that ends in .yml or .yaml, with / between folders',
   )
+  // Written one way only, so `./docker-compose.yml` cannot name a built-in
+  // file again and `a/../b.yml` cannot list `b.yml` twice.
+  .refine((value) => posix.normalize(value) === value, {
+    message: 'a path written without ./, // or a folder/.. step',
+  })
   .refine((value) => !BUILT_IN_FILES.has(value), {
     message: 'a file melete.deploy.json already chooses with its own keys',
   });
@@ -260,11 +265,17 @@ export function parseDeployConfig(text: string): LoadedConfig {
 /**
  * The contract's own Compose files that are not there, one line each. A file
  * left out would start the stack without what it adds, so a missing one makes
- * the contract invalid rather than skipped.
+ * the contract invalid rather than skipped. So does one that lands on a file
+ * already read: `../deploy/docker-compose.yml` is the base file however it is
+ * spelt, and a file read twice is not what the list says.
  */
 export function missingComposeFiles(deployDir: string, config: DeployConfig): string[] {
+  const read = new Set([...BUILT_IN_FILES].map((file) => resolve(deployDir, file)));
   return config.compose_files.flatMap((file, index) => {
     const path = join(deployDir, file);
+    if (read.has(resolve(path)))
+      return [`compose_files.${index}: deploy/${file} is a file the stack already reads`];
+    read.add(resolve(path));
     let present = false;
     try {
       present = statSync(path).isFile();

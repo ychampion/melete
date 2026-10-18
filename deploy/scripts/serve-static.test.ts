@@ -20,12 +20,15 @@ import { join, resolve, sep } from 'node:path';
 import { CLIENT_ADDRESS_HEADER as API_CLIENT_ADDRESS_HEADER } from '../../apps/melete/src/api/listener.ts';
 import { isIsolated, viewHeaders } from '../../apps/melete/src/viewer/headers.ts';
 import {
+  BRAND_CSS_MAX_BYTES,
+  BRAND_FILE_MAX_BYTES,
   BRAND_TOKENS,
   brandCssIssues,
   brandFile,
   CLIENT_ADDRESS_HEADER,
   createStaticServer,
   defaultGateway,
+  readBrandFile,
   renderIndex,
   resolveInside,
 } from './serve-static.ts';
@@ -1177,5 +1180,128 @@ describe("an installation's brand folder", () => {
     expect(() => createStaticServer({ root: dir, port: 0, instanceName: 'a\nb' })).toThrow(
       'MELETE_INSTANCE_NAME',
     );
+  });
+
+  test('a comment opener inside a string does not hide a rule from the check', () => {
+    // A browser reads "/*" as two characters of a string, so the rule between
+    // the two strings below is one it applies.
+    for (const css of [
+      ':root { --font-body: "/*"; } body { display: none } :root { --font-head: "*/"; }',
+      ":root{--font-body:'/*'}*{visibility:hidden}:root{--font-head:'*/'}",
+      ':root{--font-body:"/*\n"} body{display:none} :root{--font-head:"*/"}',
+    ]) {
+      expect(brandCssIssues(css).length, css).toBeGreaterThan(0);
+    }
+    // Comments are still comments, and a string that holds "/*" is still a value.
+    expect(brandCssIssues('/* a } b { */ :root { --primary: #0b6e4f; } /* end')).toEqual([]);
+    expect(brandCssIssues(':root { --font-body: "/* not a comment */", serif; }')).toEqual([]);
+  });
+
+  test('the check reads a long brand.css in time proportional to its length', () => {
+    // Each of these took seconds while the selector pattern and the space
+    // before it competed for the same whitespace.
+    for (const css of [
+      `${' '.repeat(60_000)}x`,
+      `:root{--primary:red}${' '.repeat(60_000)}a`,
+      `@media (prefers-color-scheme: dark) {${' '.repeat(60_000)}`,
+    ]) {
+      const started = performance.now();
+      expect(brandCssIssues(css).length).toBeGreaterThan(0);
+      expect(performance.now() - started).toBeLessThan(500);
+    }
+    expect(brandCssIssues(`:root{--primary:red}/*${'x'.repeat(BRAND_CSS_MAX_BYTES)}*/`)).toEqual([
+      `it is over ${BRAND_CSS_MAX_BYTES / 1024} KiB`,
+    ]);
+  });
+
+  test('brand.css spelt another way is still checked before it is served', async () => {
+    await writeFile(join(brand, 'brand.css'), 'body { display: none; }', 'utf8');
+    try {
+      for (const path of ['/brand.css/', '//brand.css', '/brand.css%2f', '/./brand.css']) {
+        const response = await ask(path);
+        expect(response.body, path).not.toContain('display: none');
+      }
+    } finally {
+      await writeFile(join(brand, 'brand.css'), TOKENS_ONLY, 'utf8');
+    }
+    const served = await ask('//brand.css');
+    expect(served.status).toBe(200);
+    expect(served.body).toBe(TOKENS_ONLY);
+  });
+
+  test('brand files carry nosniff and revalidate, and an SVG runs and loads nothing', async () => {
+    const css = await ask('/brand.css');
+    expect(css.head).toContain('x-content-type-options: nosniff');
+    expect(css.head).toContain('cache-control: no-cache');
+    const favicon = await ask('/favicon.svg');
+    expect(favicon.head).toContain('x-content-type-options: nosniff');
+    expect(favicon.head).toContain('cache-control: no-cache');
+    const policy = /content-security-policy: ([^\r\n]*)/.exec(favicon.head)?.[1] ?? '';
+    for (const directive of [
+      "default-src 'none'",
+      "script-src 'none'",
+      "frame-ancestors 'self'",
+      'sandbox',
+    ]) {
+      expect(
+        policy.split(';').map((part) => part.trim()),
+        directive,
+      ).toContain(directive);
+    }
+    // Only an SVG is a document of its own.
+    expect((await ask('/logo.png')).head).not.toContain('sandbox');
+  });
+
+  test('a brand file over its size limit is not served, and the log says why', async () => {
+    const lines: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await writeFile(join(brand, 'icons', 'icon-192.png'), Buffer.alloc(BRAND_FILE_MAX_BYTES + 1));
+      expect((await ask('/icons/icon-192.png')).body).toBe('bundle-icon');
+      await writeFile(
+        join(brand, 'brand.css'),
+        `${TOKENS_ONLY}/*${' '.repeat(BRAND_CSS_MAX_BYTES)}*/`,
+      );
+      expect((await ask('/brand.css')).status).toBe(404);
+      expect((await ask('/')).body).not.toContain('/brand.css');
+      await writeFile(join(brand, 'brand.css'), ':root { color: red; }');
+      await ask('/');
+      await ask('/');
+    } finally {
+      process.stderr.write = write;
+      await writeFile(join(brand, 'icons', 'icon-192.png'), `icon-${BRAND_SENTINEL}`, 'utf8');
+      await writeFile(join(brand, 'brand.css'), TOKENS_ONLY, 'utf8');
+    }
+    const log = lines.join('');
+    expect(log).toContain('brand icons/icon-192.png is not served: it is over 2048 KiB');
+    expect(log).toContain('brand brand.css is not served: it is over 64 KiB');
+    // Said once, however many pages load.
+    expect(log.split('color is not a design token').length - 1).toBe(1);
+  });
+
+  test('a folder swapped for a link after the path was checked is not read', async () => {
+    const root = realpathSync(brand);
+    const outside = join(dir, 'swapped-icons');
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'icon-192.png'), SENTINEL, 'utf8');
+    const checked = brandFile(root, '/icons/icon-192.png');
+    expect(checked).not.toBeNull();
+    // Between the check and the read, icons/ becomes a link out of the folder.
+    await rm(join(brand, 'icons'), { recursive: true, force: true });
+    await symlink(outside, join(brand, 'icons'), 'junction');
+    try {
+      const read = readBrandFile(root, checked as string, BRAND_FILE_MAX_BYTES);
+      expect('bytes' in read ? read.bytes.toString() : '').not.toContain(SENTINEL);
+    } finally {
+      await rm(join(brand, 'icons'), { recursive: true, force: true });
+      await mkdir(join(brand, 'icons'), { recursive: true });
+      await writeFile(join(brand, 'icons', 'icon-192.png'), `icon-${BRAND_SENTINEL}`, 'utf8');
+    }
+    const read = readBrandFile(root, checked as string, BRAND_FILE_MAX_BYTES);
+    expect('bytes' in read ? read.bytes.toString() : '').toBe(`icon-${BRAND_SENTINEL}`);
   });
 });

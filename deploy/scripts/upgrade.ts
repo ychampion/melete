@@ -193,7 +193,7 @@ export function parseArguments(
       index += 1;
       const value = argv[index] ?? '';
       // The rule melete.deploy.json holds `compose_files` to (packages/cli, deploy-config.ts).
-      if (!COMPOSE_FILE.test(value)) fail();
+      if (!COMPOSE_FILE.test(value) || posix.normalize(value) !== value) fail();
       if (!composeFiles.includes(value)) composeFiles.push(value);
     } else if (argument === '--backup-dir') {
       index += 1;

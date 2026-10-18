@@ -449,7 +449,9 @@ complete file, and `init` writes each one out:
   beside the stack or change one of its settings. Each must exist: a missing one
   makes the file invalid, so `deploy` and `upgrade` refuse to run and `status`,
   `doctor` and `check` fail until it is there. Those three name the files on the
-  contract line. A file the other keys already choose cannot be listed again. See
+  contract line. Each path is written one way (no `./`, `//` or `folder/..`),
+  and a file the other keys already choose, or one already listed, cannot be
+  listed again, however the path reaches it. See
   [Building on Melete](../FORKING.md).
 - `disk.min_free_mb` is the free space, in MB, below which `doctor` and
   `status` report the machine short of disk. A small host sets its own, below
@@ -1696,7 +1698,11 @@ else in it:
 | `brand.css` | Colours, corners and fonts; see below |
 
 A path that climbs out of the folder, or a symbolic link that points outside it,
-is not served. The service sees the same folder at `/brand`, so an identity file
+is not served. Each file may be up to 2 MiB and `brand.css` up to 64 KiB; a
+larger one is not served (the app's own file is, where it has one), and the web
+client logs why. An SVG
+is served so that, opened on its own, it runs no script and loads nothing. The
+service sees the same folder at `/brand`, so an identity file
 kept there is `MELETE_IDENTITY_FILE=/brand/identity.md`; the web client never
 serves it.
 

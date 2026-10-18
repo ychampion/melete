@@ -110,7 +110,7 @@ describe("the installation's own compose files", () => {
     deployDir = join(dir, 'deploy');
     mkdirSync(deployDir);
     mkdirSync(join(dir, 'private'));
-    writeFileSync(join(dir, 'private', 'compose.control.yml'), 'services: {}\n');
+    writeFileSync(join(dir, 'private', 'compose.extra.yml'), 'services: {}\n');
     writeFileSync(join(deployDir, 'docker-compose.brand.yml'), 'services: {}\n');
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -126,7 +126,7 @@ describe("the installation's own compose files", () => {
       overlays: ['browser'],
       database: { external: true },
       blobs: { store: 's3', bucket: 'b' },
-      compose_files: ['../private/compose.control.yml', 'docker-compose.brand.yml'],
+      compose_files: ['../private/compose.extra.yml', 'docker-compose.brand.yml'],
     });
     const loaded = loadDeployConfig(deployDir);
     if (loaded.kind !== 'found') throw new Error(JSON.stringify(loaded));
@@ -138,7 +138,7 @@ describe("the installation's own compose files", () => {
       'deploy/docker-compose.browser.yml',
       'deploy/docker-compose.external-db.yml',
       'deploy/docker-compose.blobs-s3.yml',
-      'private/compose.control.yml',
+      'private/compose.extra.yml',
       'deploy/docker-compose.brand.yml',
     ]);
     const command = composeCommand(deployDir, { ...loaded.config, profiles: ['sandbox'] });
@@ -187,12 +187,45 @@ describe("the installation's own compose files", () => {
     ).toContain('each file once');
   });
 
+  test('a path is written one way, so a built-in or a listed file cannot be named twice', () => {
+    for (const file of [
+      './docker-compose.yml',
+      './docker-compose.brand.yml',
+      'brand//compose.yml',
+      'brand/./compose.yml',
+      'brand/../docker-compose.yml',
+      '../private/../deploy/docker-compose.brand.yml',
+    ])
+      expect(issues(JSON.stringify({ contract: 1, compose_files: [file] })), file).toContain(
+        'compose_files',
+      );
+    // Normalised, and still the base file or one already listed: judged by where it lands.
+    write({ contract: 1, compose_files: ['../deploy/docker-compose.yml'] });
+    const base = loadDeployConfig(deployDir);
+    expect(base.kind === 'invalid' ? base.issues.join() : base.kind).toContain(
+      'is a file the stack already reads',
+    );
+    write({
+      contract: 1,
+      compose_files: ['docker-compose.brand.yml', '../deploy/docker-compose.brand.yml'],
+    });
+    const twice = loadDeployConfig(deployDir);
+    expect(twice.kind === 'invalid' ? twice.issues : []).toEqual([
+      'compose_files.1: deploy/../deploy/docker-compose.brand.yml is a file the stack already reads',
+    ]);
+    for (const file of ['./docker-compose.brand.yml', 'brand/../x.yml'])
+      expect(
+        () => parseArguments(['v1.2.3', '--compose-file', file], new Date(0), '/h', '/r'),
+        file,
+      ).toThrow();
+  });
+
   test('status, doctor and check name them in the contract line', () => {
-    write({ contract: 1, compose_files: ['../private/compose.control.yml'] });
+    write({ contract: 1, compose_files: ['../private/compose.extra.yml'] });
     const result = judgeContract(readInstallation(deployDir));
     expect(result.level).toBe('ok');
     expect(result.detail).toBe(
-      'melete.deploy.json, contract 1; also reads deploy/../private/compose.control.yml',
+      'melete.deploy.json, contract 1; also reads deploy/../private/compose.extra.yml',
     );
     write({ contract: 1, compose_files: ['../private/gone.yml'] });
     const missing = judgeContract(readInstallation(deployDir));
@@ -201,11 +234,11 @@ describe("the installation's own compose files", () => {
   });
 
   test('an upgrade names them to the upgrade script, which reads them in the same place', () => {
-    const config = valid('{"contract":1,"compose_files":["../private/compose.control.yml"]}');
+    const config = valid('{"contract":1,"compose_files":["../private/compose.extra.yml"]}');
     const args = upgradeOverlayArguments(config);
-    expect(args).toEqual(['--compose-file', '../private/compose.control.yml']);
+    expect(args).toEqual(['--compose-file', '../private/compose.extra.yml']);
     const parsed = parseArguments(['v1.2.3', ...args], new Date(0), '/home/op', '/srv/melete');
-    expect(composeArguments(parsed).slice(-2)).toEqual(['-f', 'private/compose.control.yml']);
+    expect(composeArguments(parsed).slice(-2)).toEqual(['-f', 'private/compose.extra.yml']);
     expect(() =>
       parseArguments(['v1.2.3', '--compose-file', '/etc/x.yml'], new Date(0), '/h', '/r'),
     ).toThrow();

@@ -54,8 +54,15 @@ rm -rf "$HERMES_HOME/plugins/melete"
 # Timestamps kept, so the bytecode compiled into the image still matches.
 cp -R --preserve=timestamps /opt/melete-runtime/melete_plugin "$HERMES_HOME/plugins/melete"
 # Melete's identity is the engine's identity slot. Written on every start, so
-# the engine never seeds its own stock persona into a fresh home.
-cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"
+# the engine never seeds its own stock persona into a fresh home. The service
+# passes the installation's own (its assistant's name, or its identity file)
+# as MELETE_ENGINE_SOUL, base64; without it the release's copy is used.
+if [ -n "${MELETE_ENGINE_SOUL:-}" ]; then
+  python -c 'import base64, os, sys; open(sys.argv[1], "wb").write(base64.b64decode(os.environ["MELETE_ENGINE_SOUL"], validate=True))' "$HERMES_HOME/SOUL.md"
+else
+  cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"
+fi
+unset MELETE_ENGINE_SOUL
 
 BOOT_CONFIG=$(cat <<'PY'
 import os, sys, yaml

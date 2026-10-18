@@ -6,8 +6,12 @@ the tests that need it are skipped with the reason; the refusal test needs none.
 """
 from __future__ import annotations
 
+import base64
 import importlib.util
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -86,6 +90,40 @@ def test_the_image_installs_melete_identity_as_the_engine_soul():
     assert 'cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"' in script
     assert "COPY config/SOUL.md /opt/melete-runtime/SOUL.md" in (
         PACKAGE / "Dockerfile").read_text(encoding="utf-8")
+
+
+def soul_step() -> str:
+    """The entrypoint's SOUL.md step, from its `if` to the `unset` that ends it."""
+    script = (PACKAGE / "entrypoint.sh").read_text(encoding="utf-8")
+    start = script.index('if [ -n "${MELETE_ENGINE_SOUL:-}" ]; then')
+    end = script.index("unset MELETE_ENGINE_SOUL", start) + len("unset MELETE_ENGINE_SOUL")
+    return script[start:end]
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_the_installation_identity_the_service_passes_becomes_the_engine_soul(tmp_path):
+    """The image's SOUL.md is the release's; an installation that named its
+    assistant or wrote its own identity hands that one in, and it is written
+    byte for byte, line breaks and all."""
+    image = tmp_path / "opt"
+    image.mkdir()
+    (image / "SOUL.md").write_text("You are Melete, the release's own.\n", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    step = (soul_step()
+            .replace("/opt/melete-runtime/SOUL.md", (image / "SOUL.md").as_posix())
+            .replace("python -c", f'"{Path(sys.executable).as_posix()}" -c'))
+    script = f"set -eu\nHERMES_HOME='{home.as_posix()}'\n{step}\nprintf '%s' \"${{MELETE_ENGINE_SOUL:-gone}}\"\n"
+    own = "You are Juniper, the Riverside assistant.\n\nAnswer first in chat.\n"
+    passed = subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, check=True,
+        env={**os.environ, "MELETE_ENGINE_SOUL": base64.b64encode(own.encode()).decode()})
+    assert (home / "SOUL.md").read_bytes() == own.encode()
+    # Not left for the engine's own processes to inherit.
+    assert passed.stdout == "gone"
+    env = {key: value for key, value in os.environ.items() if key != "MELETE_ENGINE_SOUL"}
+    subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=True, env=env)
+    assert (home / "SOUL.md").read_text(encoding="utf-8") == "You are Melete, the release's own.\n"
 
 
 def test_a_checkout_carrying_the_earlier_patch_is_moved_to_this_one_and_nothing_else_is():

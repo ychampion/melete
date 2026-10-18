@@ -80,6 +80,10 @@ describe('the skills that ship with the release', () => {
       writeFileSync(own, '  \n');
       expect(() => loadIdentity({ MELETE_IDENTITY_FILE: own })).toThrow('is empty');
       expect(() => loadIdentity({ MELETE_IDENTITY_FILE: join(dir, 'missing.md') })).toThrow();
+      // Measured before it is read: a folder, or a file far over the cap.
+      expect(() => loadIdentity({ MELETE_IDENTITY_FILE: dir })).toThrow('is not a file');
+      writeFileSync(own, 'x'.repeat(64 * 1024 + 1));
+      expect(() => loadIdentity({ MELETE_IDENTITY_FILE: own })).toThrow('bytes; the cap is about');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

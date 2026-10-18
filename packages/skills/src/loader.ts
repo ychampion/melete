@@ -10,7 +10,7 @@
  * not itself depend on model judgment, or injected text gets a say in which
  * instructions arrive with it.
  */
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -187,6 +187,13 @@ export function loadSkills(options: LoadOptions = {}): LoadedSkills {
   return { skills, failures: [...builtIn.failures, ...fromSpace.failures] };
 }
 
+/**
+ * The most an installation's identity file may hold before it is read. Far
+ * above the token cap, which still decides; this only keeps a wrong path from
+ * being read whole.
+ */
+const IDENTITY_MAX_BYTES = 64 * 1024;
+
 /** The name the assistant goes by: `MELETE_ASSISTANT_NAME`, or Melete. */
 export const assistantName = (env: IdentityEnv = process.env): string =>
   displayName(env.MELETE_ASSISTANT_NAME, 'MELETE_ASSISTANT_NAME');
@@ -200,6 +207,16 @@ export const assistantName = (env: IdentityEnv = process.env): string =>
 export function loadIdentity(env: IdentityEnv = process.env): string {
   const path = identityPath(env);
   const own = Boolean(env.MELETE_IDENTITY_FILE?.trim());
+  // Measured before it is read: a device or a very large file named by
+  // mistake would otherwise be read whole before the cap could refuse it.
+  if (own) {
+    const file = statSync(path);
+    if (!file.isFile()) throw new Error(`the identity file ${path} is not a file`);
+    if (file.size > IDENTITY_MAX_BYTES)
+      throw new Error(
+        `the identity file ${path} is ${file.size} bytes; the cap is about ${IDENTITY_MAX_TOKENS} tokens`,
+      );
+  }
   let text = readFileSync(path, 'utf8').trim();
   if (!own) text = text.replace(/^You are Melete\b/, () => `You are ${assistantName(env)}`);
   const tokens = estimateTokens(text);
