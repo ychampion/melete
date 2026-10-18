@@ -93,6 +93,7 @@ import {
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
 import { workQuiet } from './quiet.ts';
+import { reminderHeld } from './reminder-hold.ts';
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
@@ -1021,6 +1022,14 @@ export class AttemptRunner {
       .limit(1);
     const parsed = waitSpec.safeParse((notice?.payload as JsonObject | undefined)?.wait);
     if (!parsed.success) return null;
+    // The person cancelled it during this attempt (run.stop): it stays gone,
+    // for a retry of this turn too.
+    const [dropped] = await tx
+      .select({ seq: event.seq })
+      .from(event)
+      .where(and(eq(event.dedupKey, `${attemptId}:wait-dropped`), eq(event.jobId, row.id)))
+      .limit(1);
+    if (dropped) return null;
     const wait = parsed.data;
     const [pending] = await tx
       .select({ id: action.id })
@@ -1044,10 +1053,15 @@ export class AttemptRunner {
     // due while a reply was written is put back all the same and fires at once,
     // late but never lost. Other work woken after its timer's time has nothing
     // left to wait for.
-    if (wait.kind === 'timer')
-      return row.kind === 'chat' || Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime()
-        ? wait
-        : null;
+    // A reminder held from another conversation comes back still held (the
+    // move is told it is restoring), and one whose time passed while held has
+    // nothing left to come back to.
+    if (wait.kind === 'timer') {
+      const ahead = Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime();
+      if (row.kind === 'chat' && !ahead && (await reminderHeld(tx, row.id, wait.wake_at)))
+        return null;
+      return row.kind === 'chat' || ahead ? wait : null;
+    }
     if (wait.kind !== 'event') return null;
     const [registration] = await tx
       .select({ id: trigger.id })
@@ -1391,6 +1405,8 @@ export class AttemptRunner {
           wait,
           payload: { outcome },
           ...(retryAfterMs > 0 ? { retryAfterMs } : {}),
+          // Put back by itself, not chosen by this attempt: a hold on it stays.
+          ...(restored !== posed && outcome === restored ? { restoring: true } : {}),
         });
     // The work runs again by itself: the turn is still under way, not failed.
     const retrying = outcome.kind === 'failed' && updated.state === 'queued';
