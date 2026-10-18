@@ -1736,7 +1736,17 @@ Settings › Models. Write it as the Anthropic SDKs read it, the address without
 `<address>/v1/messages` with `ANTHROPIC_API_KEY`. An address that already ends
 in `/v1` stops start-up. Left empty, Melete calls `https://api.anthropic.com`
 directly. Over `http://` the key and every prompt travel unencrypted, so keep it
-to a network you trust.
+to a network you trust; start-up warns when a plain `http://` address is not on
+the machine itself.
+
+Which key goes to the gateway: `ANTHROPIC_API_KEY` when it is set. Without it,
+the owner can save a key in Settings › Models, and that key is bound to the
+address Anthropic was called at when it was saved. A key saved while Melete
+called Anthropic directly is never sent to a gateway set later, and a key saved
+for a gateway never goes to another address. Settings › Models then says the
+saved key is for another address, shows the address in use, and asks for a key
+for it; until one is saved or `ANTHROPIC_API_KEY` is set, Anthropic calls are
+refused for want of a key.
 
 A gateway address is never treated as a model on your own machine, even when it
 is on your network: Anthropic still answers there. Its calls are priced at

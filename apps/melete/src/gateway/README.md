@@ -48,7 +48,9 @@ on the person's own machine (`mayBeLocal`, read by `providerIsLocal`) are
 separate: only the OpenAI-compatible endpoint can be local. Anthropic behind
 `ANTHROPIC_BASE_URL` is priced, cached, rerouted and redacted as Anthropic at
 any address, and Settings › Models tests and lists it at the same address
-(`anthropic-base-url.test.ts`).
+(`anthropic-base-url.test.ts`). A key saved in the app for Anthropic, like the
+compatible endpoint's, is bound to the address it was saved at; rows saved
+before that carry no address and belong to `https://api.anthropic.com/v1/`.
 
 The fixtures use fake transports/providers and local TLS. General real-provider
 compatibility and real-model quality are **not claimed**.

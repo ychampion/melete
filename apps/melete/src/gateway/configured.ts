@@ -176,5 +176,23 @@ export function configuredProviders(
   if (problem) throw new Error(problem);
   const missingKey = providerKeyProblem(env.MELETE_DEFAULT_PROVIDER, providers);
   if (missingKey) warn(missingKey);
+  const unencrypted = plainHttpGateway(providers);
+  if (unencrypted) warn(unencrypted);
   return providers;
+}
+
+/** A host that is this machine itself, so a plain HTTP call never crosses a network. */
+const isLoopback = (hostname: string): boolean =>
+  hostname === 'localhost' ||
+  hostname.endsWith('.localhost') ||
+  hostname === '[::1]' ||
+  /^127(?:\.\d{1,3}){3}$/.test(hostname);
+
+/** Anthropic reached over plain HTTP at an address that leaves this machine. */
+function plainHttpGateway(providers: readonly GatewayProvider[]): string | null {
+  const anthropic = providers.find((provider) => provider.name === 'anthropic');
+  if (!anthropic?.allowHttp) return null;
+  const address = new URL(anthropic.baseUrl);
+  if (address.protocol !== 'http:' || isLoopback(address.hostname)) return null;
+  return `ANTHROPIC_BASE_URL is plain http:// to ${address.host}, so the Anthropic key and every prompt travel unencrypted to it. Use https:// unless the network to it is one you trust.`;
 }

@@ -76,6 +76,23 @@ describe('the providers a service starts with', () => {
     ).toBe('https://api.anthropic.com/v1/');
   });
 
+  test('a plain http:// Anthropic gateway off this machine is warned about at start-up', () => {
+    const warned = (address: string) =>
+      configure({
+        ANTHROPIC_API_KEY: 'anthropic-key',
+        ANTHROPIC_BASE_URL: address,
+      }).warnings.filter((warning) => warning.includes('ANTHROPIC_BASE_URL'));
+    for (const address of ['http://192.168.1.20:4610', 'http://gateway.example.net'])
+      expect(warned(address)).toEqual([expect.stringContaining('travel unencrypted')]);
+    for (const address of [
+      'https://gateway.example.net',
+      'http://127.0.0.1:4610',
+      'http://localhost:4610',
+      'http://[::1]:4610',
+    ])
+      expect(warned(address)).toEqual([]);
+  });
+
   test('an Anthropic address given with /v1 stops start-up and says to leave it off', () => {
     expect(() => configure({ ANTHROPIC_BASE_URL: 'https://gateway.example.net/v1' })).toThrow(
       'ANTHROPIC_BASE_URL',

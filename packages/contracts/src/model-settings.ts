@@ -31,10 +31,12 @@ export const keyedModelProvider = z.enum(KEYED_MODEL_PROVIDERS);
 
 export const modelKeyState = z
   .object({
-    state: z.enum(['unset', 'set', 'operator']).meta({
+    state: z.enum(['unset', 'set', 'operator', 'other_address']).meta({
       description:
         '`set`: entered in the app and stored sealed. `operator`: the server environment ' +
-        'names a key for this provider; it is used, cannot be changed here, and is never shown.',
+        'names a key for this provider; it is used, cannot be changed here, and is never shown. ' +
+        '`other_address`: an Anthropic key entered in the app for another address than the ' +
+        'one calls go to now (`base_url`); it is kept but never sent there.',
     }),
     last_four: z
       .string()
@@ -54,7 +56,11 @@ export const modelProviderStatus = z
     base_url: z
       .string()
       .nullable()
-      .meta({ description: 'The OpenAI-compatible endpoint’s version prefix; null for the rest' }),
+      .meta({
+        description:
+          'Where calls go: the OpenAI-compatible endpoint’s version prefix, or the gateway ' +
+          'the server routes Anthropic through; null for the rest',
+      }),
     base_url_source: z.enum(['app', 'operator']).nullable(),
     connected: z.boolean().meta({
       description:
