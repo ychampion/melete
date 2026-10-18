@@ -19,8 +19,9 @@
   "private": true,
   "scripts": {
     "typecheck": "tsc -b && tsc -p apps/web/tsconfig.json --noEmit",
-    "lint": "biome check . && bun run scrub:check",
+    "lint": "biome check . && bun run scrub:check && bun run names:check",
     "scrub:check": "bun run scripts/scrub-check.ts",
+    "names:check": "bun run scripts/visible-name-check.ts",
     "release:check": "MELETE_RELEASE=1 bun run lint",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",

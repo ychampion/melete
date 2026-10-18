@@ -2,6 +2,8 @@
  * The telephony provider behind texts and calls to the person's own number.
  * Twilio is the one built in; a test passes its own.
  */
+
+import { assistantName } from '../names.ts';
 import {
   TWILIO_UNSUBSCRIBED,
   TwilioClient,
@@ -95,8 +97,7 @@ export type ReachConfig = {
   codesPerHour: number;
 };
 
-const PUSH_ONLY =
-  'Texts and calls aren’t set up on this installation, so Melete reaches you by push only.';
+const PUSH_ONLY = `Texts and calls aren’t set up on this installation, so ${assistantName()} reaches you by push only.`;
 
 /** Read the operator's telephony settings. Without all of them, the ladder stops at push. */
 export function reachConfigFromEnv(env: {

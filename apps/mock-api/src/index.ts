@@ -57,6 +57,9 @@ export type MockOptions = {
   signIn?: 'password' | 'both' | 'oidc';
   /** Features turned off, as `MELETE_FEATURE_<NAME>=off` does on the service. */
   featuresOff?: string[];
+  /** What the installation and its assistant are called; Melete when left out. */
+  instanceName?: string;
+  assistantName?: string;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -94,6 +97,8 @@ export function createMock(given: MockOptions = {}) {
     firstRun: options.firstRun ?? false,
     signIn: options.signIn ?? 'password',
     featuresOff: options.featuresOff ?? [],
+    ...(options.instanceName ? { instanceName: options.instanceName } : {}),
+    ...(options.assistantName ? { assistantName: options.assistantName } : {}),
   });
   if (options.connections === 'none') store.connections.clear();
   if (options.connections === 'apps') {
@@ -120,6 +125,9 @@ if (import.meta.main) {
       .split(',')
       .map((name) => name.trim())
       .filter(Boolean),
+    // The same settings the service reads, so a named installation can be tried against the mock.
+    instanceName: process.env.MELETE_INSTANCE_NAME?.trim() || undefined,
+    assistantName: process.env.MELETE_ASSISTANT_NAME?.trim() || undefined,
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
     signIn:
       process.env.MELETE_MOCK_SIGNIN === 'both' || process.env.MELETE_MOCK_SIGNIN === 'oidc'

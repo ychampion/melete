@@ -197,8 +197,21 @@ const variables = z.object({
    * status. Defaults to Melete. docs/DEPLOYMENT.md, "Names and look".
    */
   MELETE_INSTANCE_NAME: nameSetting('MELETE_INSTANCE_NAME'),
-  /** What the assistant calls itself in its identity. Defaults to Melete. */
-  MELETE_ASSISTANT_NAME: nameSetting('MELETE_ASSISTANT_NAME'),
+  /**
+   * What the assistant calls itself in its identity. Defaults to
+   * MELETE_INSTANCE_NAME, and so to Melete when neither is set.
+   */
+  MELETE_ASSISTANT_NAME: z
+    .string()
+    .optional()
+    .transform((value, context) => {
+      try {
+        return value?.trim() ? displayName(value, 'MELETE_ASSISTANT_NAME') : undefined;
+      } catch (error) {
+        context.addIssue({ code: 'custom', message: (error as Error).message });
+        return z.NEVER;
+      }
+    }),
   /**
    * A file that replaces the built-in identity, read once at start and held to
    * the same token cap (packages/skills, loadIdentity).
@@ -1491,7 +1504,11 @@ export const envSchema = variables.transform((value, context) => {
       path: ['MELETE_PASSWORD_SIGNIN'],
       message: 'MELETE_PASSWORD_SIGNIN=off needs MELETE_OIDC_ISSUER, or nobody could sign in',
     });
-  return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
+  return {
+    ...value,
+    MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '',
+    MELETE_ASSISTANT_NAME: value.MELETE_ASSISTANT_NAME ?? value.MELETE_INSTANCE_NAME,
+  };
 });
 
 export type Env = z.infer<typeof envSchema>;

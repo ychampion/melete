@@ -120,6 +120,24 @@ describe('GET /setup', () => {
       instance_name: 'Riverside Assistant',
       assistant_name: 'Juniper',
     });
+    // With only the installation named, the assistant takes its name; a blank
+    // value, as Compose writes an unset one, means the same.
+    const blank: Record<string, string>[] = [
+      {},
+      { MELETE_ASSISTANT_NAME: '' },
+      { MELETE_ASSISTANT_NAME: '  ' },
+    ];
+    for (const assistant of blank) {
+      const only = await appWith([], { MELETE_INSTANCE_NAME: 'Riverside', ...assistant }).request(
+        '/setup',
+      );
+      expect(setupStatusResponse.parse(await only.json())).toMatchObject({
+        instance_name: 'Riverside',
+        assistant_name: 'Riverside',
+      });
+    }
+    expect(loadEnv({ MELETE_ASSISTANT_NAME: ' Juniper ' }).MELETE_ASSISTANT_NAME).toBe('Juniper');
+    expect(loadEnv({}).MELETE_ASSISTANT_NAME).toBe('Melete');
     expect(() => loadEnv({ MELETE_INSTANCE_NAME: 'Two\nlines' })).toThrow('MELETE_INSTANCE_NAME');
     expect(() => loadEnv({ MELETE_ASSISTANT_NAME: 'x'.repeat(61) })).toThrow(
       'MELETE_ASSISTANT_NAME',

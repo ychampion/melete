@@ -1815,7 +1815,9 @@ bun run melete set MELETE_INSTANCE_NAME='Riverside Assistant' MELETE_ASSISTANT_N
   the home-screen title, and the subject and text of sign-in and password reset
   mail, which also ends with `MELETE_PUBLIC_URL` when it is set.
 - `MELETE_ASSISTANT_NAME` is what the assistant calls itself. The built-in
-  identity begins "You are Melete"; the name takes Melete's place there.
+  identity begins "You are Melete"; the name takes Melete's place there. Left
+  unset, the assistant takes `MELETE_INSTANCE_NAME`, so an installation named
+  once reads as one name throughout.
 - `MELETE_IDENTITY_FILE` replaces the built-in identity with a file of your own,
   a path the service can read. It is used as written, so it names the assistant
   itself, and it is held to the same cap as the built-in one, about 250 tokens,

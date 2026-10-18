@@ -17,6 +17,7 @@ import { Button, Chip, Field, Input, Segmented, Select, Toggle } from '../design
 import { NEW_PASSWORD_MIN } from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
+import { assistantName, instanceName } from '../experience/instance.ts';
 import { plainSchedule, zoneName } from '../experience/plain.ts';
 import { givenName, onboardedProfile, UNNAMED } from '../experience/profile.ts';
 import { keptAnswer, SETUP_QUESTIONS, SKIP_REPLY } from '../experience/setup-answers.ts';
@@ -291,7 +292,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
           <div className="row" style={{ gap: 10 }}>
             <MeleteMark width={46} />
             <span style={{ fontFamily: 'var(--font-head)', fontSize: 18, fontWeight: 700 }}>
-              Melete
+              {instanceName()}
             </span>
           </div>
           <div className="col" style={{ gap: 12, maxWidth: 540, marginTop: 40, flexShrink: 0 }}>
@@ -316,8 +317,8 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 textWrap: 'pretty',
               }}
             >
-              Melete works with any model, keeps working while you’re away, follows up for you, and
-              comes back when something needs your approval.
+              {assistantName()} works with any model, keeps working while you’re away, follows up
+              for you, and comes back when something needs your approval.
             </span>
           </div>
           <div className="signin-art">
@@ -461,7 +462,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 paddingTop: 6,
               }}
             >
-              {creating ? 'Create your account' : 'Welcome to Melete'}
+              {creating ? 'Create your account' : `Welcome to ${instanceName()}`}
             </h1>
             <p style={{ fontSize: 15, lineHeight: '22px', color: 'var(--muted)' }}>
               {creating
@@ -488,7 +489,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 You’re already signed in on this device.
               </span>
               <Button icon="chevronRight" onClick={() => navigate('/')}>
-                Continue to Melete
+                Continue to {instanceName()}
               </Button>
             </div>
           ) : null}
@@ -541,7 +542,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                   {creating && codeRequired ? (
                     <Field
                       label="Setup code"
-                      hint="Whoever set up this Melete has it, and the link they sent fills it in. If that is you, run bun run melete account setup-code on the host for one."
+                      hint={`Whoever set up this ${instanceName()} has it, and the link they sent fills it in. If that is you, run bun run melete account setup-code on the host for one.`}
                     >
                       <Input
                         icon="lock"
@@ -713,28 +714,28 @@ export function SignInLinkCard({
 
 /* ---------- setup ---------- */
 
-const STAGES: Record<TourStage, { title: string; desc: string }> = {
+const tourStages = (): Record<TourStage, { title: string; desc: string }> => ({
   calendar: {
     title: 'Say it once. It gets done.',
-    desc: 'Not answers, outcomes. Melete checks what it needs, does the steps, and comes back with the one thing only you can do.',
+    desc: `Not answers, outcomes. ${assistantName()} checks what it needs, does the steps, and comes back with the one thing only you can do.`,
   },
   drafting: {
     title: 'Messages you always send yourself',
-    desc: 'Melete drafts the note in your voice and stops. Nothing goes out until you press send.',
+    desc: `${assistantName()} drafts the note in your voice and stops. Nothing goes out until you press send.`,
   },
   browser: {
     title: 'It has hands',
-    desc: 'Expense reports, forms, bookings, sign-ups: Melete does them in its own sandboxed browser. Watch, take over any time. Money and messages always wait for your yes.',
+    desc: `Expense reports, forms, bookings, sign-ups: ${assistantName()} does them in its own sandboxed browser. Watch, take over any time. Money and messages always wait for your yes.`,
   },
   plans: {
     title: 'Plans that run themselves',
-    desc: 'A project at work or a goal at home: say it once. Melete drafts the milestones, assigns the legwork to agents, and keeps the next step in front of you.',
+    desc: `A project at work or a goal at home: say it once. ${assistantName()} drafts the milestones, assigns the legwork to agents, and keeps the next step in front of you.`,
   },
   memory: {
     title: 'Memory that compounds',
     desc: 'It remembers the people, habits and rules of your life, and uses them without being asked. Every bit is visible and editable.',
   },
-};
+});
 
 function Stage({ stage }: { stage: TourStage }) {
   const chip = (inner: ReactNode, delay: number) => (
@@ -1328,11 +1329,13 @@ export function OnboardingScreen() {
     let agentId = completed.current.agentId;
     if (!agentId) {
       const listed = await adapter.agents();
-      if (!listed.data) return fail(listed.error ?? listed.unavailable ?? 'Couldn’t reach Melete');
+      if (!listed.data)
+        return fail(listed.error ?? listed.unavailable ?? `Couldn’t reach ${instanceName()}`);
       const melete = listed.data.agents.find((candidate) => candidate.is_default);
-      if (!melete) return fail('Couldn’t reach Melete');
+      if (!melete) return fail(`Couldn’t reach ${instanceName()}`);
       const saved = await adapter.updateAgent(melete.id, { ...inputOf(melete), ...voice });
-      if (!saved.data) return fail(saved.error ?? saved.unavailable ?? 'Couldn’t save Melete');
+      if (!saved.data)
+        return fail(saved.error ?? saved.unavailable ?? `Couldn’t save ${assistantName()}`);
       agentId = melete.id;
       completed.current.agentId = agentId;
     }
@@ -1408,7 +1411,7 @@ export function OnboardingScreen() {
     card = (
       <Card
         title="Connect a model"
-        sub="Melete needs a model to answer with. It couldn’t check yours just now."
+        sub={`${assistantName()} needs a model to answer with. It couldn’t check yours just now.`}
         footer={
           <>
             <div className="grow" />
@@ -1452,7 +1455,7 @@ export function OnboardingScreen() {
   } else if (step === 1) {
     card = (
       <Card
-        title="Welcome to Melete"
+        title={`Welcome to ${instanceName()}`}
         footer={
           <>
             {stepLabel}
@@ -1513,8 +1516,8 @@ export function OnboardingScreen() {
               The assistant that actually does it
             </span>
             <span style={{ fontSize: 15, color: 'var(--muted)', maxWidth: 520 }}>
-              For your life and your work. Melete takes the task off your plate end to end, and only
-              comes back for the moments that need you.
+              For your life and your work. {assistantName()} takes the task off your plate end to
+              end, and only comes back for the moments that need you.
             </span>
           </div>
           <div style={{ width: 520, maxWidth: '100%' }}>
@@ -1567,7 +1570,7 @@ export function OnboardingScreen() {
     const current = stages[stage] ?? stages[0];
     card = (
       <Card
-        title="What Melete does"
+        title={`What ${assistantName()} does`}
         footer={
           <>
             {back}
@@ -1613,10 +1616,10 @@ export function OnboardingScreen() {
                   color: 'var(--heading)',
                 }}
               >
-                {STAGES[current].title}
+                {tourStages()[current].title}
               </span>
               <span style={{ fontSize: 14, lineHeight: '21px', color: 'var(--muted)' }}>
-                {STAGES[current].desc}
+                {tourStages()[current].desc}
               </span>
             </div>
           </div>
@@ -1637,7 +1640,7 @@ export function OnboardingScreen() {
     card = (
       <Card
         title="Connect your apps"
-        sub="Each one is optional. Melete looks things up there, and asks you before it sends, posts or pays for anything."
+        sub={`Each one is optional. ${assistantName()} looks things up there, and asks you before it sends, posts or pays for anything.`}
         footer={
           <>
             {back}
@@ -1666,7 +1669,7 @@ export function OnboardingScreen() {
     card = (
       <Card
         title="Want a morning brief?"
-        sub="Start each day with one short note from Melete. It works from today, and gets richer with each app you connect."
+        sub={`Start each day with one short note from ${assistantName()}. It works from today, and gets richer with each app you connect.`}
         footer={
           <>
             {back}
@@ -1714,7 +1717,7 @@ export function OnboardingScreen() {
     const question = QUESTIONS[asked];
     card = (
       <Card
-        title="Let Melete get to know you"
+        title={`Let ${assistantName()} get to know you`}
         sub="Four quick questions, so it can help from day one. Answer in your own words or skip any of them. What you say is kept under Settings › Memory and can be changed there."
         footer={
           <>
@@ -1728,7 +1731,7 @@ export function OnboardingScreen() {
                 disabled={busy}
                 onClick={() => void finish()}
               >
-                Open Melete
+                Open {instanceName()}
               </Button>
             ) : (
               <Button
@@ -1833,7 +1836,7 @@ export function OnboardingScreen() {
             ) : null}
           </div>
           <div className="col" style={{ gap: 8, width: 220, flexShrink: 0 }}>
-            <span className="overline">What Melete will remember</span>
+            <span className="overline">What {assistantName()} will remember</span>
             {kept.length === 0 ? (
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>
                 Nothing yet. Each answer appears here as it is saved.
@@ -1882,8 +1885,8 @@ export function OnboardingScreen() {
   } else {
     card = (
       <Card
-        title="Meet Melete"
-        sub="Melete is your assistant. It can use every app you connect, its own computer and what you tell it to remember. Set how it sounds; change anything later in Agents."
+        title={`Meet ${assistantName()}`}
+        sub={`${assistantName()} is your assistant. It can use every app you connect, its own computer and what you tell it to remember. Set how it sounds; change anything later in Agents.`}
         footer={
           <>
             {back}
@@ -2028,7 +2031,7 @@ export function OnboardingScreen() {
             color: 'var(--heading)',
           }}
         >
-          Melete
+          {instanceName()}
         </span>
         <div className="grow" />
         <Button

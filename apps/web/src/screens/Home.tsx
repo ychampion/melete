@@ -62,6 +62,7 @@ import { Shell, toast } from '../shell/Shell.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
+import { assistantName } from '../experience/instance.ts';
 import { FirstSteps } from './FirstSteps.tsx';
 import { NeedsYouSection } from './NeedsYouSection.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
@@ -439,7 +440,7 @@ export function DecisionCard({
     >
       <div className="decision-who">
         <Face agent={agent} size={22} />
-        <span className="decision-agent">{agent?.name ?? 'Melete'}</span>
+        <span className="decision-agent">{agent?.name ?? assistantName()}</span>
         {conversation ? (
           <span className="decision-for clamp1">from “{conversation.title}”</span>
         ) : run ? (
@@ -742,7 +743,7 @@ export function WaitingOnYou({
           {next ? (
             <button type="button" className="queue-next" onClick={() => setFrontId(next.id)}>
               <Face agent={agentOf(next)} size={16} />
-              <span className="queue-next-agent">{agentOf(next)?.name ?? 'Melete'}</span>
+              <span className="queue-next-agent">{agentOf(next)?.name ?? assistantName()}</span>
               <span className="clamp1 grow queue-next-what">
                 {next.kind === 'permission' ? next.permission.what : next.question.text}
               </span>
@@ -833,7 +834,7 @@ function InMotion({ now }: { now: number }) {
               <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
                 <span className="clamp1 motion-title">{conversation.title}</span>
                 <span className="clamp1 motion-line">
-                  {motionLine(conversation, waiting, agent?.name ?? 'Melete')}
+                  {motionLine(conversation, waiting, agent?.name ?? assistantName())}
                 </span>
               </span>
               <span className="motion-when">{relative(conversation.updated_at, now)}</span>
@@ -1186,7 +1187,7 @@ export function HomeScreen() {
               value={text}
               onChange={setText}
               onSend={() => void start(text, files.ready)}
-              placeholder="Ask Melete to handle something"
+              placeholder={`Ask ${assistantName()} to handle something`}
               disabled={busy}
               attachments={files}
             />

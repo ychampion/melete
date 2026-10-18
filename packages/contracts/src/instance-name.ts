@@ -1,7 +1,8 @@
 /**
  * The names an installation goes by: what the app calls itself
  * (`MELETE_INSTANCE_NAME`) and what the assistant calls itself
- * (`MELETE_ASSISTANT_NAME`). Both default to "Melete".
+ * (`MELETE_ASSISTANT_NAME`). Both default to "Melete", and the assistant takes
+ * the installation's name when only that is set.
  *
  * This file imports nothing, because the web client's file server reads it in
  * an image that carries no packages.
@@ -35,4 +36,18 @@ export function displayName(value: string | undefined, setting: string): string 
       `${setting} must be one line of at most ${DISPLAY_NAME_MAX} characters, for example "Riverside Assistant".`,
     );
   return name;
+}
+
+/**
+ * What the assistant is called: `MELETE_ASSISTANT_NAME`, or the installation's
+ * name when only `MELETE_INSTANCE_NAME` is set, so an installation named once
+ * reads as one name throughout. Melete when neither is set.
+ */
+export function assistantDisplayName(
+  assistant: string | undefined,
+  instance: string | undefined,
+): string {
+  return assistant?.trim()
+    ? displayName(assistant, 'MELETE_ASSISTANT_NAME')
+    : displayName(instance, 'MELETE_INSTANCE_NAME');
 }

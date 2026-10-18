@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { Button, Dialog } from '../design/primitives.tsx';
 import { useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import { href } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import { type RoomDetail, type RoomMemoryItem, type RoomShare, roomsApi } from './api.ts';
@@ -188,7 +189,7 @@ export function RoomMemory({
           ) : null}
           {guest ? null : (
             <p className="people-hint">
-              To share something Melete remembers about you, open{' '}
+              To share something {assistantName()} remembers about you, open{' '}
               <a className="memory-link" href={href('/settings/memory')}>
                 Memory
               </a>{' '}

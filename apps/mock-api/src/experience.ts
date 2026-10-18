@@ -233,6 +233,8 @@ export class ExperienceMock {
     ] as const) {
       const agent = C.experienceAgent.parse({
         ...made,
+        // The agent every space has goes by the assistant's name, as on the service.
+        ...(isDefault && deps.assistantName ? { name: deps.assistantName } : {}),
         id: newId('agent'),
         space_id: deps.spaceId,
         is_default: isDefault,

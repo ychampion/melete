@@ -1,3 +1,5 @@
+import { instanceName } from '../experience/instance.ts';
+
 /**
  * The Melete mark. It is rendered bare, never on a tile or a coloured
  * background: next to the wordmark in the header, and in a square slot as the
@@ -10,7 +12,7 @@ export function MeleteMark({ width = 36 }: { width?: number }) {
   return (
     <img
       src="/melete-logo.png"
-      alt="Melete"
+      alt={`${instanceName()}`}
       style={{ width, height: Math.round(width * MARK_RATIO), display: 'block', flexShrink: 0 }}
     />
   );

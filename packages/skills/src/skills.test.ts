@@ -62,6 +62,30 @@ describe('the skills that ship with the release', () => {
     expect(() => loadIdentity({ MELETE_ASSISTANT_NAME: 'x'.repeat(61) })).toThrow(
       'MELETE_ASSISTANT_NAME',
     );
+    // The cap holds the file as written, so the longest name a setting allows
+    // starts the service, and adds no more than its own length.
+    for (const name of ['Riverside Primary School Assistant', 'x'.repeat(60)])
+      expect(estimateTokens(loadIdentity({ MELETE_ASSISTANT_NAME: name }))).toBeLessThanOrEqual(
+        IDENTITY_MAX_TOKENS + Math.ceil(60 / 4),
+      );
+  });
+
+  test('with only the installation named, the assistant takes its name', () => {
+    const riverside = loadIdentity({ MELETE_INSTANCE_NAME: 'Riverside Assistant' });
+    expect(riverside.startsWith('You are Riverside Assistant, a personal assistant')).toBe(true);
+    expect(
+      loadIdentity({ MELETE_INSTANCE_NAME: 'Riverside Assistant', MELETE_ASSISTANT_NAME: ' ' }),
+    ).toBe(riverside);
+    // A name of its own wins, and neither set reads as before.
+    expect(
+      loadIdentity({ MELETE_INSTANCE_NAME: 'Riverside Assistant', MELETE_ASSISTANT_NAME: 'Ada' }),
+    ).toBe(loadIdentity({ MELETE_ASSISTANT_NAME: 'Ada' }));
+    expect(loadIdentity({ MELETE_INSTANCE_NAME: '', MELETE_ASSISTANT_NAME: '' })).toBe(
+      loadIdentity({}),
+    );
+    expect(() => loadIdentity({ MELETE_INSTANCE_NAME: 'Two\nlines' })).toThrow(
+      'MELETE_INSTANCE_NAME',
+    );
   });
 
   test("an installation's own identity file is used as written, inside the same cap", () => {

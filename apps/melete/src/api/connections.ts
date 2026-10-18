@@ -113,6 +113,7 @@ import { awsSecret } from '../egress/aws-session.ts';
 import type { Env } from '../env.ts';
 import { FEATURES, featureOfConnectionKind, installationFeatures } from '../features.ts';
 import { newId } from '../ids.ts';
+import { instanceName } from '../names.ts';
 import { signInStore } from '../ops/signin-store.ts';
 import {
   managesConnection,
@@ -442,7 +443,10 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
             note: COMPOSIO_NOTE,
           },
           available: hint === undefined,
-          ...unavailable(`Signing in with ${entry.title} is not set up on this Melete yet.`, hint),
+          ...unavailable(
+            `Signing in with ${entry.title} is not set up on this ${instanceName()} yet.`,
+            hint,
+          ),
         };
       }
       const hint = !factory.options[entry.provider]
@@ -463,7 +467,10 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           scopes: entry.scopes.map((scope) => ({ ...scope })),
         },
         available: hint === undefined,
-        ...unavailable(`Signing in with ${entry.title} is not set up on this Melete yet.`, hint),
+        ...unavailable(
+          `Signing in with ${entry.title} is not set up on this ${instanceName()} yet.`,
+          hint,
+        ),
       };
     });
     // With a Composio key, popular apps sign in through Composio too; any

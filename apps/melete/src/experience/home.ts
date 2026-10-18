@@ -23,6 +23,7 @@ import {
   task,
 } from '../db/schema.ts';
 import { newId } from '../ids.ts';
+import { assistantName } from '../names.ts';
 import { ownJob } from '../principals/authority.ts';
 import { watchedByDefault } from '../signals/poller.ts';
 import { sourceCursor } from '../signals/schema.ts';
@@ -84,10 +85,9 @@ export type ConnectionLiveness = (
   row: typeof connection.$inferSelect,
 ) => Promise<'running' | 'not_running' | 'unknown'>;
 
-const NOT_RUNNING = 'Installed, but not running right now, so Melete can’t use it yet.';
+const NOT_RUNNING = `Installed, but not running right now, so ${assistantName()} can’t use it yet.`;
 const FAILING = 'Its last check failed. Press Test to check it again, or reconnect it.';
-const NEEDS_ACCESS =
-  'It asked for more access than it was given. Sign in again to grant it, or Melete keeps going without that part.';
+const NEEDS_ACCESS = `It asked for more access than it was given. Sign in again to grant it, or ${assistantName()} keeps going without that part.`;
 
 export class ExperienceHome {
   constructor(

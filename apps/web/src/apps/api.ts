@@ -4,6 +4,7 @@
  */
 import { errorMessage, type paths } from '@melete/client';
 import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
+import { instanceName } from '../experience/instance.ts';
 import { plainError } from '../experience/plain.ts';
 
 type Json<T> = T extends { content: { 'application/json': infer B } } ? B : never;
@@ -28,7 +29,7 @@ export type GrantRequest = NonNullable<
   paths['/apps/{id}/grants']['put']['requestBody']
 >['content']['application/json']['grants'][number];
 
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+const offline = () => `Couldn’t reach ${instanceName()}. Check that the service is running.`;
 
 async function call<T>(
   run: () => Promise<{ data?: unknown; error?: unknown; response?: Response }>,
@@ -39,12 +40,12 @@ async function call<T>(
       return { data: outcome.data as T, error: null, unavailable: null };
     return {
       data: null,
-      error: plainError(errorMessage(outcome.error, OFFLINE)),
+      error: plainError(errorMessage(outcome.error, offline())),
       unavailable: null,
       unauthorized: outcome.response?.status === 401,
     };
   } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
+    return { data: null, error: offline(), unavailable: null };
   }
 }
 
@@ -116,11 +117,11 @@ async function forViewer(
         error:
           response.status === 404
             ? 'This app has nothing by that name.'
-            : plainError(errorMessage(body, OFFLINE)),
+            : plainError(errorMessage(body, offline())),
       };
     return { ok: true, value: body };
   } catch {
-    return { ok: false, error: OFFLINE };
+    return { ok: false, error: offline() };
   }
 }
 

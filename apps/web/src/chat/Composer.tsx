@@ -40,6 +40,7 @@ import {
 import { elapsed, useNowTick, useRecorder, type VoicePlace } from './voice.ts';
 import './composer.css';
 import './message-files.css';
+import { assistantName } from '../experience/instance.ts';
 
 /**
  * Said above the box while no model is connected, since nothing sent could be
@@ -51,8 +52,8 @@ export function ModelMissing({ canEdit }: { canEdit: boolean }) {
       <Icon name="info" size={15} />
       <span className="grow">
         {canEdit
-          ? 'Melete needs a model to answer. Connect one and you can start.'
-          : 'Melete needs a model to answer. The person who runs this server can connect one.'}
+          ? `${assistantName()} needs a model to answer. Connect one and you can start.`
+          : `${assistantName()} needs a model to answer. The person who runs this server can connect one.`}
       </span>
       {canEdit ? (
         <a className="composer-missing-link" href={href('/settings/models')}>
@@ -72,7 +73,7 @@ export function Composer({
   onResume,
   onStop,
   state = 'send',
-  agentName = 'Melete',
+  agentName = assistantName(),
   placeholder = `Message ${agentName}`,
   disabled = false,
   autoFocus = false,

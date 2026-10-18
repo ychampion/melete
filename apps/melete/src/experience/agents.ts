@@ -5,6 +5,7 @@ export { AGENT_TEMPLATES } from './agent-library.ts';
 
 import { ServiceError } from '../api/errors.ts';
 import type { agent } from '../db/schema.ts';
+import { assistantName } from '../names.ts';
 
 /**
  * Melete, the agent every space has. It reaches every connection the person
@@ -30,8 +31,7 @@ export const MELETE_AGENT = agentInput.parse({
  * What an agent that keeps no memory is told, so it never says it will
  * remember something. Melete always keeps memory, so it is the one to offer.
  */
-export const NO_MEMORY_NOTE =
-  "You don't keep details from your chats. If the person asks you to remember something, don't say you will: tell them you don't keep details, and offer to have Melete remember it instead.";
+export const NO_MEMORY_NOTE = `You don't keep details from your chats. If the person asks you to remember something, don't say you will: tell them you don't keep details, and offer to have ${assistantName()} remember it instead.`;
 
 /**
  * The persona a conversation's agent adds on top of Melete's identity: a name,
@@ -76,7 +76,9 @@ export function agentView(
   return experienceAgent.parse({
     id: row.id,
     space_id: row.spaceId,
-    name: row.name,
+    // The agent every space has goes by the assistant's name; its row keeps the
+    // stored one, so a renamed assistant needs no change to stored agents.
+    name: row.isDefault ? assistantName() : row.name,
     role: row.role,
     colour: row.colour,
     surface: row.surface,
@@ -103,8 +105,9 @@ export function agentView(
  */
 export function agentValues(raw: unknown, isDefault = false, fixedReach = isDefault) {
   const value = agentInput.parse(raw);
-  if (isDefault && value.name !== MELETE_AGENT.name)
-    throw new ServiceError('default_agent_fixed', 'Melete keeps its name.', 400);
+  // It is shown with the assistant's name, so a save may send either.
+  if (isDefault && value.name !== MELETE_AGENT.name && value.name !== assistantName())
+    throw new ServiceError('default_agent_fixed', `${assistantName()} keeps its name.`, 400);
   if (
     fixedReach &&
     (value.allowed_connection_ids !== null ||
@@ -114,12 +117,12 @@ export function agentValues(raw: unknown, isDefault = false, fixedReach = isDefa
   )
     throw new ServiceError(
       'default_agent_fixed',
-      'Melete can use everything you connect. Make a new agent to narrow what it can use.',
+      `${assistantName()} can use everything you connect. Make a new agent to narrow what it can use.`,
       400,
     );
   agentIdentity(value);
   return {
-    name: value.name,
+    name: isDefault ? MELETE_AGENT.name : value.name,
     role: value.role,
     colour: value.colour,
     surface: value.surface,

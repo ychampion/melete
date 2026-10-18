@@ -215,7 +215,7 @@ function AgentChip({
         aria-expanded={open}
       >
         <AgentAvatar agent={agent} size={20} />
-        {agent?.name ?? 'Melete'}
+        {agent?.name ?? assistantName()}
         <Icon name="chevronDown" size={13} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
@@ -475,7 +475,10 @@ function TurnView({
               finished={layout.finished}
               renderBlock={renderBlock}
               computer={
-                onOpenComputer && { agentName: agent?.name ?? 'Melete', open: onOpenComputer }
+                onOpenComputer && {
+                  agentName: agent?.name ?? assistantName(),
+                  open: onOpenComputer,
+                }
               }
             />
             {layout.answer ? <Answer text={layout.answer} /> : null}
@@ -531,6 +534,7 @@ function Answer({ text }: { text: string }) {
 
 /** The transcript reaches the turn views through a tiny context, to keep props short. */
 import { createContext, useContext } from 'react';
+import { assistantName } from '../experience/instance.ts';
 import type { Transcript } from '../experience/reduce.ts';
 
 const TranscriptContext = createContext<{ transcript: Transcript } | null>(null);
@@ -1191,7 +1195,7 @@ export function ChatScreen({ id }: { id: string | null }) {
     chatAgentId,
   );
   const showComputer = computerShown && computerOpen && Boolean(conversationId);
-  const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
+  const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? assistantName()}’s computer`;
   const openComputer = () => setComputerOpen(true);
   const computerToggle = (size?: number) =>
     conversationId && computerShown ? (
@@ -1346,7 +1350,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <span style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>
                     {agent
                       ? agent.standing_instruction || agent.tone
-                      : 'Say it once. Melete checks what it needs, does the steps, and comes back for the moments that need you.'}
+                      : `Say it once. ${assistantName()} checks what it needs, does the steps, and comes back for the moments that need you.`}
                   </span>
                 </div>
               ) : null}
@@ -1419,7 +1423,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <CallPanel
                     conversationId={conversationId}
                     transcript={transcript}
-                    agentName={agent?.name?.trim() || 'Melete'}
+                    agentName={agent?.name?.trim() || assistantName()}
                     avatar={<AgentAvatar agent={agent} size={28} />}
                     minimised={voiceMin}
                     onMinimise={setVoiceMin}
@@ -1430,7 +1434,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <VoicePanel
                     conversationId={conversationId}
                     transcript={transcript}
-                    agentName={agent?.name?.trim() || 'Melete'}
+                    agentName={agent?.name?.trim() || assistantName()}
                     avatar={<AgentAvatar agent={agent} size={28} />}
                     minimised={voiceMin}
                     onMinimise={setVoiceMin}
@@ -1562,12 +1566,12 @@ ${words}`
                     // A turn handed to another agent with @Name is that agent's while it works.
                     (working ? agentById(agents, last?.turn.agent_id) : null)?.name ??
                     agent?.name ??
-                    'Melete'
+                    assistantName()
                   }
                   placeholder={
                     agents.length > 1
-                      ? `Message ${agent?.name ?? 'Melete'}, or @name`
-                      : `Message ${agent?.name ?? 'Melete'}`
+                      ? `Message ${agent?.name ?? assistantName()}, or @name`
+                      : `Message ${agent?.name ?? assistantName()}`
                   }
                   state={conversationId ? composerState : 'send'}
                   working={working}

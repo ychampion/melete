@@ -4,6 +4,7 @@
  * artboard. Reach it at #/design.
  */
 import { type ReactNode, useState } from 'react';
+import { assistantName } from '../experience/instance.ts';
 import { AgentFace, FACE_PALETTE, FACE_SHAPES, FACE_STATES, type FaceShape } from './face.tsx';
 import { ICON_PATHS, Icon, type IconName } from './icons.tsx';
 import { LOGOS, Logo, type LogoName } from './logos.tsx';
@@ -358,7 +359,7 @@ export function Sheet() {
           open={dialog}
           onClose={() => setDialog(false)}
           title="Create a plan"
-          sub="Melete will suggest milestones once you save."
+          sub={`${assistantName()} will suggest milestones once you save.`}
           footer={
             <>
               <Button variant="ghost" onClick={() => setDialog(false)}>

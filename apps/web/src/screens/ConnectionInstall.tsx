@@ -29,8 +29,9 @@ import type {
   ProviderAccess,
 } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
-import { APP_PASSWORD } from './app-passwords.ts';
+import { appPassword } from './app-passwords.ts';
 import './connections.css';
+import { assistantName, instanceName } from '../experience/instance.ts';
 import { McpServerAdd } from './McpServerAdd.tsx';
 
 /** Where an installation's owner reads how to turn on each sign-in. */
@@ -41,7 +42,7 @@ export const SETUP_DOCS: Record<string, string> = {
   github: 'https://github.com/ychampion/melete/blob/main/docs/CONNECTORS.md#connecting-github',
 };
 /** Said wherever an option is not offered on this Melete. */
-export const NOT_SET_UP = 'Not offered on this Melete yet.';
+export const notSetUp = () => `Not offered on this ${instanceName()} yet.`;
 
 /**
  * Whether the person looking is the one who runs this Melete: the service
@@ -143,7 +144,7 @@ function Control({
 
 /** Why a mail kind asks for an app password, and where to make one. Stated as fact, once. */
 export function AppPasswordExplainer({ kindId }: { kindId: string }) {
-  const note = APP_PASSWORD[kindId];
+  const note = appPassword()[kindId];
   if (!note) return null;
   return (
     <div
@@ -281,8 +282,8 @@ export function KindForm({
       ) : easier && runsThis(easier) && SETUP_DOCS[easier.connect.provider] ? (
         <div className="col connect-easier" role="note">
           <span>
-            Signing in with {easier.title} isn’t set up on this Melete yet, so {kind.title} connects
-            here with an app password.{' '}
+            Signing in with {easier.title} isn’t set up on this {instanceName()} yet, so{' '}
+            {kind.title} connects here with an app password.{' '}
             <a href={SETUP_DOCS[easier.connect.provider]} target="_blank" rel="noreferrer">
               How to set up {easier.title} sign-in
             </a>
@@ -498,7 +499,7 @@ export function AccountSignIn({
       ) : (
         <>
           <span style={{ fontSize: 13, color: 'var(--text)' }}>
-            You sign in at <strong>{issuer}</strong>. Melete asks {entry.title} for:
+            You sign in at <strong>{issuer}</strong>. {instanceName()} asks {entry.title} for:
           </span>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text)' }}>
             {scopes.map((item) => (
@@ -509,7 +510,7 @@ export function AccountSignIn({
       )}
       {!entry.available ? (
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-          {NOT_SET_UP}{' '}
+          {notSetUp()}{' '}
           {runsThis(entry) && SETUP_DOCS[provider] ? (
             <a href={SETUP_DOCS[provider]} target="_blank" rel="noreferrer">
               How to set this up
@@ -588,16 +589,13 @@ function accessOf<T extends { label: string; effect_class: string; asks_first: b
 
 /** Why a catalog sign-in did not finish, by the code the service gave. */
 /** What a disconnection did at the provider, said after it. */
-const DISCONNECTED: Record<ProviderAccess | 'none', string | null> = {
-  withdrawn: 'Melete has deleted its copy, and the provider has withdrawn Melete’s access too.',
-  kept_for_other_connections:
-    'Melete has deleted its copy. Your other connections to the same account still use that sign-in, so the account keeps Melete’s access until you disconnect them too.',
-  not_offered:
-    'Melete has deleted its copy. To cancel the token itself, delete it in that account’s own security settings.',
-  not_confirmed:
-    'Melete has deleted its copy, but the provider didn’t confirm withdrawing Melete’s access. To be sure, remove it in that account’s own security settings.',
+const disconnected = (): Record<ProviderAccess | 'none', string | null> => ({
+  withdrawn: `${instanceName()} has deleted its copy, and the provider has withdrawn ${instanceName()}’s access too.`,
+  kept_for_other_connections: `${instanceName()} has deleted its copy. Your other connections to the same account still use that sign-in, so the account keeps ${instanceName()}’s access until you disconnect them too.`,
+  not_offered: `${instanceName()} has deleted its copy. To cancel the token itself, delete it in that account’s own security settings.`,
+  not_confirmed: `${instanceName()} has deleted its copy, but the provider didn’t confirm withdrawing ${instanceName()}’s access. To be sure, remove it in that account’s own security settings.`,
   none: null,
-};
+});
 
 /** The same, when the answer names the provider's page for cancelling the credential. */
 export function disconnectedNote(
@@ -607,22 +605,22 @@ export function disconnectedNote(
   const at = answer.revoke_at;
   if (at && access === 'not_offered')
     return {
-      sub: `Melete has deleted its copy. To cancel the token itself, delete it at ${at.url}`,
+      sub: `${instanceName()} has deleted its copy. To cancel the token itself, delete it at ${at.url}`,
       link: at,
     };
   if (at && access === 'not_confirmed')
     return {
-      sub: `Melete has deleted its copy, but the provider didn’t confirm withdrawing Melete’s access. To be sure, remove it at ${at.url}`,
+      sub: `${instanceName()} has deleted its copy, but the provider didn’t confirm withdrawing ${instanceName()}’s access. To be sure, remove it at ${at.url}`,
       link: at,
     };
-  return { sub: DISCONNECTED[access] };
+  return { sub: disconnected()[access] };
 }
 
-const SIGN_IN_ENDED: Record<string, string> = {
-  catalog_tools_unavailable: 'You signed in, but the app offers none of the tools Melete uses.',
+const signInEnded = (): Record<string, string> => ({
+  catalog_tools_unavailable: `You signed in, but the app offers none of the tools ${assistantName()} uses.`,
   catalog_tools_unreadable: 'You signed in, but the app did not say what it can do. Try again.',
   sign_in_declined: 'The sign-in was not approved.',
-};
+});
 
 /**
  * Connecting an app from the catalog. Before the browser leaves, the person
@@ -678,7 +676,7 @@ export function AppConnect({
           onInstalled();
           onDone();
         } else if (r.data.state === 'failed')
-          setError(SIGN_IN_ENDED[r.data.error] ?? 'The connection didn’t finish. Try again.');
+          setError(signInEnded()[r.data.error] ?? 'The connection didn’t finish. Try again.');
       });
     }, 2000);
     return () => window.clearInterval(timer);
@@ -733,7 +731,7 @@ export function AppConnect({
       {!entry.available ? (
         <div className="col" style={{ gap: 4 }}>
           <span className="app-connect-note">
-            {entry.unavailable_reason ?? NOT_SET_UP}{' '}
+            {entry.unavailable_reason ?? notSetUp()}{' '}
             {runsThis(entry) && SETUP_DOCS[entry.id] ? (
               <a href={SETUP_DOCS[entry.id]} target="_blank" rel="noreferrer">
                 How to set this up
@@ -1027,8 +1025,8 @@ export function Catalog({
               ))}
             </div>
             <span className="app-connect-note">
-              Melete reads a server’s tools from its address, after you sign in when it asks, and
-              you choose which to use.
+              {instanceName()} reads a server’s tools from its address, after you sign in when it
+              asks, and you choose which to use.
             </span>
           </div>
         </details>

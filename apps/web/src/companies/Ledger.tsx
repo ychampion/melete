@@ -6,6 +6,7 @@
  */
 import { Icon } from '../design/icons.tsx';
 import { Button, CompanyTile, Skeleton, Status, type StatusTone } from '../design/primitives.tsx';
+import { assistantName } from '../experience/instance.ts';
 import type {
   Company,
   Confidence,
@@ -241,9 +242,9 @@ export function EmptyLedger({
     <div className="ledger-empty">
       <span className="ledger-empty-title">No companies found yet</span>
       <p className="ledger-empty-body">
-        Connect a mailbox and Melete reads it: what each company takes every month, what it owes
-        back, what renews next, whose price went up, whose trial ends this week, and who is holding
-        data. Every figure opens the sentence in the email it came from.
+        Connect a mailbox and {assistantName()} reads it: what each company takes every month, what
+        it owes back, what renews next, whose price went up, whose trial ends this week, and who is
+        holding data. Every figure opens the sentence in the email it came from.
       </p>
       {scanning ? (
         <div className="scan" role="status">

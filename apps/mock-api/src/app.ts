@@ -151,6 +151,9 @@ export type AppDeps = {
    * (`MELETE_MOCK_FEATURES_OFF=voice,companies`). The setup status says so.
    */
   featuresOff?: string[];
+  /** What the installation and its assistant are called, as MELETE_INSTANCE_NAME and MELETE_ASSISTANT_NAME set them. */
+  instanceName?: string;
+  assistantName?: string;
 };
 
 /** The features the service lists in features.ts, each on unless turned off; multiplayer follows its own switch. */
@@ -380,8 +383,9 @@ export function createMockApp(deps: AppDeps) {
       ),
       code_required: false,
       email_sign_in: false,
-      instance_name: 'Melete',
-      assistant_name: 'Melete',
+      instance_name: deps.instanceName ?? 'Melete',
+      // As the service does: the assistant takes the installation's name when only that is set.
+      assistant_name: deps.assistantName ?? deps.instanceName ?? 'Melete',
       signin: {
         password: deps.signIn !== 'oidc',
         oidc: deps.signIn === 'both' || deps.signIn === 'oidc' ? { label: 'Example ID' } : null,

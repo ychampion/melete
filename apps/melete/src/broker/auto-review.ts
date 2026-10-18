@@ -43,6 +43,7 @@ import {
 } from '@melete/contracts';
 import { isPublicAddress } from '../connectors/web.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
+import { assistantName, instanceName } from '../names.ts';
 import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { CalendarCheck } from './calendar-check.ts';
 import { SEEKS_CREDENTIALS_REASON, seeksCredentials } from './credential-stores.ts';
@@ -354,8 +355,7 @@ export function reviewTier(input: {
     return {
       tier: 'sandbox',
       actionClass: 'sandbox',
-      reason:
-        'Melete made it in this conversation, and it goes to the trash, where Undo puts it back.',
+      reason: `${assistantName()} made it in this conversation, and it goes to the trash, where Undo puts it back.`,
     };
   if (DESTRUCTIVE.test(words(tool.name)) && !ownRemoval)
     return person('It deletes or removes something.');
@@ -365,7 +365,8 @@ export function reviewTier(input: {
     );
   if (provider === APPS_PROVIDER && APP_PUBLISHING.has(tool.name)) {
     const risks = appRisks(payload);
-    if (risks === null) return person('Melete could not check who this app would reach.');
+    if (risks === null)
+      return person(`${assistantName()} could not check who this app would reach.`);
     if (risks.length) return person(risks.join(' '));
     return {
       tier: 'apps',
@@ -409,7 +410,7 @@ export function reviewTier(input: {
       return person(
         typeof input.existingGuests === 'number'
           ? 'It changes a meeting that has guests, and they would be told.'
-          : 'Melete could not check whether this event has guests.',
+          : `${assistantName()} could not check whether this event has guests.`,
       );
     // A calendar that cannot be read for its context leaves the change to the reviewer.
     if (input.calendar === undefined)
@@ -419,20 +420,22 @@ export function reviewTier(input: {
         reason: 'It changes an event on your own calendar, with no guests.',
       };
     if (input.calendar === null)
-      return person('Melete could not read your calendar around that time.');
+      return person(`${assistantName()} could not read your calendar around that time.`);
     if (input.calendar.concern) return person(input.calendar.concern);
     if (!input.calendar.reversible)
-      return person('Melete could not keep a way to undo it, because the event changed since.');
+      return person(
+        `${assistantName()} could not keep a way to undo it, because the event changed since.`,
+      );
     return {
       tier: 'own_calendar',
       actionClass: 'own_calendar',
       reason:
         tool.name === 'calendar.delete'
-          ? 'It removes an event Melete made on your own calendar, touches nothing important, and can be put back.'
+          ? `It removes an event ${assistantName()} made on your own calendar, touches nothing important, and can be put back.`
           : 'It is on your own calendar with no guests, touches nothing important, and can be undone.',
     };
   }
-  return person('It sends or publishes outside Melete and cannot be taken back.');
+  return person(`It sends or publishes outside ${instanceName()} and cannot be taken back.`);
 }
 
 /** The fields whose origin decides the tier: who, where and how much. */
@@ -600,7 +603,7 @@ export async function reviewInput(
         field: field.path,
         value: field.value,
         trust: known?.origin_trust ?? 'unknown',
-        note: known?.description ?? 'Melete cannot say where this value came from.',
+        note: known?.description ?? `${assistantName()} cannot say where this value came from.`,
       };
     }),
   };

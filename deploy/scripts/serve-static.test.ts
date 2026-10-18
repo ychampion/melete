@@ -1305,3 +1305,12 @@ describe("an installation's brand folder", () => {
     expect('bytes' in read ? read.bytes.toString() : '').toBe(`icon-${BRAND_SENTINEL}`);
   });
 });
+
+test('the page description opens with the installation name, and is unchanged by default', () => {
+  const page =
+    '<title>Melete</title>\n<meta name="description" content="Melete: the assistant that actually does it." />';
+  expect(renderIndex(page, 'Melete', false)).toBe(page);
+  const named = renderIndex(page, 'Riverside Assistant', false);
+  expect(named).toContain('content="Riverside Assistant: the assistant that actually does it."');
+  expect(named).not.toContain('Melete');
+});

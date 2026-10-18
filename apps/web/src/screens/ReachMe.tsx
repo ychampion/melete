@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { Button, Input } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { ReachState } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -81,9 +82,9 @@ export function ReachMe() {
         Texts and calls about your deadlines
       </h2>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        When a deadline you set is about to be missed and you haven’t opened its push, Melete can
-        text your own number three minutes later, and call it five minutes after that. It stops as
-        soon as you open the push, reply, or press a key on the call.
+        When a deadline you set is about to be missed and you haven’t opened its push,{' '}
+        {assistantName()} can text your own number three minutes later, and call it five minutes
+        after that. It stops as soon as you open the push, reply, or press a key on the call.
       </p>
 
       {!reach.available ? (
@@ -96,7 +97,7 @@ export function ReachMe() {
           {reach.number && !pending ? (
             <Row
               title={reach.number}
-              sub={`Your number, verified${reach.verified_at ? ` ${dateOf(reach.verified_at)}` : ''}. Texts and calls come from ${reach.from_number ?? 'Melete’s number'}.`}
+              sub={`Your number, verified${reach.verified_at ? ` ${dateOf(reach.verified_at)}` : ''}. Texts and calls come from ${reach.from_number ?? `${assistantName()}’s number`}.`}
             >
               <Button
                 size="sm"
@@ -154,7 +155,7 @@ export function ReachMe() {
           ) : (
             <Row
               title={reach.number ? 'Use another number' : 'Your number'}
-              sub="With + and the country code. Melete texts it a code to make sure it’s yours."
+              sub={`With + and the country code. ${assistantName()} texts it a code to make sure it’s yours.`}
             >
               <form
                 className="row"
@@ -187,7 +188,7 @@ export function ReachMe() {
           {reach.opted_out_at ? (
             <Row
               title="You replied STOP"
-              sub={`Nothing is texted or called. To allow it again, text START to ${reach.from_number ?? 'Melete’s number'}, then agree below.`}
+              sub={`Nothing is texted or called. To allow it again, text START to ${reach.from_number ?? `${assistantName()}’s number`}, then agree below.`}
             />
           ) : null}
 
@@ -256,7 +257,7 @@ export function ReachMe() {
       {reach.recent.some((contact) => contact.purpose === 'ladder') ? (
         <>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--heading)', marginTop: 8 }}>
-            What Melete did
+            What {assistantName()} did
           </span>
           <ul className="card-12" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
             {reach.recent

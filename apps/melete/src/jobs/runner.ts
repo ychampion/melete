@@ -71,6 +71,7 @@ import { turnAcknowledged, turnEnded, turnSpoke, turnStarted } from '../gateway/
 import type { UsageClass } from '../gateway/usage-class.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
+import { instanceName } from '../names.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
 import { EngineImageUnavailable } from '../runtime/cell-host.ts';
@@ -120,19 +121,15 @@ export const LEASE_MS = 45_000;
  * What a conversation's turn ends with when its engine could not start because
  * the engine image the service started with is gone or refused.
  */
-export const ENGINE_IMAGE_NOTE =
-  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then send your message again.';
+export const ENGINE_IMAGE_NOTE = `I couldn’t start the engine that does the work: the engine image ${instanceName()} started with is no longer available. Restart ${instanceName()}, or ask whoever runs it to, then send your message again.`;
 /** What long work asks the person when its engine could not start that way. */
-export const ENGINE_IMAGE_QUESTION =
-  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then say "continue" to try again.';
+export const ENGINE_IMAGE_QUESTION = `I couldn’t start the engine that does the work: the engine image ${instanceName()} started with is no longer available. Restart ${instanceName()}, or ask whoever runs it to, then say "continue" to try again.`;
 /** Why long work or a helper stopped that way, in its record. */
-const ENGINE_IMAGE_WHY =
-  'Its engine could not start: the engine image Melete started with is no longer available.';
+const ENGINE_IMAGE_WHY = `Its engine could not start: the engine image ${instanceName()} started with is no longer available.`;
 /** The reason an attempt lost that way is recorded with. */
 export const ENGINE_IMAGE_REASON = 'engine_image_unavailable';
 /** What a conversation's turn ends with when its work was cut off and could not be resumed. */
-export const LOST_NOTE =
-  'This was interrupted before it could finish, for example because Melete restarted while it was working. Nothing more will happen here until you send another message.';
+export const LOST_NOTE = `This was interrupted before it could finish, for example because ${instanceName()} restarted while it was working. Nothing more will happen here until you send another message.`;
 /** The same, when the work stopped because an app it was using was disconnected. */
 export const DISCONNECTED_NOTE =
   'This stopped because an app it was using was disconnected. Nothing more will happen here until you send another message.';

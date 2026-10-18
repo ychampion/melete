@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { adapter } from '../experience/adapter.ts';
 import { featureOn } from '../experience/features.ts';
 import { useApp } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { VoiceStatus } from '../experience/types.ts';
 
 /* ---------- whether voice is here at all ---------- */
@@ -57,7 +58,7 @@ export function useVoiceStatus(place: VoicePlace | null): VoiceStatus | null {
 export function microphoneProblem(error: unknown): string {
   const name = error instanceof Error ? error.name : '';
   if (name === 'NotAllowedError' || name === 'SecurityError')
-    return 'Melete can’t use your microphone. Allow it for this site in your browser, then try again.';
+    return `${assistantName()} can’t use your microphone. Allow it for this site in your browser, then try again.`;
   if (name === 'NotFoundError' || name === 'OverconstrainedError')
     return 'No microphone was found. Connect one and try again.';
   if (name === 'NotReadableError')

@@ -6,7 +6,7 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { LedgerAction } from '../experience/types.ts';
-import { describeAction, ownComputerStep, RETRY_HINT, UnknownCard } from './parts.tsx';
+import { describeAction, ownComputerStep, retryWords, UnknownCard } from './parts.tsx';
 
 const action = (status: string) =>
   ({
@@ -19,7 +19,7 @@ test('"It did not" is described by the retry hint before the choice', () => {
   const html = renderToStaticMarkup(
     <UnknownCard action={action('unknown')} onResolve={() => {}} />,
   );
-  expect(RETRY_HINT).toBe('Melete may try again, and asks you first.');
+  expect(retryWords()).toBe('Melete may try again, and asks you first.');
   expect(html).toContain('If it did not, Melete may try again, and asks you first.');
   const described = html.match(
     /<button[^>]*aria-describedby="([^"]+)"[^>]*>(?:(?!<\/button>)[\s\S])*It did not/,
@@ -31,7 +31,7 @@ test('"It did not" is described by the retry hint before the choice', () => {
 test('once the person says it did not, the card says Melete may try again and asks first', () => {
   const html = renderToStaticMarkup(<UnknownCard action={action('failed')} onResolve={() => {}} />);
   expect(html).toContain('It did not');
-  expect(html).toContain(RETRY_HINT);
+  expect(html).toContain(retryWords());
   expect(html).not.toContain('It arrived</button>');
 });
 

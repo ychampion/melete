@@ -15,6 +15,8 @@
  * - Texts and calls say only that a deadline the person set is at risk: no
  *   title or reason, which a lock screen, a carrier or a phone log would show.
  */
+
+import { assistantName, instanceName } from '../names.ts';
 import { type DayWindow, isQuiet, localTime } from '../push/policy.ts';
 
 const MINUTE = 60_000;
@@ -65,31 +67,35 @@ export function decideRung(input: RungInput): RungDecision {
   if (!situation?.live)
     return { send: false, reason: 'It was settled or closed before this was due.', cancel: true };
   if (situation.acked)
-    return { send: false, reason: 'You saw it, so Melete stopped.', cancel: true };
+    return { send: false, reason: `You saw it, so ${assistantName()} stopped.`, cancel: true };
   // The database holds urgent to person-set already; the ladder does not trust that alone.
   if (!situation.urgent || !situation.personSet)
     return { send: false, reason: 'Only a deadline you set is texted or called about.' };
   if (!input.providerReady)
     return {
       send: false,
-      reason:
-        'Texts and calls aren’t set up on this installation, so Melete reached you by push only.',
+      reason: `Texts and calls aren’t set up on this installation, so ${assistantName()} reached you by push only.`,
     };
   if (!input.number) return { send: false, reason: 'There is no verified number to reach you on.' };
   if (input.optedOut)
-    return { send: false, reason: 'You replied STOP, so Melete no longer texts or calls you.' };
+    return {
+      send: false,
+      reason: `You replied STOP, so ${assistantName()} no longer texts or calls you.`,
+    };
   if (!consent || consent.number !== input.number)
     return {
       send: false,
-      reason:
-        'You haven’t agreed to texts and calls on this number, so Melete reached you by push only.',
+      reason: `You haven’t agreed to texts and calls on this number, so ${assistantName()} reached you by push only.`,
     };
   if (channel === 'text' && !consent.texts)
     return { send: false, reason: 'You haven’t agreed to texts.' };
   if (channel === 'call' && !consent.calls)
-    return { send: false, reason: 'You chose texts only, so Melete didn’t call.' };
+    return { send: false, reason: `You chose texts only, so ${assistantName()} didn’t call.` };
   if (channel === 'call' && !input.textWent)
-    return { send: false, reason: 'The text before it didn’t go, so Melete didn’t call.' };
+    return {
+      send: false,
+      reason: `The text before it didn’t go, so ${assistantName()} didn’t call.`,
+    };
   if (!consent.nights && offHours(input.now, input.day))
     return {
       send: false,
@@ -100,8 +106,8 @@ export function decideRung(input: RungInput): RungDecision {
       send: false,
       reason:
         channel === 'text'
-          ? `Melete had already sent ${DAILY_CAPS.text} texts today, the most it sends in a day.`
-          : `Melete had already called ${DAILY_CAPS.call} times today, the most it calls in a day.`,
+          ? `${assistantName()} had already sent ${DAILY_CAPS.text} texts today, the most it sends in a day.`
+          : `${assistantName()} had already called ${DAILY_CAPS.call} times today, the most it calls in a day.`,
     };
   return { send: true, to: input.number };
 }
@@ -189,16 +195,14 @@ export function providerAnswers(body: string): boolean {
 }
 
 /** The one confirmation an opt-out gets, with how to undo it. */
-export const OPT_OUT_CONFIRMATION =
-  'Melete: you won’t get texts or calls about deadlines. To restart, text START here, then turn it on again in Settings.';
+export const OPT_OUT_CONFIRMATION = `${instanceName()}: you won’t get texts or calls about deadlines. To restart, text START here, then turn it on again in Settings.`;
 
 /** The text: no title or reason, only that a deadline is at risk, how to answer and how to stop. */
-export const TEXT_BODY =
-  'Melete: a deadline you set is at risk. Open Melete to see it. Reply to say you’ve seen it, or STOP to end texts and calls.';
+export const TEXT_BODY = `${instanceName()}: a deadline you set is at risk. Open ${instanceName()} to see it. Reply to say you’ve seen it, or STOP to end texts and calls.`;
 
 /** The code text. */
 export const codeBody = (code: string) =>
-  `Your Melete code is ${code}. It expires in 10 minutes. If you didn't ask for it, ignore this text.`;
+  `Your ${instanceName()} code is ${code}. It expires in 10 minutes. If you didn't ask for it, ignore this text.`;
 
 /** A phone number read out digit by digit: "+1 415…" becomes "1, 4 1 5, …". */
 export function spokenNumber(number: string): string {
@@ -211,17 +215,17 @@ export function spokenNumber(number: string): string {
  */
 export function callWords(from: string): { lead: string; keys: string; after: string } {
   return {
-    lead: 'This is Melete, calling about a deadline you set. It is at risk. Open Melete to see it.',
+    lead: `This is ${assistantName()}, calling about a deadline you set. It is at risk. Open ${instanceName()} to see it.`,
     keys: 'Press 1 if you’ve seen this. Press 9 to stop these calls and texts.',
-    after: `You can text Melete at ${spokenNumber(from)}, or reply STOP to that number to end texts and calls. Goodbye.`,
+    after: `You can text ${assistantName()} at ${spokenNumber(from)}, or reply STOP to that number to end texts and calls. Goodbye.`,
   };
 }
 
 /** The words the person agrees to, with their number in them. They are recorded as shown. */
 export function consentWording(number: string): { texts: string; calls: string; nights: string } {
   return {
-    texts: `Melete may text ${number} when a deadline you set is about to be missed and you haven’t opened its push, at most 6 texts a day. Texts come from this installation’s number and may cost what your carrier charges. Reply STOP at any time to end texts and calls.`,
-    calls: `If a text also goes unanswered, Melete may call ${number}, at most 3 calls a day. The call is an automated voice; press 1 to say you’ve seen it, or 9 to end texts and calls.`,
+    texts: `${assistantName()} may text ${number} when a deadline you set is about to be missed and you haven’t opened its push, at most 6 texts a day. Texts come from this installation’s number and may cost what your carrier charges. Reply STOP at any time to end texts and calls.`,
+    calls: `If a text also goes unanswered, ${assistantName()} may call ${number}, at most 3 calls a day. The call is an automated voice; press 1 to say you’ve seen it, or 9 to end texts and calls.`,
     nights: 'Also outside your day hours. Otherwise nothing is texted or called while you’re off.',
   };
 }

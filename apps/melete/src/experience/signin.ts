@@ -5,6 +5,7 @@ import { ServiceError } from '../api/errors.ts';
 import { issuePasswordReset, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { instanceName } from '../names.ts';
 import {
   type AccountMailer,
   type MailInstance,
@@ -18,7 +19,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
  * What the person signing in is told when no link can be mailed. Setup steps
  * for whoever runs the installation are in its docs, not on the sign-in page.
  */
-const NO_SIGN_IN_MAIL = 'This Melete can’t email a sign-in link. Sign in with your password.';
+const NO_SIGN_IN_MAIL = `This ${instanceName()} can’t email a sign-in link. Sign in with your password.`;
 
 /**
  * The page a sign-in link opens: the sign-in screen, with the token in the
@@ -167,7 +168,7 @@ export class ExperienceSignIn {
     const mailbox = await this.ownMailbox();
     if (!mailbox.ok)
       return unavailable(
-        'This Melete can’t email you a reset link. Ask whoever set up your account to send you one.',
+        `This ${instanceName()} can’t email you a reset link. Ask whoever set up your account to send you one.`,
       );
     if (String(mailbox.owner.email).toLowerCase() === email.toLowerCase()) {
       const { owner, space, connector } = mailbox;

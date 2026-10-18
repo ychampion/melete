@@ -647,6 +647,11 @@ export function renderIndex(html: string, name: string, brandCss: boolean): stri
     .replace(
       /(<meta\s+name="apple-mobile-web-app-title"\s+content=")[^"]*(")/,
       (_m, open: string, end: string) => `${open}${safe}${end}`,
+    )
+    // The description opens with the name: "Melete: the assistant that actually does it."
+    .replace(
+      /(<meta\s+name="description"\s+content=")Melete(:[^"]*")/,
+      (_m, open: string, rest: string) => `${open}${safe}${rest}`,
     );
   if (brandCss)
     page = page.replace('</head>', () => '<link rel="stylesheet" href="/brand.css" />\n</head>');

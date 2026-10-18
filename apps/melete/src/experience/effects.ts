@@ -27,6 +27,7 @@ import { lockEventOrderIn } from '../db/transaction.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
 import { MCP_COMMAND_PREFIX } from '../mcp-server/actor.ts';
 import { actionBecause } from '../memory/basis.ts';
+import { assistantName, instanceName } from '../names.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import { roomAuthorityOf } from '../rooms/approvals.ts';
 import { listActivity } from './activity.ts';
@@ -656,7 +657,8 @@ export class ExperienceEffects {
         (space.kind === 'shared'
           ? space.generation !== null && Number(space.generation) === input.membershipGeneration
           : space.owner_id === input.principalId);
-      if (!member) return unavailable('The person can no longer use this space in Melete.');
+      if (!member)
+        return unavailable(`The person can no longer use this space in ${instanceName()}.`);
       const [waiting] = await tx`select j.id from job j join action a on a.job_id = j.id
         where j.principal_id = ${input.principalId} and j.kind = 'command'
         and starts_with(j.experience_command_key, ${stem}) and j.space_id = ${input.spaceId}
@@ -684,7 +686,7 @@ export class ExperienceEffects {
             and not exists (select 1 from action a where a.job_id = j.id)))`;
       if (Number(open?.n ?? 0) >= ASSISTANT_SENDS_WAITING)
         return unavailable(
-          `${ASSISTANT_SENDS_WAITING} messages from assistants already wait for the person's approval in Melete. Nothing was sent; wait until they decide.`,
+          `${ASSISTANT_SENDS_WAITING} messages from assistants already wait for the person's approval in ${instanceName()}. Nothing was sent; wait until they decide.`,
         );
       const id = recordId('job');
       await tx`insert into job (id, space_id, principal_id, title, objective, kind, state, lease_epoch,
@@ -720,8 +722,8 @@ export class ExperienceEffects {
       });
       return unavailable(
         error.message === 'membership_revoked'
-          ? 'The person can no longer use this space in Melete.'
-          : 'Melete did not accept this message. Nothing was sent.',
+          ? `The person can no longer use this space in ${instanceName()}.`
+          : `${assistantName()} did not accept this message. Nothing was sent.`,
       );
     }
   }
