@@ -136,10 +136,16 @@ export class BundleContextLimitError extends Error {
  * let a replacement stub replay its effect. Large tool bodies may be explicitly
  * abbreviated, but their call IDs remain exact. If identities alone do not fit,
  * refuse the attempt instead of silently discarding its replay protection.
+ *
+ * A call made in a turn that has ended (`settled`) can no longer be replayed:
+ * every attempt of that turn is over, and a later turn's calls are its own. It
+ * is ordinary conversation, kept while there is room, so a long chat is never
+ * refused for the calls its earlier turns made.
  */
 export function boundTranscript(
   messages: readonly CanonicalMessage[],
   limits: TranscriptLimits = BASELINE_TRANSCRIPT,
+  settled: ReadonlySet<CanonicalMessage> = NONE_SETTLED,
 ): CanonicalMessage[] {
   const { maxMessages, maxTokens, maxBytes } = limits;
   // Bound by characters at four to the token, then check the result against
@@ -149,7 +155,7 @@ export function boundTranscript(
   // proportion until both hold. Latin text fits on the first pass.
   let characters = maxTokens * CONTEXT_CHARS_PER_TOKEN;
   for (let pass = 0; ; pass++) {
-    const bounded = boundByCharacters(messages, maxMessages, characters);
+    const bounded = boundByCharacters(messages, maxMessages, characters, settled);
     const serialized = JSON.stringify(bounded);
     const tokens = estimateInputTokens(serialized);
     const bytes = wireBytes(serialized);
@@ -160,15 +166,19 @@ export function boundTranscript(
   }
 }
 
-/** The bound in serialized characters, keeping every completed tool identity. */
+const NONE_SETTLED: ReadonlySet<CanonicalMessage> = new Set();
+
+/** The bound in serialized characters, keeping every completed tool identity a turn under way made. */
 function boundByCharacters(
   messages: readonly CanonicalMessage[],
   maxMessages: number,
   maxCharacters: number,
+  settled: ReadonlySet<CanonicalMessage>,
 ): CanonicalMessage[] {
   const tools = new Map<string, number>();
   for (const [index, message] of messages.entries()) {
-    if (message.role === 'tool' && message.tool_call_id) tools.set(message.tool_call_id, index);
+    if (message.role === 'tool' && message.tool_call_id && !settled.has(message))
+      tools.set(message.tool_call_id, index);
   }
   if (tools.size > maxMessages) {
     throw new BundleContextLimitError(
@@ -179,7 +189,9 @@ function boundByCharacters(
   const selected = new Set(required);
   for (let index = messages.length - 1; index >= 0 && selected.size < maxMessages; index--) {
     const message = messages[index];
-    if (!message || (message.role === 'tool' && message.tool_call_id)) continue;
+    // A call under way is kept once, at its latest result; an earlier turn's is conversation.
+    if (!message || (message.role === 'tool' && message.tool_call_id && !settled.has(message)))
+      continue;
     selected.add(index);
   }
   const indices = [...selected].sort((a, b) => a - b);
@@ -225,7 +237,8 @@ function boundByCharacters(
   return bounded;
 }
 
-type HistoryEvent = Pick<typeof event.$inferSelect, 'seq' | 'type' | 'payload' | 'createdAt'>;
+type HistoryEvent = Pick<typeof event.$inferSelect, 'seq' | 'type' | 'payload' | 'createdAt'> &
+  Partial<Pick<typeof event.$inferSelect, 'attemptId'>>;
 type HistoryAttempt = Pick<
   typeof attempt.$inferSelect,
   'outcome' | 'outcomeDetail' | 'endedAt' | 'startedAt'
@@ -409,8 +422,12 @@ export function assembleHistory(
      * recorded as another principal's is never in their words.
      */
     principal?: string | null;
+    /** Attempts of a chat's turns that have ended; their tool calls cannot be replayed. */
+    settledAttempts?: ReadonlySet<string>;
   } = {},
 ): Pick<AttemptBundle, 'inputs' | 'transcript' | 'earlier'> & {
+  /** The tool results in `full` that turns which have ended made. */
+  settled: ReadonlySet<CanonicalMessage>;
   progressSummary: string;
   /** The whole conversation in order, before any of it is summarised or bounded. */
   full: CanonicalMessage[];
@@ -425,7 +442,14 @@ export function assembleHistory(
   /** The newest summary of its earlier messages, if one was made. */
   stored: StoredSummary | null;
 } {
-  const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT, principal } = context;
+  const {
+    names,
+    fileTexts = new Map(),
+    limits = BASELINE_TRANSCRIPT,
+    principal,
+    settledAttempts,
+  } = context;
+  const settled = new Set<CanonicalMessage>();
   let stored: StoredSummary | null = null;
   const spoken = new Map<CanonicalMessage, string>();
   const inputs: AttemptBundle['inputs'] = {
@@ -497,12 +521,14 @@ export function assembleHistory(
       if (row.seq > messagesAfter && !readBefore) inputs.new_user_messages.push(message);
     } else if (row.type === 'tool_result') {
       const result = toolResult.parse(payload);
-      transcript.push({
+      const message: CanonicalMessage = {
         role: 'tool',
         tool_call_id: result.call_id,
         content: JSON.stringify({ ok: result.ok, result: result.result }),
         at: row.createdAt.toISOString(),
-      });
+      };
+      transcript.push(message);
+      if (row.attemptId && settledAttempts?.has(row.attemptId)) settled.add(message);
     } else if (row.seq > afterSeq && row.type === 'approval_decided') {
       const decision = attemptBundle.shape.inputs.shape.approval_results.element.safeParse({
         ...payload,
@@ -533,12 +559,13 @@ export function assembleHistory(
     }
   }
   transcript.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  const bounded = boundHistory(transcript, inputs.new_user_messages, stored, limits);
+  const bounded = boundHistory(transcript, inputs.new_user_messages, stored, limits, settled);
   return {
     inputs,
     transcript: bounded.transcript,
     ...(bounded.earlier ? { earlier: bounded.earlier } : {}),
     progressSummary,
+    settled,
     full: transcript,
     personWords: spoken,
     stored,
@@ -558,6 +585,8 @@ export function boundHistory(
   fresh: readonly CanonicalMessage[],
   stored: StoredSummary | null,
   limits: TranscriptLimits,
+  /** Tool calls of turns that have ended, which no attempt can replay (`boundTranscript`). */
+  settled: ReadonlySet<CanonicalMessage> = NONE_SETTLED,
 ): { transcript: CanonicalMessage[]; earlier?: NonNullable<AttemptBundle['earlier']> } {
   const isFresh = new Set(fresh);
   // The rules the person set in the summarised messages travel beside the
@@ -571,7 +600,9 @@ export function boundHistory(
   const through = stored ? Date.parse(stored.through) : Number.NEGATIVE_INFINITY;
   const kept = transcript.flatMap((message) => {
     if (isFresh.has(message) || Date.parse(message.at) > through) return [message];
-    return isToolIdentity(message) ? [{ ...message, content: omitted }] : [];
+    return isToolIdentity(message) && !settled.has(message)
+      ? [{ ...message, content: omitted }]
+      : [];
   });
   const carried = standing.length ? JSON.stringify(standing) : '';
   const room: TranscriptLimits = summary
@@ -589,7 +620,7 @@ export function boundHistory(
         ),
       }
     : limits;
-  const bounded = boundAroundNewMessages(kept, fresh, room);
+  const bounded = boundAroundNewMessages(kept, fresh, room, settled);
   const said = (message: CanonicalMessage) => !isToolIdentity(message);
   const shown = bounded.filter(
     (message) => said(message) && !message.content.endsWith(omitted),
@@ -623,8 +654,9 @@ function boundAroundNewMessages(
   transcript: readonly CanonicalMessage[],
   fresh: readonly CanonicalMessage[],
   limits: TranscriptLimits,
+  settled: ReadonlySet<CanonicalMessage>,
 ): CanonicalMessage[] {
-  if (fresh.length === 0) return boundTranscript(transcript, limits);
+  if (fresh.length === 0) return boundTranscript(transcript, limits, settled);
   const isFresh = new Set(fresh);
   const serialized = JSON.stringify(fresh);
   const remaining: TranscriptLimits = {
@@ -635,10 +667,10 @@ function boundAroundNewMessages(
   const prior = transcript.filter((message) => !isFresh.has(message));
   let bounded: CanonicalMessage[];
   try {
-    bounded = boundTranscript(prior, remaining);
+    bounded = boundTranscript(prior, remaining, settled);
   } catch (error) {
     if (!(error instanceof BundleContextLimitError)) throw error;
-    return boundTranscript(transcript, limits);
+    return boundTranscript(transcript, limits, settled);
   }
   return [...bounded, ...fresh].sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
 }
@@ -889,11 +921,18 @@ async function historyRows(
   const provenance = await tx
     .select({
       id: attempt.id,
+      turnId: attempt.turnId,
       policyGeneration: attempt.policyGeneration,
       connectionGenerations: attempt.connectionGenerations,
     })
     .from(attempt)
     .where(eq(attempt.jobId, row.id));
+  // The attempts of a chat's turns that have ended: none of them runs again.
+  const settledAttempts = new Set(
+    provenance
+      .filter((entry) => entry.turnId !== null && entry.turnId !== row.currentTurnId)
+      .map((entry) => entry.id),
+  );
   const contextMatches = (entry: {
     policyGeneration: number;
     connectionGenerations: Record<string, number>;
@@ -952,7 +991,7 @@ async function historyRows(
     tx,
     row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
   );
-  return { usableEvents, attempts, contextMatches, currentAttempts, room, files };
+  return { usableEvents, attempts, contextMatches, currentAttempts, settledAttempts, room, files };
 }
 
 /**
@@ -969,19 +1008,22 @@ export async function readConversation(
   full: CanonicalMessage[];
   personWords: ReadonlyMap<CanonicalMessage, string>;
   stored: StoredSummary | null;
+  settled: ReadonlySet<CanonicalMessage>;
 }> {
-  const { usableEvents, attempts, contextMatches, room, files } = await historyRows(
-    tx,
-    row,
-    generations,
-    upTo,
-  );
+  const { usableEvents, attempts, contextMatches, settledAttempts, room, files } =
+    await historyRows(tx, row, generations, upTo);
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), upTo, {
     ...(room?.names ? { names: room.names } : {}),
     fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
     principal: row.principalId,
+    settledAttempts,
   });
-  return { full: history.full, personWords: history.personWords, stored: history.stored };
+  return {
+    full: history.full,
+    personWords: history.personWords,
+    stored: history.stored,
+    settled: history.settled,
+  };
 }
 
 export async function buildAttemptSkeleton(
@@ -997,11 +1039,12 @@ export async function buildAttemptSkeleton(
   const generations = expected
     ? await requireGenerations(tx, row.spaceId, expected)
     : await readGenerations(tx, row.spaceId);
-  const { usableEvents, attempts, contextMatches, currentAttempts, room, files } =
+  const { usableEvents, attempts, contextMatches, currentAttempts, settledAttempts, room, files } =
     await historyRows(tx, row, generations);
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq, {
     ...(room?.names ? { names: room.names } : {}),
     fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
+    settledAttempts,
     limits: transcriptLimits(attemptContextBudget(model.model, jobBudget.parse(row.budget))),
   });
   // The agent's own timer came due: this wake is that moment, and is told so,

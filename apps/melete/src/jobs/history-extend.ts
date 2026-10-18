@@ -228,7 +228,7 @@ export async function extendHistory(
     }),
   );
   deps.log?.(`history: summarised ${completed} message(s) in ${calls} call(s)`);
-  const bounded = boundHistory(read.full, fresh, stored, limits);
+  const bounded = boundHistory(read.full, fresh, stored, limits, read.settled);
   const { earlier: _built, ...rest } = bundle;
   return {
     ...rest,
