@@ -12,8 +12,21 @@ import { BrokerService } from '../broker/service.ts';
 import { openDatabase } from '../db/client.ts';
 import { ExperienceEvents } from '../experience/events.ts';
 import type { DesktopCommand, DockerSandboxProvider } from './adapters/docker.ts';
-import type { MaritimeProvider } from './adapters/maritime.ts';
-import { mountSandboxComputers, SandboxComputerService } from './computer.ts';
+import {
+  createMaritimeProvider,
+  MARITIME_API_URL,
+  type MaritimeProvider,
+} from './adapters/maritime.ts';
+import {
+  AUTHORING_KEY,
+  createMaritimeStandin,
+  RELEASE_GRACE_MS,
+} from './adapters/maritime-standin.ts';
+import {
+  mountSandboxComputers,
+  type SandboxComputerOptions,
+  SandboxComputerService,
+} from './computer.ts';
 import { type ComputerControls, PostgresComputerControls } from './computer-control.ts';
 import { COMPUTER_CHECK_LEFT, handComputerToPerson } from './hand-off.ts';
 import { seedSessionScope } from './session-fixtures.ts';
@@ -25,6 +38,12 @@ const withDb = database ? describe : describe.skip;
 type Owner = { id: string };
 
 const codeOf = async (response: Response) => ((await response.json()) as { code?: string }).code;
+
+/** Until `done` holds, or a few seconds pass. */
+async function waitFor(done: () => boolean): Promise<void> {
+  const until = Date.now() + 5_000;
+  while (!done() && Date.now() < until) await Bun.sleep(5);
+}
 
 /** A desktop that records what it was asked and paints two frames. */
 function desktop() {
@@ -153,6 +172,9 @@ async function scene(
     serves?: string[];
     /** A Maritime computer, shown through Maritime's own viewer, instead of Docker's desktop. */
     maritime?: boolean;
+    /** That computer as a real adapter speaks for it: its provider and the computer's id. */
+    adapter?: { provider: MaritimeProvider; sandbox: string };
+    service?: SandboxComputerOptions;
   } = {},
 ) {
   if (!database) throw new Error('Postgres unavailable');
@@ -165,15 +187,16 @@ async function scene(
   await sql`update job set principal_id = ${ownerId}, state = 'running' where id = ${scope.jobId}`;
   const attemptId = await scope.attempt();
   const sessionId = recordId('sbx');
-  const sandbox = `melete-sbx-test-${sessionId.toLowerCase()}`;
+  const sandbox = options.adapter?.sandbox ?? `melete-sbx-test-${sessionId.toLowerCase()}`;
   await sql`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id, agent_id,
       adapter, provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
     values (${sessionId}, ${scope.connectionId}, ${scope.spaceId}, ${scope.jobId}, ${attemptId},
-      ${scope.agentId}, ${options.maritime ? 'maritime' : 'docker'}, ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
+      ${scope.agentId}, ${options.maritime || options.adapter ? 'maritime' : 'docker'}, ${sandbox}, 'melete-sandbox:local', '{"kind":"deny_all"}'::jsonb,
       'pause', 'ready', now() + interval '1 hour')`;
   const docker = desktop();
   const viewer = maritimeViewer();
-  const provider = options.maritime ? viewer.provider : docker.provider;
+  const provider =
+    options.adapter?.provider ?? (options.maritime ? viewer.provider : docker.provider);
   const inputs = docker.inputs;
   const stored = new PostgresComputerControls(sql);
   const controls = options.wrap ? options.wrap(stored) : stored;
@@ -181,10 +204,14 @@ async function scene(
     new Map(
       [scope.connectionId, ...(options.serves ?? [])].map((id) => [
         id,
-        { adapter: options.maritime ? ('maritime' as const) : ('docker' as const), provider },
+        {
+          adapter:
+            options.maritime || options.adapter ? ('maritime' as const) : ('docker' as const),
+          provider,
+        },
       ]),
     );
-  const service = new SandboxComputerService(sql, providers, { controls });
+  const service = new SandboxComputerService(sql, providers, { controls, ...options.service });
   const parked: string[][] = [];
   service.onPark = (_job, attempts) => parked.push(attempts);
   let owner: Owner = { id: ownerId };
@@ -799,19 +826,226 @@ withDb('a computer shown through its provider’s own viewer', () => {
     expect(written.join('')).not.toContain('viewer.example.test');
   });
 
-  test('it is not handed back while the person still holds it in the viewer', async () => {
-    const s = await scene({ maritime: true });
+  test('handed back while the viewer still holds it, it goes back at once and the work waits for the viewer to let go', async () => {
+    const s = await scene({ maritime: true, service: { releasePollMs: 10 } });
+    const resumed: string[] = [];
+    s.service.onHandedBack = async (jobId) => {
+      resumed.push(jobId);
+    };
     await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
     await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, { mode: 'control' });
     s.viewer.holds('human');
-    const early = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
-    expect([early.status, await codeOf(early)]).toEqual([409, 'finish_in_viewer']);
-    expect((await s.controls.state(s.sandbox)).control).toBe('human');
-    expect(s.viewer.ended()).toBe(0);
-    // Done pressed in the viewer: now it goes back.
-    s.viewer.holds('agent');
-    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(200);
+    const back = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
+    expect(back.status).toBe(200);
     expect((await s.controls.state(s.sandbox)).control).toBe('agent');
+    // The person's link is replaced by the shortest one, handed to no one, and every link ends.
+    expect(s.viewer.minted.at(-1)).toEqual({ mode: 'control', ttlSeconds: 30 });
+    expect(s.viewer.ended()).toBe(1);
+    await Bun.sleep(80);
+    expect(resumed).toEqual([]);
+    // The viewer lets go: the work goes on.
+    s.viewer.holds('agent');
+    await waitFor(() => resumed.length > 0);
+    expect(resumed).toEqual([s.scope.jobId]);
+  });
+
+  test('a takeover while the viewer is letting go ends that wait; the next hand-back resumes the work', async () => {
+    const s = await scene({ maritime: true, service: { releasePollMs: 10 } });
+    const resumed: string[] = [];
+    s.service.onHandedBack = async (jobId) => {
+      resumed.push(jobId);
+    };
+    await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+    s.viewer.holds('human');
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(200);
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`)).status).toBe(200);
+    s.viewer.holds('agent');
+    await Bun.sleep(80);
+    expect(resumed).toEqual([]);
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(200);
+    expect(resumed).toEqual([s.scope.jobId]);
+  });
+
+  test('the work goes on after the longest wait even if the viewer never says it let go', async () => {
+    const s = await scene({ maritime: true, service: { releasePollMs: 10, releaseWaitMs: 60 } });
+    const resumed: string[] = [];
+    s.service.onHandedBack = async (jobId) => {
+      resumed.push(jobId);
+    };
+    await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+    s.viewer.holds('human');
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(200);
+    await waitFor(() => resumed.length > 0);
+    expect(resumed).toEqual([s.scope.jobId]);
+  });
+
+  test('on the stand-in: a link to drive it made and never opened does not keep the agent waiting for the link to run out', async () => {
+    let clock = Date.parse('2026-10-18T09:00:00.000Z');
+    const standin = createMaritimeStandin({ now: () => clock });
+    const provider = createMaritimeProvider({
+      credential: (use) => use(AUTHORING_KEY),
+      fetch: standin.fetch,
+    });
+    const made = await standin.fetch(`${MARITIME_API_URL}/api/v1/computers`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHORING_KEY}` },
+      body: JSON.stringify({ externalUserId: 'melete-viewer-test' }),
+    });
+    const { id } = (await made.json()) as { id: string };
+    const s = await scene({
+      adapter: { provider, sandbox: id },
+      service: { releasePollMs: 10 },
+    });
+    const resumed: string[] = [];
+    s.service.onHandedBack = async (jobId) => {
+      resumed.push(jobId);
+    };
+    const handle = { providerSandboxId: id, imageDigest: null, region: null };
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`)).status).toBe(200);
+    const link = await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, {
+      mode: 'control',
+    });
+    expect(link.status).toBe(200);
+    const { expires_at } = (await link.json()) as { expires_at: string };
+    // Made is taken: Maritime holds the desktop for the person, opened or not, for five minutes and more.
+    expect(Date.parse(expires_at) - clock).toBe(300_000);
+    expect(await provider.holder(handle, AbortSignal.timeout(5_000))).toBe('human');
+    // The person never opens it and hands the computer back.
+    clock += 20_000;
+    const back = await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`);
+    expect(back.status).toBe(200);
+    expect((await s.controls.state(s.sandbox)).control).toBe('agent');
+    expect(standin.minted.map((each) => [each.mode, each.ttlS])).toEqual([
+      ['control', 300],
+      ['control', 30],
+    ]);
+    expect(standin.closed).toEqual([id]);
+    // Still held while the short link and Maritime's minute after it run: the agent is not woken into refusals.
+    clock += 30_000 + RELEASE_GRACE_MS - 1_000;
+    await Bun.sleep(60);
+    expect(resumed).toEqual([]);
+    // About a minute and a half after the hand-back, not six minutes: the desktop is back and the work goes on.
+    clock += 2_000;
+    await waitFor(() => resumed.length > 0);
+    expect(resumed).toEqual([s.scope.jobId]);
+    expect(await provider.holder(handle, AbortSignal.timeout(5_000))).toBe('agent');
+  });
+
+  test('a desktop handed back after Done in the viewer resumes at once and makes no new link', async () => {
+    const standin = createMaritimeStandin();
+    const provider = createMaritimeProvider({
+      credential: (use) => use(AUTHORING_KEY),
+      fetch: standin.fetch,
+    });
+    const make = (externalUserId: string) =>
+      standin.fetch(`${MARITIME_API_URL}/api/v1/computers`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHORING_KEY}` },
+        body: JSON.stringify({ externalUserId }),
+      });
+    // Each stand-in numbers its computers from one: the first is another test's in this database.
+    await make('melete-viewer-other');
+    const made = await make('melete-viewer-done');
+    const { id } = (await made.json()) as { id: string };
+    const s = await scene({ adapter: { provider, sandbox: id } });
+    const resumed: string[] = [];
+    s.service.onHandedBack = async (jobId) => {
+      resumed.push(jobId);
+    };
+    await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+    await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, { mode: 'control' });
+    standin.hold(id, false);
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(200);
+    expect(resumed).toEqual([s.scope.jobId]);
+    expect(standin.minted.map((each) => each.ttlS)).toEqual([300]);
+  });
+
+  test('a person of another space, with a computer of their own, gets no link to this one', async () => {
+    const s = await scene({ maritime: true });
+    const other = await person();
+    s.as(other.id);
+    for (const mode of ['watch', 'control']) {
+      const response = await s.call('POST', `/sandbox/sessions/${s.sessionId}/viewer`, { mode });
+      expect([mode, response.status, await codeOf(response)]).toEqual([
+        mode,
+        404,
+        'session_not_found',
+      ]);
+    }
+    expect(s.viewer.minted).toEqual([]);
+  });
+
+  test('in a room, members and guests may watch through a link and only owners may drive', async () => {
+    const s = await scene({ maritime: true });
+    const [space] = await s.sql`select owner_principal_id from space where id = ${s.scope.spaceId}`;
+    const ownerId = String(space?.owner_principal_id);
+    const memberId = recordId('own');
+    const guestId = recordId('own');
+    const roomId = recordId('own');
+    for (const [id, kind] of [
+      [memberId, 'person'],
+      [guestId, 'person'],
+      [roomId, 'room'],
+    ] as const)
+      await s.sql`insert into principal (id, email, kind) values (${id}, ${`${id.toLowerCase()}@example.test`}, ${kind})`;
+    await s.sql`update space set kind = 'shared', audience = 'space' where id = ${s.scope.spaceId}`;
+    await s.sql`insert into space_membership (principal_id, space_id, role) values
+      (${ownerId}, ${s.scope.spaceId}, 'owner'), (${memberId}, ${s.scope.spaceId}, 'member'),
+      (${guestId}, ${s.scope.spaceId}, 'guest'), (${roomId}, ${s.scope.spaceId}, 'agent')`;
+    await s.sql`update job set principal_id = ${roomId}, audience = 'room',
+      requested_by_principal_id = ${memberId} where id = ${s.scope.jobId}`;
+    const viewer = `/sandbox/sessions/${s.sessionId}/viewer`;
+    s.as(ownerId);
+    expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`)).status).toBe(200);
+    for (const id of [memberId, guestId]) {
+      s.as(id);
+      expect((await s.call('POST', viewer, { mode: 'watch' })).status).toBe(200);
+      const drive = await s.call('POST', viewer, { mode: 'control' });
+      expect([drive.status, await codeOf(drive)]).toEqual([404, 'session_not_found']);
+      expect((await s.call('POST', `/sandbox/sessions/${s.sessionId}/handback`)).status).toBe(404);
+    }
+    s.as(ownerId);
+    expect((await s.call('POST', viewer, { mode: 'control' })).status).toBe(200);
+    expect(s.viewer.minted.map((each) => each.mode)).toEqual(['watch', 'watch', 'control']);
+    // A member who leaves the room gets nothing more.
+    await s.sql`update space_membership set revoked_at = now()
+      where space_id = ${s.scope.spaceId} and principal_id = ${memberId}`;
+    s.as(memberId);
+    expect((await s.call('POST', viewer, { mode: 'watch' })).status).toBe(404);
+  });
+
+  test('a cross-site request gets no link', async () => {
+    const s = await scene({ maritime: true });
+    await s.call('POST', `/sandbox/sessions/${s.sessionId}/takeover`);
+    for (const headers of [
+      { 'Sec-Fetch-Site': 'cross-site' },
+      { Origin: 'https://evil.example' },
+    ] as Record<string, string>[])
+      for (const mode of ['watch', 'control']) {
+        const response = await s.call(
+          'POST',
+          `/sandbox/sessions/${s.sessionId}/viewer`,
+          { mode },
+          '10.9.0.1',
+          headers,
+        );
+        expect([mode, response.status, await codeOf(response)]).toEqual([
+          mode,
+          403,
+          'origin_refused',
+        ]);
+      }
+    expect(s.viewer.minted).toEqual([]);
+  });
+
+  test('links asked for in a burst are refused before the provider is asked', async () => {
+    const s = await scene({ maritime: true });
+    const viewer = `/sandbox/sessions/${s.sessionId}/viewer`;
+    for (let each = 0; each < 12; each += 1)
+      expect((await s.call('POST', viewer, { mode: 'watch' })).status).toBe(200);
+    const over = await s.call('POST', viewer, { mode: 'watch' });
+    expect([over.status, await codeOf(over)]).toEqual([429, 'too_many_links']);
+    expect(s.viewer.minted).toHaveLength(12);
   });
 
   test('another person can get no link to it, to watch or to drive', async () => {

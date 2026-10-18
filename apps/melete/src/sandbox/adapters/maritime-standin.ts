@@ -23,6 +23,11 @@
  * - The desktop user is not root and has no `sudo`: nothing can be made at the
  *   top of the filesystem, so `/work` cannot be made, as on a real computer.
  * - The computer's egress is open.
+ * - A link to drive the desktop holds it for a person from the moment it is made,
+ *   opened or not, until they press Done in the viewer or a minute or so after it
+ *   runs out (`RELEASE_GRACE_MS`), as the live test found; a new one ends the one
+ *   before and holds it from then on. Closing the session ends no hold. A link to
+ *   watch holds nothing.
  *
  * Fixtures written through it are marked `authored-from-documented-api`. They
  * prove the adapter speaks the published protocol; they are not evidence of
@@ -83,13 +88,33 @@ function pngOfSize(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-export function createMaritimeStandin() {
+/**
+ * How long after a link to drive the desktop runs out Maritime gives the desktop
+ * back by itself: live, a thirty-second link left unopened was still held 45 s
+ * after it was made and back with the agent 100 s after.
+ */
+export const RELEASE_GRACE_MS = 60_000;
+
+export function createMaritimeStandin(options: { now?: () => number } = {}) {
+  const now = options.now ?? Date.now;
   const engine = new FakeSandboxEngine();
   const records = new Map<string, Held>();
   let refuseSleep = false;
   let viewers = 0;
-  /** Computers a person holds through a control link: every action is refused meanwhile. */
-  const held = new Set<string>();
+  /**
+   * Computers a person holds through a control link, until when (never, for one
+   * held by `hold`): every action is refused meanwhile.
+   */
+  const held = new Map<string, number>();
+  const holding = (id: string) => {
+    const until = held.get(id);
+    if (until === undefined) return false;
+    if (now() < until) return true;
+    held.delete(id);
+    return false;
+  };
+  /** Every viewer link asked for, in order, with how long it was asked to last. */
+  const minted: { id: string; mode: string; ttlS: number | null }[] = [];
   /** Each action asked for, by computer, in order. */
   const acted: { id: string; actions: Record<string, unknown>[] }[] = [];
   /** Computers whose session was closed, in order. */
@@ -105,7 +130,7 @@ export function createMaritimeStandin() {
     name: record.name,
     status: record.status,
     screen: { width: 1280, height: 800, modelWidth: 1200 },
-    mode: held.has(record.sandbox.id) ? 'human' : 'agent',
+    mode: holding(record.sandbox.id) ? 'human' : 'agent',
     modeReason: null,
     lastActionAt: record.lastActionAt,
     lastWakeMs: null,
@@ -269,7 +294,7 @@ export function createMaritimeStandin() {
     if (action === 'exec' && method === 'POST') return exec(record, init);
     if (action === 'files') return files(record, method, url, init);
     if (action === 'actions' && method === 'POST') {
-      if (held.has(record.sandbox.id))
+      if (holding(record.sandbox.id))
         return failure(409, 'human_in_control', 'a person holds the desktop', 15);
       wake(record);
       const body = JSON.parse(new TextDecoder().decode(bodyBytes(init.body)) || '{}') as {
@@ -319,10 +344,15 @@ export function createMaritimeStandin() {
       const mode = body.mode ?? 'watch';
       if (mode !== 'watch' && mode !== 'control')
         return failure(422, 'validation', 'mode is watch or control');
+      const ttlS = typeof body.ttlS === 'number' ? body.ttlS : null;
+      const lasts = (ttlS ?? 600) * 1000;
       viewers += 1;
+      minted.push({ id: record.sandbox.id, mode, ttlS });
+      // A link to drive it holds the desktop from now, opened or not, and replaces the one before.
+      if (mode === 'control') held.set(record.sandbox.id, now() + lasts + RELEASE_GRACE_MS);
       return json(200, {
         url: `https://maritime.sh/view/standin-${String(viewers).padStart(4, '0')}`,
-        expiresAt: '2026-10-18T00:10:00.000Z',
+        expiresAt: new Date(now() + lasts).toISOString(),
         mode,
       });
     }
@@ -351,9 +381,10 @@ export function createMaritimeStandin() {
     },
     acted,
     closed,
-    /** A person takes the desktop through a control link, or lets it go. */
+    minted,
+    /** A person takes the desktop through a control link until they let it go, or lets it go (Done). */
     hold(id: string, on = true) {
-      if (on) held.add(id);
+      if (on) held.set(id, Number.POSITIVE_INFINITY);
       else held.delete(id);
     },
     /** Screenshots come back at this size from now on. */

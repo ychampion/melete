@@ -2054,11 +2054,18 @@ tab, since the app does not frame other sites:
   fresh link* replaces it, and the old one stops working. While that link is
   out, Maritime refuses the agent's actions, and the agent is told so in a
   plain sentence.
-- When you are done, press *Done* in the viewer, then *Hand back* in the app.
-  Maritime returns the desktop only on *Done*, or a minute or two after the link
-  runs out, so the app refuses a hand-back before then and says why. Handing
-  back closes the computer's session, which ends every link it gave out, and
-  the agent carries on from a fresh screenshot.
+- When you are done, press *Done* in the viewer, or *Hand back* in the app.
+  Handing back closes the computer's session, which ends every link it gave
+  out, and the agent carries on from a fresh screenshot. Maritime holds the
+  desktop for you from the moment a link to drive it is made, opened or not,
+  until *Done* or a minute or so after the link runs out. So a hand-back while it
+  still holds the desktop first asks for a new 30-second link, given to no one,
+  which ends yours; the agent then carries on once Maritime gives the desktop
+  back, about a minute and a half later, rather than being refused at every step.
+- If your link runs out while you still have the computer, the panel says so;
+  open a fresh link to carry on, or hand it back. Asking for links is limited to
+  twelve a minute per person and computer, since each one is a call on the
+  installation's Maritime key.
 
 Links are asked for each time they are opened and answered with
 `cache-control: no-store`. They are never kept, written to the timeline, a

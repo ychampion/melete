@@ -3943,7 +3943,7 @@ export function buildOpenApiDocument() {
               'drives; `control` only while the person holds control, after takeover. The link ' +
               'is minted on each call, answered with no-store, and never recorded: it is a ' +
               'credential for that computer until `expires_at`. A new control link ends the ' +
-              'one before it, and handing the computer back ends them all.',
+              'one before it, and handing the computer back ends them all, even one still open in a tab.',
             requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
             requestBody: {
               required: true,
@@ -3955,6 +3955,7 @@ export function buildOpenApiDocument() {
               '403': problem('Request origin refused'),
               '404': problem('No such computer'),
               '409': problem('Take over first, or this computer is shown in the live view'),
+              '429': problem('Too many links asked for at once'),
             },
           },
         },

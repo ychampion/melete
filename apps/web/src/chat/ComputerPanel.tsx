@@ -529,28 +529,37 @@ function ViewerLinkScreen({
   sessionId,
   agentName,
   yours,
+  onExpired,
 }: {
   sessionId: string;
   agentName: string;
   /** The person holds control: the link drives the desktop. */
   yours: boolean;
+  /** Told whether the last link opened has run out: true when it does, false when a fresh one opens. */
+  onExpired?: (expired: boolean) => void;
 }) {
   const mode = yours ? 'control' : 'watch';
   const [opening, setOpening] = useState(false);
   const [opened, setOpened] = useState<{ until: string | null; expiresAt: number } | null>(null);
   // A link the browser would not open in a tab by itself, offered to press instead.
   const [blocked, setBlocked] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const [expired, setExpired] = useState(false);
+  // One timer, set for the moment the link runs out; none while no link is open.
   useEffect(() => {
-    if (!opened && !blocked) return;
-    const timer = setInterval(() => setNow(Date.now()), 5000);
-    return () => clearInterval(timer);
-  }, [opened, blocked]);
-  const expired = opened !== null && opened.expiresAt <= now;
+    if (!opened || !Number.isFinite(opened.expiresAt)) return;
+    const left = opened.expiresAt - Date.now();
+    if (left <= 0) {
+      setExpired(true);
+      return;
+    }
+    const timer = setTimeout(() => setExpired(true), Math.min(left, 2 ** 31 - 1));
+    return () => clearTimeout(timer);
+  }, [opened]);
   // Expiry drops a link that no longer works.
   useEffect(() => {
     if (expired) setBlocked(null);
-  }, [expired]);
+    onExpired?.(expired);
+  }, [expired, onExpired]);
   const open = async () => {
     setOpening(true);
     setBlocked(null);
@@ -570,11 +579,11 @@ function ViewerLinkScreen({
       return;
     }
     const expiresAt = Date.parse(result.data.expires_at);
+    setExpired(false);
     setOpened({
       until: untilWords(result.data.expires_at),
       expiresAt: Number.isNaN(expiresAt) ? Number.POSITIVE_INFINITY : expiresAt,
     });
-    setNow(Date.now());
     if (tab) {
       tab.opener = null;
       tab.location.replace(result.data.url);
@@ -593,9 +602,9 @@ function ViewerLinkScreen({
         {expired
           ? 'That link has expired. Open a fresh one to carry on.'
           : opened
-            ? `Opened in a new tab${opened.until ? `. The link works until ${opened.until}` : ''}.${yours ? ' Opening a fresh one ends the one before. Press Done in the viewer before you hand it back.' : ''}`
+            ? `Opened in a new tab${opened.until ? `. The link works until ${opened.until}` : ''}.${yours ? ' Opening a fresh one ends the one before. When you are done, press Done in the viewer or hand it back here.' : ''}`
             : yours
-              ? `You have the computer. Open it in a new tab to use it yourself. When you are done, press Done in the viewer, then hand it back here.`
+              ? `You have the computer. Open it in a new tab to use it yourself. When you are done, press Done in the viewer or hand it back here.`
               : `${agentName}’s desktop opens in its own viewer, in a new tab.`}
       </span>
       <span className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
@@ -646,10 +655,14 @@ function DesktopView({
   const [watching, setWatching] = useState(false);
   const [busy, setBusy] = useState(false);
   const [releasing, setReleasing] = useState(false);
+  // The person's link to drive a desktop in its provider's viewer has run out.
+  const [linkExpired, setLinkExpired] = useState(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: a change of hands starts from what the service says
   useEffect(() => {
     setReleasing(false);
+    setLinkExpired(false);
   }, [desktop.session_id, desktop.control_epoch]);
+  const runOut = yours && desktop.view === 'link' && linkExpired;
   const change = async (to: 'take' | 'give') => {
     setBusy(true);
     if (to === 'give') {
@@ -701,6 +714,7 @@ function DesktopView({
           sessionId={desktop.session_id}
           agentName={agentName}
           yours={yours}
+          onExpired={setLinkExpired}
         />
       ) : yours || watching ? (
         <LiveScreen
@@ -726,16 +740,20 @@ function DesktopView({
           <span className="computer-dot" aria-hidden="true" />
           <span className="col" style={{ gap: 0, minWidth: 0 }}>
             <span className="computer-holder-name">
-              {yours
-                ? 'You have control'
-                : working
-                  ? `${agentName} has control`
-                  : `${agentName} isn’t using it now`}
+              {runOut
+                ? 'Your link has run out'
+                : yours
+                  ? 'You have control'
+                  : working
+                    ? `${agentName} has control`
+                    : `${agentName} isn’t using it now`}
             </span>
             <span className="computer-holder-sub">
-              {yours
-                ? `${agentName} waits until you hand it back.`
-                : 'Take over to use the desktop yourself.'}
+              {runOut
+                ? `Open a fresh link to carry on, or hand it back. ${agentName} waits until you do.`
+                : yours
+                  ? `${agentName} waits until you hand it back.`
+                  : 'Take over to use the desktop yourself.'}
             </span>
           </span>
         </span>

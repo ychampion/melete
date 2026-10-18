@@ -356,4 +356,84 @@ if (!apiKey) {
     }
     expect(deleted).toBe(created);
   }, 900_000);
+
+  test('a link to drive it, made and never opened, is cut short by a thirty-second one', async () => {
+    const provider = createMaritimeProvider({ credential: (use) => use(apiKey) });
+    const spec: SandboxSpec = {
+      image: 'linux',
+      egress: { kind: 'open' },
+      region: null,
+      lifetimeSeconds: 3600,
+      idleSeconds: null,
+      workdir: '/work',
+      labels: sandboxLabels({ project: 'live-probe', space: 'sp_LIVE', session: 'sbx_LIVECUT' }),
+      env: {},
+    };
+    const listed = async () => {
+      const response = await fetch('https://api.maritime.sh/api/v1/computers', {
+        headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+        signal: signal(),
+      });
+      const body = (await response.json()) as { computers?: unknown[] };
+      return Array.isArray(body.computers) ? body.computers.length : -1;
+    };
+    let handle: SandboxHandle | null = null;
+    let created = 0;
+    let deleted = 0;
+    let freedAfter = -1;
+    try {
+      say(`computers on the account before: ${await listed()}`);
+      handle = await openSandbox(provider, spec, signal());
+      created += 1;
+      const holding = async () => provider.holder(handle as SandboxHandle, signal());
+      const agentTries = async () =>
+        provider
+          .act(
+            handle as SandboxHandle,
+            [{ action: 'key', text: 'shift', noScreenshot: true }],
+            signal(),
+          )
+          .then(
+            () => 'the agent acts',
+            (error: Error) => `the agent is refused (${error.message.slice(0, 40)}...)`,
+          );
+      // The person's link: five minutes, never opened.
+      await provider.viewerLink(handle, { mode: 'control' }, signal());
+      say(`control link of 300 s made; holder ${await holding()}`);
+      // The hand-back's: thirty seconds, handed to no one.
+      const cut = Date.now();
+      await provider.viewerLink(handle, { mode: 'control', ttlSeconds: 30 }, signal());
+      await provider.endViewers(handle, signal());
+      say(`replaced by a 30 s link and the session closed; holder ${await holding()}`);
+      while (Date.now() - cut < 420_000) {
+        await Bun.sleep(10_000);
+        const holder = await holding();
+        if (holder !== 'human') {
+          freedAfter = Math.round((Date.now() - cut) / 1000);
+          break;
+        }
+      }
+      say(
+        freedAfter >= 0
+          ? `the desktop came back ${freedAfter} s after the 30 s link replaced the 300 s one; ${await agentTries()}`
+          : 'the desktop did not come back within 420 s of the replacement',
+      );
+    } finally {
+      if (handle) {
+        await provider.destroy(handle, signal()).then(
+          () => {
+            deleted += 1;
+          },
+          (error: unknown) => say(`delete failed: ${String(error)}`),
+        );
+        say(
+          `computers made ${created}, deleted ${deleted}; on the account: ${await listed().catch(() => -1)}`,
+        );
+      }
+    }
+    expect(deleted).toBe(created);
+    // Well before the 300 s link would have run out.
+    expect(freedAfter).toBeGreaterThanOrEqual(0);
+    expect(freedAfter).toBeLessThan(240);
+  }, 900_000);
 }

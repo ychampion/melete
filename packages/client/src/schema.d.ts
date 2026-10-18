@@ -21461,7 +21461,7 @@ export interface paths {
         put?: never;
         /**
          * A short-lived link to the desktop's own viewer
-         * @description For a computer whose `view` is `link`. `watch` may be asked while the agent drives; `control` only while the person holds control, after takeover. The link is minted on each call, answered with no-store, and never recorded: it is a credential for that computer until `expires_at`. A new control link ends the one before it, and handing the computer back ends them all.
+         * @description For a computer whose `view` is `link`. `watch` may be asked while the agent drives; `control` only while the person holds control, after takeover. The link is minted on each call, answered with no-store, and never recorded: it is a credential for that computer until `expires_at`. A new control link ends the one before it, and handing the computer back ends them all, even one still open in a tab.
          */
         post: {
             parameters: {
@@ -21517,6 +21517,15 @@ export interface paths {
                 };
                 /** @description Take over first, or this computer is shown in the live view */
                 409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema239"];
+                    };
+                };
+                /** @description Too many links asked for at once */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };

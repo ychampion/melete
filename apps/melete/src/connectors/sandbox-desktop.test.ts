@@ -232,11 +232,69 @@ test('a screenshot is kept as a PNG, and later positions follow the frame it was
   expect(m.actedHere().map((each) => each.coordinate)).toEqual([
     [1199, 749],
     [599, 374],
-    [300, 188],
+    // The centre of tool pixel (600, 375) is at (300.25, 187.75) in the half-size frame.
+    [300, 187],
   ]);
   expect(scaledPoint(0, 0, MARITIME_DESKTOP, { width: 600, height: 375 })).toEqual([0, 0]);
   expect(scaledPoint(1199, 749, MARITIME_DESKTOP, MARITIME_DESKTOP)).toEqual([1199, 749]);
   await m.provider.destroy(m.handle, signal());
+});
+
+test('a position scaled to another frame lands on the pixel holding its centre, edges included', () => {
+  // The reference: the destination pixel whose span holds the source pixel's centre, found by search.
+  const reference = (value: number, a: number, b: number) => {
+    for (let pixel = 0; pixel < b; pixel += 1)
+      if (2 * pixel * a <= (2 * value + 1) * b && (2 * value + 1) * b < 2 * (pixel + 1) * a)
+        return pixel;
+    throw new Error('no pixel holds it');
+  };
+  const frames = [
+    { width: 1200, height: 750 },
+    { width: 1280, height: 800 },
+    { width: 1920, height: 1200 },
+    { width: 2400, height: 1500 },
+    { width: 600, height: 375 },
+    { width: 1199, height: 749 },
+    { width: 1201, height: 751 },
+    { width: 1, height: 1 },
+    { width: 3841, height: 2161 },
+  ];
+  let seed = 7;
+  const random = (below: number) => {
+    seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+    return seed % below;
+  };
+  for (let each = 0; each < 40; each += 1)
+    frames.push({ width: 1 + random(4000), height: 1 + random(2500) });
+  for (const to of frames) {
+    const xs = [
+      0,
+      1,
+      2,
+      598,
+      599,
+      600,
+      1197,
+      1198,
+      1199,
+      ...Array.from({ length: 40 }, () => random(1200)),
+    ];
+    const ys = [0, 1, 374, 375, 748, 749, ...Array.from({ length: 40 }, () => random(750))];
+    for (const [index, x] of xs.entries()) {
+      const y = ys[index % ys.length] as number;
+      const [sx, sy] = scaledPoint(x, y, MARITIME_DESKTOP, to);
+      expect([to, x, y, sx, sy]).toEqual([
+        to,
+        x,
+        y,
+        reference(x, MARITIME_DESKTOP.width, to.width),
+        reference(y, MARITIME_DESKTOP.height, to.height),
+      ]);
+    }
+    // The edges, checked against the reference above, never land outside the frame.
+    const [lx, ly] = scaledPoint(1199, 749, MARITIME_DESKTOP, to);
+    expect([lx < to.width, ly < to.height]).toEqual([true, true]);
+  }
 });
 
 test('a person holding the desktop in its viewer refuses the step in a plain sentence', async () => {

@@ -66,8 +66,11 @@ export function scaledPoint(
   to: DesktopScreen,
 ): [number, number] {
   if (from.width === to.width && from.height === to.height) return [x, y];
+  // The pixel that holds the centre of the one given, scaled up or down, so the
+  // last one lands at the far edge rather than one short. In whole numbers, so
+  // no rounding moves it.
   const along = (value: number, a: number, b: number) =>
-    Math.min(b - 1, Math.max(0, Math.round((value * b) / a)));
+    Math.min(b - 1, Math.max(0, Math.floor(((2 * value + 1) * b) / (2 * a))));
   return [along(x, from.width, to.width), along(y, from.height, to.height)];
 }
 
