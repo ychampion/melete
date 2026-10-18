@@ -350,6 +350,8 @@ export function createMockApp(deps: AppDeps) {
       multiplayer,
       code_required: false,
       email_sign_in: false,
+      instance_name: 'Melete',
+      assistant_name: 'Melete',
     }),
   );
 

@@ -2677,7 +2677,9 @@ export function buildOpenApiDocument() {
               'code: when one is configured or issued, and also when none exists but ' +
               '`MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and ' +
               '`MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation ' +
-              'can email sign-in and password reset links.',
+              'can email sign-in and password reset links. `instance_name` and `assistant_name` ' +
+              'are what the installation and its assistant are called (`MELETE_INSTANCE_NAME`, ' +
+              '`MELETE_ASSISTANT_NAME`), both Melete unless set.',
             responses: {
               '200': jsonResponse('Whether setup is needed', setupStatusResponse),
               '503': problem('No database is configured'),

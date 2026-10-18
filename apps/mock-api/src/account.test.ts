@@ -20,6 +20,8 @@ test('a fresh install asks for its first account, then signs in with it', async 
     multiplayer: false,
     code_required: false,
     email_sign_in: false,
+    instance_name: 'Melete',
+    assistant_name: 'Melete',
   });
   expect((await app.request('/profile')).status).toBe(401);
 
@@ -35,6 +37,8 @@ test('a fresh install asks for its first account, then signs in with it', async 
     multiplayer: false,
     code_required: false,
     email_sign_in: false,
+    instance_name: 'Melete',
+    assistant_name: 'Melete',
   });
 
   const again = await post(app, '/setup', {
@@ -65,6 +69,8 @@ test('by default the demo account exists and setup is not needed', async () => {
     multiplayer: false,
     code_required: false,
     email_sign_in: false,
+    instance_name: 'Melete',
+    assistant_name: 'Melete',
   });
   expect((await app.request('/profile')).status).toBe(200);
 });

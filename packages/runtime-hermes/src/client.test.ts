@@ -724,7 +724,7 @@ describe('context assembly', () => {
     const system = client.renderSystem({ ...bundle, identity: persona });
     expect(system.startsWith('# Who is speaking')).toBe(true);
     expect(system).toContain(persona);
-    expect(system).toContain("Everything in Melete's identity above still holds.");
+    expect(system).toContain('Everything in the identity above still holds.');
     expect(system.indexOf(persona)).toBeLessThan(system.indexOf('# This task'));
   });
 

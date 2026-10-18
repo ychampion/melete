@@ -34,6 +34,7 @@ export * from './experience.ts';
 export * from './feedback.ts';
 export * from './handoffs.ts';
 export * from './hooks.ts';
+export * from './instance-name.ts';
 export * from './intents.ts';
 export * from './job-state.ts';
 export * from './knowledge.ts';

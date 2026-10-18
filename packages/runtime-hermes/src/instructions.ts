@@ -37,7 +37,9 @@ import { estimateTokens, indexLine, loadIdentity } from '@melete/skills';
 /**
  * Who Melete is, read from the one file that defines it rather than copied.
  * `loadIdentity` refuses a file over the 250-token cap, so a drifting identity
- * fails at the boundary instead of quietly eating the context budget.
+ * fails at the boundary instead of quietly eating the context budget. An
+ * installation names its own file with `MELETE_IDENTITY_FILE`, or only the
+ * assistant's name with `MELETE_ASSISTANT_NAME`; both are read once, at start.
  */
 export const IDENTITY: string = loadIdentity();
 
@@ -46,6 +48,20 @@ export const IDENTITY: string = loadIdentity();
  * the same for every attempt, so it stays in the longest cached prefix.
  */
 export const renderSoul = (): string => `${IDENTITY}\n`;
+
+/** The variable that hands an engine container its `SOUL.md` (entrypoint.sh). */
+export const SOUL_ENV = 'MELETE_ENGINE_SOUL';
+
+/**
+ * `renderSoul()` for an engine container. The image carries the release's own
+ * SOUL.md, which knows nothing of `MELETE_ASSISTANT_NAME` or
+ * `MELETE_IDENTITY_FILE`, so the service passes the identity it renders and
+ * the entrypoint writes it in place of the image's copy. Base64, so the line
+ * breaks arrive as they were written.
+ */
+export const soulEnvironment = (): Record<string, string> => ({
+  [SOUL_ENV]: Buffer.from(renderSoul(), 'utf8').toString('base64'),
+});
 
 /** Facts about where the attempt runs, known only once its engine is launched. */
 export type RunPlacement = {
@@ -70,7 +86,7 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
       throw new Error("The conversation's persona exceeds its 250-token cap.");
     // Layered on top of the identity in SOUL.md, never instead of it.
     parts.push(
-      `# Who is speaking\n\n${bundle.identity}\n\nEverything in Melete's identity above still holds.`,
+      `# Who is speaking\n\n${bundle.identity}\n\nEverything in the identity above still holds.`,
     );
   }
 

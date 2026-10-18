@@ -58,6 +58,7 @@ describe('melete init --adopt', () => {
       images: { registry: 'ghcr.io/ychampion', tag: '34a9140', channel: 'main' },
       profiles: [],
       overlays: ['browser'],
+      compose_files: [],
       disk: { min_free_mb: 600, pull_margin_mb: 200 },
       backup: { dir: '~/melete-backups', keep: 3, max_age_days: 30 },
       public_ports: false,

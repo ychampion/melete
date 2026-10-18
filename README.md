@@ -216,6 +216,7 @@ in with ChatGPT.
 - [melete.si](https://melete.si): the website
 - [Deployment](docs/DEPLOYMENT.md): hosting, providers, sandboxes, Tailscale, backups and removal
 - [Upgrading](docs/UPGRADING.md): moving an installation to a later release
+- [Building on Melete](FORKING.md): your own name, logo and colours, and your own services beside the stack
 - [Connectors](docs/CONNECTORS.md) and [mail and calendars](docs/mail-calendar.md)
 - [Melete in other assistants](docs/MCP-SERVER.md): adding Melete to ChatGPT, Claude or Hermes as a connector
 - [Browser worker](docs/browser-worker.md): the browser Melete drives, and taking over from it

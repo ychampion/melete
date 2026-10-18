@@ -9,6 +9,7 @@ import { actionStatus, approvalRequestView, effectClass, payloadHash } from './b
 import { ID_PREFIXES, jsonObject, newPasswordInput, prefixedId, timestamp } from './common.ts';
 import { originWarnings } from './effects.ts';
 import { action, attempt, job, jobBudget, jobConstraints, space, trigger } from './entities.ts';
+import { DISPLAY_NAME_MAX } from './instance-name.ts';
 import {
   knowledgeFrontmatter,
   knowledgeRecordStatus,
@@ -127,6 +128,10 @@ export const setupStatusResponse = z.strictObject({
    * forgotten password needs the person who runs the installation.
    */
   email_sign_in: z.boolean(),
+  /** What the installation calls itself (`MELETE_INSTANCE_NAME`); Melete unless set. */
+  instance_name: z.string().min(1).max(DISPLAY_NAME_MAX),
+  /** What the assistant calls itself (`MELETE_ASSISTANT_NAME`); Melete unless set. */
+  assistant_name: z.string().min(1).max(DISPLAY_NAME_MAX),
 });
 
 // --------------------------------------------------------------------------

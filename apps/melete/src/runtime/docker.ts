@@ -16,6 +16,7 @@ import {
   type FetchLike,
   HermesRuntimeAdapter,
   type ParkedActions,
+  soulEnvironment,
 } from '@melete/runtime-hermes';
 import { moveJobScreens } from '../devices/screens.ts';
 import { modelApiMode } from '../gateway/providers.ts';
@@ -242,6 +243,9 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
           features: attemptEngineFeatures(tools, budget),
         }),
       ).map(([key, value]) => `${key}=${value}`),
+      // The installation's identity, which the image's own SOUL.md is not.
+      // Part of the key, so no spare started with another one is handed out.
+      ...Object.entries(soulEnvironment()).map(([key, value]) => `${key}=${value}`),
     ];
     return { key: JSON.stringify([broker, environment]), environment };
   }
