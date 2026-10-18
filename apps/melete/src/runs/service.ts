@@ -229,6 +229,23 @@ type Reminder = {
 };
 
 /**
+ * Whether the conversation has an action parked until its destination is
+ * back (a rate limit, a computer that was off). It then waits on a timer the
+ * broker set to carry on with that action, not on a reminder: cancelling it
+ * would leave the turn with nothing to finish it.
+ */
+async function parkedAction(tx: Transaction, jobId: string): Promise<boolean> {
+  const [parked] = await tx
+    .select({ id: action.id })
+    .from(action)
+    .where(
+      and(eq(action.jobId, jobId), eq(action.status, 'admitted'), isNotNull(action.retryAfterAt)),
+    )
+    .limit(1);
+  return Boolean(parked);
+}
+
+/**
  * This conversation's own timer, set aside for the attempt answering it and
  * not cancelled since: the end of the attempt puts it back
  * (`AttemptRunner.restorableWait`) unless run.stop marks it dropped.
@@ -238,6 +255,7 @@ async function setAsideTimer(
   chatId: string,
   attemptId: string,
 ): Promise<{ kind: 'timer'; wake_at: string } | null> {
+  if (await parkedAction(tx, chatId)) return null;
   const rows = await tx
     .select({ key: event.dedupKey, payload: event.payload })
     .from(event)
@@ -265,6 +283,7 @@ function dueWords(at: string): string {
  * end of that turn puts back. Null when it has none.
  */
 async function pendingReminder(tx: Transaction, row: JobRow): Promise<string | null> {
+  if (await parkedAction(tx, row.id)) return null;
   const wait = waitSpec.safeParse(row.wait);
   if (
     (row.state === 'waiting_for_event_or_time' || row.state === 'queued') &&

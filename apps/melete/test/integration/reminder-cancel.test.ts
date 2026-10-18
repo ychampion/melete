@@ -26,7 +26,7 @@ import { requestRuntimeWait } from '../../src/broker/runtime-wait.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { session } from '../../src/db/auth-schema.ts';
-import { job, owner, space, trigger } from '../../src/db/schema.ts';
+import { action, connection, job, owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
@@ -680,5 +680,55 @@ withDb('cancelling a reminder the agent set', () => {
     const after = await required(jobs).get(tea.chat.id);
     expect((after.wait as { kind?: string }).kind).not.toBe('timer');
     expect(after.nextWakeAt).toBeNull();
+  });
+
+  test('a conversation waiting out a rate limit is not a reminder, and cancelling cannot strand it', async () => {
+    const who = await person();
+    const chat = await conversation(who, 'Send the invoice');
+    const turn = await send(who, chat.id, 'Send it.');
+    // What the broker leaves when a destination asks to be left alone
+    // (`BrokerService.park`): the action admitted until the destination's
+    // time, the attempt ended, the conversation on a timer at that time.
+    const sql = required(handle).sql;
+    const connectionId = newId('conn');
+    await required(handle).db.insert(connection).values({
+      id: connectionId,
+      spaceId: who.spaceId,
+      provider: 'test',
+      label: 'Mail',
+    });
+    const until = new Date(Date.now() + 20 * 60_000).toISOString();
+    await required(handle)
+      .db.insert(action)
+      .values({
+        id: newId('act'),
+        jobId: chat.id,
+        attemptId: turn.claims.attempt_id,
+        connectionId,
+        kind: 'test.send',
+        effectClass: 'write_irreversible',
+        canonicalPayload: {},
+        payloadHash: 'invoice',
+        status: 'admitted',
+        idempotencyKey: newId('op'),
+        retryAfterAt: new Date(until),
+      });
+    await sql`update attempt set ended_at = now(), outcome = 'waiting_for_event_or_time'
+      where id = ${turn.claims.attempt_id}`;
+    await sql`update job set state = 'waiting_for_event_or_time',
+      wait = ${JSON.stringify({ kind: 'timer', wake_at: until })}::jsonb,
+      state_version = state_version + 1, next_wake_at = ${until} where id = ${chat.id}`;
+
+    const elsewhere = await send(
+      who,
+      (await conversation(who, 'Errands')).id,
+      'Cancel my reminders.',
+    );
+    expect((await remindersOf(elsewhere.claims)).map((entry) => entry.id)).not.toContain(chat.id);
+    expect((await tool(elsewhere.claims, 'run.stop', { run: chat.id })).status).toBe(
+      'not_scheduled',
+    );
+    // It still wakes to carry on with the send.
+    expect(await wakeOf(chat.id)).toBe(Date.parse(until));
   });
 });
