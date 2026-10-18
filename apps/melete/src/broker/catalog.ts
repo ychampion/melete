@@ -37,6 +37,15 @@ import { spaceStanding } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
 import { connectorDenied, spaceRulesFor, toolAllowedHere } from '../spaces/policy.ts';
 import { ASK_PERSON_TOOL } from './ask-person.ts';
+import {
+  keepSaidLevels,
+  levelsFor,
+  personOf,
+  roomWork,
+  sendsFromChat,
+  type TaskKind,
+  type TaskLevel,
+} from './autonomy.ts';
 import { CHASE_FOLLOW_UP_TOOL } from './chase.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -473,6 +482,8 @@ export type CatalogOptions = {
   nativeTools?: readonly ToolSpec[];
   /** Whether a chase's scope still covers a follow-up, so its tool is offered. */
   followable?: (tx: Query, job: LockedJob) => Promise<boolean>;
+  /** The job's person's level for each kind of task, with the operator's defaults. */
+  taskLevels?: (tx: Query, jobId: string) => Promise<ReadonlyMap<TaskKind, TaskLevel>>;
 };
 
 /**
@@ -589,8 +600,17 @@ export class ToolCatalog {
         .filter((row) => !(access.allowed && !access.allowed.includes(row.id)))
         .map((row) => ({ provider: String(row.provider), scopes: row.scopes })),
     );
-    // A send the person asked for in this turn is offered; otherwise it is drafted.
+    // A level the person set in the message being answered counts from the start.
+    await keepSaidLevels(tx, claims.attempt_id);
+    // A send the person asked for in this turn is offered, and so is one whose
+    // kind of task they let go on its own sometimes; otherwise it is drafted.
     const told = access.chat && (await toldToSend(tx, claims.attempt_id));
+    // A room's work keeps its own rule: only what the person said to send.
+    const levels =
+      access.chat && !told && !(await roomWork(tx, job.id))
+        ? await (this.options.taskLevels?.(tx, job.id) ?? levelsFor(tx, await personOf(tx, job.id)))
+        : null;
+    const sends = (name: string) => told || (levels !== null && sendsFromChat(name, false, levels));
     for (const row of connections) {
       // A conversation's persona bounds which connections and verbs are offered.
       if (!connectionOffered(access, row.id)) continue;
@@ -601,7 +621,7 @@ export class ToolCatalog {
       if (connector.capability?.available === false) continue;
       if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
-        if (!toolOffered(access, declared.name, told)) continue;
+        if (!toolOffered(access, declared.name, sends(declared.name))) continue;
         if (!toolAllowedHere(rules, String(row.provider), declared.name)) continue;
         // Made by commands in the computer through the egress relay, never offered as a tool.
         if (isEgressTool(declared.name)) continue;

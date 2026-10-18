@@ -109,6 +109,22 @@ import {
   submitRisk,
   type TierDecision,
 } from './auto-review.ts';
+import {
+  type AutonomyLevel,
+  askOnce,
+  defaultLevels,
+  draftKindOf,
+  keepSaidLevels,
+  LEVEL_NAMES,
+  levelsFor,
+  personOf,
+  roomWork,
+  sendKindOf,
+  sendsFromChat,
+  TASK_NAMES,
+  type TaskKind,
+  type TaskLevel,
+} from './autonomy.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import {
   type CalendarCheck,
@@ -141,7 +157,6 @@ import {
   PROACTIVE_DEFAULT_THRESHOLD,
   proactiveAttempt,
   reaches,
-  sendsMail,
 } from './proactive.ts';
 import {
   actionFromRow,
@@ -160,6 +175,20 @@ import { toldToSend } from './told.ts';
 
 /** Why a message went without a card: the person's own words in this turn. */
 const TOLD_TO_SEND = 'You said to send it in your message.';
+
+/** Which level for a kind of task applied, in one sentence for its receipt. */
+function levelLine(level: TaskLevel): string {
+  const name = `“${LEVEL_NAMES[level.level].short}”`;
+  return level.chosen
+    ? `Your setting for ${TASK_NAMES[level.kind].said}: ${name}.`
+    : `The default for ${TASK_NAMES[level.kind].said}: ${name}.`;
+}
+
+/** A judgement whose reason also says which level applied. */
+const withSetting = (confidence: Confidence, setting: string): Confidence => ({
+  ...confidence,
+  reason: `${confidence.reason} ${setting}`,
+});
 
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
@@ -332,7 +361,15 @@ type Admissibility = {
    * lets it go. Null for anything else.
    */
   proactive: Confidence | null;
+  /**
+   * For a plain send to someone outside: its kind of task and the person's
+   * level for it, which decided whether it went on its own (`autonomy.ts`).
+   */
+  task: (TaskLevel & { personId: string | null }) | null;
 };
+
+/** The first-time card for a kind of task, when this proposal should ask it. */
+type TaskAsk = { personId: string | null; kind: TaskKind; level: AutonomyLevel };
 
 /**
  * Proactive work that is not likely enough to be wanted: nothing is sent, no
@@ -340,7 +377,11 @@ type Admissibility = {
  * quiet suggestion.
  */
 export class ProactiveHold extends BrokerFault {
-  constructor(readonly confidence: Confidence) {
+  constructor(
+    readonly confidence: Confidence,
+    /** The kind of task, to ask the person about once if they have not chosen. */
+    readonly ask: TaskAsk | null = null,
+  ) {
     super(
       'scope_denied',
       `Not done: nobody asked for this now, and what the person said before does not make it likely they want it (confidence ${confidence.score.toFixed(2)}; it goes ahead on its own from ${confidence.threshold.toFixed(2)}). It is left for them as a suggestion. Do not try it another way.`,
@@ -561,6 +602,7 @@ export class BrokerService implements BrokerOperations {
         ...(options.memorySearch ? [MEMORY_SEARCH_TOOL] : []),
       ],
       ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
+      taskLevels: (tx, jobId) => this.taskLevels(tx, jobId),
     });
     if (options.composeExecutor) {
       this.compose = new ComposeService({
@@ -1174,6 +1216,7 @@ export class BrokerService implements BrokerOperations {
         (await this.options.resolveStandingGrant(tx, input)));
     let auto: Admissibility['auto'] = null;
     let proactive: Confidence | null = null;
+    let task: Admissibility['task'] = null;
     if (settings?.mode === 'auto_review' && requiresApproval && !granted) {
       // Silence about an origin is `unknown`, which keeps the action with the person.
       const doubts = await resolveOriginWarnings(
@@ -1218,14 +1261,12 @@ export class BrokerService implements BrokerOperations {
         doubts.length === 0 &&
         warnings.length === 0 &&
         (base.tier !== 'person' || base.reason === OUTSIDE_SEND_REASON);
-      // Work nobody is waiting on that reaches someone outside Melete is never
-      // asked about by default: it goes on its own when what the person said
-      // before makes it likely they want it, and is left as a suggestion when not.
-      // Only what would otherwise wait as a plain send or post is judged so:
-      // one that also deletes or carries a password, a calendar change, and
-      // anything another rule already lets go, stay as they were.
-      const sendKinds = actionKinds(tool.name, false);
-      // Doubts are weighed by the judgement itself, so the send is read without them here.
+      // A plain send or post to someone outside Melete goes by the person's
+      // level for its kind of task (`autonomy.ts`). Only what would otherwise
+      // wait for them as a plain send is judged so: one that also deletes or
+      // carries a password, a don't-rule, a connector's own question, room
+      // work and an agent set to ask before acting stay as they were. Doubts
+      // about a recipient are weighed below, so the send is read without them.
       const plain =
         doubts.length + warnings.length > 0
           ? tierOf(
@@ -1234,32 +1275,72 @@ export class BrokerService implements BrokerOperations {
               guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
             )
           : base;
+      // Set when the person's level lets this go on its own: why, for the receipt.
+      let onItsOwn: string | null = null;
       if (
         tool.effect_class === 'write_external' &&
         !money &&
         !dont &&
-        !sendsAsTold &&
         !connectorAsks &&
         !afterResponses &&
         !roomWork &&
         !agentAsks &&
         plain.tier === 'person' &&
-        plain.reason === OUTSIDE_SEND_REASON &&
-        !sendKinds.includes('calendar') &&
-        (await proactiveAttempt(tx, action.attempt_id))
+        plain.reason === OUTSIDE_SEND_REASON
       ) {
-        const kinds = sendKinds;
-        const mail = kinds.includes('contact') && sendsMail(tool.name);
-        proactive = judge(
-          await gatherEvidence(tx, { job, action, words: actionWords(tool.name, kinds) }),
-          {
-            threshold: this.options.proactiveThreshold ?? PROACTIVE_DEFAULT_THRESHOLD,
-            doubted: doubts.length > 0 || warnings.length > 0,
-            mail,
-            draftOnly:
-              kinds.includes('contact') && !mail && this.options.messagesToOthers === 'draft_only',
-          },
-        );
+        const kind = sendKindOf(tool.name);
+        const personId = await personOf(tx, job.id);
+        const level = (
+          await levelsFor(tx, personId, defaultLevels(this.options.messagesToOthers))
+        ).get(kind) as TaskLevel;
+        task = { ...level, personId };
+        if (!sendsAsTold) {
+          const doubted = doubts.length > 0 || warnings.length > 0;
+          // Work nobody is waiting on is never asked about by default: when it
+          // does not go on its own, it is left as a suggestion.
+          const woke = await proactiveAttempt(tx, action.attempt_id);
+          const setting = levelLine(level);
+          const threshold = this.options.proactiveThreshold ?? PROACTIVE_DEFAULT_THRESHOLD;
+          if (level.level === 'always') {
+            if (!doubted) onItsOwn = `Sent on its own. ${setting}`;
+            // A recipient Melete cannot vouch for is never sent to on its own.
+            else if (woke)
+              proactive = withSetting(judge([], { threshold, doubted: true }), setting);
+          } else if (
+            level.level === 'when_confident' ||
+            // An invite kept as a draft is asked about as before, whatever a routine says.
+            (woke && kind !== 'calendar_invite')
+          ) {
+            const evidence = await gatherEvidence(tx, {
+              job,
+              action,
+              words: actionWords(tool.name, actionKinds(tool.name, false)),
+            });
+            // Choosing "when confident" is not itself evidence: the score is
+            // what the person said and did before, the same as by default, so
+            // confirming the default on the card changes nothing.
+            const confidence = withSetting(
+              judge(evidence, {
+                threshold,
+                doubted,
+                // The operator's older `draft_only` keeps chat apps' messages
+                // out of proactive work, as before, until the person chooses.
+                draftOnly:
+                  kind === 'chat_message' &&
+                  !level.chosen &&
+                  this.options.messagesToOthers === 'draft_only',
+                ...(level.level === 'draft'
+                  ? {
+                      needsInstruction: `${TASK_NAMES[kind].one} goes out on its own only when your routine or its instructions say to send it`,
+                    }
+                  : {}),
+              }),
+              setting,
+            );
+            if (woke) proactive = confidence;
+            else if (confidence.act) onItsOwn = confidence.reason;
+          }
+        }
       }
       const tier: TierDecision = dont
         ? { tier: 'person', actionClass: null, reason: dont.reason }
@@ -1269,7 +1350,9 @@ export class BrokerService implements BrokerOperations {
             ? { tier: 'person', actionClass: null, reason: TOLD_TO_SEND }
             : proactive
               ? { tier: 'person', actionClass: null, reason: proactive.reason }
-              : base;
+              : onItsOwn
+                ? { tier: 'person', actionClass: null, reason: onItsOwn }
+                : base;
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
@@ -1281,7 +1364,7 @@ export class BrokerService implements BrokerOperations {
         outcome:
           money || dont || connectorAsks || afterResponses
             ? 'person'
-            : sendsAsTold || proactive?.act
+            : sendsAsTold || proactive?.act || onItsOwn
               ? 'policy_approved'
               : proactive
                 ? 'person'
@@ -1323,7 +1406,66 @@ export class BrokerService implements BrokerOperations {
       money,
       dont,
       proactive,
+      task,
     };
+  }
+
+  /**
+   * The first-time card for this action's kind of task, when the person has
+   * not chosen a level for it and has not been asked yet. Recorded with the
+   * proposal, so a proposal refused for another reason asks nothing.
+   */
+  private taskAsk(classified: Admissibility): TaskAsk | null {
+    const task = classified.task;
+    return task && !task.chosen && !task.asked
+      ? { personId: task.personId, kind: task.kind, level: task.level }
+      : null;
+  }
+
+  /**
+   * The first-time card for a draft of a send, when its kind of task is not
+   * chosen and not asked about yet: in a conversation a drafted kind is
+   * drafted, never sent, so this is the first time it comes up.
+   */
+  private async draftAsk(tx: Query, jobId: string, toolName: string): Promise<TaskAsk | null> {
+    const kind = draftKindOf(toolName);
+    if (!kind) return null;
+    const level = (await this.taskLevels(tx, jobId)).get(kind);
+    return level && !level.chosen && !level.asked
+      ? { personId: await personOf(tx, jobId), kind, level: level.level }
+      : null;
+  }
+
+  /**
+   * Whether a chat may send this directly now: the person said to send in the
+   * turn being answered, or their level for its kind of task is not a draft.
+   * Each send is still judged on its own (`classify`).
+   */
+  private async sendsFromChatNow(
+    tx: Query,
+    jobId: string,
+    attemptId: string | null | undefined,
+    kind: string,
+  ): Promise<boolean> {
+    if (await toldToSend(tx, attemptId)) return true;
+    // A room's work keeps its own rule: only what the person said to send.
+    if (await roomWork(tx, jobId)) return false;
+    const levels = await levelsFor(
+      tx,
+      await personOf(tx, jobId),
+      defaultLevels(this.options.messagesToOthers),
+    );
+    return sendsFromChat(kind, false, levels);
+  }
+
+  /** The levels a job's person chose, with the operator's defaults, for the tool catalog. */
+  async taskLevels(tx: Query, jobId: string) {
+    return levelsFor(tx, await personOf(tx, jobId), this.taskDefaults());
+  }
+
+  /** The level each kind of task starts at on this install. */
+  taskDefaults() {
+    return defaultLevels(this.options.messagesToOthers);
   }
 
   /** Whether an action moves money, judged on its connector's tool as it stands now. */
@@ -1518,7 +1660,11 @@ export class BrokerService implements BrokerOperations {
         if (!job) return null;
         await checkAttempt(tx, job, claims);
         const access = await agentAccess(tx, job.id);
-        if (access.chat && directSend(request.kind) && !(await toldToSend(tx, claims.attempt_id)))
+        if (
+          access.chat &&
+          directSend(request.kind) &&
+          !(await this.sendsFromChatNow(tx, job.id, claims.attempt_id, request.kind))
+        )
           return null;
         return { job, ...(await this.tool(tx, job, claims, request.connection_id, request.kind)) };
       });
@@ -1959,8 +2105,14 @@ export class BrokerService implements BrokerOperations {
       .begin(async (tx) => {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
+        // A level the person set in the message being answered counts from here.
+        await keepSaidLevels(tx, claims.attempt_id);
         const access = await agentAccess(tx, job.id);
-        if (access.chat && directSend(request.kind) && !(await toldToSend(tx, claims.attempt_id)))
+        if (
+          access.chat &&
+          directSend(request.kind) &&
+          !(await this.sendsFromChatNow(tx, job.id, claims.attempt_id, request.kind))
+        )
           throw new BrokerFault(
             'scope_denied',
             'In a chat the person sends a draft from its draft card. Say the draft is ready.',
@@ -2155,7 +2307,7 @@ export class BrokerService implements BrokerOperations {
         // Proactive work not likely enough to be wanted: nothing is recorded or
         // sent, no card is raised, and it is left as a suggestion (below).
         if (classified.proactive && !classified.proactive.act)
-          throw new ProactiveHold(classified.proactive);
+          throw new ProactiveHold(classified.proactive, this.taskAsk(classified));
         // What the person approves is shown to them whole: a command too long
         // for its card is refused here, and nothing of it is recorded.
         const hidden = classified.requires_approval
@@ -2179,6 +2331,10 @@ export class BrokerService implements BrokerOperations {
           { action_id: id, kind: request.kind, payload_hash: canonical.hash, intent_key: key },
           ref ?? undefined,
         );
+        // The first task of a kind the person has not chosen for asks them once,
+        // beside the work, which goes on at the default meanwhile.
+        const asking = this.taskAsk(classified) ?? (await this.draftAsk(tx, job.id, tool.name));
+        if (asking) await askOnce(tx, { ...asking, jobId: job.id, attemptId: claims.attempt_id });
         const review = { job, action: created, tool, claims };
         if (classified.requires_approval) {
           // A reviewable action waits as `proposed`, with no card, while the
@@ -2314,6 +2470,9 @@ export class BrokerService implements BrokerOperations {
           evidence: confidence.evidence,
           missing: confidence.missing,
         });
+        // The first time a kind of task comes up, it is asked about here too.
+        if (hold.ask)
+          await askOnce(tx, { ...hold.ask, jobId: job.id, attemptId: claims.attempt_id });
       });
     } catch (error) {
       process.stderr.write(
@@ -2362,7 +2521,11 @@ export class BrokerService implements BrokerOperations {
       const stored = await loadAction(tx, id);
       if (stored.job_id !== job.id) throw new BrokerFault('action_not_found');
       const access = await agentAccess(tx, job.id);
-      if (access.chat && directSend(stored.kind) && !(await toldToSend(tx, claims.attempt_id)))
+      if (
+        access.chat &&
+        directSend(stored.kind) &&
+        !(await this.sendsFromChatNow(tx, job.id, claims.attempt_id, stored.kind))
+      )
         throw new BrokerFault(
           'scope_denied',
           'In a chat the person sends a draft from its draft card. Say the draft is ready.',
@@ -2953,7 +3116,8 @@ export class BrokerService implements BrokerOperations {
       access.missingAgent ||
       (access.chat &&
         (!access.agentId ||
-          (directSend(action.kind) && !(await toldToSend(tx, action.attempt_id)))))
+          (directSend(action.kind) &&
+            !(await this.sendsFromChatNow(tx, job.id, action.attempt_id, action.kind)))))
     )
       throw new BrokerFault('scope_denied');
     const [connection] =

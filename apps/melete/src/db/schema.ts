@@ -722,6 +722,45 @@ export const stepUp = pgTable(
   ],
 );
 
+/**
+ * How much the agent does on its own for one kind of task, as one person chose
+ * (`broker/autonomy.ts`). A row with no level was asked about once, in the
+ * conversation named here, and not answered yet: the default applies and it is
+ * not asked again. The person is a principal, or the owner of a single-person
+ * install, so there is no reference to either table.
+ */
+export const taskAutonomy = pgTable(
+  'task_autonomy',
+  {
+    principalId: text('principal_id').notNull(),
+    kind: text('kind').notNull(),
+    level: text('level'),
+    /** Where it was chosen: Settings, the card that asked, or the person's own message. */
+    setBy: text('set_by'),
+    /** The message that set it, when it was said in one. */
+    turnId: text('turn_id'),
+    askId: text('ask_id'),
+    askedJobId: text('asked_job_id'),
+    askedAt: timestamp('asked_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.principalId, t.kind] }),
+    check(
+      'task_autonomy_kind',
+      sql`${t.kind} in ('email', 'chat_message', 'calendar_invite', 'public_post', 'other_send')`,
+    ),
+    check(
+      'task_autonomy_level',
+      sql`${t.level} is null or ${t.level} in ('draft', 'when_confident', 'always')`,
+    ),
+    check(
+      'task_autonomy_set_by',
+      sql`${t.setBy} is null or ${t.setBy} in ('settings', 'card', 'chat')`,
+    ),
+  ],
+);
+
 export const event = pgTable(
   'event',
   {

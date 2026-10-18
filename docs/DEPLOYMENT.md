@@ -2253,10 +2253,17 @@ instructions asking for it +0.6, something they told Melete about that recipient
 90 days +0.15 (two at most), each one they said no to or took back -0.5, and 0
 when Melete cannot vouch for where the recipient came from.
 `MELETE_PROACTIVE_CONFIDENCE` (default `0.6`) is where it goes ahead. An email
-also needs the routine or the instructions to ask for it. With
-`MELETE_MESSAGES_TO_OTHERS=draft_only` (default `confidence`), messages to
-others on chat apps are always left as suggestions. Money moves and the
-person's own don't-rules still go to the person.
+also needs the routine or the instructions to ask for it.
+
+Each kind of send (email, chat-app messages, calendar invites, public posts,
+anything else outside) has a level the person picks once, on a card in the
+conversation or in Settings: `draft`, `when_confident` or `always`. Chat-app
+messages start at `MELETE_MESSAGES_TO_OTHERS` (`when_confident` by default,
+also written `confidence`; `draft`; `draft_only`, which also keeps them out of
+proactive work until the person picks a level; `always`), the rest at
+`draft`. A level the person chose wins over the setting. Money moves, the
+person's own don't-rules, and sends that also delete or carry a password still
+go to the person at every level.
 
 ## Sandboxes
 

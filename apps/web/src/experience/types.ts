@@ -124,6 +124,13 @@ export type PersonFileDeleted = Ok<paths['/files/{id}'], 'delete'>;
 export type OwnSkill = Ok<paths['/own-skills'], 'get'>['skills'][number];
 export type OwnSkillEdit = Body<paths['/own-skills/{name}/edit'], 'post'>;
 export type Question = Success<Ok<paths['/quick-answers'], 'get'>>['questions'][number];
+/** How much the agent does on its own for each kind of task that reaches other people. */
+export type TaskAutonomyList = Success<Ok<paths['/autonomy'], 'get'>>;
+export type TaskAutonomyUpdate = Body<paths['/autonomy'], 'put'>;
+export type AutonomyLevel = TaskAutonomyList['tasks'][number]['level'];
+export type TaskKind = TaskAutonomyList['tasks'][number]['task'];
+/** The card that asks once about a kind of task. */
+export type AutonomyAsk = Extract<ExperienceEvent['item'], { type: 'autonomy' }>['autonomy'];
 
 /* ---------- agents, memory ---------- */
 

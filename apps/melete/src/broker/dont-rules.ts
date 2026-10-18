@@ -42,8 +42,15 @@ export type DontMatch = { rule: DontRule; reason: string };
 /** Words that open a prohibition. */
 export const PROHIBIT =
   /\b(?:don'?t|dont|do not|never|stop|no more|avoid|without asking|not allowed to|shouldn'?t|should not|must not|mustn'?t)\b/i;
-/** "Don't forget to email Bob" asks for it; these openers are not prohibitions. */
-const NOT_PROHIBIT = /^(?:forget|hesitate|miss|worry|mind|wait|be shy|let me forget|skip)\b/i;
+/**
+ * "Don't forget to email Bob" asks for it, and "don't ask me before sending
+ * Slack replies" lets it go on its own; these openers are not prohibitions.
+ * Not asking is waived only of the person themselves ("me", "us") or before
+ * acting ("ask first"): "don't bother Bob", "don't ask Sam to pay" and "don't
+ * confirm the booking" still forbid.
+ */
+const NOT_PROHIBIT =
+  /^(?:forget|hesitate|miss|worry|mind|wait|be shy|let me forget|skip|(?:need to |have to )?(?:(?:ask(?:ing)?|check(?:ing)? (?:in )?with|bother(?:ing)?|confirm(?:ing)? with|wait(?:ing)? (?:for|on))\s+(?:me|us)\b|ask(?:ing)?\s+(?:first|before)\b))/i;
 
 export const KIND_WORDS: Record<DontKind, RegExp> = {
   contact:
@@ -154,12 +161,19 @@ export function targetsIn(text: string, options: { roles?: boolean; skipFirst?: 
 export function parseRule(text: string): ParsedRule[] {
   const found: ParsedRule[] = [];
   for (const sentence of text.replace(/[’‘]/g, "'").split(SENTENCES)) {
-    const hit = PROHIBIT.exec(sentence);
-    if (!hit) continue;
-    // "Do not ever" / "never, ever": what follows the opener is what is forbidden.
-    const rest = sentence.slice(hit.index + hit[0].length).replace(/^[\s,]*(?:ever\s+)?/i, '');
-    const parsed = parseClause(rest);
-    if (parsed) found.push(parsed);
+    let left = sentence;
+    for (let hit = PROHIBIT.exec(left); hit; hit = PROHIBIT.exec(left)) {
+      // "Do not ever" / "never, ever": what follows the opener is what is forbidden.
+      const rest = left.slice(hit.index + hit[0].length).replace(/^[\s,]*(?:ever\s+)?/i, '');
+      // An opener that forbids nothing ("don't ask me first, never email Bob")
+      // leaves the rest of the sentence to be read for one that does.
+      if (!NOT_PROHIBIT.test(rest.trim())) {
+        const parsed = parseClause(rest);
+        if (parsed) found.push(parsed);
+        break;
+      }
+      left = rest;
+    }
   }
   return found;
 }

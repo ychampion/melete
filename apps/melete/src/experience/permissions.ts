@@ -4,6 +4,9 @@ import {
   permissionCard,
   permissionDecision,
   permissionStepUpRequest,
+  TASK_KINDS,
+  type TaskAutonomyResponse,
+  taskAutonomyUpdate,
   unavailable,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
@@ -14,10 +17,12 @@ import {
   loadApprovalSettings,
   saveApprovalSettings,
 } from '../broker/auto-review.ts';
+import { CHOICES, levelsFor, setLevel, TASK_NAMES } from '../broker/autonomy.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, lockJob } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import { issueStepUp, STEP_UP_NEEDED } from '../broker/step-up.ts';
+import { lockEventOrderIn } from '../db/transaction.ts';
 import { ENDED_NOTE, ENDED_STATES } from '../jobs/withdraw.ts';
 import { actionBecause } from '../memory/basis.ts';
 import { FailureWindow, type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
@@ -350,6 +355,51 @@ export class ExperiencePermissions {
   async saveApprovalSettings(spaceId: string, input: unknown) {
     await saveApprovalSettings(this.sql, spaceId, input);
     return this.approvalSettings(spaceId);
+  }
+
+  /** The caller's level for each kind of task, with this install's defaults. */
+  async autonomy(): Promise<TaskAutonomyResponse> {
+    const person = await this.person();
+    const defaults = this.broker.taskDefaults();
+    const levels = await levelsFor(this.sql, person, defaults);
+    return {
+      tasks: TASK_KINDS.map((kind) => {
+        const level = levels.get(kind);
+        return {
+          task: kind,
+          title: TASK_NAMES[kind].title,
+          level: level?.level ?? defaults[kind],
+          default_level: defaults[kind],
+          chosen: level?.chosen ?? false,
+        };
+      }),
+      choices: CHOICES,
+    };
+  }
+
+  /** Keep the level the caller chose for a kind of task, in Settings or on the card that asked. */
+  async saveAutonomy(body: unknown): Promise<TaskAutonomyResponse> {
+    const input = taskAutonomyUpdate.parse(body);
+    const person = await this.person();
+    if (!person) throw new ServiceError('not_found', 'There is no one to keep this for yet.', 404);
+    await this.sql.begin(async (tx) => {
+      // The card that asked shows the choice, so this appends an event.
+      await lockEventOrderIn(tx);
+      await setLevel(tx, {
+        personId: person,
+        kind: input.task,
+        level: input.level,
+        source: input.from === 'card' ? 'card' : 'settings',
+      });
+    });
+    return this.autonomy();
+  }
+
+  private async person(): Promise<string | null> {
+    const caller = requestPrincipal();
+    if (caller) return caller;
+    const [owner] = await this.sql`select id from owner limit 1`;
+    return owner?.id ? String(owner.id) : null;
   }
 
   async list(spaceId: string) {

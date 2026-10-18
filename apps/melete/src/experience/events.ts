@@ -14,6 +14,7 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { reviewView } from '../broker/auto-review.ts';
+import { AUTONOMY_ASK_NOTICE, askCard, isLevel, isTaskKind } from '../broker/autonomy.ts';
 import type { Database } from '../db/client.ts';
 import {
   action,
@@ -654,6 +655,23 @@ export class ExperienceEvents {
           } else if (payload.kind === 'question_asked' && typeof payload.question_id === 'string') {
             const question = lookups.questions.get(payload.question_id);
             if (question) await emit(source, { type: 'question', question });
+          } else if (
+            payload.kind === AUTONOMY_ASK_NOTICE &&
+            typeof payload.ask_id === 'string' &&
+            isTaskKind(payload.task) &&
+            isLevel(payload.level)
+          ) {
+            // The card that asks once about a kind of task, and each later
+            // choice, which the conversation shows in the card's place.
+            await emit(source, {
+              type: 'autonomy',
+              autonomy: askCard({
+                ask_id: payload.ask_id,
+                task: payload.task,
+                level: payload.level,
+                chosen: isLevel(payload.chosen) ? payload.chosen : null,
+              }),
+            });
           } else if (
             payload.kind === 'question_closed' &&
             typeof payload.question_id === 'string'

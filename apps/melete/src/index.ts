@@ -61,6 +61,7 @@ import { mountAppViews } from './apps/serve.ts';
 import { attachmentSettingsFromEnv } from './attachments/limits.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
+import { defaultLevels } from './broker/autonomy.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import { configuredSearchGateway } from './broker/search-gateway.ts';
@@ -1336,7 +1337,11 @@ export async function bootstrap(
         // A private or sensitive conversation's words never go to an outside search.
         searchPrivacy: ({ jobId, query, tx }) => privacy.outsideSearchRefusal(jobId, query, tx),
       });
-      catalog = new RuntimeCatalog(handle.db, registry);
+      catalog = new RuntimeCatalog(
+        handle.db,
+        registry,
+        defaultLevels(env.MELETE_MESSAGES_TO_OTHERS),
+      );
       // Sandboxes are the service's own: their providers come from the same
       // factory the connectors did, so the key stays with the connection.
       const connectors = connectorFactoryFor(registry, () =>

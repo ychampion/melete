@@ -72,6 +72,7 @@ import type {
 import { NEW_CHAT_AGAIN, navigate, useRoute } from '../router.ts';
 import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { AutonomyAskCard } from './AutonomyAsk.tsx';
 import { useAttachments } from './attachments.ts';
 import { shownBlocks } from './blocks.ts';
 import { CallPanel } from './CallPanel.tsx';
@@ -444,6 +445,8 @@ function TurnView({
             }
           />
         );
+      case 'autonomy':
+        return <AutonomyAskCard ask={block.autonomy} />;
       default:
         return null;
     }
