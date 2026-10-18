@@ -19,6 +19,10 @@ describe('what counts as asking for it', () => {
     ['Reply to anything from my landlord.', mail, ['landlord@flat.example']],
     ['Send the notes to bob@example.com after each call.', mail, bob],
     ['Open an issue for every failing build.', issue, ['acme/site']],
+    ['When Bob writes, reply right away.', mail, bob],
+    ['You can always email Bob the weekly summary.', mail, bob],
+    ['Your job is to reply to Bob for me.', mail, bob],
+    ['Draft the summary and email it to Bob every Monday.', mail, bob],
   ] as const)('"%s" does', (text, words, to) => {
     expect(asksForIt(text, words, to)).not.toBeNull();
   });
@@ -31,6 +35,13 @@ describe('what counts as asking for it', () => {
     ['Send nothing without my ok. Keep my inbox tidy.', mail, bob],
     ['Ask before you email Bob.', mail, bob],
     ['Keep the weekly summary up to date.', mail, bob],
+    // Describing the work, or what someone does, is not telling the agent to do it.
+    ['You manage my email.', mail, bob],
+    ['You handle my email and calendar.', mail, bob],
+    ['Bob emails me every Friday.', mail, bob],
+    ['I usually reply to Bob within a day.', mail, bob],
+    ['My inbox gets lots of replies from Bob.', mail, bob],
+    ['This agent looks after issues for the site.', issue, ['acme/site']],
   ] as const)('"%s" does not', (text, words, to) => {
     expect(asksForIt(text, words, to)).toBeNull();
   });

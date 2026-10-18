@@ -2686,6 +2686,12 @@ export class BrokerService implements BrokerOperations {
         if (classified.requires_approval) {
           const [row] = await tx`select * from approval where action_id = ${id}
             and payload_hash = ${action.payload_hash} for update`;
+          // Proactive work that was likely enough when proposed but is not now
+          // ends here, with no card, as it would have at proposal.
+          if (!row && classified.proactive && !classified.proactive.act) {
+            await this.rejectDispatch(tx, job, action, 'proactive_hold');
+            throw new ProactiveHold(classified.proactive);
+          }
           let approval = await this.holdApproval(tx, job, action, row, classified);
           if (
             approval.decided_by === 'auto_review' &&

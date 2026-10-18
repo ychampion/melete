@@ -142,7 +142,48 @@ const speaksOf = (sentence: string, words: ActionWords) =>
   words.kinds.some((kind) => KIND_WORDS[kind].test(sentence)) ||
   words.tool.some((word) => new RegExp(`\\b${word}(?:s|es)?\\b`, 'i').test(sentence));
 
-/** The first sentence of `text` that asks for this kind of action, to these recipients when it names any. */
+/** Words an instruction opens with that are not the thing asked for. */
+const LEAD_IN =
+  /^(?:(?:please|always|also|just|then|and|so|automatically|go ahead and|feel free to|you (?:can|should|may|must|will|could)(?: always| also)?|i want you to|i'?d like you to|make sure (?:to|you)|be sure to|remember to|your (?:job|task|role) is to|you(?:'re| are) here to|it'?s (?:ok|okay|fine) to|it is (?:ok|okay|fine) to)[,]?\s+)+/i;
+/** Verbs that make or open a thing a tool's name says ("create an issue", "open a ticket"). */
+const MAKES = /^(?:create|open|file|add|make|log|raise|submit|start|put|write)\b/i;
+
+/**
+ * Whether a sentence tells the agent to do this kind of thing, rather than
+ * describing it: after any lead-in time or condition ("Every Monday, …",
+ * "When an invoice arrives, …"), a part of it opens with the action's own
+ * verb ("email Bob …", "reply to …"), or with a verb that makes the thing the
+ * tool's name says ("create an issue"). "You manage my email" or "Bob emails
+ * me on Fridays" only describe it.
+ */
+function tellsTo(sentence: string, words: ActionWords): boolean {
+  return sentence
+    .split(/[,:;]|\s+(?:and|then)\s+/i)
+    .map((part) => part.trim().replace(LEAD_IN, ''))
+    .some((part) => {
+      const first = part.match(/^[a-z-]+/i)?.[0]?.toLowerCase();
+      if (!first) return false;
+      // A verb as it is said when asking: "email", "reply", not "emails" or "replied".
+      const plain = first === 'sms' || !/(?:[^s]s|ed|ing)$/.test(first);
+      if (
+        plain &&
+        words.kinds.some((kind) => new RegExp(`^(?:${KIND_WORDS[kind].source})$`, 'i').test(first))
+      )
+        return true;
+      if (plain && words.tool.some((word) => new RegExp(`^${word}$`, 'i').test(first))) return true;
+      return (
+        MAKES.test(part) &&
+        words.tool.some((word) =>
+          new RegExp(`^\\S+(?:\\s+\\S+){0,3}?\\s+${word}(?:s|es)?\\b`, 'i').test(part),
+        )
+      );
+    });
+}
+
+/**
+ * The first sentence of `text` that tells the agent to do this kind of
+ * action, to these recipients when it names any.
+ */
 export function asksForIt(
   text: string,
   words: ActionWords,
@@ -150,7 +191,7 @@ export function asksForIt(
 ): string | null {
   for (const sentence of text.replace(/[’‘]/g, "'").split(SENTENCES)) {
     if (PROHIBIT.test(sentence) || HOLDS.test(sentence)) continue;
-    if (!speaksOf(sentence, words)) continue;
+    if (!speaksOf(sentence, words) || !tellsTo(sentence, words)) continue;
     // Roles ("my team") cannot be matched to an address, so they neither count nor exclude.
     const targets = targetsIn(sentence, { roles: false, skipFirst: true });
     if (targets.length === 0 || targets.some((target) => names(recipients, target)))
@@ -254,20 +295,26 @@ export async function gatherEvidence(
     }
   }
 
-  // What the person did with actions like this one before.
-  const history = await tx`select a.id, a.canonical_payload, a.created_at, a.status,
+  // What the person did with actions like this one before: only their own
+  // work, and only what they themselves allowed or asked for counts for it.
+  // A no from anyone counts against it.
+  const history = await tx`with person as (
+      select coalesce(${job.principal_id ?? null}::text, (select id from owner limit 1)) as id)
+    select a.id, a.canonical_payload, a.created_at, a.status,
       coalesce((a.reconciliation->>'cancelled')::boolean, false) as cancelled,
-      exists (select 1 from approval p join principal pr on pr.id = p.decided_by
-        where p.action_id = a.id and p.decision = 'approved') as allowed,
+      exists (select 1 from approval p
+        where p.action_id = a.id and p.decision = 'approved'
+          and p.decided_by = (select id from person)) as allowed,
       exists (select 1 from approval p join principal pr on pr.id = p.decided_by
         where p.action_id = a.id and p.decision = 'denied') as refused,
       exists (select 1 from attempt t join experience_turn u on u.id = t.turn_id
         where t.id = a.attempt_id and t.class = 'interactive'
-          and u.author_principal_id is not null) as asked,
+          and u.author_principal_id = (select id from person)) as asked,
       exists (select 1 from activity_record r where r.action_id = a.id
         and r.undone_at is not null) as undone
     from action a join job j on j.id = a.job_id
     where j.space_id = ${job.space_id} and a.kind = ${action.kind} and a.id <> ${action.id}
+      and coalesce(j.principal_id, (select id from owner limit 1)) = (select id from person)
       and a.created_at > now() - make_interval(days => ${LOOKBACK_DAYS})
     order by a.created_at desc limit ${HISTORY_READ}`;
   let past = 0;

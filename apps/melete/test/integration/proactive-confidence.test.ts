@@ -10,7 +10,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import type { ConnectorManifest, JsonObject } from '@melete/contracts';
 import { actionReviewView } from '../../src/broker/auto-review.ts';
-import { recordId } from '../../src/broker/records.ts';
+import { type Query, recordId } from '../../src/broker/records.ts';
 import { BrokerService, ProactiveHold } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import type { Connector } from '../../src/connectors/types.ts';
@@ -47,6 +47,7 @@ const manifest: ConnectorManifest = {
   tools: [
     tool('test.send_email', ['to', 'subject', 'body']),
     tool('test.send_message', ['to', 'text']),
+    tool('test.send_secret', ['to', 'text', 'api_key']),
   ],
 };
 const mailBob = (body = 'This week went well.'): JsonObject => ({
@@ -90,8 +91,14 @@ async function setup(
       objective = ${options.routine ?? 'Keep my inbox tidy'}, objective_origin = 'owner_request'
     where id = ${seed.claims.job_id}`;
   const dispatched: string[] = [];
+  let admitting: ((tx: Query) => Promise<void>) | null = null;
   const connector: Connector = {
     manifest,
+    async validateBinding(_action, _ctx, tx) {
+      const run = admitting;
+      admitting = null;
+      await run?.(tx);
+    },
     async execute(action) {
       dispatched.push(action.kind);
       return {
@@ -122,12 +129,12 @@ async function setup(
   });
 
   /** An attempt: woken by a schedule (`background`), or answering the person. */
-  const attempt = async (usageClass: 'interactive' | 'background') => {
+  const attempt = async (usageClass: 'interactive' | 'background', author = personId) => {
     const turnId = recordId('trn');
     await sql`insert into experience_turn (id, job_id, agent_id, submission_id, author_principal_id,
         text, answer, status)
       values (${turnId}, ${seed.claims.job_id}, ${agentId}, ${recordId('sub')},
-        ${usageClass === 'interactive' ? personId : null}, 'Go', '', 'running')`;
+        ${usageClass === 'interactive' ? author : null}, 'Go', '', 'running')`;
     const attemptId = recordId('att');
     // The shift before rested until its schedule woke the work again.
     await sql`update attempt set outcome = 'waiting_for_event_or_time', ended_at = now()
@@ -158,12 +165,22 @@ async function setup(
       values (${claimId}, 1, ${content})`;
   };
 
-  /** One the person was asked about earlier, while they were there, and answered. */
-  const answered = async (kind: string, payload: JsonObject, decision: 'approved' | 'denied') => {
-    const there = await attempt('interactive');
+  /** One the person (or `by`) was asked about earlier, while they were there, and answered. */
+  const answered = async (
+    kind: string,
+    payload: JsonObject,
+    decision: 'approved' | 'denied',
+    by?: string,
+  ) => {
+    const there = await attempt('interactive', by ?? personId);
     const asked = await there.propose(kind, payload);
     expect(asked.status).toBe('needs_approval');
-    await broker.decide(asked.action_id, { decision, payload_hash: asked.payload_hash });
+    await broker.decide(
+      asked.action_id,
+      { decision, payload_hash: asked.payload_hash },
+      undefined,
+      by,
+    );
     if (decision === 'approved')
       expect((await broker.resume(there.claims, asked.action_id)).status).toBe('succeeded');
   };
@@ -185,9 +202,18 @@ async function setup(
     };
   };
 
+  /** Someone else with access to the same work. */
+  const someoneElse = recordId('prn');
+  await sql`insert into principal (id, email) values (${someoneElse}, ${`${someoneElse}@example.test`})`;
+
   return {
     sql,
     broker,
+    someoneElse,
+    /** Runs once inside the next admission's transaction, before it judges the action. */
+    atAdmission: (run: (tx: Query) => Promise<void>) => {
+      admitting = run;
+    },
     attempt,
     firstShift,
     remember,
@@ -289,6 +315,62 @@ describe('work nobody is waiting on', () => {
       expect((hold as ProactiveHold).confidence.missing.join(' ')).toContain('an email goes out');
     },
   );
+
+  databaseTest('a routine that only describes the work does not ask for a send', async () => {
+    const s = await setup({ routine: 'You manage my email. Bob writes most weeks.' });
+    const woke = await s.attempt('background');
+    expect(await rejectionOf(woke.propose('test.send_message', messageBob()))).toBeInstanceOf(
+      ProactiveHold,
+    );
+    expect(s.dispatched).toEqual([]);
+    expect(await s.cards()).toHaveLength(0);
+  });
+
+  databaseTest('sends someone else allowed are not the person allowing them', async () => {
+    const s = await setup();
+    await s.remember('I always message Bob when I am running late.');
+    await s.answered('test.send_message', messageBob('Late, sorry.'), 'approved', s.someoneElse);
+    await s.answered(
+      'test.send_message',
+      messageBob('Ten minutes behind.'),
+      'approved',
+      s.someoneElse,
+    );
+    const woke = await s.attempt('background');
+    const hold = await rejectionOf(woke.propose('test.send_message', messageBob()));
+    expect(hold).toBeInstanceOf(ProactiveHold);
+    expect((hold as ProactiveHold).confidence.score).toBe(0.3);
+    expect(s.dispatched).toEqual(['test.send_message', 'test.send_message']);
+  });
+
+  databaseTest(
+    'a send that was likely when proposed but is not by admission raises no card',
+    async () => {
+      const s = await setup({ instruction: 'Every Friday, email Bob the weekly summary.' });
+      const woke = await s.attempt('background');
+      // Between the proposal and its admission, the instructions stop asking for it.
+      s.atAdmission(async (tx) => {
+        await tx`update agent set standing_instruction = '' where space_id = ${woke.claims.space_id}`;
+      });
+      const hold = await rejectionOf(woke.propose('test.send_email', mailBob()));
+      expect(hold).toBeInstanceOf(ProactiveHold);
+      expect(s.dispatched).toEqual([]);
+      expect(await s.cards()).toHaveLength(0);
+      expect(await s.pushes()).toHaveLength(0);
+    },
+  );
+
+  databaseTest('a send that also carries a key is asked about as before', async () => {
+    const s = await setup({ routine: 'Every Friday, message Bob the deploy key.' });
+    const woke = await s.attempt('background');
+    const asked = await woke.propose('test.send_secret', {
+      to: 'bob@example.com',
+      text: 'Here it is.',
+      api_key: 'sk-live-123',
+    });
+    expect(asked.status).toBe('needs_approval');
+    expect(s.dispatched).toEqual([]);
+  });
 
   databaseTest('a similar one the person said no to outweighs the routine', async () => {
     const s = await setup({ routine: 'Every Friday, email Bob the weekly summary.' });
