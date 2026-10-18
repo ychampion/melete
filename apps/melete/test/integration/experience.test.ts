@@ -161,6 +161,27 @@ withDb('experience rows and authenticated scope', () => {
     expect(JSON.stringify(result)).not.toContain('Dinner private');
     expect((await request(`/tasks/${task.id}`, 'DELETE')).status).toBe(200);
   });
+  test('the voice is teammate until picked, and a save that leaves it out keeps it', async () => {
+    const profile = async () =>
+      experienceOperations['GET /profile'].response.parse(await (await request('/profile')).json())
+        .profile;
+    const before = await profile();
+    expect(before.voice).toBe('teammate');
+    const save = (extra: Record<string, unknown>) =>
+      request('/profile', 'PATCH', {
+        name: before.name,
+        time_zone: before.time_zone,
+        day_hours: before.day_hours,
+        ...extra,
+      });
+    expect((await save({ voice: 'professional' })).status).toBe(200);
+    expect((await profile()).voice).toBe('professional');
+    expect((await save({})).status).toBe(200);
+    expect((await profile()).voice).toBe('professional');
+    expect((await save({ voice: 'loud' })).status).toBe(400);
+    expect((await save({ voice: 'teammate' })).status).toBe(200);
+    expect((await profile()).voice).toBe('teammate');
+  });
   test('the profile names the address messages leave from, once a mailbox can send', async () => {
     const profile = async () =>
       experienceOperations['GET /profile'].response.parse(await (await request('/profile')).json())

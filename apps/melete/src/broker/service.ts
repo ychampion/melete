@@ -15,6 +15,7 @@ import {
   executionIntent,
   findTool,
   hashOriginWarnings,
+  humanText,
   INTENT_CAPTURE_TOOL,
   intentKey,
   isTrustGatedEffect,
@@ -127,6 +128,7 @@ import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
+import { humanPayload, typedInConversation } from './human-payload.ts';
 import {
   actionFromRow,
   appendEvent,
@@ -826,7 +828,8 @@ export class BrokerService implements BrokerOperations {
         })
       : null;
     if (!next) throw new BrokerFault('unknown_tool', 'This chase has no follow-up to send.');
-    return this.propose(claims, next);
+    // The follow-up is the approved message, word for word (`chase-scope.ts`).
+    return this.propose(claims, next, false, true);
   }
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
@@ -1735,6 +1738,8 @@ export class BrokerService implements BrokerOperations {
     claims: CapabilityClaims,
     request: ProposeActionRequest,
     readOnly = false,
+    /** The service wrote this payload from words the person approved: no pass rewrites it. */
+    verbatim = false,
   ): Promise<EffectProposalResponse> {
     // Nothing is read from a destination for a proposal that is not authorized.
     // Only a connector that reads ahead needs the checks made early.
@@ -1774,6 +1779,22 @@ export class BrokerService implements BrokerOperations {
         // A presentation alias binds one granted account; the durable intent and
         // connector dispatch keep the original verb, including after a restart.
         request = { ...request, kind: tool.name };
+        // A draft or message the model wrote reads as the person would write
+        // it, before it is hashed, so what is approved is what is sent
+        // (`human-payload.ts`). An owner command, and a follow-up made of words
+        // the person approved, carry someone's exact words and go as they are.
+        if (!verbatim && !job.experience_command_key) {
+          const passed = humanPayload(tool.name, request.payload);
+          if (passed !== request.payload)
+            request = {
+              ...request,
+              payload: humanPayload(
+                tool.name,
+                request.payload,
+                await typedInConversation(tx, job.id),
+              ),
+            };
+        }
         let canonical = canonicalizePayload(request.payload);
         this.validatePayload(tool, canonical.canonical);
         const proposing: ConnectorContext = {
@@ -2131,6 +2152,8 @@ export class BrokerService implements BrokerOperations {
       (safe.match(/[.!?](?:\s|$)/g)?.length ?? 0) > 2
     )
       throw new BrokerFault('payload_invalid', 'Use one or two plain first-person sentences.');
+    // A line the person reads mid-turn reads like the reply around it.
+    const said = humanText(safe);
     await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
@@ -2139,7 +2162,7 @@ export class BrokerService implements BrokerOperations {
         job.id,
         claims.attempt_id,
         'notice',
-        { kind: 'experience_say', text: safe },
+        { kind: 'experience_say', text: said },
         `say:${claims.attempt_id}:${createHash('sha256').update(ref).digest('hex')}`,
       );
     });

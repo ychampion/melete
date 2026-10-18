@@ -85,6 +85,7 @@ import { requireCurrentAttempt } from './fence.ts';
 import { FirstLine } from './first-line.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { personWords } from './history-summary.ts';
+import { HumanStream, humanOutcome } from './human-stream.ts';
 import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { PROVIDER_FAILURE_NOTES } from './provider-notes.ts';
 import { persistQuestions, resolveQuestions, withdrawSettledQuestion } from './questions.ts';
@@ -1281,13 +1282,17 @@ export class AttemptRunner {
     const capped = endsOnLimit(given)
       ? (limits[await usageClassOf(tx, attemptId)]?.message ?? null)
       : null;
+    // The saved answer reads as the person saw it stream: the same plain-text
+    // pass, last, after the answer's links and notes are settled.
     const original: AttemptOutcome = capped
       ? { kind: 'budget_exhausted', summary: capped }
-      : await this.citedOnlyWhatWasRead(
-          tx,
-          row,
-          attemptId,
-          await namedFailure(tx, attemptId, given),
+      : humanOutcome(
+          await this.citedOnlyWhatWasRead(
+            tx,
+            row,
+            attemptId,
+            await namedFailure(tx, attemptId, given),
+          ),
         );
     let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
@@ -2234,20 +2239,19 @@ export class AttemptRunner {
     );
     // A conversation's reply that starts saying the same thing over and over
     // is stopped and cut back to its first copy (`runaway.ts`). It counts the
-    // words the first-line gate passes on, so what it keeps is what was recorded.
+    // words as they are recorded, so what it keeps is what was shown.
     const runaway = claim.turn ? runawayWatch() : null;
-    const firstLine = new FirstLine(
-      async (event) => {
-        await this.emit(claims, event);
-        // Stopped only once the words that showed the loop are stored, so
-        // the turn's end, written next, is the last thing said.
-        const loop = runaway && event.type === 'text_delta' ? runaway.see(event.text) : null;
-        if (loop && !controller.signal.aborted)
-          controller.abort(new RunawayReply(loop.kept, loop.copies));
-      },
-      acknowledging,
-      acknowledged,
-    );
+    // The agent's words reach the record as a person would write them, the
+    // same live as saved (`human-stream.ts`).
+    const human = new HumanStream(async (event) => {
+      await this.emit(claims, event);
+      // Stopped only once the words that showed the loop are stored, so
+      // the turn's end, written next, is the last thing said.
+      const loop = runaway && event.type === 'text_delta' ? runaway.see(event.text) : null;
+      if (loop && !controller.signal.aborted)
+        controller.abort(new RunawayReply(loop.kept, loop.copies));
+    });
+    const firstLine = new FirstLine((event) => human.emit(event), acknowledging, acknowledged);
     const acknowledgement =
       acknowledging && claim.turn
         ? this.acknowledgeLater(claims, claim.turn, bundle, firstLine)
@@ -2298,10 +2302,12 @@ export class AttemptRunner {
       // wait for what that work started, which must not be cut short into a
       // lost attempt and a rerun. Only Stop or a fence ends the wait early.
       clearTimeout(timeout);
-      // Words still held behind an acknowledgement reach the record before the
-      // outcome does. A failure to record one was the runtime's to report.
+      // Words still held behind an acknowledgement, then words the pass still
+      // held, reach the record before the outcome does. A failure to record one
+      // was the runtime's to report.
       acknowledgement?.cancel();
       await firstLine.drain().catch(() => undefined);
+      await human.drain();
       // The answer is saved as the person saw it, without a line dropped from it.
       const outcome = firstLine.settled(isOutcomeEnvelope(result) ? result.outcome : result);
       if (outcome.kind === 'completed') {
@@ -2313,6 +2319,8 @@ export class AttemptRunner {
         isOutcomeEnvelope(result) ? { ...result, outcome } : outcome,
       );
     } catch (error) {
+      // Whatever ends the attempt, the words already said are kept as shown.
+      await human.drain().catch(() => undefined);
       if (controller.signal.reason instanceof RunawayReply) {
         await this.endRunaway(claims, controller.signal.reason, controller.signal);
       } else if (

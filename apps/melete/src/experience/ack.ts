@@ -18,6 +18,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
+import { humanText } from '@melete/contracts';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
@@ -128,7 +129,8 @@ export function readAck(text: string, message: string): string | null {
   if (/[`*#[\]{}<>]/.test(say)) return null;
   for (const number of say.match(/\d[\d.,:]*/g) ?? [])
     if (!message.includes(number.replace(/[.,:]+$/, ''))) return null;
-  return /[.!…]$/.test(say) ? say : `${say}.`;
+  const line = humanText(say);
+  return /[.!…]$/.test(line) ? line : `${line}.`;
 }
 
 export type AckCall = {

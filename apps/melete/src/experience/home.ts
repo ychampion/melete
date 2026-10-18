@@ -5,6 +5,7 @@ import {
   experienceSearch,
   experienceTask,
   profileInput,
+  readReplyVoice as storedVoice,
   taskInput,
   unavailable,
 } from '@melete/contracts';
@@ -127,6 +128,7 @@ export class ExperienceHome {
         ),
         onboarded,
         time_zone_confirmed: Boolean(row?.timeZoneConfirmedAt),
+        voice: storedVoice(row?.voice),
         sending_address: await this.sendingAddress(spaceId),
         role: 'owner' as const,
       },
@@ -144,6 +146,7 @@ export class ExperienceHome {
         timeZone: experienceProfile.timeZone,
         dayStart: experienceProfile.dayStart,
         dayEnd: experienceProfile.dayEnd,
+        voice: experienceProfile.voice,
       })
       .from(experienceProfile)
       .where(eq(experienceProfile.spaceId, spaceId));
@@ -163,6 +166,8 @@ export class ExperienceHome {
         }),
         onboarded: true,
         time_zone_confirmed: true,
+        // The space's agent has one voice, and its owner picks it.
+        voice: storedVoice(row?.voice),
         sending_address: null,
         role: 'member' as const,
       },
@@ -211,6 +216,8 @@ export class ExperienceHome {
       onboardedAt: before?.onboardedAt ?? (input.onboarded ? now : null),
       timeZoneConfirmedAt:
         before?.timeZoneConfirmedAt ?? (input.time_zone_confirmed || moved ? now : null),
+      // A save that leaves the voice out keeps the one already picked.
+      voice: input.voice ?? storedVoice(before?.voice),
     };
     await this.db
       .insert(experienceProfile)

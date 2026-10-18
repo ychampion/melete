@@ -1781,6 +1781,7 @@ export class ExperienceMock {
   profileView() {
     return {
       ...this.profile,
+      voice: this.profile.voice ?? C.DEFAULT_REPLY_VOICE,
       onboarded: this.onboarded || [...this.agents.values()].some((agent) => !agent.is_default),
       time_zone_confirmed: this.timeZoneConfirmed,
       sending_address: this.sendingAddress,
@@ -2145,6 +2146,7 @@ export class ExperienceMock {
           name: next.name,
           time_zone: next.time_zone,
           day_hours: next.day_hours,
+          voice: next.voice ?? this.profile.voice,
         });
         return { profile: this.profileView() };
       }

@@ -24,7 +24,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { VOICE_ASIDE_LIMITS, type VoiceAside, type VoiceAsideRequest } from '@melete/contracts';
+import {
+  humanText,
+  VOICE_ASIDE_LIMITS,
+  type VoiceAside,
+  type VoiceAsideRequest,
+} from '@melete/contracts';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
@@ -215,7 +220,7 @@ const unfenced = (text: string) =>
 
 /** The longest prefix of `text` within the limit that ends a sentence, or a plain cut. */
 function sayable(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = humanText(text).replace(/\s+/g, ' ').trim();
   if (flat.length <= VOICE_ASIDE_LIMITS.say_characters) return flat;
   const head = flat.slice(0, VOICE_ASIDE_LIMITS.say_characters);
   const end = Math.max(head.lastIndexOf('. '), head.lastIndexOf('? '), head.lastIndexOf('! '));

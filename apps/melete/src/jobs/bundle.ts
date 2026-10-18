@@ -21,6 +21,7 @@ import {
   QUESTION_GUIDANCE,
   type RecallResult,
   type ResponsibilityAttemptBundle,
+  readReplyVoice,
   receipt,
   receipt as receiptContract,
   responsibilityAttemptBundle,
@@ -1270,7 +1271,7 @@ export async function buildAttemptSkeleton(
     ? await tx.select({ name: space.name }).from(space).where(eq(space.id, row.spaceId))
     : [];
   const [profile] = await tx
-    .select({ timeZone: experienceProfile.timeZone })
+    .select({ timeZone: experienceProfile.timeZone, voice: experienceProfile.voice })
     .from(experienceProfile)
     .where(eq(experienceProfile.spaceId, row.spaceId));
   // The zone the attempt reads time in, which may be the device's (see local-now.ts).
@@ -1284,6 +1285,8 @@ export async function buildAttemptSkeleton(
         }
       : {}),
     ...(profile?.timeZone ? { time_zone: canonicalTimeZone(moment.time_zone) } : {}),
+    // How the person wants the agent to sound, in replies and in drafts.
+    voice: readReplyVoice(profile?.voice),
     local_now: moment,
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }

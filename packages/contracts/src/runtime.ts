@@ -13,6 +13,7 @@ import { executionMode } from './execution.ts';
 import { hookCaptureErrorCode, hookObservation } from './hooks.ts';
 import { claimHandle, memoryKey, originTrust } from './memory.ts';
 import { repairBrief } from './provenance.ts';
+import { replyVoice } from './reply-voice.ts';
 
 export const runtimeCapabilities = z.object({
   streaming: z.boolean(),
@@ -448,6 +449,11 @@ export const attemptBundle = z.object({
    * line has no tool of its own). Additive: a producer that omits it names none.
    */
   connected_accounts: z.array(z.string().min(1).max(300)).max(20).optional(),
+  /**
+   * The voice the person picked for replies and drafts. Additive: a producer
+   * that omits it gets the default voice.
+   */
+  voice: replyVoice.optional(),
   knowledge: z.array(knowledgeExcerpt),
   workspace: z.object({
     mount: z.literal('/work'),
