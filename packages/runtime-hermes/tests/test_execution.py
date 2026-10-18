@@ -188,3 +188,27 @@ def test_the_filesystem_outside_the_workspace_is_the_containers_job_not_this_mod
     )
     assert outcome["record"]["exit_code"] == 0
     assert (tmp_path / "escaped.txt").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes and umask are POSIX")
+def test_what_cell_code_makes_the_service_can_manage(workspace):
+    """The workspace is shared with the service through a group. A folder or
+    file the agent's code makes must be group-writable, or the service cannot
+    move a file out of it into the person's Files."""
+    previous = os.umask(0o022)
+    try:
+        outcome = run_in_cell(
+            "python",
+            {
+                "code": (
+                    "import os\n"
+                    "os.makedirs('output/slides')\n"
+                    "open('output/slides/deck.pptx', 'wb').write(b'PK\x03\x04')\n"
+                )
+            },
+        )
+    finally:
+        os.umask(previous)
+    assert outcome["record"]["exit_code"] == 0
+    for made in ("output", "output/slides", "output/slides/deck.pptx"):
+        assert (workspace / made).stat().st_mode & 0o020, f"{made} is not group-writable"

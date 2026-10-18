@@ -143,6 +143,11 @@ PY
 
 python -c "$BOOT_CONFIG" "$HERMES_HOME/config.yaml"
 
+# /work is shared with the service through a setgid group. What the engine and
+# the commands it runs make there is group-writable, so the service can move a
+# file the agent made into the person's Files.
+umask 002
+
 if [ "$SPARE" = 1 ]; then
   export MELETE_BOOT_CONFIG="$BOOT_CONFIG" MELETE_RUNTIME_HANDOFF=http
   exec python /opt/melete-runtime/process_launcher.py

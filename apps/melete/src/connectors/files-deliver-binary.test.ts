@@ -146,6 +146,19 @@ for (const each of cases) {
       expect(String(result.receipt.detail.workspace_note)).toContain(`/work/output/${each.name}`);
       // The workspace copy is left as it was.
       expect(sha(await readFile(work('output', each.name)))).toBe(sha(bytes));
+      // Checked again later, the move is delivered: the copy left behind was said on its receipt.
+      const recorded = { ...action, receipt: result.receipt as unknown as typeof action.receipt };
+      const verdict = await connector().verify(recorded, connectorContext(recorded));
+      expect(verdict.decision).toBe('succeeded');
+      if (verdict.decision === 'succeeded')
+        expect(verdict.evidence).toMatchObject({
+          content_hash: sha(bytes),
+          workspace_copy: 'kept',
+        });
+      // Without that receipt, a source still there leaves the move undecided.
+      expect((await connector().verify(action, connectorContext(action))).decision).toBe(
+        'undecided',
+      );
     },
   );
 }

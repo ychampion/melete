@@ -127,6 +127,10 @@ def child_environment() -> Dict[str, str]:
     return env
 
 
+#: Folders 2775 and files 0664 in the setgid workspace the service shares.
+SHARED_UMASK = 0o002
+
+
 def _limits() -> Optional[Any]:
     """POSIX resource caps for the child, or None where they do not exist.
 
@@ -140,6 +144,9 @@ def _limits() -> Optional[Any]:
         return None
 
     def apply() -> None:  # pragma: no cover - runs in the forked child
+        # The workspace is shared with the service through a group: what the
+        # command makes is group-writable, so the service can move it on.
+        os.umask(SHARED_UMASK)
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES))
         resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT_MS // 1000, MAX_TIMEOUT_MS // 1000))
 

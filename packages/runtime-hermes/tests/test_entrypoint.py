@@ -213,3 +213,20 @@ def test_helpers_are_built_only_when_the_attempt_asks_for_them(tmp_path, monkeyp
 def test_helpers_take_only_the_value_the_renderer_writes(tmp_path, monkeypatch, value):
     with pytest.raises(SystemExit):
         boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "MELETE_ENGINE_DELEGATION": value})
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the entrypoint's shell")
+def test_the_engine_starts_with_a_group_writable_umask():
+    """What the engine and its commands make in the shared /work must be
+    group-writable, so the service can move it into the person's Files."""
+    import subprocess  # noqa: PLC0415
+
+    script = (Path(__file__).parents[1] / "entrypoint.sh").read_text()
+    start = script.index("\numask ")
+    launch = script[start:]
+    assert launch.index("\numask ") < launch.index('\nexec "$@"')
+    shown = subprocess.run(
+        ["sh", "-c", "umask 077\nSPARE=\n" + launch, "entrypoint", "sh", "-c", "umask"],
+        capture_output=True, text=True, check=True,
+    )
+    assert shown.stdout.strip() == "0002"
