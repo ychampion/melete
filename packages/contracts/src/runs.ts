@@ -408,7 +408,8 @@ export const RUN_PAUSE_TOOL: ToolSpec = {
 
 export const RUN_RESUME_TOOL: ToolSpec = {
   name: 'run.resume',
-  description: 'Resume paused background work or a routine; a routine waits for its next time.',
+  description:
+    'Resume paused background work or a routine; a routine waits for its next time. Given a cancelled reminder’s id from run.list, it turns that reminder back on at the time it was due.',
   effect_class: 'write_reversible',
   connection_id: null,
   input_schema: runTarget,
@@ -417,7 +418,7 @@ export const RUN_RESUME_TOOL: ToolSpec = {
 export const RUN_STOP_TOOL: ToolSpec = {
   name: 'run.stop',
   description:
-    'Turn off background work or a routine when the person asks to stop, cancel, delete or turn it off: it stops running at once, and run.resume undoes it. Removing it for good is the person’s own step on its card, so never say it is deleted. Given a reminder’s id from run.list, it cancels that reminder: it will not fire; to move it instead, cancel it and set the new time with job.wait.',
+    'Turn off background work or a routine when the person asks to stop, cancel, delete or turn it off: it stops running at once, and run.resume undoes it. Removing it for good is the person’s own step on its card, so never say it is deleted. Given a reminder’s id from run.list, it cancels that reminder so it will not fire; one in another conversation can be turned back on with run.resume until it is due. To move a reminder instead, set the new time with job.wait.',
   effect_class: 'write_reversible',
   connection_id: null,
   input_schema: runTarget,

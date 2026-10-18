@@ -3,19 +3,28 @@
  * finds it with run.list and cancels it with run.stop, and then it neither
  * comes back after the reply nor fires.
  *
+ * One in another conversation is held rather than removed, said in both
+ * conversations, and run.resume turns it back on at the time it was due.
+ *
  * Before, a conversation's own reminder was set aside while it answered
  * "cancel that reminder", listed nowhere, and put back by itself when the
  * reply ended, so it fired anyway.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
-import { agentResponse, type CapabilityClaims, conversationResponse } from '@melete/contracts';
+import {
+  agentResponse,
+  type CapabilityClaims,
+  conversationResponse,
+  type ExperienceEvent,
+} from '@melete/contracts';
 import { renderInput } from '@melete/runtime-hermes';
 import { eq } from 'drizzle-orm';
 import { requestRuntimeWait } from '../../src/broker/runtime-wait.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { job, owner, space, trigger } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
+import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -134,13 +143,26 @@ async function reminderIn(who: Person, title: string, minutes = 3) {
 const tool = (claims: CapabilityClaims, name: string, input: unknown) =>
   required(runs).call(claims, name, input) as Promise<Record<string, unknown>>;
 
-type Listed = { id: string; this_conversation: boolean; wakes_at: string; conversation: string };
+type Listed = {
+  id: string;
+  this_conversation: boolean;
+  wakes_at: string;
+  conversation: string;
+  status: string;
+};
 const remindersOf = async (claims: CapabilityClaims) =>
   ((await tool(claims, 'run.list', {})).reminders ?? []) as Listed[];
 
 const waitingUntil = async (who: Person, chatId: string) =>
   conversationResponse.parse(await (await who.request(`/conversations/${chatId}`)).json())
     .conversation.waiting_until;
+
+async function notesOf(who: Person, chatId: string) {
+  const page = await new ExperienceEvents(required(handle).db).page(who.spaceId, 0, chatId, 500);
+  return (page as { events: ExperienceEvent[] }).events.flatMap((entry) =>
+    entry.item.type === 'note' ? [entry.item.text] : [],
+  );
+}
 
 const done = (summary: string) => ({ kind: 'completed' as const, summary, evidence: [] });
 
@@ -187,7 +209,7 @@ withDb('cancelling a reminder the agent set', () => {
     expect((await required(jobs).get(chat.id)).nextWakeAt).toBeNull();
   });
 
-  test('from another conversation: only the one named is cancelled, other reminders and routines stay', async () => {
+  test('from another conversation: held, said in both places, undone by resume, and nothing else touched', async () => {
     const who = await person();
     const water = await reminderIn(who, 'drink water');
     const stretch = await reminderIn(who, 'stretch', 10);
@@ -205,23 +227,38 @@ withDb('cancelling a reminder the agent set', () => {
     expect(listed.every((entry) => entry.this_conversation === false)).toBe(true);
     expect(listed.find((entry) => entry.id === water.chat.id)?.conversation).toBe('drink water');
 
+    const before = await required(jobs).get(water.chat.id);
     expect(await tool(turn.claims, 'run.stop', { run: water.chat.id })).toMatchObject({
       status: 'cancelled',
       reminder: water.chat.id,
+      undo: expect.stringContaining('run.resume'),
     });
-    const cancelled = await required(jobs).get(water.chat.id);
-    expect(cancelled.state).toBe('completed');
-    expect(cancelled.nextWakeAt).toBeNull();
+    // Held, not removed: it rests on the same timer with no wake.
+    const held = await required(jobs).get(water.chat.id);
+    expect(held.state).toBe('waiting_for_event_or_time');
+    expect(held.wait).toEqual(water.wait);
+    expect(held.nextWakeAt).toBeNull();
     expect(await waitingUntil(who, water.chat.id)).toBeUndefined();
-    // A timer wake delivered late finds nothing to wake.
+    // The wake queued for its time, and any later one, finds nothing to start.
+    for (const version of [before.stateVersion, held.stateVersion])
+      expect(
+        await required(runner).claim({
+          job_id: water.chat.id,
+          expected_epoch: held.leaseEpoch,
+          expected_version: version,
+          reason: 'timer',
+        }),
+      ).toBeNull();
+    // Said where it was done, and in the conversation it belongs to.
+    expect((await notesOf(who, elsewhere.id)).join('\n')).toContain(
+      'Cancelled the reminder in "drink water"',
+    );
+    expect((await notesOf(who, water.chat.id)).join('\n')).toContain(
+      'was cancelled from another conversation',
+    );
     expect(
-      await required(runner).claim({
-        job_id: water.chat.id,
-        expected_epoch: cancelled.leaseEpoch,
-        expected_version: cancelled.stateVersion,
-        reason: 'timer',
-      }),
-    ).toBeNull();
+      (await remindersOf(turn.claims)).find((entry) => entry.id === water.chat.id)?.status,
+    ).toBe('cancelled');
 
     const kept = await required(jobs).get(stretch.chat.id);
     expect(kept.state).toBe('waiting_for_event_or_time');
@@ -235,11 +272,43 @@ withDb('cancelling a reminder the agent set', () => {
       .where(eq(trigger.jobId, routineId));
     expect(required(standing).enabled).toBe(true);
     expect((await required(jobs).get(routineId)).paused).toBe(false);
-    expect((await remindersOf(turn.claims)).map((entry) => entry.id)).toEqual([stretch.chat.id]);
 
-    // The conversation that set it carries on as usual.
+    // A message in that conversation is answered, and the reminder stays held.
     const next = await send(who, water.chat.id, 'Hello again.');
-    expect(next.bundle.inputs.cancelled_wait).toBeUndefined();
+    await required(runner).commitOutcome(next.claims, done('Hello.'));
+    const still = await required(jobs).get(water.chat.id);
+    expect(still.state).toBe('waiting_for_event_or_time');
+    expect(still.nextWakeAt).toBeNull();
+
+    // Turned back on from here: the same due time, its wake queued for it.
+    expect(await tool(turn.claims, 'run.resume', { run: water.chat.id })).toMatchObject({
+      status: 'resumed',
+      due_at: water.wait.wake_at,
+    });
+    const back = await required(jobs).get(water.chat.id);
+    expect(back.nextWakeAt?.getTime()).toBe(Date.parse(water.wait.wake_at));
+    expect(Date.parse((await waitingUntil(who, water.chat.id)) ?? '')).toBe(
+      Date.parse(water.wait.wake_at),
+    );
+    const [queued] = await required(handle)
+      .sql`select start_after from pgboss.job where data->>'job_id' = ${water.chat.id}
+        and (data->>'expected_version')::int = ${back.stateVersion}`;
+    expect(new Date(String(required(queued).start_after)).getTime()).toBe(
+      Date.parse(water.wait.wake_at),
+    );
+    expect((await notesOf(who, elsewhere.id)).join('\n')).toContain(
+      'Turned the reminder in "drink water" back on',
+    );
+    expect((await notesOf(who, water.chat.id)).join('\n')).toContain('This reminder is back on');
+    // At its time it fires as a new message.
+    await required(handle)
+      .db.update(job)
+      .set({ nextWakeAt: new Date(Date.now() - 1000) })
+      .where(eq(job.id, water.chat.id));
+    const fired = await claimNow(await required(jobs).get(water.chat.id), 'timer');
+    expect(fired.bundle.inputs.trigger_events).toContainEqual(
+      expect.objectContaining({ kind: 'timer_fired' }),
+    );
   });
 
   test('another person’s reminder is not listed and cannot be cancelled', async () => {
@@ -277,6 +346,11 @@ withDb('cancelling a reminder the agent set', () => {
       (error: unknown) => error,
     );
     expect(refused).toMatchObject({ status: 404 });
+    const resumed = await tool(turn.claims, 'run.resume', { run: theirs.id }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(resumed).toMatchObject({ status: 404 });
     const untouched = await required(handle).db.select().from(job).where(eq(job.id, theirs.id));
     expect(required(untouched[0]).state).toBe('waiting_for_event_or_time');
     expect(required(untouched[0]).wait).toEqual(wait);

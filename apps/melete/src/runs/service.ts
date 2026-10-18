@@ -82,6 +82,12 @@ import { appendEvent } from '../events/store.ts';
 import { SUPERSEDED_NOTE } from '../experience/projectors.ts';
 import { newId } from '../ids.ts';
 import { requireCurrentAttempt } from '../jobs/fence.ts';
+import {
+  REMINDER_HELD,
+  REMINDER_RECEIPT,
+  REMINDER_RELEASED,
+  reminderHeld,
+} from '../jobs/reminder-hold.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { DEFAULT_BUDGET, type JobRow, type JobService } from '../jobs/service.ts';
 import { recordSteer } from '../jobs/steer.ts';
@@ -213,11 +219,13 @@ function ownedBy(principalId: string | null): SQL {
 
 /** A one-time reminder a conversation rests on, as run.list shows it. */
 type Reminder = {
-  /** The conversation's id: run.stop takes it. */
+  /** The conversation's id: run.stop and run.resume take it. */
   id: string;
   conversation: string;
   wakes_at: string;
   this_conversation: boolean;
+  /** Cancelled from another conversation and held: run.resume turns it back on. */
+  status: 'scheduled' | 'cancelled';
 };
 
 /**
@@ -243,6 +251,67 @@ async function setAsideTimer(
   const notice = rows.find((row) => row.key === `${attemptId}:wait-cancelled`);
   const wait = waitSpec.safeParse((notice?.payload as { wait?: unknown } | undefined)?.wait);
   return wait.success && wait.data.kind === 'timer' ? wait.data : null;
+}
+
+/** A due time as a person reads it: "2026-10-18 00:03 UTC". */
+function dueWords(at: string): string {
+  return `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+/** Whether a conversation rests on this timer, held or (with `held` false) live. */
+function restsOn(row: JobRow, wakeAt: string, held: boolean): boolean {
+  const wait = waitSpec.safeParse(row.wait);
+  return (
+    row.state === 'waiting_for_event_or_time' &&
+    wait.success &&
+    wait.data.kind === 'timer' &&
+    Date.parse(wait.data.wake_at) === Date.parse(wakeAt) &&
+    (row.nextWakeAt === null) === held
+  );
+}
+
+/** The attempt a note in a reminder's conversation shows under: its latest turn's. */
+async function settingAttempt(tx: Transaction, jobId: string): Promise<string | null> {
+  const [latest] = await tx
+    .select({ id: attempt.id })
+    .from(attempt)
+    .where(eq(attempt.jobId, jobId))
+    .orderBy(desc(attempt.epoch))
+    .limit(1);
+  return latest?.id ?? null;
+}
+
+/** Marks a held reminder released, with a line saying so in its conversation. */
+async function released(
+  tx: Transaction,
+  jobId: string,
+  attemptId: string | null,
+  reminder: Reminder,
+  when: string,
+  by: string,
+) {
+  await appendEvent(tx, {
+    jobId,
+    attemptId,
+    type: 'notice',
+    payload: {
+      kind: REMINDER_RELEASED,
+      wake_at: reminder.wakes_at,
+      note: `This reminder is back on, due ${when}.`,
+    },
+    dedupKey: `${by}:reminder-released:${jobId}:${newId('op')}`,
+  });
+}
+
+/** A line in the conversation the change was made from, saying what changed. */
+async function receipt(tx: Transaction, chatId: string, attemptId: string, note: string) {
+  await appendEvent(tx, {
+    jobId: chatId,
+    attemptId,
+    type: 'notice',
+    payload: { kind: REMINDER_RECEIPT, note },
+    dedupKey: `${attemptId}:reminder-receipt:${newId('op')}`,
+  });
 }
 
 export class RunService {
@@ -598,9 +667,9 @@ export class RunService {
    * The reminders the person's conversations rest on: one-time timers set with
    * job.wait. This conversation's own is set aside while it answers and comes
    * back when the turn ends, unless cancelled; the person's other
-   * conversations in this space list theirs while they wait. A room's
-   * conversations other than this one are not the asker's own, so they are
-   * left out.
+   * conversations in this space list theirs while they wait, held ones
+   * included until their time passes. A room's conversations other than this
+   * one are not the asker's own, so they are left out.
    */
   private async reminders(
     chat: JobRow,
@@ -608,15 +677,21 @@ export class RunService {
     attemptId: string,
   ): Promise<Reminder[]> {
     return this.jobs.transaction(async (tx) => {
+      const now = (await databaseNow(tx)).getTime();
       const found: Reminder[] = [];
-      const here = await setAsideTimer(tx, chat.id, attemptId);
-      if (here)
+      const add = async (row: JobRow, wakeAt: string, here: boolean) => {
+        const held = await reminderHeld(tx, row.id, wakeAt);
+        if (held && Date.parse(wakeAt) <= now) return;
         found.push({
-          id: chat.id,
-          conversation: chat.title,
-          wakes_at: here.wake_at,
-          this_conversation: true,
+          id: row.id,
+          conversation: row.title,
+          wakes_at: wakeAt,
+          this_conversation: here,
+          status: held ? 'cancelled' : 'scheduled',
         });
+      };
+      const here = await setAsideTimer(tx, chat.id, attemptId);
+      if (here) await add(chat, here.wake_at, true);
       const others = await tx
         .select()
         .from(job)
@@ -631,17 +706,11 @@ export class RunService {
             ownedBy(actor),
           ),
         )
-        .orderBy(asc(job.nextWakeAt))
+        .orderBy(asc(job.updatedAt))
         .limit(50);
       for (const row of others) {
         const wait = waitSpec.safeParse(row.wait);
-        if (wait.success && wait.data.kind === 'timer')
-          found.push({
-            id: row.id,
-            conversation: row.title,
-            wakes_at: wait.data.wake_at,
-            this_conversation: false,
-          });
+        if (wait.success && wait.data.kind === 'timer') await add(row, wait.data.wake_at, false);
       }
       return found;
     });
@@ -677,11 +746,16 @@ export class RunService {
   }
 
   /**
-   * Cancel a reminder. This conversation's own is marked so the end of this
-   * turn does not put it back; another conversation's stops waiting at once
-   * and rests as a finished turn, so it never fires and its next message
-   * carries on as usual. Setting a new time is job.wait in the conversation
-   * it belongs to.
+   * Cancel a reminder, or turn a cancelled one back on.
+   *
+   * In this conversation, cancelling marks its own reminder so the end of
+   * this turn does not put it back; job.wait sets a new one.
+   *
+   * A reminder in another conversation is held instead (`jobs/reminder-hold.ts`):
+   * that conversation keeps resting on the same timer with no wake set, so it
+   * never fires, and run.resume restores the same due time while it is still
+   * ahead. Words the model read elsewhere can therefore never remove a
+   * reminder for good, and each change is said in both conversations.
    */
   private async manageReminder(
     claims: CapabilityClaims,
@@ -689,10 +763,10 @@ export class RunService {
     chat: JobRow,
     reminder: Reminder | null,
   ): Promise<unknown> {
-    if (name !== 'run.stop')
+    if (name === 'run.pause')
       throw new ServiceError(
         'payload_invalid',
-        'A reminder is not paused or resumed. run.stop cancels it; to change its time, cancel it and set a new one with job.wait in that conversation.',
+        'A reminder is not paused: run.stop cancels it, and run.resume turns a cancelled one back on.',
         409,
       );
     const notScheduled = {
@@ -701,6 +775,20 @@ export class RunService {
         'No reminder is set there now: it was already cancelled or has already come. Tell the person in one short sentence.',
     };
     if (!reminder) return notScheduled;
+    const shared = {
+      reminder: reminder.id,
+      conversation: reminder.conversation,
+      due_at: reminder.wakes_at,
+    };
+    const when = dueWords(reminder.wakes_at);
+    if (name === 'run.resume') return this.resumeReminder(claims, chat, reminder, shared, when);
+    if (!reminder.this_conversation && reminder.status === 'cancelled')
+      return {
+        status: 'already_cancelled',
+        ...shared,
+        undo: 'run.resume with this reminder id turns it back on.',
+        instruction: 'It was already cancelled. Tell the person in one short sentence.',
+      };
     const cancelled = await this.jobs.transaction(async (tx) => {
       if (reminder.this_conversation) {
         await requireCurrentAttempt(tx, claims);
@@ -716,32 +804,121 @@ export class RunService {
         return true;
       }
       const locked = await this.jobs.lock(tx, reminder.id);
-      const wait = waitSpec.safeParse(locked?.wait);
-      if (
-        locked?.state !== 'waiting_for_event_or_time' ||
-        !wait.success ||
-        wait.data.kind !== 'timer'
-      )
-        return false;
-      await this.jobs.move(tx, locked, { kind: 'wait_dropped' });
+      if (!locked || !restsOn(locked, reminder.wakes_at, false)) return false;
       await appendEvent(tx, {
         jobId: locked.id,
+        attemptId: await settingAttempt(tx, locked.id),
         type: 'notice',
-        payload: { kind: 'wait_dropped', wait: wait.data, by: chat.id },
-        dedupKey: `${claims.attempt_id}:wait-dropped:${locked.id}`,
+        payload: {
+          kind: REMINDER_HELD,
+          wake_at: reminder.wakes_at,
+          by: chat.id,
+          note: `This reminder, due ${when}, was cancelled from another conversation. It can be turned back on until then.`,
+        },
+        dedupKey: `${claims.attempt_id}:reminder-held:${locked.id}:${newId('op')}`,
       });
+      await receipt(
+        tx,
+        chat.id,
+        claims.attempt_id,
+        `Cancelled the reminder in "${reminder.conversation}", due ${when}. It can be turned back on until then.`,
+      );
+      // It keeps resting on its timer with no wake: the wake already queued
+      // names the old state version, so it finds nothing to start.
+      await tx
+        .update(job)
+        .set({
+          nextWakeAt: null,
+          attentionBaseWakeAt: null,
+          stateVersion: locked.stateVersion + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(job.id, locked.id));
       return true;
     });
     if (!cancelled) return notScheduled;
+    if (reminder.this_conversation)
+      return {
+        status: 'cancelled',
+        ...shared,
+        receipt: `Cancelled the reminder due ${when}: nothing is scheduled for it now, and it will not fire.`,
+        instruction:
+          'It is cancelled and will not fire. Tell the person in one short sentence. If they want it at another time instead, call job.wait with the new time.',
+      };
     return {
       status: 'cancelled',
-      reminder: reminder.id,
-      conversation: reminder.conversation,
-      was_due_at: reminder.wakes_at,
-      receipt: `Cancelled the reminder due at ${reminder.wakes_at}: nothing is scheduled for it now, and it will not fire.`,
-      instruction: reminder.this_conversation
-        ? 'It is cancelled and will not fire. Tell the person in one short sentence. If they want it at another time instead, call job.wait with the new time.'
-        : 'It is cancelled and will not fire. Tell the person in one short sentence.',
+      ...shared,
+      receipt: `Cancelled the reminder in "${reminder.conversation}", due ${when}: it will not fire unless turned back on.`,
+      undo: 'run.resume with this reminder id turns it back on, due at the same time.',
+      instruction:
+        'It is cancelled and will not fire. Tell the person in one short sentence, and that you can turn it back on.',
+    };
+  }
+
+  /** Turn a held reminder back on, at the time it was due, while that is still ahead. */
+  private async resumeReminder(
+    claims: CapabilityClaims,
+    chat: JobRow,
+    reminder: Reminder,
+    shared: Record<string, string>,
+    when: string,
+  ): Promise<unknown> {
+    if (reminder.status === 'scheduled')
+      return {
+        status: 'already_on',
+        ...shared,
+        instruction: 'It is still set. Tell the person in one short sentence when it comes.',
+      };
+    const resumed = await this.jobs.transaction(async (tx) => {
+      if (Date.parse(reminder.wakes_at) <= (await databaseNow(tx)).getTime()) return false;
+      if (reminder.this_conversation) {
+        // The end of this turn puts it back, now with its wake.
+        await requireCurrentAttempt(tx, claims);
+        await released(tx, chat.id, claims.attempt_id, reminder, when, claims.attempt_id);
+        return true;
+      }
+      const locked = await this.jobs.lock(tx, reminder.id);
+      if (!locked || !restsOn(locked, reminder.wakes_at, true)) return false;
+      await released(
+        tx,
+        locked.id,
+        await settingAttempt(tx, locked.id),
+        reminder,
+        when,
+        claims.attempt_id,
+      );
+      await receipt(
+        tx,
+        chat.id,
+        claims.attempt_id,
+        `Turned the reminder in "${reminder.conversation}" back on, due ${when}.`,
+      );
+      const wakeAt = new Date(reminder.wakes_at);
+      const [updated] = await tx
+        .update(job)
+        .set({
+          nextWakeAt: wakeAt,
+          attentionBaseWakeAt: wakeAt,
+          stateVersion: locked.stateVersion + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(job.id, locked.id))
+        .returning();
+      if (updated) await this.jobs.enqueue(tx, updated, 'timer');
+      return true;
+    });
+    if (!resumed)
+      return {
+        status: 'too_late',
+        ...shared,
+        instruction:
+          'Its time has already passed, so it cannot come back as it was. Tell the person, and offer to set a new reminder.',
+      };
+    return {
+      status: 'resumed',
+      ...shared,
+      receipt: `Turned the reminder in "${reminder.conversation}" back on, due ${when}.`,
+      instruction: 'It is back on and comes at its time. Tell the person in one short sentence.',
     };
   }
 

@@ -43,6 +43,7 @@ import {
 import { personSetSchedule } from './attention.ts';
 import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
+import { reminderHeld } from './reminder-hold.ts';
 import type { StandingWorkSettings } from './resting.ts';
 import { opensWithMention, recordSteer } from './steer.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
@@ -398,8 +399,16 @@ export class JobService {
     if (result.value === 'queued' && row.state !== 'running' && !(await this.attemptsLeft(tx, row)))
       throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     let wait = options.wait ?? { kind: 'none' };
-    const baseWakeAt =
-      result.value === 'queued'
+    // A conversation's reminder held from another conversation rests with no
+    // wake, so it cannot fire until it is turned back on (`reminder-hold.ts`).
+    const held =
+      row.kind === 'chat' &&
+      result.value === 'waiting_for_event_or_time' &&
+      wait.kind === 'timer' &&
+      (await reminderHeld(tx, row.id, wait.wake_at));
+    const baseWakeAt = held
+      ? null
+      : result.value === 'queued'
         ? new Date((await databaseNow(tx)).getTime() + Math.max(0, options.retryAfterMs ?? 0))
         : result.value === 'waiting_for_event_or_time' && wait.kind === 'timer'
           ? new Date(wait.wake_at)

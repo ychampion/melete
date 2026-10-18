@@ -93,6 +93,7 @@ import {
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
 import { workQuiet } from './quiet.ts';
+import { reminderHeld } from './reminder-hold.ts';
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
@@ -1052,10 +1053,14 @@ export class AttemptRunner {
     // due while a reply was written is put back all the same and fires at once,
     // late but never lost. Other work woken after its timer's time has nothing
     // left to wait for.
-    if (wait.kind === 'timer')
-      return row.kind === 'chat' || Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime()
-        ? wait
-        : null;
+    // A reminder held from another conversation comes back still held, and
+    // one whose time passed while held has nothing left to come back to.
+    if (wait.kind === 'timer') {
+      const ahead = Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime();
+      if (row.kind === 'chat' && !ahead && (await reminderHeld(tx, row.id, wait.wake_at)))
+        return null;
+      return row.kind === 'chat' || ahead ? wait : null;
+    }
     if (wait.kind !== 'event') return null;
     const [registration] = await tx
       .select({ id: trigger.id })

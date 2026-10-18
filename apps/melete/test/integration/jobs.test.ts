@@ -61,7 +61,6 @@ const INPUTS: TransitionInput[] = [
   { kind: 'approval_decided', decision: 'approved' },
   { kind: 'event_fired' },
   { kind: 'timer_fired' },
-  { kind: 'wait_dropped' },
   { kind: 'reconciled' },
   { kind: 'cancelled' },
 ];

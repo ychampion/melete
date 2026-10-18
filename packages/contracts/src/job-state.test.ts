@@ -31,7 +31,6 @@ const INPUTS: Record<TransitionInput['kind'], TransitionInput> = {
   approval_decided: { kind: 'approval_decided', decision: 'approved' },
   event_fired: { kind: 'event_fired' },
   timer_fired: { kind: 'timer_fired' },
-  wait_dropped: { kind: 'wait_dropped' },
   reconciled: { kind: 'reconciled' },
   cancelled: { kind: 'cancelled' },
 };
@@ -127,8 +126,6 @@ describe('illegal transitions are refused, not tolerated', () => {
     ['waiting_for_input', 'approval_decided'],
     ['waiting_for_event_or_time', 'reconciled'],
     ['needs_reconciliation', 'timer_fired'],
-    ['running', 'wait_dropped'],
-    ['waiting_for_input', 'wait_dropped'],
   ];
 
   for (const [from, input] of cases) {
