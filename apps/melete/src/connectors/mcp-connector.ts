@@ -65,6 +65,7 @@ export function mcpConnector(
     },
     catalog: { ...worker.catalog, audience: 'owner' },
     readOnlyDeclared: (kind) => worker.readOnly.includes(kind),
+    rawToolName: (kind) => worker.rawNames?.get(kind),
     async execute(action, context) {
       // Re-read authority immediately before the transport call. A cached startup
       // audience or scope list cannot authorize a worker after a grant is revoked.

@@ -6498,7 +6498,7 @@
       "checkConstraints": {
         "step_up_method": {
           "name": "step_up_method",
-          "value": "\"step_up\".\"method\" in ('password', 'passkey')"
+          "value": "\"step_up\".\"method\" in ('password', 'passkey', 'oidc')"
         }
       },
       "isRLSEnabled": false

@@ -97,6 +97,7 @@ import {
   deciding,
   escalationReason,
   loadApprovalSettings,
+  OUTSIDE_SEND_REASON,
   reachesOnlyPublisher,
   recordReview,
   reviewerApproves,
@@ -1135,24 +1136,28 @@ export class BrokerService implements BrokerOperations {
           ? (guests.guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
           : null;
       const checked = changeKey(action.connection_id, action.canonical_payload);
+      const base = tierOf(
+        [...doubts, ...warnings],
+        existingGuests,
+        guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
+      );
       // Asked for in so many words, to people whose addresses Melete can vouch
-      // for: a recipient planted in something the agent read still asks.
+      // for: a recipient planted in something the agent read still asks. Being
+      // told to send settles only the send itself: a send that also deletes,
+      // carries a password or invites guests asks as it did before.
       const sendsAsTold =
         told &&
         !connectorAsks &&
         !afterResponses &&
         !roomWork &&
         doubts.length === 0 &&
-        warnings.length === 0;
+        warnings.length === 0 &&
+        (base.tier !== 'person' || base.reason === OUTSIDE_SEND_REASON);
       const tier: TierDecision = money
         ? { tier: 'person', actionClass: null, reason: money.reason }
         : sendsAsTold
           ? { tier: 'person', actionClass: null, reason: TOLD_TO_SEND }
-          : tierOf(
-              [...doubts, ...warnings],
-              existingGuests,
-              guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
-            );
+          : base;
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
@@ -1220,11 +1225,14 @@ export class BrokerService implements BrokerOperations {
     tool: ConnectorTool,
   ) {
     const connector = this.options.connectors.get(action.connection_id);
+    const rawName = connector?.rawToolName?.(tool.name);
     return moneyMove({
       tool,
       provider: connector?.manifest.provider ?? '',
       payload: action.canonical_payload,
       metered: connector?.capability?.kind === tool.name,
+      ...(rawName ? { rawName } : {}),
+      page: connector?.personPaysPage?.(tool.name) ?? null,
     });
   }
 

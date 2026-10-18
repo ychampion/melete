@@ -9,6 +9,7 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import type { CatalogMetadata } from '../broker/catalog.ts';
+import type { PersonPaysPage } from '../broker/money.ts';
 import type { Query } from '../broker/records.ts';
 import type { Declaration, ReversalPlan } from '../broker/reversals.ts';
 import type { SignalSource, SubjectReader } from '../signals/types.ts';
@@ -116,6 +117,19 @@ export interface Connector {
    * failed; without it, the person is asked, as for any other effect.
    */
   readOnlyDeclared?(kind: string): boolean;
+  /**
+   * For a connector that renames its server's tools (an installed MCP server
+   * under the operator's aliases): the server's own name for this tool, which
+   * says what it does as much as the alias does. The money check reads both.
+   */
+  rawToolName?(kind: string): string | undefined;
+  /**
+   * A page this tool opens in the conversation where the person pays in the
+   * page themselves, as the installation's own policy declares it (never the
+   * server's description of itself). The money check does not ask for a
+   * step-up to open such a page.
+   */
+  personPaysPage?(kind: string): PersonPaysPage | null;
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   /**

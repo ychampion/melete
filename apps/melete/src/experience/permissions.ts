@@ -20,6 +20,7 @@ import type { BrokerService } from '../broker/service.ts';
 import { issueStepUp, STEP_UP_NEEDED } from '../broker/step-up.ts';
 import { ENDED_NOTE, ENDED_STATES } from '../jobs/withdraw.ts';
 import { actionBecause } from '../memory/basis.ts';
+import { FailureWindow, type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import {
   eligibleApprovers,
@@ -120,15 +121,33 @@ const MONEY_REASON = 'This moves money, so you confirm it is you before it happe
 /** The general first reason, which a money move's card replaces. */
 const ASK_REASON = 'This change needs your permission before it happens.';
 
+/** Wrong passwords at money moves' confirmations an account may make in an hour. */
+export const STEP_UP_FAILURES_PER_HOUR = 10;
+
 export class ExperiencePermissions {
-  /** Wrong passwords at a money move's confirmation, counted per account. */
-  private readonly stepUps = new LoginThrottle(undefined, undefined, undefined, 'step_up');
+  /**
+   * Tries at a money move's confirmation, counted per account where every
+   * instance on the database sees them: a backoff after a few wrong ones, and
+   * no more than `STEP_UP_FAILURES_PER_HOUR` wrong ones an hour. A signed-in
+   * session that is not the person's own cannot guess its way past either.
+   */
+  private readonly stepUps: LoginThrottle;
+  private readonly stepUpFailures: FailureWindow;
 
   constructor(
     readonly sql: Sql,
     readonly broker: BrokerService,
     readonly effects: ExperienceEffects,
-  ) {}
+    limits: LimitStore = new PostgresLimitStore(sql),
+  ) {
+    this.stepUps = new LoginThrottle(undefined, undefined, limits, 'step_up');
+    this.stepUpFailures = new FailureWindow(
+      limits,
+      'step_up.failures',
+      STEP_UP_FAILURES_PER_HOUR,
+      60 * 60_000,
+    );
+  }
 
   async find(spaceId: string, id: string) {
     const [row] = await this.sql`select p.*, j.experience_parent_id, j.experience_command_key,
@@ -284,20 +303,32 @@ export class ExperiencePermissions {
     // The person's own permissions only. A room's money move cannot be
     // confirmed yet, so it cannot be allowed: it stays waiting, nothing moves.
     const row = await this.find(spaceId, id);
-    if (row.step_up_required !== true || row.decision !== null)
+    // An ask recorded before money moves were marked is confirmed the same way.
+    const money =
+      row.step_up_required === true ||
+      (await this.broker.movesMoneyNow(await loadAction(this.sql, String(row.action_id))));
+    if (!money || row.decision !== null)
       throw new ServiceError('invalid_request', 'This does not need confirming.', 400);
     const [account] = await this
       .sql`select password_hash from principal where id = ${principal} and disabled_at is null`;
     const hash = account?.password_hash ? String(account.password_hash) : null;
-    const verified = hash ? await Bun.password.verify(input.password, hash) : false;
-    if (!verified)
+    if (!hash)
       throw new ServiceError(
-        hash ? 'wrong_password' : 'no_password',
-        hash
-          ? 'That password is not right.'
-          : 'Your account has no password to confirm with. Set one in Settings first.',
+        'no_password',
+        'Your account has no password to confirm with. Set one in Settings first.',
         400,
       );
+    // Counted before the password is weighed, so tries made at once count too.
+    const held = await this.stepUpFailures.reserve(principal);
+    if (held > 0)
+      throw new ServiceError(
+        'step_up_rate_limited',
+        `Too many wrong passwords. Try again in ${Math.ceil(held / 60)} minutes.`,
+        429,
+      );
+    if (!(await Bun.password.verify(input.password, hash)))
+      throw new ServiceError('wrong_password', 'That password is not right.', 400);
+    await this.stepUpFailures.release(principal);
     await this.stepUps.succeeded(principal);
     const issued = await issueStepUp(this.sql, {
       principalId: principal,

@@ -10,7 +10,7 @@ CREATE TABLE "step_up" (
 	"expires_at" timestamp with time zone NOT NULL,
 	"used_at" timestamp with time zone,
 	CONSTRAINT "step_up_token_hash_unique" UNIQUE("token_hash"),
-	CONSTRAINT "step_up_method" CHECK ("step_up"."method" in ('password', 'passkey'))
+	CONSTRAINT "step_up_method" CHECK ("step_up"."method" in ('password', 'passkey', 'oidc'))
 );
 --> statement-breakpoint
 ALTER TABLE "approval" ADD COLUMN "step_up_required" boolean DEFAULT false NOT NULL;--> statement-breakpoint

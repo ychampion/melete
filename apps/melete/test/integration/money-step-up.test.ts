@@ -22,7 +22,11 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { issueStepUp, STEP_UP_NEEDED } from '../../src/broker/step-up.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { ExperienceEffects } from '../../src/experience/effects.ts';
-import { ExperiencePermissions } from '../../src/experience/permissions.ts';
+import {
+  ExperiencePermissions,
+  STEP_UP_FAILURES_PER_HOUR,
+} from '../../src/experience/permissions.ts';
+import { limitKey } from '../../src/ops/limiter.ts';
 import { principalContext } from '../../src/principals/authority.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
@@ -370,6 +374,47 @@ describe('the confirmation, through the permission routes', () => {
       decision: 'approved',
       decided_by: s.personId,
     });
+  });
+
+  databaseTest(
+    'wrong passwords lock the confirmation for every instance, the right one included',
+    async () => {
+      const s = await setup();
+      const proposal = await s.propose('payments.pay', { amount: 5 });
+      const approvalId = String((await s.approval(proposal.action_id)).id);
+      const space = s.claims.space_id;
+      for (let i = 0; i < STEP_UP_FAILURES_PER_HOUR; i++) {
+        // Waiting out the short pause between tries; the hour's count stays.
+        await s.sql`delete from rate_limit_window where key = ${limitKey('step_up', s.personId)}`;
+        const wrong = await rejectionOf(
+          s.as(s.personId, () =>
+            s.permissions.stepUp(space, approvalId, { password: `guess ${i}` }),
+          ),
+        );
+        expect(wrong).toMatchObject({ code: 'wrong_password' });
+      }
+      await s.sql`delete from rate_limit_window where key = ${limitKey('step_up', s.personId)}`;
+      // Another instance of the service answers the same way.
+      const elsewhere = new ExperiencePermissions(s.sql, s.broker, s.permissions.effects);
+      const locked = await rejectionOf(
+        s.as(s.personId, () => elsewhere.stepUp(space, approvalId, { password: PASSWORD })),
+      );
+      expect(locked).toMatchObject({ code: 'step_up_rate_limited' });
+      const [issued] =
+        await s.sql`select count(*)::int as n from step_up where approval_id = ${approvalId}`;
+      expect(issued?.n).toBe(0);
+    },
+  );
+
+  databaseTest('a money ask recorded before the mark can still be confirmed', async () => {
+    const s = await setup();
+    const proposal = await s.propose('payments.pay', { amount: 5 });
+    const approvalId = String((await s.approval(proposal.action_id)).id);
+    await s.sql`update approval set step_up_required = false where id = ${approvalId}`;
+    const { step_up_token } = await s.as(s.personId, () =>
+      s.permissions.stepUp(s.claims.space_id, approvalId, { password: PASSWORD }),
+    );
+    expect(step_up_token).toBeString();
   });
 
   databaseTest('someone else cannot confirm it, even with their own password', async () => {

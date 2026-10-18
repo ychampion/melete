@@ -671,7 +671,7 @@ export const stepUp = pgTable(
   },
   (t) => [
     index('step_up_approval_idx').on(t.approvalId),
-    check('step_up_method', sql`${t.method} in ('password', 'passkey')`),
+    check('step_up_method', sql`${t.method} in ('password', 'passkey', 'oidc')`),
   ],
 );
 

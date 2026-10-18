@@ -21,7 +21,7 @@ export const STEP_UP_TTL_MS = 2 * 60_000;
 export const STEP_UP_NEEDED =
   'This moves money, so it needs you to confirm it is you, with your password, when you allow it.';
 
-export type StepUpMethod = 'password' | 'passkey';
+export type StepUpMethod = 'password' | 'passkey' | 'oidc';
 
 /** How a token is kept: only its digest. */
 export const stepUpDigest = (token: string) => createHash('sha256').update(token).digest('hex');
