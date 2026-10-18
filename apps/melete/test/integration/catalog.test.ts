@@ -497,6 +497,33 @@ dbTest('skills.read reads an indexed skill by name, once per read, with a tool e
   ]);
 });
 
+dbTest('a skill given in full is not offered again as its own tool', async () => {
+  const skill = (name: string): Skill => ({
+    path: `${name}/SKILL.md`,
+    body: `The ${name} procedure.`,
+    frontmatter: {
+      name,
+      tools: [],
+      description: `Find a ${name} procedure`,
+      triggers: [name],
+      max_tokens: 400,
+    },
+  });
+  const s = await setup({ skills: [skill('receipts'), skill('refunds')] });
+  // The attempt started with "receipts" in its instructions, as the runner records it.
+  await s.sql`insert into learning_attempt (attempt_id, versions) values (${s.claims.attempt_id},
+    ${JSON.stringify({ attempt_id: s.claims.attempt_id, skills: [{ name: 'receipts', version: 'sha256:x' }] })}::jsonb)
+    on conflict (attempt_id) do update set versions = excluded.versions`;
+  await s.sql`delete from attempt_tool_context where attempt_id = ${s.claims.attempt_id}`;
+  const offered = (await s.broker.discovery.search(s.claims, 'procedure')).map((tool) => tool.name);
+  // Calling it would only read the same words again, a round trip before any work.
+  expect(offered).not.toContain('skills.receipts');
+  expect(offered).toContain('skills.refunds');
+  expect(
+    await rejectionOf(s.broker.discovery.callSkill(s.claims, 'skills.receipts', {})),
+  ).toMatchObject({ code: 'unknown_tool' });
+});
+
 dbTest('a private space skill is read only by the space’s own owner', async () => {
   const s = await setup({
     skills: [

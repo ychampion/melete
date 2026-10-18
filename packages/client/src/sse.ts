@@ -79,9 +79,40 @@ function normalizeEndings(text: string): { normalized: string; held: string } {
   return { normalized: body.replace(/\r\n/g, '\n').replace(/\r/g, '\n'), held };
 }
 
-/** Read a response body and yield one frame at a time. */
+/** Nothing, not even a keepalive, arrived on a stream for its idle limit. */
+export class SseIdleError extends Error {
+  override name = 'SseIdleError';
+}
+
+/** The next chunk, or an `SseIdleError` when none comes within `idleMs`. */
+async function nextChunk<Chunk>(
+  reader: { read(): Promise<Chunk> },
+  idleMs: number | undefined,
+): Promise<Chunk> {
+  if (!idleMs) return reader.read();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const idle = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new SseIdleError(`No data for ${idleMs} ms; the stream is treated as lost.`)),
+      idleMs,
+    );
+  });
+  try {
+    return await Promise.race([reader.read(), idle]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Read a response body and yield one frame at a time. With `idleMs`, a stream
+ * that sends nothing for that long, keepalives included, ends in an
+ * `SseIdleError`: a connection the network dropped without closing it would
+ * otherwise wait forever.
+ */
 export async function* readSse(
   body: ReadableStream<Uint8Array>,
+  options: { idleMs?: number } = {},
 ): AsyncGenerator<SseFrame, void, void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -92,7 +123,7 @@ export async function* readSse(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await nextChunk(reader, options.idleMs);
       if (done) break;
 
       const { normalized, held } = normalizeEndings(

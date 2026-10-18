@@ -24,7 +24,12 @@ export type UsageClass = 'interactive' | 'background';
 export type UsageTier = 'interactive' | 't1' | 't2' | 'service';
 
 /** Side calls a person starts and waits on. */
-const INTERACTIVE_PURPOSES: ReadonlySet<string> = new Set(['voice', 'companies']);
+const INTERACTIVE_PURPOSES: ReadonlySet<string> = new Set([
+  'voice',
+  'companies',
+  // The first line of a turn the person is waiting on.
+  'acknowledgement',
+]);
 
 /**
  * Side calls made inside an agent turn, which take that turn's class: a
