@@ -40,7 +40,15 @@
 #    is configured here without the capability and handed to the launcher,
 #    which loads the engine, takes the attempt over its port, and runs this same
 #    program again before the engine serves (see process_launcher.py).
+#
+# 6. What the engine and the code it runs make under /work keeps the group's
+#    write bit. The job's workspace belongs to the service, which shares this
+#    group and has to move and remove what is in it. A folder made under the
+#    usual umask 022 (mode 755) cannot be moved to another directory by the
+#    service, nor its files removed. Every process the engine starts inherits
+#    this umask.
 set -eu
+umask 002
 
 : "${HERMES_HOME:?HERMES_HOME must be set}"
 SPARE="${MELETE_RUNTIME_SPARE:-}"
