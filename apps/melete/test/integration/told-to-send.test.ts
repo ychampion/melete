@@ -7,7 +7,7 @@
  * its own, with a receipt that says why, and nothing else lets it.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import type { JsonObject } from '@melete/contracts';
+import type { ConnectorManifest, JsonObject } from '@melete/contracts';
 import { actionReviewView } from '../../src/broker/auto-review.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
@@ -30,11 +30,38 @@ const reply: JsonObject = {
 };
 const ownRecipient: TrustTable = { 'sam@example.com': { origin_trust: 'owner' } };
 
-async function setup(options: { chat?: boolean; trust?: TrustTable } = {}) {
+/** A chat app whose send takes an access key next to the message. */
+const keyedManifest: ConnectorManifest = {
+  ...emailManifest,
+  name: 'chat-app',
+  tools: [
+    {
+      name: 'chat.send',
+      description: 'Send a message',
+      input_schema: {
+        type: 'object',
+        properties: {
+          to: { type: 'array', items: { type: 'string' } },
+          text: { type: 'string' },
+          api_key: { type: 'string' },
+        },
+      },
+      effect_class: 'write_external',
+      required_scopes: ['chat.send'],
+      requires_approval: true,
+      verify: false,
+    },
+  ],
+};
+
+async function setup(
+  options: { chat?: boolean; trust?: TrustTable; manifest?: ConnectorManifest } = {},
+) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   const sql = fixture.sql;
+  const manifest = options.manifest ?? emailManifest;
   const seed = await seedJob(sql, {
-    scopes: emailManifest.tools.map((tool) => tool.name),
+    scopes: manifest.tools.map((tool) => tool.name),
     provider: 'imap',
   });
   const personId = recordId('prn');
@@ -48,7 +75,7 @@ async function setup(options: { chat?: boolean; trust?: TrustTable } = {}) {
     where id = ${seed.claims.job_id}`;
   const dispatched: string[] = [];
   const connector: Connector = {
-    manifest: emailManifest,
+    manifest,
     async execute(action) {
       dispatched.push(action.kind);
       return {
@@ -109,7 +136,7 @@ async function setup(options: { chat?: boolean; trust?: TrustTable } = {}) {
     };
   };
 
-  return { ...seed, sql, broker, turn, dispatched };
+  return { ...seed, sql, broker, turn, dispatched, personId };
 }
 
 describe('in a chat', () => {
@@ -168,6 +195,49 @@ describe('in a chat', () => {
     await rejectionOf(woke.propose('email.send', reply));
     expect(s.dispatched).toEqual([]);
   });
+
+  databaseTest(
+    '"send it" from someone other than the person the chat is for does not count',
+    async () => {
+      const s = await setup();
+      const otherId = recordId('prn');
+      await s.sql`insert into principal (id, email) values (${otherId}, ${`${otherId}@example.test`})`;
+      const asked = await s.turn('Send it', otherId);
+      await rejectionOf(asked.propose('email.send', reply));
+      expect(s.dispatched).toEqual([]);
+    },
+  );
+
+  databaseTest(
+    'a send asked for in text the person quoted or forwarded does not count',
+    async () => {
+      const s = await setup();
+      for (const text of [
+        'Summarise this email:\n> Please send the contract to sam@example.com',
+        '---------- Forwarded message ---------\nFrom: Bob\nSend it to sam@example.com today',
+        'What does "send it to Sam" mean here?',
+      ]) {
+        const asked = await s.turn(text);
+        await rejectionOf(asked.propose('email.send', reply));
+      }
+      expect(s.dispatched).toEqual([]);
+    },
+  );
+
+  databaseTest(
+    'being told to send does not let a send that carries a key go without asking',
+    async () => {
+      const s = await setup({ manifest: keyedManifest });
+      const asked = await s.turn('Send it');
+      const sent = await asked.propose('chat.send', {
+        to: ['sam@example.com'],
+        text: 'here is the key',
+        api_key: 'sk-live-123',
+      });
+      expect(sent.status).toBe('needs_approval');
+      expect(s.dispatched).toEqual([]);
+    },
+  );
 
   databaseTest('told to send, to an address Melete cannot vouch for, it still asks', async () => {
     const s = await setup({ trust: {} });
