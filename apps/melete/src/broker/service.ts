@@ -125,6 +125,7 @@ import {
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
+import { type DontMatch, dontRulesFor, matchDontRule } from './dont-rules.ts';
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import { type MoneyMove, moneyMove } from './money.ts';
@@ -298,6 +299,8 @@ type Admissibility = {
    * covers it, and its Allow counts only with the person's step-up.
    */
   money: MoneyMove | null;
+  /** The person's own don't-rule this action goes against, which its card quotes. */
+  dont: DontMatch | null;
 };
 
 /** A review to run once the proposal's transaction has committed. */
@@ -1005,6 +1008,18 @@ export class BrokerService implements BrokerOperations {
     const changes =
       tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
     const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
+    // The person's own don't-rule, from their memory, the agent's instructions
+    // or this conversation: the one thing besides money a card is asked for.
+    const said = changes ? await dontRulesFor(tx, job, action.attempt_id) : null;
+    const dont = said
+      ? matchDontRule({
+          rules: said.rules,
+          kind: tool.name,
+          payload: action.canonical_payload,
+          movesMoney: money !== null,
+          current: said.current,
+        })
+      : null;
     const provider = this.options.connectors.get(action.connection_id)?.manifest.provider ?? '';
     // A hand-off from a room puts a task in front of a person, who reads it
     // whole and runs or declines it: their answer is the approval, so the
@@ -1047,6 +1062,7 @@ export class BrokerService implements BrokerOperations {
     const afterResponses = changes && (await asksAfterResponses(tx, job.id, action));
     const requiresApproval =
       money !== null ||
+      dont !== null ||
       toolAsks ||
       connectorAsks ||
       afterResponses ||
@@ -1096,6 +1112,7 @@ export class BrokerService implements BrokerOperations {
     const authorizedBy =
       requiresApproval &&
       !money &&
+      !dont &&
       !roomWork &&
       warnings.length > 0 &&
       this.options.resolveScopedGrant
@@ -1105,6 +1122,7 @@ export class BrokerService implements BrokerOperations {
       authorizedBy !== null ||
       (requiresApproval &&
         !money &&
+        !dont &&
         !roomWork &&
         warnings.length === 0 &&
         this.options.resolveStandingGrant !== undefined &&
@@ -1147,17 +1165,20 @@ export class BrokerService implements BrokerOperations {
       // carries a password or invites guests asks as it did before.
       const sendsAsTold =
         told &&
+        !dont &&
         !connectorAsks &&
         !afterResponses &&
         !roomWork &&
         doubts.length === 0 &&
         warnings.length === 0 &&
         (base.tier !== 'person' || base.reason === OUTSIDE_SEND_REASON);
-      const tier: TierDecision = money
-        ? { tier: 'person', actionClass: null, reason: money.reason }
-        : sendsAsTold
-          ? { tier: 'person', actionClass: null, reason: TOLD_TO_SEND }
-          : base;
+      const tier: TierDecision = dont
+        ? { tier: 'person', actionClass: null, reason: dont.reason }
+        : money
+          ? { tier: 'person', actionClass: null, reason: money.reason }
+          : sendsAsTold
+            ? { tier: 'person', actionClass: null, reason: TOLD_TO_SEND }
+            : base;
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
@@ -1167,7 +1188,7 @@ export class BrokerService implements BrokerOperations {
         // the reviewer or a publishing policy; work in the room's own workspace
         // stays under the sandbox rule, as it does for a person.
         outcome:
-          money || connectorAsks || afterResponses
+          money || dont || connectorAsks || afterResponses
             ? 'person'
             : sendsAsTold
               ? 'policy_approved'
@@ -1207,6 +1228,7 @@ export class BrokerService implements BrokerOperations {
       authorized_by: authorizedBy,
       auto,
       money,
+      dont,
     };
   }
 
@@ -1610,6 +1632,22 @@ export class BrokerService implements BrokerOperations {
   ): Promise<string | undefined> {
     const options = this.options.autoReview;
     const { job, action } = context;
+    // The person's own rule, quoted on the card with where it came from.
+    if (classified.dont) {
+      await recordReview(tx, {
+        action_id: action.id,
+        job_id: job.id,
+        space_id: job.space_id,
+        attempt_id: context.claims.attempt_id,
+        tier: 'person',
+        action_class: null,
+        decided_by: 'policy',
+        outcome: 'escalated',
+        risk: null,
+        reason: classified.dont.reason,
+      });
+      return classified.dont.reason;
+    }
     // A change on the person's own calendar that touches something important
     // says what, on its card, so they know why they are asked.
     if (

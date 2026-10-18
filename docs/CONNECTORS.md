@@ -83,6 +83,19 @@ and with a receipt that says why (`apps/melete/src/broker/told.ts`). Asking for
 a draft, saying not to send yet, or asking a question about sending does not
 count, and neither does a turn no person wrote. A recipient whose origin Melete
 cannot vouch for still asks.
+
+Besides money moves, the one thing that puts a card in front of an action the
+agent would otherwise take is the person's own "don't". The broker reads three
+places that are theirs: memory items they told Melete themselves (origin
+`owner`; words saved from an email or a page do not count), the agent's
+instructions, and their own messages in this conversation. A rule such as
+"Don't email Bob", "Never book Ryanair" or "Stop posting in #general" covers
+actions of that kind that reach what it names (a recipient, a payee, a channel,
+a domain); a rule that names no one covers every action of its kind. The card
+quotes the rule and says where it came from. Asking for that very thing in the
+message being answered lifts an older rule, and only the person the job works
+for can set or lift one (`apps/melete/src/broker/dont-rules.ts`).
+
 Evidence for the default effect gate is conformance 4, `An approval cannot be
 spent on different content`; a manifest's schema declares what a tool takes,
 and admission is what decides whether it runs.
