@@ -73,3 +73,23 @@ test('the start of what was read is a button: read more, reading, or try again',
   );
   expect(failed).toContain('Try again');
 });
+
+test('a turn far from the view keeps its words, so find in page and screen readers reach it', () => {
+  const html = renderToStaticMarkup(
+    <TurnSlot
+      turnId="turn_1"
+      words={{ asked: 'Step 3: run the checks', answered: 'The build is green.' }}
+      root={root}
+      windowed
+      near={false}
+    >
+      <div className="turn" data-turn="turn_1">
+        <pre>{OUTPUT}</pre>
+      </div>
+    </TurnSlot>,
+  );
+  expect(html).toContain('data-drawn="false"');
+  expect(html).toContain('<p>Step 3: run the checks</p>');
+  expect(html).toContain('<p>The build is green.</p>');
+  expect(html).not.toContain(OUTPUT.slice(0, 100));
+});

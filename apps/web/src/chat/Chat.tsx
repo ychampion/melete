@@ -1444,6 +1444,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                     ) : null}
                     <TurnSlot
                       turnId={turn.id}
+                      words={{ asked: turn.turn.text, answered: finalText(turn) }}
                       root={scrollRef}
                       windowed={windowed}
                       near={index >= transcript.turns.length - WINDOW_FROM || index < wentInAbove}

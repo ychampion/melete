@@ -18,6 +18,7 @@ export const UNDRAWN_HEIGHT = 240;
 /** One turn in the transcript. A turn holding the keyboard focus is never let go. */
 export function TurnSlot({
   turnId,
+  words,
   root,
   windowed,
   near: startsNear,
@@ -25,6 +26,11 @@ export function TurnSlot({
 }: {
   /** The turn, named on the slot so it can be found while it is not drawn. */
   turnId: string;
+  /**
+   * What the person asked and the answer, as plain text. A turn not drawn
+   * keeps these, so find in page and a screen reader still reach it.
+   */
+  words?: { asked: string; answered: string };
   /** The scrolling transcript. */
   root: RefObject<HTMLDivElement | null>;
   /** Whether the transcript is long enough to draw only near the view. */
@@ -73,7 +79,21 @@ export function TurnSlot({
       data-drawn={drawn ? undefined : 'false'}
       style={drawn ? undefined : { height: height.current ?? UNDRAWN_HEIGHT }}
     >
-      {drawn ? children : null}
+      {drawn ? children : words ? <TurnWords words={words} /> : null}
+    </div>
+  );
+}
+
+/**
+ * A turn far from the view, as plain words: two paragraphs where the drawn
+ * turn has dozens of elements. The browser skips laying it out until it is
+ * near (`content-visibility`), and the turn is drawn in full before then.
+ */
+function TurnWords({ words }: { words: { asked: string; answered: string } }) {
+  return (
+    <div className="turn-words">
+      {words.asked ? <p>{words.asked}</p> : null}
+      {words.answered ? <p>{words.answered}</p> : null}
     </div>
   );
 }
