@@ -1236,30 +1236,42 @@ export class ExperienceEvents {
   }
 
   /**
-   * The events of some of a conversation's turns, oldest first, for a page of
-   * its messages. The newest page also takes the events no turn owns from its
-   * first event on, as a full replay would. `last_seq` is the conversation's
-   * newest event when this was read, where a stream carries on; `events_cursor`
-   * is set when these turns have more events than `limit`, and is the seq the
-   * rest are read on from, as `after`. `from` is when the oldest of the turns
-   * was written: `messages_after` is where the job's own stream holds its message.
+   * Where a page of a conversation's messages hands over to its stream: the
+   * newest event, once what the job did is projected. It is read before the
+   * page's turns. Events are written in seq order, so every event at or before
+   * it was there first and belongs to a turn the page then finds, and every
+   * one after it comes on the stream; a turn that begins while the page is
+   * read comes on the stream whole. Only reached once the chat was found to be
+   * the person's; projection checks that again for itself.
    */
-  async ofTurns(
-    spaceId: string,
-    jobId: string,
-    turnIds: readonly string[],
-    page: { newest: boolean; from?: string; after?: number; limit?: number },
-    principalId = requestPrincipal(),
-  ) {
-    const { newest, from, after, limit = MESSAGE_PAGE_EVENT_LIMIT } = page;
+  async cut(spaceId: string, jobId: string, principalId = requestPrincipal()): Promise<number> {
     await this.sync(spaceId, jobId, principalId);
-    const experience = sql`${event.payload}->>'kind' = 'experience'`;
-    const turnOf = sql<string | null>`${event.payload}->>'turn_id'`;
     const [last] = await this.db
       .select({ seq: sql<number | null>`max(${event.seq})` })
       .from(event)
-      .where(and(eq(event.jobId, jobId), experience));
-    const lastSeq = Number(last?.seq ?? 0);
+      .where(and(eq(event.jobId, jobId), sql`${event.payload}->>'kind' = 'experience'`));
+    return Number(last?.seq ?? 0);
+  }
+
+  /**
+   * The events of some of a conversation's turns, oldest first, for a page of
+   * its messages, up to `until` (`cut`), read before the turns. The newest
+   * page also takes the events no turn owns from its first event on, as a full
+   * replay would. `last_seq` is `until`, where a stream carries on; nothing
+   * after it is here, so nothing comes twice. `events_cursor` is set when these
+   * turns have more events than `limit`, and is the seq the rest are read on
+   * from, as `after`. `from` is when the oldest of the turns was written:
+   * `messages_after` is where the job's own stream holds its message.
+   */
+  async ofTurns(
+    jobId: string,
+    turnIds: readonly string[],
+    page: { newest: boolean; until: number; from?: string; after?: number; limit?: number },
+  ) {
+    const { newest, until, from, after, limit = MESSAGE_PAGE_EVENT_LIMIT } = page;
+    const experience = sql`${event.payload}->>'kind' = 'experience'`;
+    const turnOf = sql<string | null>`${event.payload}->>'turn_id'`;
+    const lastSeq = until;
     const owned = turnIds.length ? inArray(turnOf, [...turnIds]) : undefined;
     // The person's message is written with its turn, at the same moment, so the
     // job's own stream holds these turns' messages from there on.
@@ -1301,6 +1313,7 @@ export class ExperienceEvents {
           eq(event.jobId, jobId),
           experience,
           which,
+          lte(event.seq, until),
           after === undefined ? undefined : gt(event.seq, after),
         ),
       )

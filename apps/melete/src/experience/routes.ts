@@ -694,17 +694,24 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /conversations/{id}/messages': async (spaceId, c) => {
       const id = c.req.param('id') ?? '';
       const query = c.req.query();
+      // Where the stream takes over is read before the turns (`cut`), so an
+      // event that lands while this is read is on the stream, never in a gap.
+      // The chat is checked to be the person's first.
+      const until =
+        query.events === 'true'
+          ? await service.requireThread(spaceId, id).then(() => events.cut(spaceId, id))
+          : undefined;
       const page = await service.messages(spaceId, id, query);
-      if (query.events !== 'true' || page.next_cursor === undefined) return page;
+      if (until === undefined || page.next_cursor === undefined) return page;
       // The newest page carries the events after it too; an older one only its own.
       return {
         ...page,
         ...(await events.ofTurns(
-          spaceId,
           id,
           page.turns.map((turn) => turn.id),
           {
             newest: !query.before,
+            until,
             from: page.turns[0]?.created_at,
             after: query.events_after === undefined ? undefined : Number(query.events_after),
           },

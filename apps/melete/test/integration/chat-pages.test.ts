@@ -16,8 +16,9 @@ import {
   turnList,
 } from '@melete/contracts';
 import { session } from '../../src/db/auth-schema.ts';
-import { owner, space } from '../../src/db/schema.ts';
+import { owner, principal, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
+import { ExperienceEvents } from '../../src/experience/events.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -336,5 +337,150 @@ withDb('a chat read a page at a time', () => {
       .flatMap((entry) => (entry.item.type === 'text_delta' ? [entry.item.text] : []))
       .join('');
     expect(words).toContain('Step 19 done.');
+  }, 120_000);
+
+  test("a cursor is refused in any chat but its own, and pages are read only by the chat's person", async () => {
+    const chat = await newChat();
+    const other = await newChat();
+    for (let n = 1; n <= 3; n++) await turn(chat.id, n);
+    await turn(other.id, 1);
+    const first = await page(chat.id, 'limit=1');
+    const cursor = encodeURIComponent(required(first.next_cursor));
+    // Another chat's cursor names no turn of this one.
+    expect(
+      (await request(`/conversations/${other.id}/messages?limit=1&before=${cursor}`)).status,
+    ).toBe(400);
+    // Well formed, naming a turn that is not there.
+    const madeUp = Buffer.from(`t|${new Date().toISOString()}|turn_none`).toString('base64url');
+    expect(
+      (await request(`/conversations/${chat.id}/messages?limit=1&before=${madeUp}`)).status,
+    ).toBe(400);
+    const queries = [
+      '',
+      'limit=1',
+      `limit=1&before=${cursor}`,
+      'limit=1&events=true',
+      `limit=1&events=true&before=${cursor}`,
+      'limit=1&events=true&events_after=0',
+    ];
+    // Another person on the installation, in their own space, with every new parameter.
+    const db = required(handle);
+    const them = newId('own');
+    const theirSpace = newId('sp');
+    const theirToken = randomBytes(32).toString('base64url');
+    await db.db.insert(principal).values({ id: them, email: `${them}@example.test` });
+    await db.db.insert(space).values({
+      id: theirSpace,
+      name: 'Personal',
+      ownerPrincipalId: them,
+      gitPath: `/spaces/${theirSpace}`,
+    });
+    await db.db.insert(session).values({
+      tokenHash: createHash('sha256').update(theirToken).digest('hex'),
+      ownerId,
+      principalId: them,
+      spaceId: theirSpace,
+      expiresAt: new Date(Date.now() + 600000),
+    });
+    for (const query of queries) {
+      const read = await required(app).request(`/conversations/${chat.id}/messages?${query}`, {
+        headers: { Cookie: `melete_session=${theirToken}` },
+      });
+      expect([query, read.status]).toEqual([query, 404]);
+      expect(await read.text()).not.toContain('Step');
+    }
+    // Another person's chat in the same space.
+    await db.sql`update job set principal_id = ${them} where id = ${chat.id}`;
+    for (const query of queries) {
+      const read = await request(`/conversations/${chat.id}/messages?${query}`);
+      expect([query, read.status]).toEqual([query, 404]);
+      expect(await read.text()).not.toContain('Step');
+    }
+  }, 120_000);
+
+  test('turns written at the same moment page back once each, in the order a whole read gives', async () => {
+    const chat = await newChat();
+    for (let n = 1; n <= 5; n++) await turn(chat.id, n);
+    const db = required(handle);
+    // One instant, to the microsecond, for every turn: only the id tells them apart.
+    await db.sql`update experience_turn set created_at = '2026-10-18 10:00:00.123456+00'
+      where job_id = ${chat.id}`;
+    const whole = async () =>
+      turnList
+        .parse(await (await request(`/conversations/${chat.id}/messages`)).json())
+        .turns.map((entry) => entry.id);
+    const same = await whole();
+    expect((await walk(chat.id, 1)).map((entry) => entry.id)).toEqual(same);
+    expect((await walk(chat.id, 2)).map((entry) => entry.id)).toEqual(same);
+    expect(new Set(same).size).toBe(5);
+    // A microsecond apart inside one millisecond, in the opposite order to their ids.
+    await db.sql`update experience_turn t
+      set created_at = '2026-10-18 10:00:00.123000+00'::timestamptz + make_interval(secs => r.n / 1000000.0)
+      from (select id, row_number() over (order by id desc) as n from experience_turn
+        where job_id = ${chat.id}) r
+      where t.id = r.id`;
+    const apart = await whole();
+    expect(apart).toEqual([...same].reverse());
+    expect((await walk(chat.id, 1)).map((entry) => entry.id)).toEqual(apart);
+    expect((await walk(chat.id, 2)).map((entry) => entry.id)).toEqual(apart);
+  }, 120_000);
+
+  test('a turn that begins while the newest page is read is on the page or on the stream after it, whole', async () => {
+    // A turn begins, and another tab's stream projects its first events, right
+    // after this read brings the chat's events up to date: between the page's
+    // reads, where a gap could open.
+    const sync = ExperienceEvents.prototype.sync;
+    let landing: string | null = null;
+    ExperienceEvents.prototype.sync = async function (
+      this: ExperienceEvents,
+      ...args: Parameters<typeof sync>
+    ) {
+      await sync.apply(this, args);
+      const chatId = landing;
+      landing = null;
+      if (!chatId) return;
+      const running = await begin(chatId, 'Next');
+      await running.say('Working on it. ');
+      await sync.apply(this, args);
+    };
+    try {
+      await landsDuringRead();
+    } finally {
+      ExperienceEvents.prototype.sync = sync;
+    }
+    async function landsDuringRead() {
+      const chat = await newChat();
+      await turn(chat.id, 1);
+      await turn(chat.id, 2);
+      landing = chat.id;
+      const read = await page(chat.id, 'limit=12&events=true');
+      expect(landing).toBeNull();
+      const events = required(read.events);
+      const lastSeq = required(read.last_seq);
+      // Nothing on the page comes after where the stream takes over.
+      expect(events.every((entry) => entry.seq <= lastSeq)).toBe(true);
+      const all = await everything(chat.id);
+      const listed = new Set(read.turns.map((entry) => entry.id));
+      const onPage = new Set(events.map((entry) => entry.seq));
+      const from = Math.min(
+        ...all.filter((entry) => listed.has(entry.turn_id ?? '')).map((entry) => entry.seq),
+      );
+      for (const entry of all) {
+        if (entry.turn_id === null && entry.seq < from) continue;
+        // A listed turn's event, or one no turn owns from the first of those on, is
+        // on the page or on the stream after it; a turn the page did not list is
+        // on the stream from its first event.
+        const covered =
+          entry.turn_id === null || listed.has(entry.turn_id)
+            ? onPage.has(entry.seq) || entry.seq > lastSeq
+            : entry.seq > lastSeq;
+        expect([entry.seq, entry.turn_id, covered]).toEqual([entry.seq, entry.turn_id, true]);
+      }
+      // The turn that began has events, so the check above covered it.
+      const begun = turnList
+        .parse(await (await request(`/conversations/${chat.id}/messages`)).json())
+        .turns.find((entry) => entry.text === 'Next');
+      expect(all.some((entry) => entry.turn_id === required(begun).id)).toBe(true);
+    }
   }, 120_000);
 });

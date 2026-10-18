@@ -664,15 +664,21 @@ export class ExperienceService {
     const paged = query.limit !== undefined || query.before !== undefined;
     const limit = query.limit ?? DEFAULT_MESSAGE_PAGE;
     const before = query.before ? decodeTurnCursor(query.before) : null;
-    if (query.before && !before)
-      throw new ServiceError(
-        'invalid_cursor',
-        'Read the chat again from its newest messages.',
-        400,
-      );
-    // Compared to the millisecond, the precision the cursor carries, with the id
-    // breaking ties, so no turn is skipped or shown twice across pages.
-    const created = sql`date_trunc('milliseconds', ${experienceTurn.createdAt})`;
+    const refused = () =>
+      new ServiceError('invalid_cursor', 'Read the chat again from its newest messages.', 400);
+    if (query.before && !before) throw refused();
+    // A cursor names the oldest turn of the page it ended. Turns go only with
+    // their chat, so one that names no turn of this chat came from another chat
+    // or was made up, and is refused. Pages continue from that turn's own time,
+    // to the microsecond, with the id breaking ties: no turn is skipped or shown
+    // twice, and the turns index reads them in order.
+    if (before) {
+      const [anchor] = await this.db
+        .select({ id: experienceTurn.id })
+        .from(experienceTurn)
+        .where(and(eq(experienceTurn.id, before.id), eq(experienceTurn.jobId, id)));
+      if (!anchor) throw refused();
+    }
     const rows = paged
       ? (
           await this.db
@@ -682,18 +688,18 @@ export class ExperienceService {
               and(
                 eq(experienceTurn.jobId, id),
                 before
-                  ? sql`(${created}, ${experienceTurn.id}) < (${before.created_at}::timestamptz, ${before.id})`
+                  ? sql`(${experienceTurn.createdAt}, ${experienceTurn.id}) < (select t.created_at, t.id from experience_turn t where t.id = ${before.id})`
                   : undefined,
               ),
             )
-            .orderBy(desc(created), desc(experienceTurn.id))
+            .orderBy(desc(experienceTurn.createdAt), desc(experienceTurn.id))
             .limit(limit + 1)
         ).reverse()
       : await this.db
           .select()
           .from(experienceTurn)
           .where(eq(experienceTurn.jobId, id))
-          .orderBy(created, experienceTurn.id);
+          .orderBy(experienceTurn.createdAt, experienceTurn.id);
     const more = paged && rows.length > limit;
     const shown = more ? rows.slice(1) : rows;
     const files = this.attachments
