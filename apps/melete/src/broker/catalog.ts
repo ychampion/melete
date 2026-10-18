@@ -225,6 +225,8 @@ export type CoreSelectionContext = {
   followable?: boolean;
   /** The attempt may read skills it was not given in full, so the reader must be on offer. */
   readable?: boolean;
+  /** The tools the job's previous attempt was offered, kept where the message gives no reason to swap them. */
+  kept?: ReadonlySet<string>;
 };
 
 const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
@@ -283,6 +285,8 @@ export function selectCore(
   budget = CORE_CATALOG_TOKENS,
   context: CoreSelectionContext = {},
   indexBudget = CATALOG_INDEX_TOKENS,
+  /** Named in the index but never offered: the skills this attempt was given in full. */
+  indexedOnly: readonly CatalogItem[] = [],
 ): ToolSpec[] {
   if (!Number.isSafeInteger(budget) || budget < toolTokens(META_TOOLS))
     throw new Error('Core catalog budget cannot hold discovery tools');
@@ -299,6 +303,11 @@ export function selectCore(
     .map((item) => ({ item, score: relevance(query, item.entry) }));
   // A browser tool ranks at least as high as the computer's best, and ahead of it.
   const lifted = webScores(healthy.map(({ item, score }) => ({ name: item.tool.name, score })));
+  // The tools lead a Claude request's cached prefix, so a first catalog that
+  // differs from the last attempt's writes the whole prompt to the cache
+  // again. A tool the message points at still takes its place; the room it
+  // leaves goes to what the last attempt had before anything else.
+  const kept = (item: CatalogItem) => Number(context.kept?.has(item.tool.name) === true);
   const scored = healthy
     .map(({ item, score }) => ({
       item,
@@ -311,6 +320,7 @@ export function selectCore(
         granted(b.item) - granted(a.item) ||
         b.score - a.score ||
         Number(lifted.has(b.item.tool.name)) - Number(lifted.has(a.item.tool.name)) ||
+        kept(b.item) - kept(a.item) ||
         Number(b.item.core) - Number(a.item.core) ||
         b.item.uses - a.item.uses ||
         compare(a.item.entry.name, b.item.entry.name),
@@ -377,10 +387,11 @@ export function selectCore(
     else siblings.some((other) => add(item, other));
   }
   // Relevance decides which tools make the cut, never where they stand. The
-  // tool definitions follow the system prompt in the provider's cached prefix,
-  // so the same tools are listed in the same order on every turn whatever the
-  // latest message says: pinned first, granted ahead of a server's own, then by
-  // name, which also keeps `browser.*` ahead of `computer.*` (`web-steer.ts`).
+  // tool definitions are in the provider's cached prefix (ahead of the system
+  // prompt on Claude), so the same tools are listed in the same order on every
+  // turn whatever the latest message says: pinned first, granted ahead of a
+  // server's own, then by name, which also keeps `browser.*` ahead of
+  // `computer.*` (`web-steer.ts`).
   const rank = new Map(scored.map((entry) => [entry.item.tool, entry]));
   const placed = (tool: ToolSpec) => {
     const entry = rank.get(tool);
@@ -396,10 +407,24 @@ export function selectCore(
     }),
   );
   const loader = tools.find((tool) => tool.name === 'load_tool');
-  const rest = scored.map((entry) => entry.item).filter((item) => !chosen.has(item));
+  // When the index cannot name them all, which ones it keeps never depends on
+  // the latest message, and the ones kept are named in a fixed order: the
+  // index is part of a tool definition, and a Claude request's cached prefix
+  // starts with the tools, so an index that followed the message made every
+  // turn write the whole prompt to the cache again, system prompt included.
+  // What the person granted comes first, then the local core, then by name.
+  // A skill given in full this turn is named too, so the turn's choice of
+  // skills leaves the index as it was.
+  const rest = [
+    ...scored.map((entry) => entry.item).filter((item) => !chosen.has(item)),
+    ...indexedOnly,
+  ].sort(
+    (a, b) =>
+      granted(b) - granted(a) ||
+      Number(b.core) - Number(a.core) ||
+      compare(a.entry.name, b.entry.name),
+  );
   if (loader && rest.length > 0 && indexBudget > 0) {
-    // The likeliest are kept when the index cannot name them all, and the ones
-    // kept are named in a fixed order, for the same reason as the tools.
     const listing = (shown: number) => {
       const named = rest
         .slice(0, shown)
@@ -629,13 +654,7 @@ export class ToolCatalog {
     const given = await givenInFull(tx, claims.attempt_id);
     for (const skill of skills) {
       if (given.has(skill.frontmatter.name)) continue;
-      const tool: ToolSpec = {
-        name: `skills.${skill.frontmatter.name.replaceAll('-', '_')}`,
-        description: skill.frontmatter.description,
-        input_schema: { type: 'object', properties: {}, additionalProperties: false },
-        effect_class: 'read',
-        connection_id: null,
-      };
+      const { tool, entry } = skillItem(skill);
       if (
         !(await accept(tool.name, null, () => {
           if (
@@ -646,19 +665,7 @@ export class ToolCatalog {
         }))
       )
         continue;
-      items.push({
-        original: tool.name,
-        tool,
-        entry: manifestEntry(
-          tool,
-          skill.frontmatter.tools,
-          'skill',
-          'ok',
-          skill.frontmatter.triggers,
-        ),
-        core: false,
-        uses: 0,
-      });
+      items.push({ original: tool.name, tool, entry, core: false, uses: 0 });
     }
     const resumable = await hasResumableAction(tx, job);
     for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
@@ -775,11 +782,25 @@ export class ToolCatalog {
       typeof attempt?.model === 'string' ? attempt.model : '',
       job.budget,
     );
+    const given = await givenInFull(tx, claims.attempt_id);
+    const indexedOnly = given.size
+      ? (await this.skills(tx, job, claims))
+          .filter((skill) => given.has(skill.frontmatter.name))
+          .map((skill) => ({ ...skillItem(skill), core: false, uses: 0 }))
+      : [];
+    const [last] = await tx`select c.core from attempt a
+      join attempt_tool_context c on c.attempt_id = a.id
+      where a.job_id = ${claims.job_id} and a.id <> ${claims.attempt_id}
+      order by a.epoch desc limit 1`;
+    const kept = Array.isArray(last?.core)
+      ? new Set((last.core as ToolSpec[]).map((tool) => tool.name))
+      : undefined;
     const core = selectCore(
       items,
       this.options.coreTokenBudget ?? budget.core_catalog_tokens,
-      await this.turn(tx, job, claims, access),
+      { ...(await this.turn(tx, job, claims, access)), kept },
       budget.catalog_index_tokens,
+      indexedOnly,
     );
     await tx`insert into attempt_tool_context (attempt_id, job_id, core, loaded)
       values (${claims.attempt_id}, ${claims.job_id}, ${JSON.stringify(core)}::jsonb, '[]'::jsonb)`;
@@ -963,7 +984,18 @@ export class ToolCatalog {
     z.string().min(1).max(300).parse(name);
     return this.within(claims, async (tx, _job, items, context) => {
       const item = items.find((entry) => entry.entry.name === name);
-      if (!item) throw new BrokerFault('unknown_tool');
+      if (!item) {
+        // The index names the skills given in full too; there is nothing to load
+        // for one. A long turn's compaction can drop it from the instructions,
+        // and the reader still has it then.
+        const given = await givenInFull(tx, claims.attempt_id);
+        if ([...given].some((skill) => `skills.${skill.replaceAll('-', '_')}` === name))
+          throw new BrokerFault(
+            'unknown_tool',
+            `This skill was given in full in this turn's instructions, under "How to do this kind of work": follow it there. If it is no longer there, read it with ${SKILL_READ_TOOL_NAME}.`,
+          );
+        throw new BrokerFault('unknown_tool');
+      }
       if (item.entry.health === 'failing') throw new BrokerFault('connector_unavailable');
       if (!toolSchemaFits(item.tool.input_schema))
         throw new BrokerFault(
@@ -1062,6 +1094,24 @@ const COMMAND_LINE_WORDS: Record<string, { words: string[]; commands: string }> 
   aws: { words: ['aws', 'amazon', 's3', 'ec2', 'lambda'], commands: 'aws' },
   npm: { words: ['npm', 'package', 'registry'], commands: 'npm' },
 };
+
+/** A skill as a catalog entry: its own read tool, named after it. */
+function skillItem(
+  skill: SourcedSkill,
+): Pick<CatalogItem, 'tool' | 'entry'> & { original: string } {
+  const tool: ToolSpec = {
+    name: `skills.${skill.frontmatter.name.replaceAll('-', '_')}`,
+    description: skill.frontmatter.description,
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    effect_class: 'read',
+    connection_id: null,
+  };
+  return {
+    original: tool.name,
+    tool,
+    entry: manifestEntry(tool, skill.frontmatter.tools, 'skill', 'ok', skill.frontmatter.triggers),
+  };
+}
 
 /**
  * The names of the skills an attempt was given in full, as recorded when it

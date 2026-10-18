@@ -391,7 +391,7 @@ test('a web task is steered to the browser tools ahead of the desktop, by descri
 
 test('the core lists the same tools in the same order whatever the latest message says', () => {
   // The tool definitions sit in the provider's cached prefix: a turn that
-  // reorders them reprocesses everything after the system prompt.
+  // reorders them reprocesses everything cached after them.
   const tools = [
     effect('mail.search', 'read', 'Search the mailbox for messages'),
     effect('calendar.list', 'read', 'List calendar events in a range'),
@@ -417,6 +417,52 @@ test('the core lists the same tools in the same order whatever the latest messag
   const left = tools.filter((entry) => !listed.includes(entry.tool.name));
   expect(left.length).toBeGreaterThan(0);
   for (const entry of left) expect(loader?.description).toContain(entry.tool.name);
+});
+
+test('an index too long to name every unloaded tool names the same ones whatever the message', () => {
+  // Tools lead a Claude request's cached prefix, ahead of the system prompt:
+  // an index that followed each message wrote the whole prompt again every turn.
+  const topics = ['invoice', 'flight', 'recipe', 'lease', 'garden', 'tax', 'piano', 'visa'];
+  const tools = topics.flatMap((topic) =>
+    ['find', 'list', 'export'].map((verb) =>
+      effect(`${topic}.${verb}`, 'read', `${verb} ${topic} records kept for the person`),
+    ),
+  );
+  // Room for the discovery tools alone, so every one of these waits on the index.
+  const budget = toolTokens(META_TOOLS);
+  const index = (text: string) =>
+    selectCore(tools, budget, { text }, 60).find((tool) => tool.name === 'load_tool')
+      ?.description ?? '';
+  const first = index('Find the invoice from March');
+  // The index is cut to its budget, so the message could have chosen what it keeps.
+  expect(first).toMatch(/\+\d+ more through search_tools/);
+  for (const text of ['Book a flight to Lisbon', 'Export my visa papers', 'hi', ''])
+    expect(index(text)).toBe(first);
+});
+
+test('a turn the message gives no reason to change keeps the tools the last attempt had', () => {
+  // A first catalog that differs from the last attempt's rewrites the whole
+  // cached prompt, so the room relevance leaves goes to what was there before.
+  const archive = effect('archive.find', 'read', 'Find archive records');
+  const backup = effect('backup.list', 'read', 'List backup records');
+  const garden = effect('garden.plan', 'read', 'Plan garden records');
+  const piano = effect('piano.log', 'read', 'Log piano records');
+  const tools = [archive, backup, garden, piano];
+  const room = (...picked: CatalogItem[]) =>
+    toolTokens([...META_TOOLS, ...picked.map((entry) => entry.tool)]);
+  const budget = Math.max(room(archive, backup), room(garden, piano));
+  expect(room(archive, garden, piano)).toBeGreaterThan(budget);
+  const offered = (text: string, kept?: ToolSpec[]) =>
+    names(selectCore(tools, budget, { text, kept: kept && new Set(names(kept)) })).slice(
+      META_TOOLS.length,
+    );
+  const last = selectCore(tools, budget, { text: 'Plan the garden and log my piano practice' });
+  expect(names(last).slice(META_TOOLS.length)).toEqual(['garden.plan', 'piano.log']);
+  // Without the last attempt's tools, a word-less turn changes the catalog.
+  expect(offered('thanks!')).toEqual(['archive.find', 'backup.list']);
+  expect(offered('thanks!', last)).toEqual(['garden.plan', 'piano.log']);
+  // A tool the message points at still takes its place.
+  expect(offered('Find the archived invoice', last)).toContain('archive.find');
 });
 
 test('relevance still decides which tools make the cut', () => {
