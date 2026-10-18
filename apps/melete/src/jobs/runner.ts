@@ -34,7 +34,7 @@ import {
   waitSpec,
 } from '@melete/contracts';
 import { withoutNarration, withoutUnbackedClaims } from '@melete/runtime-hermes';
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, DrizzleQueryError, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { personQuestionKey } from '../broker/ask-person.ts';
@@ -134,6 +134,20 @@ export const LOST_NOTE =
 /** The same, when the work stopped because an app it was using was disconnected. */
 export const DISCONNECTED_NOTE =
   'This stopped because an app it was using was disconnected. Nothing more will happen here until you send another message.';
+
+/**
+ * What a conversation's turn ends with when the work could not be put
+ * together from what the chat has stored, so nothing was done.
+ */
+export const BUNDLE_FAILED_NOTE =
+  'I couldn’t get started on this, so nothing was done. Send your message again to try once more.';
+/** The reason such an attempt failed with, and the code the operator's log names. */
+export const BUNDLE_FAILED_CODE = 'bundle_build_failed';
+
+/** Whether a failure came from the database: a failed query, or one Postgres answered with. */
+const fromDatabase = (error: unknown): boolean =>
+  error instanceof DrizzleQueryError ||
+  (error instanceof Error && (error.name === 'PostgresError' || 'query' in error));
 
 /** How many attempts run at once unless the service is told otherwise. */
 export const DEFAULT_ATTEMPT_CONCURRENCY = 4;
@@ -542,21 +556,32 @@ export class AttemptRunner {
         exp: Math.floor(Date.now() / 1000) + CAPABILITY_TTL_SECONDS,
       };
       const generations = await readGenerations(tx, row.spaceId);
-      const bundle = await buildAttemptSkeleton(
-        tx,
-        row,
-        {
-          id: attemptId,
-          epoch,
-          revision: row.revision,
-          token: signCapability(claims, this.options.key),
-        },
-        model,
-        previous?.inputCursor ?? 0,
-        generations,
-        capabilities.version,
-      );
-      if (this.options.loadCatalog)
+      // A bundle that cannot be built from what is stored would fail the same
+      // way on every wake, so the turn ends on it below instead of waiting
+      // queued for ever. A failed statement has already ended the transaction
+      // and may well pass next time: that is retried as before.
+      let bundle: ResponsibilityAttemptBundle | null = null;
+      let unbuilt = 'Error';
+      try {
+        bundle = await buildAttemptSkeleton(
+          tx,
+          row,
+          {
+            id: attemptId,
+            epoch,
+            revision: row.revision,
+            token: signCapability(claims, this.options.key),
+          },
+          model,
+          previous?.inputCursor ?? 0,
+          generations,
+          capabilities.version,
+        );
+      } catch (error) {
+        if (fromDatabase(error)) throw error;
+        if (error instanceof Error && error.name) unbuilt = error.name;
+      }
+      if (bundle && this.options.loadCatalog)
         Object.assign(bundle, await this.options.loadCatalog(tx, claims, bundle));
       await tx.insert(attempt).values({
         id: attemptId,
@@ -580,10 +605,11 @@ export class AttemptRunner {
         triggerId: cause.triggerId,
         situationId: cause.situationId,
       });
-      await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
+      if (bundle)
+        await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
       // The attempt is told its wait was cancelled; this row is what lets its
       // outcome restore that wait, once, if it finishes without choosing another.
-      if (bundle.inputs.cancelled_wait)
+      if (bundle?.inputs.cancelled_wait)
         await appendEvent(tx, {
           jobId: row.id,
           attemptId,
@@ -703,6 +729,30 @@ export class AttemptRunner {
           { kind: 'budget_exhausted', summary: capped.message },
           limits,
         );
+        return null;
+      }
+      // No engine starts on a bundle that could not be built. The work fails
+      // once, with a plain sentence where the person reads the turn, and the
+      // operator's log names what failed, never what was said.
+      if (!bundle) {
+        console.error(`attempt: ${BUNDLE_FAILED_CODE}:${unbuilt} (job ${row.id})`);
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'failed', reason: BUNDLE_FAILED_CODE, retryable: false },
+          limits,
+        );
+        if (row.currentTurnId)
+          await tx
+            .update(experienceTurn)
+            .set({
+              answer: sql`case when ${experienceTurn.answer} = '' then ${BUNDLE_FAILED_NOTE}
+                else ${experienceTurn.answer} || ${`\n\n${BUNDLE_FAILED_NOTE}`} end`,
+            })
+            .where(
+              and(eq(experienceTurn.id, row.currentTurnId), eq(experienceTurn.status, 'failed')),
+            );
         return null;
       }
       // The skills went into the instructions, where no tool call shows them.
