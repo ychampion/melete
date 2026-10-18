@@ -79,6 +79,13 @@ export const principal = pgTable(
      * sets it.
      */
     externalId: text('external_id').unique(),
+    /**
+     * Until when a sign-in through the identity provider may claim this account
+     * by its verified email although it has a password, under
+     * MELETE_OIDC_EMAIL_LINK=no-password. The operator sets it with
+     * `melete account link`; the link it allows clears it.
+     */
+    oidcLinkUntil: timestamp('oidc_link_until', { withTimezone: true }),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );
@@ -108,8 +115,9 @@ export const oidcIdentity = pgTable(
 
 /**
  * Sign-ins through the identity provider that have come back, by a digest of
- * their state, so the same answer is never used twice. Rows past their expiry
- * are removed as new ones arrive.
+ * their state, and back-channel logout tokens received, by a digest of their
+ * id, so neither is ever used twice. Rows past their expiry are removed as new
+ * ones arrive.
  */
 export const oidcSpentState = pgTable('oidc_spent_state', {
   stateHash: text('state_hash').primaryKey(),

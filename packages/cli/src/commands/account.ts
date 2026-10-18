@@ -1,5 +1,5 @@
 /**
- * `melete account <list|create|reset|disable|enable|setup-code> [<email>]` and
+ * `melete account <list|create|reset|disable|enable|link|setup-code> [<email>]` and
  * `melete feedback [list|show] …`: the operator's account and support tasks,
  * run in the service's container (apps/melete/src/account/cli.ts and
  * apps/melete/src/feedback/cli.ts), so `melete remote <host> account …` reaches
@@ -20,12 +20,13 @@ export const ACCOUNT_USAGE = `Usage: bun run melete account <command> [--json]
   reset <email>        A one-time link that sets a new password and signs the account out everywhere
   disable <email>      Stop the account signing in, and end its sessions, devices and connected apps
   enable <email>       Let a disabled account sign in again
+  link <email>         Let the identity provider claim an account that has a password, once, within a week
   setup-code           A new one-time code for creating the first account`;
 
 export const FEEDBACK_USAGE = `Usage: bun run melete feedback [list] [--all | --status open|fixing|fixed|wontfix]
        bun run melete feedback show FB-XXXX`;
 
-const WITH_EMAIL = new Set(['create', 'reset', 'disable', 'enable']);
+const WITH_EMAIL = new Set(['create', 'reset', 'disable', 'enable', 'link']);
 const WITHOUT = new Set(['list', 'setup-code']);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

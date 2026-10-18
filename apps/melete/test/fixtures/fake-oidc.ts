@@ -17,7 +17,13 @@ export type FakeOidcSigning =
   /** `alg: none`, no signature at all. */
   | 'none'
   /** HS256 with the published public key as the shared secret: algorithm confusion. */
-  | 'hs256-public-key';
+  | 'hs256-public-key'
+  /**
+   * RS256 with an unpublished key that the token's own header offers, inline
+   * (`jwk`) and by address (`jku`, `x5u`): a verifier must never take a key
+   * from the token itself.
+   */
+  | 'header-key';
 
 export type FakeOidc = {
   issuer: string;
@@ -28,6 +34,8 @@ export type FakeOidc = {
   signing: FakeOidcSigning;
   authorizeRequests: URLSearchParams[];
   tokenRequests: URLSearchParams[];
+  /** How often anything fetched the key set a `header-key` token points at. */
+  headerKeyFetches: number;
   /** A token signed with the published key, for back-channel logout. */
   sign(claims: JWTPayload, typ?: string): Promise<string>;
   stop(): Promise<void>;
@@ -39,7 +47,8 @@ export async function startFakeOidc(
   const clientId = options.clientId ?? 'melete-test-client';
   const clientSecret = options.clientSecret ?? 'melete-test-secret';
   const { publicKey, privateKey } = await generateKeyPair('RS256', { extractable: true });
-  const other = await generateKeyPair('RS256');
+  const other = await generateKeyPair('RS256', { extractable: true });
+  const otherJwk: JWK = { ...(await exportJWK(other.publicKey)), kid: 'k2', alg: 'RS256' };
   const jwk: JWK = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
   const codes = new Map<
     string,
@@ -55,6 +64,7 @@ export async function startFakeOidc(
     signing: 'published',
     authorizeRequests: [],
     tokenRequests: [],
+    headerKeyFetches: 0,
     sign: (claims, typ) =>
       new SignJWT(claims)
         .setProtectedHeader({ alg: 'RS256', kid: 'k1', ...(typ ? { typ } : {}) })
@@ -93,6 +103,16 @@ export async function startFakeOidc(
         return new SignJWT(payload)
           .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
           .sign(other.privateKey);
+      case 'header-key':
+        return new SignJWT(payload)
+          .setProtectedHeader({
+            alg: 'RS256',
+            kid: 'k2',
+            jwk: otherJwk,
+            jku: `${origin}/header-jwks`,
+            x5u: `${origin}/header-jwks`,
+          })
+          .sign(other.privateKey);
       default:
         return new SignJWT(payload)
           .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
@@ -121,6 +141,10 @@ export async function startFakeOidc(
           backchannel_logout_supported: true,
         });
       if (url.pathname === '/jwks') return Response.json({ keys: [jwk] });
+      if (url.pathname === '/header-jwks') {
+        fake.headerKeyFetches += 1;
+        return Response.json({ keys: [otherJwk] });
+      }
       if (url.pathname === '/authorize') {
         fake.authorizeRequests.push(url.searchParams);
         const back = new URL(url.searchParams.get('redirect_uri') ?? '');

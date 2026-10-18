@@ -1440,6 +1440,7 @@ links use `MELETE_PUBLIC_URL`, or the web port on this machine.
 | `account reset <email>` | A one-time link (60 minutes) that sets a new password. Using it signs the account out everywhere. |
 | `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept. |
 | `account enable <email>` | Lets a disabled account sign in again. |
+| `account link <email>` | For seven days, lets a sign-in through your [identity provider](#sign-in-with-your-identity-provider) with this verified email claim the account even though it has a password (`MELETE_OIDC_EMAIL_LINK=no-password`). Used up by that link. |
 | `account setup-code` | A new [setup code](#claiming-a-new-installation), while no account exists. |
 
 The exit code is 0 when it was done, 2 when it was refused (no such account,
@@ -1474,8 +1475,9 @@ page then shows a "Continue with …" button, and you can make it the only way i
 | `MELETE_OIDC_LABEL` | What the button says after "Continue with", such as `Google`. Default `single sign-on`. |
 | `MELETE_OIDC_SCOPES` | The scopes asked for. Default `openid email profile`; `openid` is always included. |
 | `MELETE_OIDC_ACCOUNTS` | `existing` (the default) signs in only accounts that already exist here. `create` also makes a person account the first time someone signs in. |
-| `MELETE_OIDC_REQUIRE_CLAIM` | `name=value`: a claim the ID token must carry, such as `melete_access=true`, or `groups=melete` for a list of groups. Without it, nobody gets in through the provider. |
-| `MELETE_PASSWORD_SIGNIN` | `off` makes the provider the only way in: passwords, emailed sign-in links and password resets are refused. Default `on`. |
+| `MELETE_OIDC_EMAIL_LINK` | Which existing accounts a verified email may claim at a first sign-in. `any` (the default): every person account with that email. `no-password`: only accounts without a password, such as those made with `account create`, plus an account with a password you open with `account link <email>`. |
+| `MELETE_OIDC_REQUIRE_CLAIM` | `name=value`: a claim the ID token must carry, such as `melete_access=true`, or `groups=melete` for a list of groups. A dotted name such as `realm_access.roles=melete` reaches into a nested claim. When it is set, an ID token without that claim is refused. |
+| `MELETE_PASSWORD_SIGNIN` | `off` makes the provider the only way in: passwords, emailed sign-in links and password resets are refused, and `account reset` prints no link. Default `on`. |
 
 How someone is matched to an account. The first time they sign in, Melete
 looks for the provider account they used, then for a person account with the
@@ -1484,7 +1486,17 @@ email the provider gives. That email has to be verified at the provider
 then linked to that Melete account, and later sign-ins follow the link even if
 the email changes at the provider. Another provider account with the same email
 does not take over an account that is already linked. Guest accounts from room
-invites keep signing in the way they were invited.
+invites keep signing in the way they were invited. The email has to be a plain
+ASCII address, as for every other way in.
+
+Which provider to trust with email matching. With a provider you run yourself
+(Okta, Authentik, Keycloak, a company's Entra tenant), a verified email is as
+good as the account it names. With a public provider such as Google, it says
+only that someone once proved the address: a personal account made with a
+work email stays verified after its owner leaves, and so does one made on a
+domain that later lapsed and was bought by someone else. With a public
+provider, set `MELETE_OIDC_EMAIL_LINK=no-password`, so an account that has a
+password is claimed only after you run `account link <email>` for it.
 
 What is checked. The browser leaves with PKCE, a state and a nonce, kept in a
 sealed cookie for ten minutes. On the way back, the state has to match that
@@ -1500,7 +1512,17 @@ already has its first account. Make it in the usual way
 ([Claiming a new installation](#claiming-a-new-installation)), or with
 `bun run melete account create <email>` on the host. Use the email you have at
 the provider, then sign in with the button. With `MELETE_PASSWORD_SIGNIN=off`,
-that first account still has to be created this way.
+that first account still has to be created this way. Under
+`MELETE_OIDC_EMAIL_LINK=no-password`, an owner made on the setup page has a
+password, so run `account link <email>` for it first; one made with
+`account create` has none and needs nothing more.
+
+Getting back in. If the provider is down, its client is deleted, or your email
+there no longer matches, nobody can sign in through it. Nothing is lost: set
+`MELETE_PASSWORD_SIGNIN=on` (or remove the line) in `deploy/.env`, restart the
+service, and run `bun run melete account reset <email>` on the host for a
+one-time link that sets your password. Turn password sign-in off again once the
+provider works.
 
 Turning someone off. `account disable <email>` works the same for people who
 sign in through the provider: the next sign-in is refused, and their browsers
@@ -1512,8 +1534,9 @@ starts a new, empty account.
 Back-channel logout. If the provider supports OpenID Connect Back-Channel Logout,
 set its back-channel logout URI to `<MELETE_PUBLIC_URL>/api/signin/oidc/logout`.
 When the person signs out at the provider, every browser signed in to their
-Melete account here is signed out too. Logout by session id (`sid`) alone is
-not supported; the logout token has to name the subject.
+Melete account here is signed out too. Each logout token works once. Logout by
+session id (`sid`) alone is not supported; the logout token has to name the
+subject.
 
 Notes for some providers:
 
@@ -1521,7 +1544,8 @@ Notes for some providers:
   ID" of type "Web application" in the Google Cloud console.
 - Microsoft Entra ID: use the tenant's own issuer,
   `https://login.microsoftonline.com/<tenant-id>/v2.0`. The shared `common`
-  endpoint names no single issuer and isn't supported.
+  endpoint names no single issuer and isn't supported. Entra ID leaves
+  `email_verified` out of its ID tokens by default, so see the last point.
 - Okta, Authentik and Keycloak: use the issuer of the authorization server or
   realm the client belongs to.
 - Every provider: the ID token has to carry `email` and `email_verified: true`.

@@ -920,6 +920,15 @@ const variables = z.object({
    */
   MELETE_OIDC_ACCOUNTS: unsetWhenBlank(z.enum(['existing', 'create']).default('existing')),
   /**
+   * Which existing accounts a verified email from the provider may claim the
+   * first time. `any`: every person account with that email. `no-password`:
+   * only accounts with no password (made with `melete account create`, or by
+   * a sign-in), plus an account with a password that the operator opened with
+   * `melete account link <email>`. Use `no-password` with a public provider,
+   * where an address it once verified may no longer belong to the same person.
+   */
+  MELETE_OIDC_EMAIL_LINK: unsetWhenBlank(z.enum(['any', 'no-password']).default('any')),
+  /**
    * `name=value`: a claim the provider must put in the ID token for the person
    * to get in, such as `melete_access=true` or a group in `groups=melete`.
    * A list claim needs to contain the value.

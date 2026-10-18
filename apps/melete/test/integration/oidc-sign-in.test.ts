@@ -6,7 +6,11 @@
  * switched off, and back-channel logout.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { ID_PREFIXES } from '@melete/contracts';
+import { runAccount } from '../../src/account/cli.ts';
+import { operatorReset } from '../../src/account/reset-password.ts';
 import { loadEnv } from '../../src/env.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { type FakeOidc, startFakeOidc } from '../fixtures/fake-oidc.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
@@ -160,14 +164,101 @@ withDb('sign-in with an OpenID Connect identity provider', () => {
       expect(done.session).toBeUndefined();
     });
 
-  for (const signing of ['none', 'hs256-public-key', 'unpublished'] as const)
+  for (const signing of ['none', 'hs256-public-key', 'unpublished', 'header-key'] as const)
     test(`an ID token signed ${signing} is refused`, async () => {
       fake.claims = { email: OWNER };
       fake.signing = signing;
       const done = await signIn(app());
       expect(done.location).toBe(refusedWith('signin_failed'));
       expect(done.session).toBeUndefined();
+      // A key the token names for itself is never fetched.
+      expect(fake.headerKeyFetches).toBe(0);
     });
+
+  test('accepted shapes: several audiences naming this client as the party, a string "true", a little clock skew', async () => {
+    const api = app();
+    const now = Math.floor(Date.now() / 1000);
+    for (const claims of [
+      { aud: [fake.clientId, 'another-api'], azp: fake.clientId },
+      { email_verified: 'true' },
+      // Expired 30 seconds ago: inside the minute of tolerance.
+      { exp: now - 30, iat: now - 330 },
+    ]) {
+      fake.claims = { sub: 'owner-subject', email: OWNER, ...claims };
+      expect((await me(api, (await signIn(api)).session))?.owner.email).toBe(OWNER);
+    }
+    for (const claims of [
+      // Past the tolerance.
+      { exp: now - 120, iat: now - 420 },
+      // One audience, but issued to another party.
+      { azp: 'some-other-client' },
+    ]) {
+      fake.claims = { sub: 'owner-subject', email: OWNER, ...claims };
+      expect((await signIn(api)).location).toBe(refusedWith('signin_failed'));
+    }
+  });
+
+  test('an email that only case-folds to an account’s email does not reach that account', async () => {
+    const api = app({ MELETE_OIDC_ACCOUNTS: 'create' });
+    await database()
+      .sql`insert into principal (id, email) values (${newId(ID_PREFIXES.owner)}, 'kelly@example.test')`;
+    // U+212A KELVIN SIGN lower-cases to an ASCII "k": a different mailbox at the provider.
+    fake.claims = { sub: 'kelvin', email: `${String.fromCharCode(0x212a)}elly@example.test` };
+    const done = await signIn(api);
+    expect(done.location).toBe(refusedWith('email_unverified'));
+    expect(done.session).toBeUndefined();
+    expect(await database().sql`select 1 from oidc_identity where subject = 'kelvin'`).toHaveLength(
+      0,
+    );
+    // Plain upper case is the same address and still finds the account.
+    fake.claims = { sub: 'kelly-subject', email: 'KELLY@Example.TEST' };
+    expect((await me(api, (await signIn(api)).session))?.owner.email).toBe('kelly@example.test');
+  });
+
+  test('a state spent on a failed exchange cannot be tried again', async () => {
+    const api = app();
+    fake.claims = { email: OWNER };
+    const flow = await begin(api);
+    const query = new URLSearchParams(flow.query);
+    const realCode = query.get('code') ?? '';
+    query.set('code', 'not-a-code-the-provider-issued');
+    const failed = await finish(api, { cookie: flow.cookie, query: `?${query}` });
+    expect(failed.location).toBe(refusedWith('signin_failed'));
+    query.set('code', realCode);
+    const retried = await finish(api, { cookie: flow.cookie, query: `?${query}` });
+    expect(retried.location).toBe(refusedWith('signin_expired'));
+    expect(retried.session).toBeUndefined();
+  });
+
+  test('email linking limited to accounts without a password', async () => {
+    const api = app({ MELETE_OIDC_EMAIL_LINK: 'no-password' });
+    const { sql } = database();
+    // The owner chose a password at setup: a verified email alone does not claim it.
+    fake.claims = { sub: 'owner-subject', email: OWNER };
+    expect((await signIn(api)).location).toBe(refusedWith('account_conflict'));
+    expect(await sql`select 1 from oidc_identity`).toHaveLength(0);
+    // An account the operator made without a password is claimed by its email.
+    expect((await runAccount(sql, ['create', 'made@example.test'], PUBLIC_URL)).code).toBe(0);
+    fake.claims = { sub: 'made-subject', email: 'made@example.test' };
+    expect((await me(api, (await signIn(api)).session))?.owner.email).toBe('made@example.test');
+    // The operator opens the owner's account to one link through the provider.
+    const opened = await runAccount(sql, ['link', OWNER], PUBLIC_URL);
+    expect(opened.code).toBe(0);
+    // An opening that has run out claims nothing.
+    await sql`update principal set oidc_link_until = now() - interval '1 minute' where email = ${OWNER}`;
+    fake.claims = { sub: 'owner-subject', email: OWNER };
+    expect((await signIn(api)).location).toBe(refusedWith('account_conflict'));
+    expect((await runAccount(sql, ['link', OWNER], PUBLIC_URL)).code).toBe(0);
+    expect((await me(api, (await signIn(api)).session))?.owner.email).toBe(OWNER);
+    // The opening is used up, and later sign-ins follow the link.
+    const [owner] = await sql`select oidc_link_until from principal where email = ${OWNER}`;
+    expect(owner?.oidc_link_until).toBeNull();
+    expect((await me(api, (await signIn(api)).session))?.owner.email).toBe(OWNER);
+    // Another subject with the owner's email still gets nowhere.
+    fake.claims = { sub: 'someone-else', email: OWNER };
+    expect((await signIn(api)).location).toBe(refusedWith('account_conflict'));
+    expect((await runAccount(sql, ['link', 'nobody@example.test'], PUBLIC_URL)).code).toBe(1);
+  });
 
   test('an email the provider has not verified is refused', async () => {
     for (const verified of [false, undefined, 'false']) {
@@ -320,6 +411,44 @@ withDb('sign-in with an OpenID Connect identity provider', () => {
     expect((await me(api, (await signIn(api)).session))?.owner.email).toBe(OWNER);
   });
 
+  test('with password sign-in off, a reset link the operator prints is refused too, and the CLI says so', async () => {
+    const api = app({ MELETE_PASSWORD_SIGNIN: 'off' });
+    const { sql } = database();
+    const issued = await operatorReset(sql, OWNER, PUBLIC_URL);
+    if (!issued.ok) throw new Error(issued.message);
+    for (const [path, body] of [
+      ['/password-reset/check', { token: issued.code }],
+      ['/password-reset/consume', { token: issued.code, password: 'another-long-password-1' }],
+      ['/signin/magic-link/check', { token: issued.code }],
+      ['/signin/magic-link/consume', { token: issued.code }],
+    ] as const) {
+      const refused = await api.request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(refused.status).toBe(403);
+    }
+    const off = { passwordSignIn: false };
+    const reset = await runAccount(sql, ['reset', OWNER], PUBLIC_URL, undefined, off);
+    expect(reset.code).toBe(1);
+    expect(reset.out).toContain('MELETE_PASSWORD_SIGNIN');
+    const made = await runAccount(
+      sql,
+      ['create', 'later@example.test', '--json'],
+      PUBLIC_URL,
+      undefined,
+      off,
+    );
+    expect(made.code).toBe(0);
+    const json = JSON.parse(made.out) as Record<string, unknown>;
+    expect(json.link).toBeNull();
+    expect(json.code).toBeUndefined();
+    expect(
+      await sql`select 1 from password_reset where principal_id = (select id from principal where email = 'later@example.test')`,
+    ).toHaveLength(0);
+  });
+
   test('without a provider set up the routes are not there', async () => {
     const api = createApp({
       env: loadEnv({ NODE_ENV: 'test' }),
@@ -363,5 +492,48 @@ withDb('sign-in with an OpenID Connect identity provider', () => {
     expect(ended.status).toBe(200);
     expect(await me(api, first.session)).toBeNull();
     expect(await me(api, second.session)).toBeNull();
+    // A logout token is used once: replayed, it does not end the session made since.
+    const third = await signIn(api);
+    const replay = await logout(await fake.sign(claims, 'logout+jwt'));
+    expect(replay.status).toBe(400);
+    expect(await me(api, third.session)).not.toBeNull();
+    // The event's value has to be an object.
+    const nulled = await logout(
+      await fake.sign({
+        ...claims,
+        jti: 'logout-2',
+        events: { 'http://schemas.openid.net/event/backchannel-logout': null },
+      } as never),
+    );
+    expect(nulled.status).toBe(400);
+    expect(await me(api, third.session)).not.toBeNull();
+  });
+
+  test('back-channel logout ends only that subject’s sessions', async () => {
+    const api = app();
+    expect(
+      (await runAccount(database().sql, ['create', 'other@example.test'], PUBLIC_URL)).code,
+    ).toBe(0);
+    fake.claims = { sub: 'owner-subject', email: OWNER };
+    const owner = await signIn(api);
+    fake.claims = { sub: 'other-subject', email: 'other@example.test' };
+    const other = await signIn(api);
+    const now = Math.floor(Date.now() / 1000);
+    const token = await fake.sign({
+      iss: fake.issuer,
+      aud: fake.clientId,
+      sub: 'owner-subject',
+      iat: now,
+      jti: 'logout-only-owner',
+      events: { 'http://schemas.openid.net/event/backchannel-logout': {} },
+    });
+    const ended = await api.request('/signin/oidc/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ logout_token: token }).toString(),
+    });
+    expect(ended.status).toBe(200);
+    expect(await me(api, owner.session)).toBeNull();
+    expect((await me(api, other.session))?.owner.email).toBe('other@example.test');
   });
 });

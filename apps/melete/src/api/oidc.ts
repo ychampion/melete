@@ -42,7 +42,7 @@ import type { Database } from '../db/client.ts';
 import { oidcIdentity, oidcSpentState, owner, principal } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
-import { startSession } from './auth.ts';
+import { credentials, startSession } from './auth.ts';
 import { OIDC_PATHS, oidcConfigured, PASSWORD_SIGNIN_PATHS } from './oidc-paths.ts';
 
 export const OIDC_COOKIE = 'melete_oidc';
@@ -62,6 +62,8 @@ const ID_TOKEN_ALGORITHMS = [
   'EdDSA',
 ];
 const CLOCK_TOLERANCE_SECONDS = 60;
+/** How old a back-channel logout token may be. */
+const LOGOUT_TOKEN_AGE_SECONDS = 10 * 60;
 const BACKCHANNEL_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
 
 /**
@@ -193,13 +195,29 @@ const refuse = (code: OidcErrorCode): never => {
   throw new OidcRefusal(code);
 };
 
+/**
+ * A claim by name, or, when no claim has that exact name, by a dotted path
+ * into nested objects (`realm_access.roles`). A name that is a URL with dots
+ * in it, as namespaced claims are, is found by its exact name first.
+ */
+function claimAt(claims: JWTPayload, name: string): unknown {
+  if (Object.hasOwn(claims, name)) return claims[name];
+  let found: unknown = claims;
+  for (const part of name.split('.')) {
+    if (!found || typeof found !== 'object' || Array.isArray(found) || !Object.hasOwn(found, part))
+      return undefined;
+    found = (found as Record<string, unknown>)[part];
+  }
+  return found;
+}
+
 /** Whether the ID token carries the claim the operator requires, or a list that holds its value. */
 export function hasRequiredClaim(
   claims: JWTPayload,
   required: { name: string; value: string } | undefined,
 ): boolean {
   if (!required) return true;
-  const found = claims[required.name];
+  const found = claimAt(claims, required.name);
   const matches = (item: unknown) =>
     (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') &&
     String(item) === required.value;
@@ -353,7 +371,12 @@ export function mountOidc(app: Hono, deps: OidcDeps): void {
         throw error;
       }
       // The state is spent before the code is: an answer replayed with its cookie stops here.
-      const spent = await spendState(db, pending, now());
+      const spent = await spendOnce(
+        db,
+        `state ${pending.state}`,
+        new Date((pending.expires + CLOCK_TOLERANCE_SECONDS) * 1000),
+        now(),
+      );
       if (!spent) return toSignIn(c, 'signin_expired');
       let idToken: string | undefined;
       try {
@@ -386,9 +409,14 @@ export function mountOidc(app: Hono, deps: OidcDeps): void {
       const subject = claims.sub;
       if (typeof subject !== 'string' || subject.length < 1 || subject.length > 255)
         return toSignIn(c, 'signin_failed');
-      const email = typeof claims.email === 'string' ? claims.email.trim().toLowerCase() : '';
-      if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(email))
-        return toSignIn(c, 'email_unverified');
+      // The address shape every other way in accepts, checked before it is
+      // lower-cased: Unicode case mapping folds some letters into ASCII ones
+      // (U+212A KELVIN SIGN becomes "k"), which would name another mailbox's account.
+      const parsedEmail = credentials.shape.email.safeParse(
+        typeof claims.email === 'string' ? claims.email.trim() : undefined,
+      );
+      if (!parsedEmail.success) return toSignIn(c, 'email_unverified');
+      const email = parsedEmail.data;
       if (claims.email_verified !== true && claims.email_verified !== 'true')
         return toSignIn(c, 'email_unverified');
       if (!hasRequiredClaim(claims, env.MELETE_OIDC_REQUIRE_CLAIM))
@@ -400,12 +428,19 @@ export function mountOidc(app: Hono, deps: OidcDeps): void {
         subject,
         email,
         create: env.MELETE_OIDC_ACCOUNTS === 'create',
+        emailLink: env.MELETE_OIDC_EMAIL_LINK,
+        at: now(),
       });
       await startSession(c, db, env, principalId);
       return toApp(c, pending.returnTo);
     } catch (error) {
       if (error instanceof OidcRefusal) return toSignIn(c, error.code);
-      throw error;
+      // The browser came here by a redirect: it goes back to the sign-in page
+      // rather than to a JSON error, and the cause is logged by kind only.
+      process.stderr.write(
+        `oidc: sign-in failed (${error instanceof Error ? error.name : 'error'})\n`,
+      );
+      return toSignIn(c, 'signin_failed');
     }
   });
 
@@ -434,22 +469,34 @@ export function mountOidc(app: Hono, deps: OidcDeps): void {
           algorithms: ID_TOKEN_ALGORITHMS,
           clockTolerance: CLOCK_TOLERANCE_SECONDS,
           currentDate: new Date(now()),
-          maxTokenAge: '10m',
+          maxTokenAge: LOGOUT_TOKEN_AGE_SECONDS,
           requiredClaims: ['iat', 'jti'],
         })
       ).payload;
     } catch {
       return invalid();
     }
-    const events = claims.events as Record<string, unknown> | undefined;
+    const isObject = (value: unknown) =>
+      typeof value === 'object' && value !== null && !Array.isArray(value);
     if (
-      !events ||
-      typeof events !== 'object' ||
-      typeof events[BACKCHANNEL_EVENT] !== 'object' ||
+      !isObject(claims.events) ||
+      !isObject((claims.events as Record<string, unknown>)[BACKCHANNEL_EVENT]) ||
       'nonce' in claims ||
-      typeof claims.sub !== 'string'
+      typeof claims.sub !== 'string' ||
+      typeof claims.jti !== 'string' ||
+      claims.jti.length > 512 ||
+      typeof claims.iat !== 'number'
     )
       return invalid();
+    // Each logout token is used once (Back-Channel Logout 1.0, section 2.6): a
+    // replay within its lifetime would end sessions made since.
+    const fresh = await spendOnce(
+      db,
+      `logout ${claims.jti}`,
+      new Date((claims.iat + LOGOUT_TOKEN_AGE_SECONDS + CLOCK_TOLERANCE_SECONDS) * 1000),
+      now(),
+    );
+    if (!fresh) return invalid();
     const [linked] = await db
       .select({ principalId: oidcIdentity.principalId })
       .from(oidcIdentity)
@@ -463,15 +510,15 @@ export function mountOidc(app: Hono, deps: OidcDeps): void {
   });
 }
 
-/** Records the state as used; false when it already was. Expired records go as new ones arrive. */
-async function spendState(db: Database, pending: Pending, at: number): Promise<boolean> {
+/**
+ * Records a sign-in's state, or a logout token's id, as used; false when it
+ * already was. Expired records go as new ones arrive.
+ */
+async function spendOnce(db: Database, key: string, expiresAt: Date, at: number): Promise<boolean> {
   await db.delete(oidcSpentState).where(lt(oidcSpentState.expiresAt, new Date(at)));
   const rows = await db
     .insert(oidcSpentState)
-    .values({
-      stateHash: createHash('sha256').update(pending.state).digest('hex'),
-      expiresAt: new Date(pending.expires * 1000 + CLOCK_TOLERANCE_SECONDS * 1000),
-    })
+    .values({ stateHash: createHash('sha256').update(key).digest('hex'), expiresAt })
     .onConflictDoNothing()
     .returning({ stateHash: oidcSpentState.stateHash });
   return rows.length === 1;
@@ -484,10 +531,23 @@ async function spendState(db: Database, pending: Pending, at: number): Promise<b
  * account is made when neither exists; two first sign-ins at once make one
  * account, because the email and the provider account are each unique and the
  * one that loses the race finds what the other made.
+ *
+ * With `emailLink: 'no-password'`, the email alone claims only an account
+ * that has no password (one the operator made, or one this sign-in made). An
+ * account with a password is claimed only while the operator has opened it
+ * with `melete account link <email>`, and that opening is used up by the link.
  */
 export async function resolveAccount(
   db: Database,
-  who: { issuer: string; subject: string; email: string; create: boolean },
+  who: {
+    issuer: string;
+    subject: string;
+    email: string;
+    create: boolean;
+    emailLink?: 'any' | 'no-password';
+    /** Now, in milliseconds, for the operator's opening. */
+    at?: number;
+  },
 ): Promise<string> {
   const usable = (row: typeof principal.$inferSelect) => {
     if (row.kind !== 'person') return refuse('account_conflict');
@@ -505,12 +565,20 @@ export async function resolveAccount(
     const [byEmail] = await db.select().from(principal).where(eq(principal.email, who.email));
     if (byEmail) {
       const id = usable(byEmail);
+      const opened =
+        byEmail.oidcLinkUntil !== null && byEmail.oidcLinkUntil.getTime() > (who.at ?? Date.now());
+      if (who.emailLink === 'no-password' && byEmail.passwordHash && !opened)
+        return refuse('account_conflict');
       const made = await db
         .insert(oidcIdentity)
         .values({ issuer: who.issuer, subject: who.subject, principalId: id })
         .onConflictDoNothing()
         .returning({ principalId: oidcIdentity.principalId });
-      if (made.length === 1) return id;
+      if (made.length === 1) {
+        if (byEmail.oidcLinkUntil !== null)
+          await db.update(principal).set({ oidcLinkUntil: null }).where(eq(principal.id, id));
+        return id;
+      }
       // Either a concurrent sign-in linked this same subject (found on the next
       // pass), or the account is already linked to another subject at this
       // provider, which this one must not take over.

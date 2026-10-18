@@ -13,6 +13,7 @@ CREATE TABLE "oidc_spent_state" (
 );
 --> statement-breakpoint
 ALTER TABLE "principal" ADD COLUMN "external_id" text;--> statement-breakpoint
+ALTER TABLE "principal" ADD COLUMN "oidc_link_until" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "oidc_identity" ADD CONSTRAINT "oidc_identity_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "oidc_identity_principal_issuer_idx" ON "oidc_identity" USING btree ("principal_id","issuer");--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_external_id_unique" UNIQUE("external_id");

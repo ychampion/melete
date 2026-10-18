@@ -4680,6 +4680,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "oidc_link_until": {
+          "name": "oidc_link_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
