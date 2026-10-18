@@ -524,6 +524,42 @@ dbTest('a skill given in full is not offered again as its own tool', async () =>
   ).toMatchObject({ code: 'unknown_tool' });
 });
 
+dbTest('the skills a turn is given in full leave the load_tool index as it was', async () => {
+  // The tool definitions lead a Claude request's cached prefix, ahead of the
+  // system prompt: an index that changed with the turn's skills had every
+  // turn write the whole prompt to the cache again.
+  const skill = (name: string): Skill => ({
+    path: `${name}/SKILL.md`,
+    body: `The ${name} procedure.`,
+    frontmatter: {
+      name,
+      tools: [],
+      description: `Find a ${name} procedure`,
+      triggers: [name],
+      max_tokens: 400,
+    },
+  });
+  const s = await setup({ skills: [skill('receipts'), skill('refunds')] });
+  const loaderGiven = async (given: string[]) => {
+    await s.sql`insert into learning_attempt (attempt_id, versions) values (${s.claims.attempt_id},
+      ${JSON.stringify({ attempt_id: s.claims.attempt_id, skills: given.map((name) => ({ name, version: 'sha256:x' })) })}::jsonb)
+      on conflict (attempt_id) do update set versions = excluded.versions`;
+    await s.sql`delete from attempt_tool_context where attempt_id = ${s.claims.attempt_id}`;
+    return (await s.broker.catalog(s.claims)).find((tool) => tool.name === 'load_tool')
+      ?.description;
+  };
+  const none = await loaderGiven([]);
+  expect(none).toContain('skills.receipts');
+  expect(none).toContain('skills.refunds');
+  expect(await loaderGiven(['receipts'])).toBe(none);
+  expect(await loaderGiven(['refunds'])).toBe(none);
+  // Named, but there is nothing to load for a skill already in the instructions.
+  expect(await rejectionOf(s.broker.discovery.load(s.claims, 'skills.refunds'))).toMatchObject({
+    code: 'unknown_tool',
+    message: expect.stringContaining('given in full'),
+  });
+});
+
 dbTest('a private space skill is read only by the space’s own owner', async () => {
   const s = await setup({
     skills: [
