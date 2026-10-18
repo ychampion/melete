@@ -1129,6 +1129,58 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate melete
 Turning it off again keeps every room and message; their routes answer 404
 until it is back on. [Rooms](ROOMS.md#turning-rooms-on) lists what it covers.
 
+### Turn features on or off
+
+Operators can turn whole features on or off, for example on an installation
+for a family or a school that has no use for phone texts or the company list.
+Each feature has one setting in `deploy/.env`, `on` or `off`; left empty, it
+keeps its default, so an installation that sets nothing works as before.
+
+| Setting | Default | What it covers |
+| --- | --- | --- |
+| `MELETE_FEATURE_MULTIPLAYER` | `MELETE_PREVIEW_MULTIPLAYER` (off) | Rooms, shared spaces, guests, hand-offs and linked chat platform accounts |
+| `MELETE_FEATURE_VOICE` | on | Push-to-talk, voice mode, calls and replies read aloud |
+| `MELETE_FEATURE_PHONE` | on | Texts and calls to a person's own verified number |
+| `MELETE_FEATURE_SMS` | on | Texting the agent through a connected phone number |
+| `MELETE_FEATURE_BROWSER` | on | The agent's own browser and the sites it is signed in to |
+| `MELETE_FEATURE_COMPUTER` | on | The agent's own computer: its desktop, terminal and programs, and watching it and taking it over |
+| `MELETE_FEATURE_COMPANIES` | on | Companies: money and paperwork found in mail, and the replies a person waits on |
+
+```dotenv
+MELETE_FEATURE_PHONE=off
+MELETE_FEATURE_COMPANIES=off
+```
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --force-recreate melete
+```
+
+A feature that is off is refused by the service, not only hidden. Its routes
+answer 404 `not_available` with a sentence such as "Voice is turned off on this
+server.", including a provider's webhook (a text Twilio delivers is refused and
+not kept), and the parts behind it are not started (the agent has no browser
+with `MELETE_FEATURE_BROWSER=off`, no texts are sent with
+`MELETE_FEATURE_PHONE=off`). The agent is not given its tools either: with
+`MELETE_FEATURE_SMS=off` it cannot send a text, and with
+`MELETE_FEATURE_COMPUTER=off` it has no computer, though sandboxes it already
+had are still stopped when idle. Texting and sandbox connections are not offered
+in Settings, and the company tools are not listed to other assistants over MCP
+with `MELETE_FEATURE_COMPANIES=off`. The app leaves its screens and buttons out.
+`GET /setup` lists every feature
+under `features` with whether it is on for whoever asks. Nothing stored is
+removed: turning a feature on again brings back what was there.
+
+`MELETE_FEATURE_MULTIPLAYER` wins over `MELETE_PREVIEW_MULTIPLAYER` when both
+are set, so either name works.
+
+A feature can also be turned off for one person alone, by code that supplies
+each person's values to the service (`personFeatures` in
+`apps/melete/src/features.ts`). A person's value can only turn a feature off:
+where the installation has it off, it stays off for everyone. Multiplayer is
+switched for the whole installation only. A person's value refuses the
+feature's routes for them; the agent's tools and background work follow the
+installation's setting.
+
 ## Tailscale
 
 Reach your installation from your own devices over your tailnet, with no

@@ -23,6 +23,7 @@ import { createCommandLineConnector } from '../egress/connector.ts';
 import { egressRecorder } from '../egress/records.ts';
 import { egressCredentialsFromEnv } from '../egress/wiring.ts';
 import type { Env } from '../env.ts';
+import { type Features, installationFeatures } from '../features.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { GatewaySpending } from '../gateway/types.ts';
 import { mcpServicesFromEnv } from '../pages/config.ts';
@@ -266,6 +267,11 @@ export type ConnectorOptions = {
    */
   multiplayer?: boolean;
   /**
+   * The features the operator has on (features.ts). Off, the browser, texting
+   * and the computer connections offer no tool. Left out, read from `env`.
+   */
+  features?: Features;
+  /**
    * Whether a space or agent is private. A private one reads no public web
    * pages beyond what a job was explicitly given. Without it, none is.
    */
@@ -487,6 +493,12 @@ export class ConnectorFactory {
           }
         : undefined);
     const stored = setting ? undefined : storedConfiguration.safeParse(row.configuration).data;
+    // A feature the operator turned off offers the agent none of its tools; the
+    // rows stay as they are, so turning it on again brings them back.
+    const features = options.features ?? installationFeatures(options.env ?? process.env);
+    if (row.provider === 'web' && setting?.kind === 'browser' && !features.browser)
+      return undefined;
+    if (row.provider === 'twilio' && stored?.kind === 'sms' && !features.sms) return undefined;
     if (row.provider === 'generation') {
       // A capability is registered like any other connector, so a generation
       // call takes the path approval, fencing, budget and idempotency already
@@ -639,6 +651,9 @@ export class ConnectorFactory {
         adapter: config.adapter,
         provider: opened.provider,
       });
+      // The computer turned off: the agent is given none, while the provider is
+      // still kept above, so the sweep and a removal can stop what is running.
+      if (!features.computer) return undefined;
       const connector = createSandboxExecConnector({
         sessions: sandbox.sessions,
         provider: opened.provider,
@@ -1252,7 +1267,8 @@ export function connectorOptionsFromEnv(
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     attachments: extra.attachments,
     cellIsolated: builtinEnvironment(env).cellIsolated,
-    multiplayer: env.MELETE_PREVIEW_MULTIPLAYER,
+    multiplayer: multiplayerEnabled(env),
+    features: installationFeatures(env),
     // Nothing is created until the first write.
     blobs: configuredBlobStore(env),
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET

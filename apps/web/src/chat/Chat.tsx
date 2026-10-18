@@ -26,6 +26,7 @@ import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { dayWords } from '../experience/clock.ts';
 import { useInFlight, useTapOnce } from '../experience/decide.ts';
+import { featureOn } from '../experience/features.ts';
 import {
   agentById,
   defaultAgentOf,
@@ -574,7 +575,7 @@ function useTranscript() {
 let voiceOnArrival: string | null = null;
 
 export function ChatScreen({ id }: { id: string | null }) {
-  const { agents, removedAgents, refreshConversations } = useApp();
+  const { agents, removedAgents, refreshConversations, capabilities } = useApp();
   const route = useRoute();
   const conversationId = id && id !== 'new' ? id : null;
   // A new chat started from an agent (Home, the sidebar) begins with that agent.
@@ -1181,17 +1182,19 @@ export function ChatScreen({ id }: { id: string | null }) {
   const atWorkTurn = runningTurn(transcript.turns);
   // Every turn in the chat, a mentioned agent's too, works on the chat agent's computer.
   const chatAgentId = conversation?.agent_id ?? agentId;
+  // Watching the agent's computer is left out where the operator turned it off.
+  const computerShown = featureOn(capabilities, 'computer');
   const computer = useComputer(
     conversationId,
-    computerOpen && Boolean(conversationId),
+    computerShown && computerOpen && Boolean(conversationId),
     toolPulse,
     chatAgentId,
   );
-  const showComputer = computerOpen && Boolean(conversationId);
+  const showComputer = computerShown && computerOpen && Boolean(conversationId);
   const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
   const openComputer = () => setComputerOpen(true);
   const computerToggle = (size?: number) =>
-    conversationId ? (
+    conversationId && computerShown ? (
       <IconButton
         name="monitor"
         label={computerLabel}
@@ -1253,7 +1256,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             onClose={() => setComputerOpen(false)}
             onChanged={() => void computer.refresh()}
           />
-        ) : found && caseOpen ? (
+        ) : found && caseOpen && featureOn(capabilities, 'companies') ? (
           <CasePanel
             found={found}
             transcript={transcript}

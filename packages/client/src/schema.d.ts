@@ -22327,7 +22327,7 @@ export interface paths {
         };
         /**
          * Whether the first account still needs to be created
-         * @description Public, like setup itself, so a browser with no session can choose between creating the account and signing in. `needed` is true until an owner exists. `multiplayer` says whether rooms, shared spaces, guests and hand-offs are switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 `not_available`. `code_required` says whether setup needs the one-time setup code: when one is configured or issued, and also when none exists but `MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and `MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation can email sign-in and password reset links. `signin` says whether passwords sign in here and names the identity provider’s button, when there is one. `instance_name` and `assistant_name` are what the installation and its assistant are called (`MELETE_INSTANCE_NAME`, `MELETE_ASSISTANT_NAME`), both Melete unless set.
+         * @description Public, like setup itself, so a browser with no session can choose between creating the account and signing in. `needed` is true until an owner exists. `multiplayer` says whether rooms, shared spaces, guests and hand-offs are switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 `not_available`. `features` names each feature an operator can turn on or off (`MELETE_FEATURE_<NAME>=on|off`) and whether it is on for whoever is asking: the installation’s value, narrowed by the signed-in person’s own. A feature that is off has its routes answer 404 `not_available`. `code_required` says whether setup needs the one-time setup code: when one is configured or issued, and also when none exists but `MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and `MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation can email sign-in and password reset links. `signin` says whether passwords sign in here and names the identity provider’s button, when there is one. `instance_name` and `assistant_name` are what the installation and its assistant are called (`MELETE_INSTANCE_NAME`, `MELETE_ASSISTANT_NAME`), both Melete unless set.
          */
         get: {
             parameters: {
@@ -22348,6 +22348,9 @@ export interface paths {
                             assistant_name: string;
                             code_required: boolean;
                             email_sign_in: boolean;
+                            features: {
+                                [key: string]: boolean;
+                            };
                             instance_name: string;
                             multiplayer: boolean;
                             needed: boolean;

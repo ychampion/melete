@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { callTool, type RouteCall, TOOL_DEFINITIONS, TOOL_INPUTS, UnknownTool } from './tools.ts';
+import {
+  callTool,
+  offeredTools,
+  type RouteCall,
+  TOOL_DEFINITIONS,
+  TOOL_INPUTS,
+  UnknownTool,
+} from './tools.ts';
 
 const actor = {
   principalId: 'own_1',
@@ -53,6 +60,24 @@ describe('the MCP tools', () => {
       const result = await callTool(probe.deps, 'status', { job_id: 'job_other' });
       expect(result).toEqual({
         content: [{ type: 'text', text: 'Melete has nothing by that id for you.' }],
+        isError: true,
+      });
+    }
+  });
+
+  test('companies turned off: its tools are not listed, and a call says it is off', async () => {
+    expect(offeredTools(true)).toEqual(TOOL_DEFINITIONS);
+    const names = offeredTools(false).map((tool): string => tool.name);
+    expect(names).not.toContain('waiting_on');
+    expect(names).not.toContain('handle');
+    expect(names).toContain('safe_send');
+    for (const message of [
+      'Companies is turned off on this server.',
+      'Companies is turned off for your account.',
+    ]) {
+      const probe = deps({ status: 404, body: { error: { code: 'not_available', message } } });
+      expect(await callTool(probe.deps, 'waiting_on', {})).toEqual({
+        content: [{ type: 'text', text: message }],
         isError: true,
       });
     }

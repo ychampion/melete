@@ -27,6 +27,7 @@ import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { clockTime, displayZone, hourOfDay, sameDay, weekday } from '../experience/clock.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
+import { featureOn } from '../experience/features.ts';
 import {
   agentById,
   faceOf,
@@ -1073,8 +1074,13 @@ export function HomeScreen() {
   const mainRef = useRef<HTMLDivElement>(null);
   const composeRef = useRef<HTMLDivElement>(null);
   const cleared = useCallback(() => mainRef.current?.focus(), []);
+  const companies = featureOn(capabilities, 'companies');
 
   useEffect(() => {
+    if (!companies) {
+      setMap(null);
+      return;
+    }
     let live = true;
     void currentSpaceId().then(async (space) => {
       if (!live || space.data === null) return;
@@ -1084,7 +1090,7 @@ export function HomeScreen() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [companies]);
 
   const start = async (body: string, attached: readonly AttachmentView[] = []) => {
     const clean = body.trim();
@@ -1238,7 +1244,7 @@ export function HomeScreen() {
           {capabilities.multiplayer ? (
             <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
           ) : null}
-          <WaitingOnSection now={now} />
+          {companies ? <WaitingOnSection now={now} /> : null}
           <RoutineResults results={data?.routine_results ?? []} now={now} />
           <InProgress now={now} />
           <InMotion now={now} />

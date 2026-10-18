@@ -124,6 +124,7 @@ describeWithDb('single-owner authentication against Postgres', () => {
     expect(await before.json()).toEqual({
       needed: true,
       multiplayer: false,
+      features: expect.any(Object),
       code_required: false,
       email_sign_in: false,
       instance_name: 'Melete',
@@ -136,6 +137,7 @@ describeWithDb('single-owner authentication against Postgres', () => {
     expect(await after.json()).toEqual({
       needed: false,
       multiplayer: false,
+      features: expect.any(Object),
       code_required: false,
       email_sign_in: false,
       instance_name: 'Melete',

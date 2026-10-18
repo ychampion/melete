@@ -146,7 +146,23 @@ export type AppDeps = {
    * `both`, a password or an identity provider; `oidc`, the provider alone.
    */
   signIn?: 'password' | 'both' | 'oidc';
+  /**
+   * Features turned off, as `MELETE_FEATURE_<NAME>=off` does on the service
+   * (`MELETE_MOCK_FEATURES_OFF=voice,companies`). The setup status says so.
+   */
+  featuresOff?: string[];
 };
+
+/** The features the service lists in features.ts, each on unless turned off; multiplayer follows its own switch. */
+export const MOCK_FEATURES = [
+  'multiplayer',
+  'voice',
+  'phone',
+  'sms',
+  'browser',
+  'computer',
+  'companies',
+];
 
 /** The routes the multiplayer switch covers, as the service lists them in rooms/preview.ts. */
 export function multiplayerPath(method: string, path: string): boolean {
@@ -356,6 +372,12 @@ export function createMockApp(deps: AppDeps) {
     send(setupStatusResponse, {
       needed: account === null,
       multiplayer,
+      features: Object.fromEntries(
+        MOCK_FEATURES.map((name) => [
+          name,
+          (name === 'multiplayer' ? multiplayer : true) && !deps.featuresOff?.includes(name),
+        ]),
+      ),
       code_required: false,
       email_sign_in: false,
       instance_name: 'Melete',

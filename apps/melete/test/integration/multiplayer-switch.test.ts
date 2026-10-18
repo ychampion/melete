@@ -94,6 +94,7 @@ const service = (url: string, multiplayer: boolean | null) =>
       expect(await (await call(on.app, '/setup')).json()).toEqual({
         needed: true,
         multiplayer: true,
+        features: expect.any(Object),
         code_required: false,
         email_sign_in: false,
         instance_name: 'Melete',
@@ -134,6 +135,7 @@ const service = (url: string, multiplayer: boolean | null) =>
       expect(await (await call(app, '/setup')).json()).toEqual({
         needed: false,
         multiplayer: false,
+        features: expect.any(Object),
         code_required: false,
         email_sign_in: false,
         instance_name: 'Melete',

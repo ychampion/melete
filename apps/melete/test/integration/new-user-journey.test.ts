@@ -144,6 +144,7 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
       expect(await (await call('/setup')).json()).toEqual({
         needed: true,
         multiplayer: false,
+        features: expect.any(Object),
         code_required: false,
         email_sign_in: false,
         instance_name: 'Melete',
@@ -164,6 +165,7 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
       expect(await (await call('/setup')).json()).toEqual({
         needed: false,
         multiplayer: false,
+        features: expect.any(Object),
         code_required: false,
         email_sign_in: false,
         instance_name: 'Melete',

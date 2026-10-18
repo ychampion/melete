@@ -111,6 +111,7 @@ import { COMMAND_LINE_SERVICE, commandLineAccount } from '../egress/adapters/acc
 import { awsAccount, awsAdapterConfig } from '../egress/adapters/aws.ts';
 import { awsSecret } from '../egress/aws-session.ts';
 import type { Env } from '../env.ts';
+import { FEATURES, featureOfConnectionKind, installationFeatures } from '../features.ts';
 import { newId } from '../ids.ts';
 import { signInStore } from '../ops/signin-store.ts';
 import {
@@ -382,6 +383,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   };
   const factory = factoryFor(deps);
   const secrets = factory.secrets;
+  // Texting and the computer are features an operator can turn off (features.ts).
+  const features = installationFeatures(deps.env);
+  const kindTurnedOff = (kind: string) => {
+    const feature = featureOfConnectionKind(kind);
+    return feature !== null && !features[feature] ? feature : null;
+  };
 
   /** Where a catalog app's server is: the catalog's address, unless a test replaced it. */
   const catalogUrl = (entry: McpCatalogEntry) =>
@@ -527,10 +534,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     return [...accounts, ...apps, ...servers, ...forms];
   };
 
-  // A kind this service cannot run is not offered: stdio servers need an isolating launcher.
+  // A kind this service cannot run is not offered: stdio servers need an
+  // isolating launcher, and a kind whose feature the operator turned off is out.
   app.get('/connection-kinds', async (c) => {
     const kinds = CONNECTION_KIND_DESCRIPTORS.filter(
-      (kind) => kind.kind !== 'mcp_stdio' || factory.options.stdioLauncher,
+      (kind) =>
+        (kind.kind !== 'mcp_stdio' || factory.options.stdioLauncher) && !kindTurnedOff(kind.kind),
     );
     const [installation] = await deps.db.select({ id: owner.id }).from(owner).limit(1);
     const operator = installation !== undefined && installation.id === c.get('owner').id;
@@ -667,6 +676,8 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     /** The catalog entry it is connected from, kept so the app is shown as that app. */
     catalogId?: string,
   ) => {
+    const off = kindTurnedOff(installation.kind);
+    if (off) throw new ServiceError('not_available', FEATURES[off].off, 404);
     // Everything but an MCP server without a token or secret variables has something to seal.
     const seals = managedInstallation(installation)
       ? false

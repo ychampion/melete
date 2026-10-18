@@ -18,6 +18,7 @@ test('a fresh install asks for its first account, then signs in with it', async 
   expect(setupStatusResponse.parse(await (await app.request('/setup')).json())).toEqual({
     needed: true,
     multiplayer: false,
+    features: expect.any(Object),
     code_required: false,
     email_sign_in: false,
     instance_name: 'Melete',
@@ -36,6 +37,7 @@ test('a fresh install asks for its first account, then signs in with it', async 
   expect(await (await app.request('/setup')).json()).toEqual({
     needed: false,
     multiplayer: false,
+    features: expect.any(Object),
     code_required: false,
     email_sign_in: false,
     instance_name: 'Melete',
@@ -69,6 +71,7 @@ test('by default the demo account exists and setup is not needed', async () => {
   expect(await (await app.request('/setup')).json()).toEqual({
     needed: false,
     multiplayer: false,
+    features: expect.any(Object),
     code_required: false,
     email_sign_in: false,
     instance_name: 'Melete',
