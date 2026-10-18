@@ -30,7 +30,7 @@ const toBob: JsonObject = {
   body: 'Friday at 3 works for me.',
 };
 
-async function setup(options: { instruction?: string } = {}) {
+async function setup(options: { instruction?: string; chat?: boolean } = {}) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   const sql = fixture.sql;
   const seed = await seedJob(sql, {
@@ -52,7 +52,8 @@ async function setup(options: { instruction?: string } = {}) {
       standing_instruction, asks_before_acting)
     values (${agentId}, ${spaceId}, 'Ada', 'Helper', 'blue', 'plain', 'dark', 'calm',
       ${options.instruction ?? ''}, false)`;
-  await sql`update job set agent_id = ${agentId}, principal_id = ${personId}, kind = 'chat'
+  await sql`update job set agent_id = ${agentId}, principal_id = ${personId},
+      kind = ${options.chat === false ? 'job' : 'chat'}
     where id = ${seed.claims.job_id}`;
   const dispatched: string[] = [];
   const connector: Connector = {
@@ -99,7 +100,11 @@ async function setup(options: { instruction?: string } = {}) {
   };
 
   /** The person says `text`, and an attempt answers it. */
-  const turn = async (text: string, author: string = personId) => {
+  const turn = async (
+    text: string,
+    author: string = personId,
+    usageClass: 'interactive' | 'background' = 'interactive',
+  ) => {
     const turnId = recordId('trn');
     await sql`insert into experience_turn (id, job_id, agent_id, submission_id, author_principal_id,
         text, answer, status)
@@ -108,8 +113,9 @@ async function setup(options: { instruction?: string } = {}) {
     const attemptId = recordId('att');
     const [job] = await sql`update job set current_turn_id = ${turnId},
         lease_epoch = lease_epoch + 1 where id = ${seed.claims.job_id} returning lease_epoch`;
-    await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, turn_id)
-      values (${attemptId}, ${seed.claims.job_id}, ${job?.lease_epoch}, 'fake', 'fake', 'scripted', ${turnId})`;
+    await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, turn_id, class)
+      values (${attemptId}, ${seed.claims.job_id}, ${job?.lease_epoch}, 'fake', 'fake', 'scripted',
+        ${turnId}, ${usageClass})`;
     const claims = { ...seed.claims, attempt_id: attemptId, epoch: Number(job?.lease_epoch) };
     return {
       claims,
@@ -210,6 +216,22 @@ describe("the person's own don't-rules", () => {
     expect((await asked.propose('email.send', toBob)).status).toBe('succeeded');
     expect(s.dispatched).toEqual(['email.send']);
   });
+
+  databaseTest(
+    'a later wake of the conversation does not lift a rule with its old message',
+    async () => {
+      // Outside a chat, where a send is judged rather than kept to its draft card.
+      const s = await setup({ chat: false });
+      await s.remember("Don't email Bob");
+      const woke = await s.turn('Email Bob that Friday works', undefined, 'background');
+      const proposal = await woke.propose('email.send', toBob);
+      expect(proposal.status).toBe('needs_approval');
+      expect((await actionReviewView(s.sql, proposal.action_id))?.reason).toContain(
+        "“Don't email Bob”",
+      );
+      expect(s.dispatched).toEqual([]);
+    },
+  );
 
   databaseTest("someone else's message neither lifts the person's rule nor sets one", async () => {
     const s = await setup();

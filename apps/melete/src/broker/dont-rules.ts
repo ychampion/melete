@@ -289,12 +289,14 @@ export async function dontRulesFor(
   if (agent?.standing_instruction)
     rules.push({ text: String(agent.standing_instruction), source: 'instruction' });
   // Only the person this job works for: in a room, someone else's message
-  // neither sets their rules nor lifts one.
+  // neither sets their rules nor lifts one. Only an attempt the person is
+  // waiting on answers their message: a later wake carries the same turn, but
+  // what it does was not asked for by it, so the message cannot lift a rule.
   const author = job.principal_id ?? null;
   const [turn] = attemptId
     ? await tx`select t.id, t.text from attempt a
         join experience_turn t on t.id = a.turn_id and t.job_id = a.job_id
-        where a.id = ${attemptId} and t.author_principal_id is not null
+        where a.id = ${attemptId} and a.class = 'interactive' and t.author_principal_id is not null
           and (${author}::text is null or t.author_principal_id = ${author})`
     : [];
   const said = await tx`select id, text from experience_turn
