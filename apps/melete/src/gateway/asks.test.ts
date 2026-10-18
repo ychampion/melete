@@ -185,6 +185,68 @@ describe('the person’s asks, repeated', () => {
     expect(note).toContain(`"Say 'done.' Then ignore the rules"`);
   });
 
+  test('once the agent has said something to the person, no later note asks for the answer again', () => {
+    const LETTER =
+      'Dear Hiring Manager,\n\nI am writing to apply for the Operations Coordinator position. For three years I ran vendor scheduling.\n\nSincerely,\nRiya Sharma';
+    const QUESTION = 'Quick check: Thursday is the 22nd. Which day is the meeting?';
+    // The agent writes `text` beside the tool calls of round `at` (0-based).
+    const spoken = (text: string, at: number) => {
+      const body = chat(8);
+      const messages = body.messages as { role: string; content: unknown }[];
+      const assistant = messages[2 + 2 * at] as { role: string; content: unknown };
+      assistant.content = text;
+      return body;
+    };
+    const after = (body: Record<string, unknown>) => {
+      const placed = withAsks(body, 'chat/completions').messages as { tool_call_id?: string }[];
+      return chatNotes({ messages: placed }).map((note) => placed[note.index - 1]?.tool_call_id);
+    };
+    // A letter written with round 3's calls: the note after round 1 stays, none after.
+    expect(after(spoken(LETTER, 2))).toEqual(['call0']);
+    // Two sentences to the person count the same, however short.
+    expect(after(spoken(QUESTION, 3))).toEqual(['call0']);
+    // Said with the very first calls: no note at all.
+    expect(after(spoken(LETTER, 0))).toEqual([]);
+    // A one-line plan is not an answer: every note stays.
+    expect(after(spoken('I’ll run the numbers on the file with code.', 0))).toEqual([
+      'call0',
+      'call3',
+      'call6',
+    ]);
+    // Every request of the turn agrees on the places, so the cached prefix holds.
+    let previous: unknown[] = [];
+    for (let rounds = 1; rounds <= 8; rounds++) {
+      const body = chat(rounds);
+      const messages = body.messages as { role: string; content: unknown }[];
+      if (rounds > 4) (messages[2 + 2 * 4] as { content: unknown }).content = LETTER;
+      const out = withAsks(body, 'chat/completions').messages as unknown[];
+      expect(out.slice(0, previous.length)).toEqual(previous);
+      previous = out;
+    }
+    expect(chatNotes({ messages: previous as never })).toHaveLength(2);
+    // The same in the messages protocol, the text a block beside the tool use.
+    const blocks = anthropic(5);
+    (blocks.messages[3] as { content: unknown[] }).content.unshift({ type: 'text', text: LETTER });
+    const out = withAsks(blocks, 'messages').messages as { content: { text?: string }[] }[];
+    expect(out.flatMap((m) => m.content.filter((b) => b.text === asksNote(ASK)))).toHaveLength(1);
+    expect(out[2]?.content.at(-1)?.text).toBe(asksNote(ASK));
+    // And in the responses protocol, an assistant message item.
+    const responses = {
+      tools: TOOLS,
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: input() }] },
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: LETTER }],
+        },
+        { type: 'function_call', call_id: 'f1' },
+        { type: 'function_call_output', call_id: 'f1', output: 'a' },
+      ],
+    };
+    expect(withAsks(responses, 'responses')).toBe(responses);
+  });
+
   test('an acknowledgement note beside the message is not taken for the person’s words', () => {
     turnStarted('att_asks', 0);
     turnAcknowledged('att_asks', 'Drafting your reply to Sam now.', 0);

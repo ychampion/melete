@@ -8,7 +8,9 @@
  * draft meant to be 200 to 250 words came back at 280. Agent harnesses keep the
  * goal in recent view for this reason. Here the message's words are repeated
  * after the first step's results, and again every few steps, with one line
- * asking that the answer be checked against them before it is given.
+ * asking that the answer be checked against them before it is given. Once the
+ * agent has said more than a one-line plan to the person, no further note is
+ * added, so an answer already given is not given again.
  *
  * Read from the request alone, like `long-turn.ts`, and placed like
  * `turn-notes.ts`: beside a step's results and never inside them, at places
@@ -49,7 +51,7 @@ function texts(content: unknown): string[] {
   return content.flatMap((part) => {
     const block = record(part);
     return block &&
-      (block.type === 'text' || block.type === 'input_text') &&
+      (block.type === 'text' || block.type === 'input_text' || block.type === 'output_text') &&
       typeof block.text === 'string'
       ? [block.text]
       : [];
@@ -95,11 +97,39 @@ export function askedWords(words: string): string | null {
 export const asksNote = (asked: string): string =>
   // The words are quoted with their own quote marks softened, so nothing in
   // them can close the quotation and read as the service's instruction.
-  `Repeated from the start of this turn, so your answer meets it (not a new message): "${asked.replace(/["“”\r\n]+/g, "'")}" Before you give your answer, check it against each thing asked here, and keep to any length, number, format or wording it sets.${
+  `Repeated from the start of this turn, so your answer meets it (not a new message): "${asked.replace(/["“”\r\n]+/g, "'")}" Before you give your answer, check it against each thing asked here, and keep to any length, number or format it sets.${
     LENGTH_LIMIT.test(asked)
       ? ' A length set here covers your whole reply, so keep anything you add around it to one short line.'
       : ''
   }`;
+
+/**
+ * Whether the agent's text says something to the person beyond a one-line
+ * plan ("I'll run the numbers on the file."): two sentences or more, or a
+ * long one. After that, a note asking it to check its answer "before you give
+ * it" reads as asking for the answer again: on a bench, a cover letter that
+ * had been written was written out a second time, and a reply that had asked
+ * a question went on to answer it in a second message.
+ */
+const SPOKE_CHARS = 160;
+function speaks(text: string): boolean {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length > SPOKE_CHARS) return true;
+  return (
+    flat.split(/(?<=[.!?])\s+(?=\S)/).filter((sentence) => /[\p{L}\p{N}]/u.test(sentence)).length >
+    1
+  );
+}
+
+/** Where in the list, from `from` on, the agent first said something to the person; the list's length when it has not. */
+function spokeAt(list: unknown[], from: number): number {
+  for (let index = from; index < list.length; index++) {
+    const entry = record(list[index]);
+    if (entry?.role !== 'assistant') continue;
+    if (texts(entry.content).some(speaks)) return index;
+  }
+  return list.length;
+}
 
 type Round = { index: number; insert: number };
 
@@ -155,7 +185,12 @@ export function withAsks(
   }
   const asked = words ? askedWords(words) : null;
   if (!asked) return body;
-  const pinned = rounds(list, protocol, from).filter((_, round) => round % ASKS_EVERY === 0);
+  // Once the agent has spoken to the person, no later note: its places are
+  // fixed by the request, so the notes before then stay where they were.
+  const spoke = spokeAt(list, from);
+  const pinned = rounds(list, protocol, from).filter(
+    ({ index }, round) => round % ASKS_EVERY === 0 && index < spoke,
+  );
   if (!pinned.length) return body;
   const note = asksNote(asked);
   const next = [...list];
