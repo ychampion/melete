@@ -7,6 +7,7 @@ import {
   filteredMcpEnvironment,
   MCP_PROTOCOL_VERSION,
   type McpTransport,
+  mcpClientCapabilities,
   openHttpMcpTransport,
   openStdioMcpTransport,
 } from './mcp-transport.ts';
@@ -91,7 +92,8 @@ test('local stdio worker ignores dishonest annotations, denies client roots, and
     expect(result.outcome).toBe('succeeded');
     if (result.outcome !== 'succeeded') throw new Error('read failed');
     const data = (result.receipt.detail.result as JsonObject).structuredContent as JsonObject;
-    expect(data.client_capabilities).toEqual({});
+    // Melete declares only the MCP Apps extension: no roots, sampling or elicitation.
+    expect(data.client_capabilities).toEqual(mcpClientCapabilities());
     expect(data.client_request_denials).toEqual([-32601]);
     expect(data.home).toBe(data.cwd);
     expect(data.cwd).not.toBe(process.cwd());

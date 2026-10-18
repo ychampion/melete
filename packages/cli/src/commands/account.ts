@@ -1,5 +1,5 @@
 /**
- * `melete account <list|create|reset|disable|enable|setup-code> [<email>]` and
+ * `melete account <list|create|reset|disable|enable|setup-code|entitlements|grant|revoke> …` and
  * `melete feedback [list|show] …`: the operator's account and support tasks,
  * run in the service's container (apps/melete/src/account/cli.ts and
  * apps/melete/src/feedback/cli.ts), so `melete remote <host> account …` reaches
@@ -20,18 +20,29 @@ export const ACCOUNT_USAGE = `Usage: bun run melete account <command> [--json]
   reset <email>        A one-time link that sets a new password and signs the account out everywhere
   disable <email>      Stop the account signing in, and end its sessions, devices and connected apps
   enable <email>       Let a disabled account sign in again
-  setup-code           A new one-time code for creating the first account`;
+  setup-code           A new one-time code for creating the first account
+  entitlements <email> What the operator granted the account
+  grant <email> <name> Grant an entitlement the installation's connections can require (verified)
+  revoke <email> <name> Take an entitlement away; calls not yet made are refused`;
 
 export const FEEDBACK_USAGE = `Usage: bun run melete feedback [list] [--all | --status open|fixing|fixed|wontfix]
        bun run melete feedback show FB-XXXX`;
 
-const WITH_EMAIL = new Set(['create', 'reset', 'disable', 'enable']);
+const WITH_EMAIL = new Set(['create', 'reset', 'disable', 'enable', 'entitlements']);
+const WITH_NAME = new Set(['grant', 'revoke']);
 const WITHOUT = new Set(['list', 'setup-code']);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const NAME = /^[a-z][a-z0-9_.-]{0,63}$/;
 
 /** The arguments handed to the service's script, or the reason they are refused. */
 export function accountArguments(args: readonly string[]): string[] | string {
   const [command, target, ...extra] = args;
+  if (command && WITH_NAME.has(command)) {
+    const [name, ...more] = extra;
+    if (!target || !EMAIL.test(target) || !name || !NAME.test(name) || more.length)
+      return `${command} takes an email address and an entitlement name.\n${ACCOUNT_USAGE}`;
+    return [command, target, name];
+  }
   if (!command || extra.length > 0) return ACCOUNT_USAGE;
   if (WITHOUT.has(command)) return target === undefined ? [command] : ACCOUNT_USAGE;
   if (!WITH_EMAIL.has(command)) return `${command} is not an account command.\n${ACCOUNT_USAGE}`;

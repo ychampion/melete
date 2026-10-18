@@ -23,9 +23,11 @@ import {
   McpProtocolError,
   type McpTransport,
   type McpTransportOptions,
+  mcpClientCapabilities,
   openHttpMcpTransport,
   openStdioMcpTransport,
 } from './mcp-transport.ts';
+import { appOnly, type PageSource, readPageResource, toolPageUri } from './mcp-ui.ts';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from './schema-budget.ts';
 import type { ConnectorContext } from './types.ts';
 
@@ -73,6 +75,9 @@ const serverTool = z.object({
   annotations: z
     .object({ readOnlyHint: z.boolean().optional(), destructiveHint: z.boolean().optional() })
     .optional(),
+  // Read for the MCP Apps page a tool names (`toolPageUri`), from the live
+  // session only, like `readOnlyHint`; never recorded with an installation.
+  _meta: z.record(z.string(), z.unknown()).optional(),
 });
 /** A tool whose definition is larger than this is never offered: no schema that size fits a turn. */
 export const MAX_TOOL_DEFINITION_BYTES = 64 * 1024;
@@ -91,7 +96,18 @@ export type McpToolDefinition = z.infer<typeof serverTool>;
 export type McpExecutionContext = ConnectorContext & {
   audience: string;
   scopes: readonly string[];
+  /** Melete's own `_meta` entries for this call: a page's report ticket. */
+  meta?: JsonObject;
+  /** Melete's own request headers for this call (the identity assertion); only HTTP sends them. */
+  headers?: Record<string, string>;
+  /**
+   * Called once the call succeeded with the page its tool shows, read from the
+   * server. What it answers is what the receipt says about the page.
+   */
+  opened?: (page: OpenedPage) => Promise<JsonObject>;
 };
+/** A page a call opened, with the call's own arguments and result for the page to read. */
+export type OpenedPage = PageSource & { arguments: JsonObject; result: JsonObject };
 export type McpWorker = {
   tools: ConnectorTool[];
   /** The server's definitions of the tools the policy names, from which `tools` was built. */
@@ -102,6 +118,11 @@ export type McpWorker = {
    * installed definitions, so a worker with no session yet declares none.
    */
   readonly readOnly: string[];
+  /**
+   * The MCP Apps page a tool shows (its `ui://` resource), by brokered name,
+   * from the live session only. Null without a session or for a tool without one.
+   */
+  pageUri(kind: string): string | null;
   catalog: { source: 'mcp' };
   execute(action: Action, context: McpExecutionContext): Promise<DispatchResult>;
   verify(): Promise<VerifyResult>;
@@ -109,7 +130,9 @@ export type McpWorker = {
   reconnect(): Promise<void>;
   close(): Promise<void>;
 };
-type McpSession = Omit<McpWorker, 'reconnect'>;
+type McpSession = Omit<McpWorker, 'reconnect' | 'pageUri'> & {
+  pages: ReadonlyMap<string, string>;
+};
 
 export type McpWorkerOptions = McpTransportOptions & {
   transport?: McpTransport;
@@ -198,6 +221,7 @@ export async function openMcpWorker(
     get readOnly() {
       return [...(current?.readOnly ?? [])];
     },
+    pageUri: (kind) => current?.pages.get(kind) ?? null,
     catalog: { source: 'mcp' },
     execute: (action, context) =>
       current ? current.execute(action, context) : Promise.reject(notRunning()),
@@ -261,24 +285,33 @@ function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDef
   const rawNames = new Map<string, string>();
   const definitions: McpToolDefinition[] = [];
   const readOnly: string[] = [];
+  const pages = new Map<string, string>();
   const tools = config.tools
     .flatMap((policy) => {
       const definition = discovered.get(policy.name);
       if (!definition) throw new McpToolMissingError(policy.name);
-      // What is recorded is the tool, never the server's own annotations.
-      const { annotations, ...recorded } = definition;
+      // What is recorded is the tool, never the server's own annotations or `_meta`.
+      const { annotations, _meta, ...recorded } = definition;
       definitions.push(recorded);
       const name = `mcp_${config.id}.${policy.alias}`;
       const inputSchema = {
         $schema: 'https://json-schema.org/draft/2020-12/schema',
         ...definition.inputSchema,
       };
+      // MCP Apps: a tool only its page may call is never offered to the model.
+      // Melete's pages call no tools, so such a tool is not used at all.
+      if (appOnly(definition)) {
+        healthNotes.push(`${policy.name}: the server offers it to its page only`);
+        return [];
+      }
       if (!toolSchemaFits(inputSchema)) {
         healthNotes.push(`${policy.name}: schema exceeds ${MAX_TOOL_SCHEMA_BYTES} UTF-8 bytes`);
         return [];
       }
       rawNames.set(name, policy.name);
       if (annotations?.readOnlyHint === true) readOnly.push(name);
+      const page = toolPageUri(definition);
+      if (page) pages.set(name, page);
       return connectorTool.parse({
         name,
         description:
@@ -295,7 +328,7 @@ function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDef
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'en'));
   definitions.sort((a, b) => a.name.localeCompare(b.name, 'en'));
-  return { tools, definitions, readOnly: readOnly.sort(), rawNames, healthNotes };
+  return { tools, definitions, readOnly: readOnly.sort(), pages, rawNames, healthNotes };
 }
 
 /**
@@ -313,7 +346,7 @@ async function introduce(transport: McpTransport) {
     const initialized = jsonObject.parse(
       await transport.request('initialize', {
         protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: {},
+        capabilities: mcpClientCapabilities(),
         clientInfo: { ...MCP_CLIENT_INFO },
       }),
     );
@@ -357,7 +390,7 @@ async function introduce(transport: McpTransport) {
     if (annotated === null && stateless) discovered.delete(name);
     else if (annotated?.length) paramHeaders.set(name, annotated);
   }
-  return { stateless, discovered, paramHeaders };
+  return { stateless, discovered, paramHeaders, capabilities };
 }
 
 /**
@@ -407,14 +440,20 @@ async function openMcpSession(
         : undefined);
   if (!transport) throw new Error('A container MCP server needs its isolating launcher');
   try {
-    const { stateless, discovered, paramHeaders } = await introduce(transport);
-    const { tools, definitions, readOnly, rawNames, healthNotes } = policyTools(config, discovered);
+    const { stateless, discovered, paramHeaders, capabilities } = await introduce(transport);
+    const { tools, definitions, readOnly, pages, rawNames, healthNotes } = policyTools(
+      config,
+      discovered,
+    );
+    // A page is read only from a server that says it has resources.
+    if (!capabilities.resources) pages.clear();
     // A caller receives a copy; mutating presentation cannot alter execution policy.
     const authoritative = new Map(tools.map((tool) => [tool.name, structuredClone(tool)]));
     return {
       tools,
       definitions,
       readOnly,
+      pages,
       catalog: { source: 'mcp' },
       async execute(action, context) {
         const tool = authoritative.get(action.kind);
@@ -453,10 +492,20 @@ async function openMcpSession(
               {
                 name: raw,
                 arguments: action.canonical_payload,
-                _meta: { 'melete/action_id': action.id, 'melete/idempotency_key': action.id },
+                _meta: {
+                  ...context.meta,
+                  'melete/action_id': action.id,
+                  'melete/idempotency_key': action.id,
+                },
               },
               context.signal,
-              annotated ? mcpParamHeaderValues(annotated, action.canonical_payload) : undefined,
+              annotated || context.headers
+                ? {
+                    ...(annotated ? mcpParamHeaderValues(annotated, action.canonical_payload) : {}),
+                    // Melete's own last, so no mirrored argument can stand in for one.
+                    ...context.headers,
+                  }
+                : undefined,
             ),
           );
           // A stateless server that needs more input before it acts has not acted.
@@ -479,6 +528,28 @@ async function openMcpSession(
             origin_trust: 'external_content',
             evidence_handle: `mcp:${config.id}:${action.id}`,
           };
+          const pageUri = pages.get(action.kind);
+          if (pageUri && context.opened) {
+            // The call itself succeeded whatever happens to its page: a page
+            // that cannot be read is said so, and the call is not repeated.
+            try {
+              const source = await readPageResource(
+                (method, params) => transport.request(method, params, context.signal),
+                pageUri,
+              );
+              detail.page = await context.opened({
+                ...source,
+                arguments: action.canonical_payload,
+                result,
+              });
+            } catch (error) {
+              if (error instanceof ConnectorFaultError) throw error;
+              detail.page = {
+                shown: false,
+                note: 'The server said this tool shows a page, but it could not be shown, so the person has not seen it.',
+              };
+            }
+          }
           return {
             outcome: 'succeeded',
             receipt: {

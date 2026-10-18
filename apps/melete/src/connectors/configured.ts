@@ -25,6 +25,7 @@ import { egressCredentialsFromEnv } from '../egress/wiring.ts';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { GatewaySpending } from '../gateway/types.ts';
+import { mcpServicesFromEnv } from '../pages/config.ts';
 import { multiplayerEnabled } from '../rooms/preview.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
 import {
@@ -70,7 +71,7 @@ import { GoogleCalendarConnector } from './google-calendar.ts';
 import { GoogleDriveConnector } from './google-drive.ts';
 import { IcsFeedConnector } from './ics-feed.ts';
 import { mcpServerConfig } from './mcp.ts';
-import { openConfiguredMcpConnector } from './mcp-connector.ts';
+import { type McpCallServices, openConfiguredMcpConnector } from './mcp-connector.ts';
 import {
   openStdioMcpConnector,
   openStoredStdioConnector,
@@ -235,6 +236,8 @@ export async function configuredBrowserSessions(options: {
 
 export type ConnectorOptions = {
   sql: Sql;
+  /** What a connected MCP server's calls carry: pages, identity, entitlements. */
+  mcpServices?: McpCallServices;
   workRoot: string;
   spacesRoot: string;
   /** How many days a delete stays in the trash (`MELETE_TRASH_DAYS`). */
@@ -865,20 +868,17 @@ export class ConnectorFactory {
       if (!options.stdioLauncher) return undefined;
       // The catalog recorded at installation lets the service start without running the server.
       if (!this.overrides.has(row.id) && storedStdioConnection.safeParse(row.configuration).success)
-        return openStoredStdioConnector(
-          row,
-          options.sql,
-          this.secrets,
-          options.stdioLauncher,
-          options.stdioLifecycle,
-        );
+        return openStoredStdioConnector(row, options.sql, this.secrets, options.stdioLauncher, {
+          ...options.stdioLifecycle,
+          services: options.mcpServices,
+        });
       return openStdioMcpConnector(
         setting.server,
         { connectionId: row.id, spaceId: row.spaceId },
         options.sql,
         this.secrets,
         options.stdioLauncher,
-        options.stdioLifecycle,
+        { ...options.stdioLifecycle, services: options.mcpServices },
       );
     }
     if (row.provider === 'mcp' && setting?.kind === 'mcp')
@@ -887,6 +887,7 @@ export class ConnectorFactory {
         { connectionId: row.id, spaceId: row.spaceId },
         options.sql,
         this.secrets,
+        options.mcpServices,
       );
     if (row.provider === 'caldav' && setting?.kind === 'ics')
       return new CalendarConnector(
@@ -1158,6 +1159,7 @@ export function connectorOptionsFromEnv(
 ): ConnectorOptions {
   return {
     sql,
+    mcpServices: mcpServicesFromEnv(sql, env),
     workRoot: env.MELETE_WORK_DIR,
     spacesRoot: env.MELETE_SPACES_DIR,
     trashDays: env.MELETE_TRASH_DAYS,

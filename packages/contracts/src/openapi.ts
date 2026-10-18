@@ -198,6 +198,7 @@ import {
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from './model-settings.ts';
+import { pagesPaths } from './pages-openapi.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
   accountAdminResponse,
@@ -1422,6 +1423,9 @@ export function buildOpenApiDocument() {
         { name: 'actions' },
         { name: 'artifacts' },
         { name: 'apps' },
+        { name: 'pages' },
+        { name: 'identity' },
+        { name: 'entitlements' },
         { name: 'approvals' },
         { name: 'connections' },
         { name: 'devices' },
@@ -4721,6 +4725,7 @@ export function buildOpenApiDocument() {
         },
         ...devicePaths(),
         ...appsPaths(),
+        ...pagesPaths(),
         ...processPreviewPaths(),
         ...spaceAuditPaths(),
       },

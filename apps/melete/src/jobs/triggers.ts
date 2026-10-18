@@ -34,6 +34,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { ItemFailures } from '../ops/item-failures.ts';
+import { PAGE_WATCH_SQL, watchedPage } from '../pages/service.ts';
 import { personSetSchedule } from './attention.ts';
 import { QUEUES } from './queue.ts';
 import { workQuiet } from './quiet.ts';
@@ -330,6 +331,13 @@ export class ProcessWatchRefusal extends Error {
 export const PROCESS_WATCH_SQL = (alias: string) =>
   `${alias}.kind = 'watch' and ${alias}.spec->>'event_name' in ('process.exited', 'process.output', 'process.listening') and ${alias}.spec #>> '{predicate,all,0,field}' = 'process_id'`;
 
+/**
+ * SQL for a watch that belongs to work under way rather than standing work:
+ * one on a background process, or on a connection's page.
+ */
+export const UNDERWAY_WATCH_SQL = (alias: string) =>
+  `((${PROCESS_WATCH_SQL(alias)}) or (${PAGE_WATCH_SQL(alias)}))`;
+
 const processWatchListeners = new Set<() => void>();
 
 /**
@@ -610,7 +618,10 @@ export class TriggerService {
     // what its schedule or connection brings is let pass, and coming back
     // counts from then. The result of an operation the work started is its
     // work under way, and still reaches it.
-    const resting = watchedProcess(registration.spec) === null && (await this.resting(tx, row));
+    const resting =
+      watchedProcess(registration.spec) === null &&
+      watchedPage(registration.spec) === null &&
+      (await this.resting(tx, row));
     const spec = triggerSpec.parse(registration.spec);
     // A trigger made before its connection stopped serving this job, or before
     // the rule existed, hears nothing more from it.

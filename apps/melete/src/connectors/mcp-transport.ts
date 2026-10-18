@@ -2,10 +2,20 @@ import { spawn } from 'node:child_process';
 import { lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { type JsonObject, jsonObject } from '@melete/contracts';
+import {
+  IDENTITY_HEADER,
+  type JsonObject,
+  jsonObject,
+  MCP_APP_MIME_TYPE,
+  MCP_UI_EXTENSION,
+} from '@melete/contracts';
 import { ConnectorFaultError } from './faults.ts';
 import { mcpHeaderValue } from './mcp-headers.ts';
 import { bearerChallenge } from './mcp-oauth.ts';
+
+/** The one request header a call carries whatever revision the server speaks. */
+const identityOnly = (headers: Record<string, string> | undefined): Record<string, string> =>
+  headers?.[IDENTITY_HEADER] ? { [IDENTITY_HEADER]: headers[IDENTITY_HEADER] } : {};
 
 /** The handshake revision `initialize` asks for; a server may answer with an earlier one. */
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
@@ -14,6 +24,13 @@ export const MCP_STATELESS_VERSION = '2026-07-28';
 /** Handshake revisions a server may settle on, newest first. */
 export const MCP_HANDSHAKE_VERSIONS: readonly string[] = ['2025-11-25', '2025-06-18', '2025-03-26'];
 export const MCP_CLIENT_INFO = { name: 'melete', version: '0.1.0' } as const;
+/**
+ * What Melete tells a server it can do. Only the MCP Apps extension: Melete
+ * draws a tool's page. Nothing here lets a server send Melete requests.
+ */
+export const mcpClientCapabilities = (): JsonObject => ({
+  extensions: { [MCP_UI_EXTENSION]: { mimeTypes: [MCP_APP_MIME_TYPE] } },
+});
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 /** One server-sent event, as the web reader caps one page. */
 const MAX_EVENT_BYTES = 1024 * 1024;
@@ -408,7 +425,7 @@ export function openHttpMcpTransport(
         ...(meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {}),
         'io.modelcontextprotocol/protocolVersion': at,
         'io.modelcontextprotocol/clientInfo': { ...MCP_CLIENT_INFO },
-        'io.modelcontextprotocol/clientCapabilities': {},
+        'io.modelcontextprotocol/clientCapabilities': mcpClientCapabilities(),
       },
     };
   };
@@ -505,7 +522,10 @@ export function openHttpMcpTransport(
         signal: controller.signal,
         headers: {
           // Mirrored values first, so none of them can stand in for the transport's own.
-          ...(modern ? { ...extra.headers, ...statelessHeaders(sent) } : {}),
+          // Before the stateless revision only Melete's identity header goes along.
+          ...(modern
+            ? { ...extra.headers, ...statelessHeaders(sent) }
+            : identityOnly(extra.headers)),
           'Content-Type': 'application/json',
           Accept: 'application/json, text/event-stream',
           'MCP-Protocol-Version': at,

@@ -1527,3 +1527,78 @@ export const spendingNotice = pgTable(
   },
   (t) => [primaryKey({ columns: [t.scope, t.period, t.level] })],
 );
+
+/**
+ * A page a connection's server showed in a conversation (MCP Apps), and what
+ * its server reported about it. The document is kept as the server gave it,
+ * and served only framed, with the policy in `csp`. The report key is never
+ * kept: it is derived from the installation's key and the page's id.
+ */
+export const connectionPage = pgTable(
+  'connection_page',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    actionId: text('action_id')
+      .notNull()
+      .references(() => action.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** The person the page is for: the job's person, or who asked a room. */
+    principalId: text('principal_id'),
+    triggerId: text('trigger_id'),
+    resourceUri: text('resource_uri').notNull(),
+    html: text('html').notNull(),
+    /** Domains the page may use, after the connection's allow-list: connect, resource, frame. */
+    domains: jsonb('domains').$type<Record<string, string[]>>().notNull().default({}),
+    /** Origins the page may ask to open in a new tab. */
+    openOrigins: jsonb('open_origins').$type<string[]>().notNull().default([]),
+    serverOrigin: text('server_origin').notNull(),
+    toolInput: jsonb('tool_input').$type<Record<string, unknown>>().notNull().default({}),
+    toolResult: jsonb('tool_result').$type<Record<string, unknown>>().notNull().default({}),
+    state: text('state').notNull().default('open'),
+    summary: text('summary'),
+    reportData: jsonb('report_data').$type<Record<string, unknown>>(),
+    reportId: text('report_id'),
+    createdAt: created(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('connection_page_job_idx').on(t.jobId),
+    uniqueIndex('connection_page_action_idx').on(t.actionId),
+    check(
+      'connection_page_state_check',
+      sql`${t.state} in ('open', 'completed', 'failed', 'cancelled', 'expired')`,
+    ),
+  ],
+);
+
+/**
+ * What an operator granted a person's account, by name (`verified`). Written
+ * only by the operator's routes and the host's command line; no route a person
+ * or an agent reaches writes it. A connection's tool can require one, and the
+ * person's identity assertion carries those they hold. A grant past
+ * `expires_at` counts for nothing.
+ */
+export const personEntitlement = pgTable(
+  'person_entitlement',
+  {
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    /** What the operator recorded with it (`method`, `level`); opaque to Melete. */
+    value: jsonb('value').$type<Record<string, string>>().notNull().default({}),
+    grantedBy: text('granted_by').notNull(),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.principalId, t.key] })],
+);
