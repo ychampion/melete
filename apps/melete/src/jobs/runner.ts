@@ -802,7 +802,7 @@ export class AttemptRunner {
       // steps show on the turn's record and the answer stands. Running the
       // turn would answer it a second time. A step that failed instead goes to
       // an attempt, which is shown what was already said (`said_this_turn`).
-      if (await answeredTurnSettled(tx, row, previous, bundle)) {
+      if (bundle && (await answeredTurnSettled(tx, row, previous, bundle))) {
         await this.finish(
           tx,
           row,
