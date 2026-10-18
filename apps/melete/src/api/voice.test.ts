@@ -1,10 +1,12 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 import { VOICE_LIMITS, voiceStatus } from '@melete/contracts';
 import { Hono } from 'hono';
+import { CallService } from '../call/service.ts';
 import { VoiceProviderError } from '../connectors/elevenlabs.ts';
 import { fakeTranscriptionAdapter, type TranscriptionAdapter } from '../connectors/transcribe.ts';
 import { pcmWav, silentWav } from '../connectors/wav.ts';
 import type { Database } from '../db/client.ts';
+import { loadEnv } from '../env.ts';
 import { ServiceError } from './errors.ts';
 import {
   mountVoice,
@@ -13,6 +15,7 @@ import {
   type VoicePrivacy,
   type VoiceProviders,
   type VoiceUsageKind,
+  voiceLimitsFromEnv,
 } from './voice.ts';
 
 /** The allowance in memory, with what was taken and given back visible to the test. */
@@ -46,6 +49,7 @@ function app(
     seconds?: number;
     privacy?: VoicePrivacy;
     speechHealth?: SpeechHealth;
+    call?: CallService;
   } = {},
 ) {
   const allowance =
@@ -74,6 +78,7 @@ function app(
     limits: { seconds: options.seconds ?? 1800, characters: 20_000, sessions: 30, asides: 600 },
     privacy: options.privacy ?? (async () => null),
     ...(options.speechHealth ? { speechHealth: options.speechHealth } : {}),
+    ...(options.call ? { call: options.call } : {}),
   });
   return { built, allowance };
 }
@@ -90,6 +95,42 @@ const clip = (
     body: bytes,
   });
 
+describe('the operator sets the daily caps', () => {
+  test('left unset, none of them caps anything; set, each holds', () => {
+    const open = voiceLimitsFromEnv(loadEnv({ NODE_ENV: 'test' }));
+    expect(open.seconds).toBe(Number.POSITIVE_INFINITY);
+    expect(open.characters).toBe(Number.POSITIVE_INFINITY);
+    expect(open.sessions).toBe(Number.POSITIVE_INFINITY);
+    const blank = voiceLimitsFromEnv(
+      loadEnv({
+        NODE_ENV: 'test',
+        MELETE_VOICE_DAILY_SECONDS: '',
+        MELETE_VOICE_DAILY_CHARACTERS: '',
+        MELETE_VOICE_DAILY_SESSIONS: '',
+      }),
+    );
+    expect(blank.sessions).toBe(Number.POSITIVE_INFINITY);
+    const capped = voiceLimitsFromEnv(
+      loadEnv({
+        NODE_ENV: 'test',
+        MELETE_VOICE_DAILY_SECONDS: '1800',
+        MELETE_VOICE_DAILY_CHARACTERS: '20000',
+        MELETE_VOICE_DAILY_SESSIONS: '0',
+      }),
+    );
+    expect(capped).toMatchObject({ seconds: 1800, characters: 20_000, sessions: 0 });
+    expect(loadEnv({ NODE_ENV: 'test' }).MELETE_CALL_MONTHLY_MINUTES).toBeUndefined();
+  });
+
+  test('an uncapped allowance still counts what is used', async () => {
+    const allowance = new CountingAllowance();
+    expect(
+      await allowance.take('prn_1', 'session', 1_000_000, Number.POSITIVE_INFINITY),
+    ).not.toBeNull();
+    expect(allowance.used('session')).toBe(1_000_000);
+  });
+});
+
 describe('which voice features the service offers', () => {
   test('nothing configured: both absent, not broken', async () => {
     const { built } = app();
@@ -98,10 +139,39 @@ describe('which voice features the service offers', () => {
     expect(voiceStatus.parse(await response.json())).toEqual({
       push_to_talk: false,
       voice_mode: false,
+      call: false,
       max_recording_seconds: 120,
       max_recording_bytes: VOICE_LIMITS.recording_bytes,
       off_reason: null,
     });
+  });
+
+  test('no ElevenLabs key means no call: the button is not offered and the route is not there', async () => {
+    const { built } = app();
+    expect((await (await built.request('/voice')).json()) as { call: boolean }).toMatchObject({
+      call: false,
+    });
+    const started = await built.request('/conversations/job_x/call', { method: 'POST' });
+    expect(started.status).toBe(404);
+    expect(((await started.json()) as { error: { code: string } }).error.code).toBe(
+      'voice_unavailable',
+    );
+  });
+
+  test('calls set up: offered, and held back while the speech key is failing', async () => {
+    const call = new CallService({
+      voice: { start: async () => Promise.reject(new Error('unused')), verify: () => false },
+      chat: () => {
+        throw new Error('unused');
+      },
+    });
+    const offered = await app({}, { call }).built.request('/voice');
+    expect(((await offered.json()) as { call: boolean }).call).toBe(true);
+    const failing = await app(
+      {},
+      { call, speechHealth: async () => ({ speech: false, transcription: true }) },
+    ).built.request('/voice');
+    expect(((await failing.json()) as { call: boolean }).call).toBe(false);
   });
 
   test('a transcription provider turns on push-to-talk; voice mode needs the live provider', async () => {

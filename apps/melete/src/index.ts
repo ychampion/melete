@@ -46,6 +46,7 @@ import { claimNotice, recordConfiguredCode } from './api/setup-code.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
+  conversationContext,
   mountVoice,
   PostgresVoiceAllowance,
   type VoiceProviders,
@@ -64,6 +65,9 @@ import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import { configuredSearchGateway } from './broker/search-gateway.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { experienceCallChat } from './call/chat.ts';
+import { CallService, callVoiceFromEnv, NO_CALLS, PostgresCallUsage } from './call/service.ts';
+import type { CallTiming } from './call/session.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
 import { closeInterruptedScans } from './companies/repository.ts';
 import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
@@ -91,6 +95,7 @@ import {
   startSecretSweep,
 } from './connectors/revocation.ts';
 import { useEffectsPool } from './connectors/secrets.ts';
+import type { CallVoice } from './connectors/speech-engine.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { assertMigrated, migrateDatabase } from './db/migrate.ts';
@@ -109,6 +114,7 @@ import { ExperienceEffects } from './experience/effects.ts';
 import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
+import type { ExperienceService } from './experience/service.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
 import { feedbackWebhook, mountFeedback } from './feedback/routes.ts';
@@ -330,6 +336,10 @@ export type AppDeps = {
   voice?: VoiceProviders;
   /** The light conversation voice mode keeps up while a turn runs. Left out, none. */
   voiceCompanion?: VoiceCompanion | null;
+  /** Voice for calls. Left out, whatever the environment configures; null, no calls. */
+  callVoice?: CallVoice | null;
+  /** How a call paces its words; tests supply a quicker one. */
+  callTiming?: Partial<CallTiming>;
   /** The router every model gateway of this service uses; Settings → Privacy edits it. */
   privacy?: PrivacyRouter;
   /** The model connected in the app. Left out, built from `db` and the sign-ins. */
@@ -353,6 +363,11 @@ export type AppDeps = {
   /** Sends sign-in and reset links. Left out, the sender MELETE_SMTP_URL configures, if any. */
   accountMail?: AccountMailer;
 };
+
+/** Each app's calls, for the server that takes their upstream WebSockets. */
+const callServices = new WeakMap<object, CallService>();
+/** The calls an app built, or null when it offers none. */
+export const callServiceOf = (app: object): CallService | null => callServices.get(app) ?? null;
 
 export function createApp(deps: AppDeps) {
   const db = deps.db;
@@ -643,6 +658,32 @@ export function createApp(deps: AppDeps) {
       resolveSpace: personalSpace,
     });
   if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
+  // Calls speak into the conversation through the experience service, which is
+  // mounted below; a call is only bound once both exist.
+  let callExperience: ExperienceService | null = null;
+  const callVoice = deps.callVoice !== undefined ? deps.callVoice : callVoiceFromEnv(deps.env);
+  const callDb = deps.db;
+  const callSql = deps.sql;
+  const calls =
+    callVoice && callDb && callSql
+      ? new CallService({
+          voice: callVoice,
+          usage: new PostgresCallUsage(callSql),
+          monthlyMinutes: deps.env.MELETE_CALL_MONTHLY_MINUTES,
+          ...(deps.callTiming ? { timing: deps.callTiming } : {}),
+          chat: (scope, since) => {
+            if (!callExperience) throw new Error('Conversations are not ready for calls.');
+            return experienceCallChat({
+              sql: callSql,
+              experience: callExperience,
+              scope,
+              since,
+              companion: deps.voiceCompanion ?? null,
+              context: (id, agentId) => conversationContext(callDb, id, agentId),
+            });
+          },
+        })
+      : null;
   if (deps.db)
     mountVoice(app, {
       db: deps.db,
@@ -652,6 +693,7 @@ export function createApp(deps: AppDeps) {
       // Voice goes to its provider directly, so it follows the router's private marks.
       privacy: voicePrivacyFrom(privacy),
       companion: deps.voiceCompanion ?? null,
+      call: calls,
     });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   const experience =
@@ -680,6 +722,8 @@ export function createApp(deps: AppDeps) {
       },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
     });
+  callExperience = experience || null;
+  if (calls) callServices.set(app, calls);
   // Rooms: shared spaces where several people talk to one agent. Switched
   // off, no room request is started, by a route or by a chat platform.
   if (multiplayer && deps.db && deps.jobs && submissions)
@@ -2222,10 +2266,22 @@ if (import.meta.main) {
   const apiNetwork = await resolveApiNetwork(loadEnv());
   const service = await bootstrap({ effects: true });
   const { app, env, effectBoundary } = service;
+  const api = apiFetch(app, apiNetwork, trustedProxy(env.MELETE_TRUSTED_PROXY));
+  const calls = callServiceOf(app);
   const server = Bun.serve({
     hostname: apiNetwork.hostname,
     port: env.PORT,
-    fetch: apiFetch(app, apiNetwork, trustedProxy(env.MELETE_TRUSTED_PROXY)),
+    fetch: (request, socket) => {
+      // A call's upstream WebSocket, from ElevenLabs through the web app, is
+      // admitted from the same network as every other request.
+      if (calls && apiNetwork.acceptsPeer(socket.requestIP(request)?.address)) {
+        const answered = calls.upgrade(request, socket);
+        if (answered !== null) return answered;
+      }
+      return api(request, socket);
+    },
+    // Without calls nothing is ever upgraded, so this handler never runs.
+    websocket: calls?.websocket ?? NO_CALLS,
     idleTimeout: 0,
   });
   process.stdout.write(`melete ${VERSION} listening on ${apiNetwork.hostname}:${env.PORT}\n`);

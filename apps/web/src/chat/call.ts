@@ -9,6 +9,7 @@
  * - when a progress word is due, so updates come at natural moments and never
  *   in a flood.
  */
+import { asksToStop } from '@melete/contracts/voice';
 import type { TranscriptTurn } from '../experience/reduce.ts';
 import type { VoiceActivity, VoiceAside } from '../experience/types.ts';
 
@@ -41,31 +42,8 @@ export function activityOf(turn: TranscriptTurn | undefined): VoiceActivity {
 /** How many steps the running turn has finished: the moments a progress word can follow. */
 export const stepsDone = (activity: VoiceActivity): number => activity.steps.length;
 
-export type QuickCommand = 'stop' | 'pause' | 'resume';
-
-const QUICK: [QuickCommand, RegExp][] = [
-  [
-    'stop',
-    /^(please )?(stop|cancel|cancel (it|that)|stop (it|that|working)|never mind|forget it)( please)?$/,
-  ],
-  ['pause', /^(please )?(pause|hold on|hold it|wait)( please| a (second|moment|minute))?$/],
-  ['resume', /^(please )?(carry on|continue|keep going|go on|resume|go ahead)( please)?$/],
-];
-
-/**
- * A short, whole utterance that is plainly a stop, pause or carry on. These go
- * straight to the existing controls, with no model in between, so stopping
- * works even when nothing else does. Anything longer is for the companion.
- */
-export function quickCommand(heard: string): QuickCommand | null {
-  const said = heard
-    .toLowerCase()
-    .replace(/[.!?,…]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  for (const [command, pattern] of QUICK) if (pattern.test(said)) return command;
-  return null;
-}
+// The spoken controls are shared with a call, which reads them on the service.
+export { asksToStop, type QuickCommand, quickCommand } from '@melete/contracts/voice';
 
 /** Said when what was heard is kept for the work to see next. */
 export const QUEUED = 'Got it. I’ll pass that on as soon as this part is done.';
@@ -77,28 +55,6 @@ export type AsideAction =
   | { kind: 'say'; say: string }
   | { kind: 'queue'; text: string; say: string }
   | { kind: 'stop'; say: string };
-
-/**
- * Whether the person's own words ask for the work to stop. The companion's
- * answer is model text, and the model reads what the work brought back from
- * pages and tools, so its `stop` is believed only when this agrees.
- */
-export function asksToStop(heard: string): boolean {
-  const said = heard.toLowerCase().replace(/[‘’]/g, "'");
-  // Each clause is read on its own: "no, keep going" and "don't stop" carry on,
-  // while "keep the notes, but stop the search" still asks for a stop.
-  return said.split(/[,.;:!?…]|\b(?:but|and|then|just)\b/).some((clause) => {
-    for (const match of clause.matchAll(STOP_WORD))
-      if (!NEGATED.test(clause.slice(0, match.index))) return true;
-    return false;
-  });
-}
-
-const STOP_WORD =
-  /\b(stop|stopping|cancel|halt|abort|quit|never mind|forget (it|that|about it|the whole thing))\b/g;
-/** A "don't", "never" or "no need to" earlier in the same clause turns a stop word around. */
-const NEGATED =
-  /\b(don'?t|do not|doesn'?t|does not|never|not|no need to|no reason to|won'?t|will not|shouldn'?t|should not|without|can'?t|cannot)\b/;
 
 /**
  * What to do with something heard while the work runs, given the companion's

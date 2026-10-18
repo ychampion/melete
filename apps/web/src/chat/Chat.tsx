@@ -65,6 +65,7 @@ import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { useAttachments } from './attachments.ts';
 import { shownBlocks } from './blocks.ts';
+import { CallPanel } from './CallPanel.tsx';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
@@ -1139,11 +1140,26 @@ export function ChatScreen({ id }: { id: string | null }) {
   const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
+  // A call where the installation can take one; voice mode where it cannot.
+  const calling = Boolean(voice?.call);
+  const voiceLabel = calling ? 'Call' : 'Voice mode';
+  // Opened before the voice status is read (a new voice chat), the panel waits for it, so a call
+  // never begins as voice mode first, and the composer stays until a panel takes its place.
+  const voiceShown =
+    voiceOpen && conversationId !== null && Boolean(voice?.call || voice?.voice_mode);
+  const endVoice = () => {
+    setVoiceOpen(false);
+    setVoiceMin(false);
+    // Back to the control that opened it, for a keyboard user.
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[aria-label="${voiceLabel}"]`)?.focus(),
+    );
+  };
   const voiceButton = (size: number) =>
-    voice?.voice_mode ? (
+    voice?.call || voice?.voice_mode ? (
       <IconButton
-        name="voice"
-        label={voiceOpen ? 'End voice mode' : 'Voice mode'}
+        name={calling ? 'phone' : 'voice'}
+        label={voiceOpen ? (calling ? 'Hang up' : 'End voice mode') : voiceLabel}
         size={size}
         iconSize={size > 32 ? 20 : 16}
         on={voiceOpen}
@@ -1391,35 +1407,41 @@ export function ChatScreen({ id }: { id: string | null }) {
               ))}
             </div>
           </div>
-          {voiceOpen && conversationId ? (
+          {voiceShown && conversationId ? (
             <div className="chat-foot" data-call={voiceMin ? 'minimised' : 'open'}>
               <div className="chat-foot-inner">
-                <VoicePanel
-                  conversationId={conversationId}
-                  transcript={transcript}
-                  agentName={agent?.name?.trim() || 'Melete'}
-                  avatar={<AgentAvatar agent={agent} size={28} />}
-                  minimised={voiceMin}
-                  onMinimise={setVoiceMin}
-                  onSend={send}
-                  onDraft={(words) =>
-                    changeDraft((current) =>
-                      current.trim()
-                        ? `${current.trimEnd()}
+                {calling ? (
+                  <CallPanel
+                    conversationId={conversationId}
+                    transcript={transcript}
+                    agentName={agent?.name?.trim() || 'Melete'}
+                    avatar={<AgentAvatar agent={agent} size={28} />}
+                    minimised={voiceMin}
+                    onMinimise={setVoiceMin}
+                    onEnd={endVoice}
+                    onShowDecision={showDecision}
+                  />
+                ) : (
+                  <VoicePanel
+                    conversationId={conversationId}
+                    transcript={transcript}
+                    agentName={agent?.name?.trim() || 'Melete'}
+                    avatar={<AgentAvatar agent={agent} size={28} />}
+                    minimised={voiceMin}
+                    onMinimise={setVoiceMin}
+                    onSend={send}
+                    onDraft={(words) =>
+                      changeDraft((current) =>
+                        current.trim()
+                          ? `${current.trimEnd()}
 ${words}`
-                        : words,
-                    )
-                  }
-                  onEnd={() => {
-                    setVoiceOpen(false);
-                    setVoiceMin(false);
-                    // Back to the control that opened it, for a keyboard user.
-                    requestAnimationFrame(() =>
-                      document.querySelector<HTMLElement>('[aria-label="Voice mode"]')?.focus(),
-                    );
-                  }}
-                  onShowDecision={showDecision}
-                />
+                          : words,
+                      )
+                    }
+                    onEnd={endVoice}
+                    onShowDecision={showDecision}
+                  />
+                )}
               </div>
             </div>
           ) : null}
@@ -1468,7 +1490,7 @@ ${words}`
               ) : null}
             </div>
           ) : null}
-          <div className="chat-foot" hidden={Boolean(pending) || (voiceOpen && !voiceMin)}>
+          <div className="chat-foot" hidden={Boolean(pending) || (voiceShown && !voiceMin)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button

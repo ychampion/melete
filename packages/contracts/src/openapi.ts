@@ -347,6 +347,7 @@ import {
 import { needsYouItemResponse, needsYouList } from './triage.ts';
 import { healthDetailResponse, usageResponse } from './usage.ts';
 import {
+  callSession,
   voiceAside,
   voiceAsideRequest,
   voiceContextQuery,
@@ -4658,8 +4659,9 @@ export function buildOpenApiDocument() {
             tags: ['voice'],
             summary: 'Which voice features this installation has',
             description:
-              'Both are false until the operator sets a speech provider key. Push-to-talk needs a ' +
-              'provider that transcribes; voice mode needs ElevenLabs. Given a conversation, or the ' +
+              'All are false until the operator sets a speech provider key. Push-to-talk needs a ' +
+              'provider that transcribes; voice mode needs ElevenLabs; a call needs ElevenLabs and ' +
+              'a public https:// address. Given a conversation, or the ' +
               'agent a new chat will have, `off_reason` says why voice is off there: the space or ' +
               'agent is marked private, or the conversation is about a sensitive topic.',
             requestParams: { query: voiceContextQuery },
@@ -4757,6 +4759,27 @@ export function buildOpenApiDocument() {
               '403': problem('Voice is off in a private space, agent or sensitive conversation'),
               '404': problem('No such conversation, or voice mode is not set up'),
               '429': problem('Too many asides in a short time, or the daily allowance is used up'),
+            },
+          },
+        },
+        '/conversations/{id}/call': {
+          post: {
+            tags: ['voice'],
+            summary: 'Start a call with the conversation’s agent',
+            description:
+              'Answers with a token for the speech service, good for one call and for a few ' +
+              'minutes; the provider key never reaches the browser. On the call the speech ' +
+              'service listens, takes turns and speaks; the agent is the conversation’s own, ' +
+              'with its tools, memory and approvals. Each thing said becomes a message in the ' +
+              'conversation, as if typed, and the answer is read aloud as it is written. ' +
+              'Hanging up ends only the call: work it started goes on.',
+            requestParams: idParam('id', 'Conversation id'),
+            responses: {
+              '201': jsonResponse('Start the call with `token`', callSession),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
+              '404': problem('No such conversation, or calls are not set up'),
+              '429': problem('The person’s call minutes for this month are used up'),
+              '502': problem('The speech provider could not start a call'),
             },
           },
         },

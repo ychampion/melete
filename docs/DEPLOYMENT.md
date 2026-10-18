@@ -1953,10 +1953,11 @@ Postgres as JSON and compared in the service, so no database extension is needed
 voice mode; speech then uses ElevenLabs in preference to `OPENAI_API_KEY`.
 `ELEVENLABS_VOICE_ID`, `ELEVENLABS_SECOND_VOICE_ID`, `ELEVENLABS_SPEECH_MODEL`,
 `ELEVENLABS_STREAMING_MODEL` and `ELEVENLABS_TRANSCRIPTION_MODEL` choose voices
-and models. `MELETE_VOICE_DAILY_SECONDS` (default `1800`),
-`MELETE_VOICE_DAILY_CHARACTERS` (default `20000`) and
-`MELETE_VOICE_DAILY_SESSIONS` (default `30`) are what one person may use in a
-day. [VOICE](VOICE.md) describes each setting and feature.
+and models. `MELETE_VOICE_DAILY_SECONDS`, `MELETE_VOICE_DAILY_CHARACTERS` and
+`MELETE_VOICE_DAILY_SESSIONS` cap what one person may use in a day, and
+`MELETE_CALL_MONTHLY_MINUTES` caps call minutes over 30 days; each is unset
+(no cap) unless you set it. [VOICE](VOICE.md) describes each setting and
+feature.
 
 ### Auto-review
 

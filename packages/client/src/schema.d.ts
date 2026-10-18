@@ -4418,6 +4418,89 @@ export interface paths {
         };
         trace?: never;
     };
+    "/conversations/{id}/call": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a call with the conversation’s agent
+         * @description Answers with a token for the speech service, good for one call and for a few minutes; the provider key never reaches the browser. On the call the speech service listens, takes turns and speaks; the agent is the conversation’s own, with its tools, memory and approvals. Each thing said becomes a message in the conversation, as if typed, and the answer is read aloud as it is written. Hanging up ends only the call: work it started goes on.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Conversation id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Start the call with `token` */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: date-time */
+                            expires_at: string;
+                            minutes_left: number | null;
+                            token: string;
+                        };
+                    };
+                };
+                /** @description Voice is off in a private space, agent or sensitive conversation */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+                /** @description No such conversation, or calls are not set up */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+                /** @description The person’s call minutes for this month are used up */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+                /** @description The speech provider could not start a call */
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/{id}/cards": {
         parameters: {
             query?: never;
@@ -23697,7 +23780,7 @@ export interface paths {
         };
         /**
          * Which voice features this installation has
-         * @description Both are false until the operator sets a speech provider key. Push-to-talk needs a provider that transcribes; voice mode needs ElevenLabs. Given a conversation, or the agent a new chat will have, `off_reason` says why voice is off there: the space or agent is marked private, or the conversation is about a sensitive topic.
+         * @description All are false until the operator sets a speech provider key. Push-to-talk needs a provider that transcribes; voice mode needs ElevenLabs; a call needs ElevenLabs and a public https:// address. Given a conversation, or the agent a new chat will have, `off_reason` says why voice is off there: the space or agent is marked private, or the conversation is about a sensitive topic.
          */
         get: {
             parameters: {
@@ -23718,6 +23801,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            call: boolean;
                             max_recording_bytes: number;
                             max_recording_seconds: number;
                             off_reason: string | null;
