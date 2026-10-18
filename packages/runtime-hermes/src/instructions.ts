@@ -448,7 +448,14 @@ export function renderInput(bundle: AttemptBundle): string {
   // The reason this wake exists goes last, because it is what the model should
   // act on first and recency is what it reads as urgency.
   const cancelled = bundle.inputs.cancelled_wait;
-  if (cancelled?.kind === 'event' || cancelled?.kind === 'timer') {
+  if (cancelled?.kind === 'timer' && bundle.inputs.cancelled_wait_held)
+    lines.push(
+      '',
+      '## A reminder is cancelled',
+      '',
+      `This conversation's reminder due ${cancelled.wake_at} was cancelled from another conversation, so it will not fire. If the person wants it back, call run.resume with this conversation as its run (run.list shows it under reminders), and it comes at that time while the time is still ahead. To set another time, call job.wait with it.`,
+    );
+  else if (cancelled?.kind === 'event' || cancelled?.kind === 'timer') {
     const named = bundle.job.triggers?.find(
       (entry) => cancelled.kind === 'event' && entry.id === cancelled.trigger_id,
     );

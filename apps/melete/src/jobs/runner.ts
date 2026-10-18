@@ -1053,8 +1053,9 @@ export class AttemptRunner {
     // due while a reply was written is put back all the same and fires at once,
     // late but never lost. Other work woken after its timer's time has nothing
     // left to wait for.
-    // A reminder held from another conversation comes back still held, and
-    // one whose time passed while held has nothing left to come back to.
+    // A reminder held from another conversation comes back still held (the
+    // move is told it is restoring), and one whose time passed while held has
+    // nothing left to come back to.
     if (wait.kind === 'timer') {
       const ahead = Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime();
       if (row.kind === 'chat' && !ahead && (await reminderHeld(tx, row.id, wait.wake_at)))
@@ -1404,6 +1405,8 @@ export class AttemptRunner {
           wait,
           payload: { outcome },
           ...(retryAfterMs > 0 ? { retryAfterMs } : {}),
+          // Put back by itself, not chosen by this attempt: a hold on it stays.
+          ...(restored !== posed && outcome === restored ? { restoring: true } : {}),
         });
     // The work runs again by itself: the turn is still under way, not failed.
     const retrying = outcome.kind === 'failed' && updated.state === 'queued';

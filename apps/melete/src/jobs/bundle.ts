@@ -85,6 +85,7 @@ import {
 } from './history-summary.ts';
 import { localNow } from './local-now.ts';
 import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
+import { reminderHeld } from './reminder-hold.ts';
 import type { JobRow } from './service.ts';
 import { UNSETTLED_WAIT } from './unsettled.ts';
 
@@ -1107,6 +1108,12 @@ export async function buildAttemptSkeleton(
       (wait.kind === 'timer' && (row.kind === 'chat' || Date.parse(wait.wake_at) > now)))
       ? wait
       : undefined;
+  // A reminder the person cancelled from another conversation comes back still
+  // cancelled, and the attempt is told so rather than that it fires.
+  const cancelledHeld =
+    row.kind === 'chat' &&
+    cancelledWait?.kind === 'timer' &&
+    (await reminderHeld(tx, row.id, cancelledWait.wake_at));
   const [open] = await tx
     .select()
     .from(question)
@@ -1190,7 +1197,11 @@ export async function buildAttemptSkeleton(
       deliverable: constraints.deliverable,
       triggers,
     },
-    inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
+    inputs: {
+      ...history.inputs,
+      ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}),
+      ...(cancelledHeld ? { cancelled_wait_held: true } : {}),
+    },
     since_last: delta,
     transcript: room
       ? boundTranscript(inTimeOrder(room.thread, history.transcript))

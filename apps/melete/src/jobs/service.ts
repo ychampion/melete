@@ -43,7 +43,7 @@ import {
 import { personSetSchedule } from './attention.ts';
 import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
-import { reminderHeld } from './reminder-hold.ts';
+import { releaseReminder, reminderHeld } from './reminder-hold.ts';
 import type { StandingWorkSettings } from './resting.ts';
 import { opensWithMention, recordSteer } from './steer.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
@@ -157,6 +157,13 @@ export type TransitionOptions = {
   bumpEpoch?: boolean;
   /** For a move back to queued: how long the next attempt waits before it may start. */
   retryAfterMs?: number;
+  /**
+   * The wait is one a turn had set aside, put back by itself as the turn ends
+   * (`AttemptRunner.restorableWait`): a conversation's reminder cancelled from
+   * another conversation comes back still held. Any other wait was chosen
+   * afresh, and releases a hold on its time (`reminder-hold.ts`).
+   */
+  restoring?: boolean;
 };
 
 export type JobFaults = {
@@ -399,13 +406,18 @@ export class JobService {
     if (result.value === 'queued' && row.state !== 'running' && !(await this.attemptsLeft(tx, row)))
       throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     let wait = options.wait ?? { kind: 'none' };
-    // A conversation's reminder held from another conversation rests with no
-    // wake, so it cannot fire until it is turned back on (`reminder-hold.ts`).
-    const held =
-      row.kind === 'chat' &&
-      result.value === 'waiting_for_event_or_time' &&
-      wait.kind === 'timer' &&
-      (await reminderHeld(tx, row.id, wait.wake_at));
+    // A conversation's reminder cancelled from another conversation comes back
+    // from a set-aside wait still held, resting with no wake until it is
+    // turned back on. A job.wait for that time asks for it again and releases
+    // the hold (`reminder-hold.ts`).
+    const reminderAt =
+      row.kind === 'chat' && result.value === 'waiting_for_event_or_time' && wait.kind === 'timer'
+        ? wait.wake_at
+        : null;
+    const onHold = reminderAt !== null && (await reminderHeld(tx, row.id, reminderAt));
+    if (onHold && !options.restoring)
+      await releaseReminder(tx, row.id, reminderAt, options.attemptId ?? null);
+    const held = onHold && options.restoring === true;
     const baseWakeAt = held
       ? null
       : result.value === 'queued'
