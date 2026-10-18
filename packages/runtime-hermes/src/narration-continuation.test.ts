@@ -2,7 +2,7 @@
 import { expect, test } from 'bun:test';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
 import { HermesRuntimeAdapter } from './adapter.ts';
-import { SAID_THEN_WROTE } from './instructions.ts';
+import { ANSWERED_QUESTION, SAID_THEN_WROTE } from './instructions.ts';
 import { DELIVER_CONTINUATION, SAID_DELIVER_CONTINUATION } from './liveness.ts';
 import { answersAlready } from './narration.ts';
 
@@ -133,6 +133,34 @@ test('a message the person sent after the answer still gets its reply', async ()
   expect(inputs[0]).toContain(SAID_THEN_WROTE);
   expect(inputs).toHaveLength(2);
   expect(outcome).toMatchObject({ kind: 'completed', summary: 'Tomorrow stays dry.' });
+});
+
+test('an answer to the question the last turn ended on is shown what the person has', async () => {
+  const message = { role: 'user' as const, content: 'Go ahead, your call.', at };
+  const answered = {
+    question: 'Should I wait for the radar, or go with this?',
+    said: ANSWER,
+  };
+  const { inputs } = await run(
+    {
+      ...bundle,
+      inputs: { ...bundle.inputs, new_user_messages: [message], answered_question: answered },
+    },
+    ['The radar agrees: rain after 4 PM.'],
+  );
+  const input = inputs[0] ?? '';
+  expect(input).toContain(ANSWERED_QUESTION);
+  expect(input).toContain(`<question>\n${answered.question}\n</question>`);
+  expect(input).toContain(`<already_said>\n${ANSWER}\n</already_said>`);
+  // Shown before the answer it explains, which stays last.
+  expect(input.indexOf(ANSWERED_QUESTION)).toBeLessThan(input.indexOf('## From the person'));
+  expect(input.trimEnd().endsWith(message.content)).toBe(true);
+  // A turn that answers no question is told nothing about one.
+  const plain = await run(
+    { ...bundle, inputs: { ...bundle.inputs, new_user_messages: [message] } },
+    ['Rain after 4 PM.'],
+  );
+  expect(plain.inputs[0]).not.toContain(ANSWERED_QUESTION);
 });
 
 test('an event in the wake leaves the ask in place', async () => {

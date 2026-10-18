@@ -85,7 +85,13 @@ import {
   storedSummary,
 } from './history-summary.ts';
 import { localNow } from './local-now.ts';
-import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
+import {
+  answerKey,
+  PRIVACY_DECISION,
+  pickedForAgent,
+  questionView,
+  readDeferred,
+} from './questions.ts';
 import type { JobRow } from './service.ts';
 import { UNSETTLED_WAIT } from './unsettled.ts';
 
@@ -1036,10 +1042,42 @@ async function saidThisTurn(
     from = entry.attemptId;
     pieces.push(text);
   }
-  const said = pieces.join('').trim();
+  return shownSaid(pieces.join('').trim());
+}
+
+/** Words said to the person, cut to their start and end when long. */
+function shownSaid(said: string): string {
   if (said.length <= SAID_SHOWN_CHARS) return said;
   const half = SAID_SHOWN_CHARS / 2;
   return `${said.slice(0, half).trimEnd()}\n[…]\n${said.slice(-half).trimStart()}`;
+}
+
+/**
+ * The question a conversation turn's message answers, when the person typed
+ * their answer to one an earlier turn ended on, and what that turn said to
+ * them. They still have those words, and the question is in no transcript, so
+ * without both the answer reads as a fresh go-ahead and the words are sent
+ * again whole.
+ */
+async function answeredQuestion(
+  tx: Transaction,
+  row: JobRow,
+  submissionId: string,
+): Promise<{ question: string; said: string } | null> {
+  const questionId = submissionId.slice(answerKey('').length);
+  if (answerKey(questionId) !== submissionId || !questionId) return null;
+  const [asked] = await tx
+    .select({ text: question.text, turnId: attempt.turnId })
+    .from(question)
+    .innerJoin(attempt, eq(attempt.id, question.attemptId))
+    .where(and(eq(question.id, questionId), eq(question.jobId, row.id)));
+  if (!asked?.turnId) return null;
+  const [turn] = await tx
+    .select({ answer: experienceTurn.answer })
+    .from(experienceTurn)
+    .where(and(eq(experienceTurn.id, asked.turnId), eq(experienceTurn.jobId, row.id)));
+  const said = shownSaid(turn?.answer.trim() ?? '');
+  return said ? { question: asked.text.slice(0, 2000), said } : null;
 }
 
 export async function buildAttemptSkeleton(
@@ -1118,6 +1156,13 @@ export async function buildAttemptSkeleton(
   const [activeTurn] = row.currentTurnId
     ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
     : [];
+  // The person's message answers the question the last turn ended on: this
+  // attempt is told so, with the words they already have from that turn.
+  const answered =
+    activeTurn && history.inputs.new_user_messages.length
+      ? await answeredQuestion(tx, row, activeTurn.submissionId)
+      : null;
+  if (answered) history.inputs.answered_question = answered;
   // The turn's agent, else the job's. One deleted since answers no more: its
   // work goes to the space's own agent, Melete, as deleting it moves its chats.
   // A room's request always has an agent: the room's.

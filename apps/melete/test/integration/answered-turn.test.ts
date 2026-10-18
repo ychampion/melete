@@ -22,7 +22,7 @@ import {
   type EventSink,
   type RuntimeAdapter,
 } from '@melete/contracts';
-import { renderInput, SAID_THEN_WROTE } from '@melete/runtime-hermes';
+import { ANSWERED_QUESTION, renderInput, SAID_THEN_WROTE } from '@melete/runtime-hermes';
 import { and, eq } from 'drizzle-orm';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -38,7 +38,7 @@ import {
 } from '../../src/db/schema.ts';
 import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
-import { withdrawSettledQuestion } from '../../src/jobs/questions.ts';
+import { QuestionService, withdrawSettledQuestion } from '../../src/jobs/questions.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { RUNAWAY_NOTE } from '../../src/jobs/runaway.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
@@ -52,7 +52,14 @@ const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
 const withDb = jobs ? describe : describe.skip;
 const key = 'answered-turn-signing-key-32-bytes-long';
 const runners: AttemptRunner[] = [];
-const LETTER = 'Dear Hiring Manager,\n\nHere is the letter.\n\nSincerely,\nRiya Sharma';
+const LETTER =
+  'Dear Hiring Manager,\n\nHere is the letter. I admire [something about the company].\n\nSincerely,\nRiya Sharma';
+/** The letter with its marked gap filled in, which the person's answer allowed. */
+const FILLED =
+  'Dear Hiring Manager,\n\nHere is the letter. I admire your fresh food.\n\nSincerely,\nRiya Sharma';
+/** Told what the person already has, the agent says first what changed. */
+const UPDATE = `Here is the letter with the gap filled in.\n\n${FILLED}`;
+const ANSWER = "Go ahead with your best judgement. I can't help further right now.";
 const FOLLOW_UP = 'The word count did not run, so I could not confirm the length.';
 const STEER = 'Also, can you make it a little warmer?';
 const STEER_REPLY =
@@ -115,6 +122,8 @@ const computer: Connector = {
  * - `looping`: `lost`, and the retry falls into repeating one paragraph;
  * - `two_through` / `two_one_failed`: two steps out, both going through, or
  *   the second failing after the first went through.
+ * - `answered`: the step never reports back, and the person types an answer to
+ *   the question the turn rests on, which opens a new turn.
  */
 type Shape =
   | 'went_through'
@@ -124,7 +133,8 @@ type Shape =
   | 'refenced'
   | 'looping'
   | 'two_through'
-  | 'two_one_failed';
+  | 'two_one_failed'
+  | 'answered';
 const FAILS = new Set<Shape>(['failed', 'refenced', 'two_one_failed']);
 const RETRIED = new Set<Shape>(['lost', 'looping']);
 
@@ -199,6 +209,16 @@ withDb('a turn answered while a step it started was still out', () => {
       async start(bundle: AttemptBundle, sink: EventSink): Promise<AttemptOutcome> {
         bundles.push(bundle);
         if (bundles.length > 1) {
+          // The person answered the question the letter's turn rested on: told
+          // they have the letter, the agent says first what it changed; not
+          // told, it reads the answer as a go-ahead and sends the letter again.
+          if (shape === 'answered') {
+            const reply = bundle.inputs.answered_question?.said.includes('Dear Hiring Manager')
+              ? UPDATE
+              : FILLED;
+            await say(bundle, sink, reply);
+            return { kind: 'completed', summary: reply, evidence: [] };
+          }
           // A message the person sent since is answered whatever else was said.
           if (bundle.inputs.new_user_messages.some((message) => message.content.includes(STEER))) {
             await say(bundle, sink, STEER_REPLY);
@@ -290,7 +310,20 @@ withDb('a turn answered while a step it started was still out', () => {
     });
     if (!sent.job) throw new Error(`message refused: ${JSON.stringify(sent.error)}`);
     await run(sent.job);
-    if (!RETRIED.has(shape)) {
+    if (shape === 'answered') {
+      // The step never reports back; the person types an answer to the
+      // question the turn rests on, as a reply box under it lets them.
+      const [asked] = await handle.db
+        .select({ id: question.id })
+        .from(question)
+        .where(and(eq(question.jobId, chat.id), eq(question.state, 'open')));
+      if (!asked) throw new Error('the turn did not rest on a question');
+      const answered = await new QuestionService(jobs, submissions).answer(asked.id, {
+        text: ANSWER,
+      });
+      if (!answered.job) throw new Error(`answer refused: ${JSON.stringify(answered.error)}`);
+      await run(answered.job);
+    } else if (!RETRIED.has(shape)) {
       // The word count reports back after the turn ended; of two, the last one fails.
       for (const [index, stepId] of steps.entries()) {
         const fails = FAILS.has(shape) && index === steps.length - 1;
@@ -329,10 +362,12 @@ withDb('a turn answered while a step it started was still out', () => {
       .select({ payload: event.payload })
       .from(event)
       .where(and(eq(event.jobId, chat.id), eq(event.type, 'text_delta')));
-    const [turn] = await handle.db
+    const turns = await handle.db
       .select()
       .from(experienceTurn)
-      .where(eq(experienceTurn.jobId, chat.id));
+      .where(eq(experienceTurn.jobId, chat.id))
+      .orderBy(experienceTurn.createdAt);
+    const [turn] = turns;
     const open = await handle.db
       .select({ text: question.text })
       .from(question)
@@ -343,10 +378,31 @@ withDb('a turn answered while a step it started was still out', () => {
         String((row.payload as { text?: unknown }).text).includes('Dear Hiring Manager'),
       ).length,
       turn,
+      turns,
       open,
       state: (await jobs.get(chat.id)).state,
     };
   }
+
+  test('an answer to the question a letter rested on gets an update, not the letter again', async () => {
+    const { bundles, turns } = await converse('answered');
+    expect(bundles).toHaveLength(2);
+    // The answer opened a turn of its own, with the person's words in it.
+    expect(turns).toHaveLength(2);
+    const [message] = bundles[1]?.inputs.new_user_messages ?? [];
+    expect(message?.content).toContain(ANSWER);
+    // That turn's attempt is told the question the answer is to, and the
+    // letter the person already has.
+    const answered = bundles[1]?.inputs.answered_question;
+    expect(answered?.question).toContain('could not confirm');
+    expect(answered?.said).toContain('Dear Hiring Manager');
+    expect(answered?.said).toContain('[something about the company]');
+    expect(renderInput(bundles[1] as AttemptBundle)).toContain(ANSWERED_QUESTION);
+    // The letter's turn keeps the letter; the next one says first what changed.
+    expect(turns[0]?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+    expect(turns[1]?.answer.startsWith('Here is the letter with the gap filled in.')).toBe(true);
+    expect(turns[1]?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+  });
 
   test('a step that went through after the answer runs nothing again', async () => {
     const { bundles, letters, turn, open, state } = await converse('went_through');

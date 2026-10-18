@@ -402,6 +402,10 @@ export const SAID_THIS_TURN =
 export const SAID_THEN_WROTE =
   'The person has written again since those words, below under "From the person". The words above do not answer that: reply to it now, without repeating what they already have.';
 
+/** What an attempt is told when the person's message answers the question the last turn ended on. */
+export const ANSWERED_QUESTION =
+  'Your last reply ended on a question to the person. They have that reply, the words below, and their message under "From the person" answers the question. Reply to that answer. Do not send the words below again unchanged. If your reply changes something in them, open it with one line that names the change, such as "Here is the letter with the closing filled in.", and then give the changed text.';
+
 /**
  * The volatile half: the job, the prior conversation, and then what this turn
  * brings: the skills chosen for it, recalled knowledge, what changed since the
@@ -491,6 +495,24 @@ export function renderInput(bundle: AttemptBundle): string {
       said,
       '</already_said>',
       ...(bundle.inputs.new_user_messages.length ? ['', SAID_THEN_WROTE] : []),
+    );
+  // The person answered the question the last turn ended on: they still have
+  // that turn's words, so the reply builds on them instead of sending them again.
+  const answered = bundle.inputs.answered_question;
+  if (answered?.said.trim())
+    lines.push(
+      '',
+      '## The question the person answered',
+      '',
+      ANSWERED_QUESTION,
+      '',
+      '<question>',
+      answered.question.trim(),
+      '</question>',
+      '',
+      '<already_said>',
+      answered.said.trim(),
+      '</already_said>',
     );
   // In a room each message names who said it; anywhere else it is the owner's.
   for (const message of bundle.inputs.new_user_messages) {
