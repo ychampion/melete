@@ -105,8 +105,9 @@ after it that sends them (a click or Return the rule holds) go ahead without
 asking again, if they come within five minutes of the step-up, on the same
 computer session and display, in the same work. The send is claimed once, as a
 notice in the work's events: a second purchase, another origin, another
-session, a step after five minutes, or a step-up that paid without entering a
-card (a saved card's Pay button) asks again. The browser worker's steps and
+session, a step after five minutes, a whole card number typed again (it may
+be another card), or a step-up that paid without entering a card (a saved
+card's Pay button) asks again. The browser worker's steps and
 commands in the terminal are never covered.
 
 The rule is fixed code in `apps/melete/src/broker/pay-moment.ts`. It reads the

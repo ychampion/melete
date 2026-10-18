@@ -133,6 +133,7 @@ import { type MoneyMove, moneyMove } from './money.ts';
 import {
   browserPays,
   type ComputerStep,
+  holdsCardNumber,
   PAGE_STEPS,
   type PayKind,
   payMoment,
@@ -1518,6 +1519,8 @@ export class BrokerService implements BrokerOperations {
     const [sent] =
       await tx`select 1 from event where dedup_key = ${`checkout_cover:${stepUp}:submit`}`;
     if (sent) return null;
+    // A whole card number typed again may be another card: the step-up was for the one entered.
+    if (!sends && holdsCardNumber(JSON.stringify(action.canonical_payload))) return null;
     // The same computer session and display as the step that was allowed.
     const [latest] = await tx`select receipt->'detail'->>'session_id' as session_id,
         receipt->'detail'->>'sandbox_id' as sandbox_id, receipt->'detail'->>'display' as display

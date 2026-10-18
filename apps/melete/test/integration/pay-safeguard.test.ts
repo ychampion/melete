@@ -296,6 +296,13 @@ describe('the agent’s own computer', () => {
       await late.sql`update step_up set used_at = used_at - interval '5 minutes 1 second'
       where action_id = ${typed.action_id}`;
       expect((await late.step('computer.click', { x: 10, y: 270 })).status).toBe('needs_approval');
+      // Another card's whole number typed on the same page, before paying.
+      const swap = await setup();
+      await enterCard(swap);
+      await swap.step('computer.click', { x: 10, y: 160 }, checkout('number'));
+      expect((await swap.step('computer.type', { text: '5555555555554444' })).status).toBe(
+        'needs_approval',
+      );
     },
   );
 
