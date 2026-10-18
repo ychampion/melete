@@ -38,6 +38,52 @@ function shownGate() {
   return { gate, recorded };
 }
 
+/**
+ * Lines that carry an answer, a finding, a problem or a request, whatever
+ * their first words: none of them may ever be dropped, wherever they come.
+ */
+const REAL_ANSWERS = [
+  "I'll be honest, the flight is $420.",
+  "I've checked: it's 4pm.",
+  "I'll go with the $420 fare on Delta.",
+  "I'll need your passport number to book this.",
+  "I'll need your address.",
+  "I'll be honest.",
+  "I'm seeing two flights at $420 and $510.",
+  "I'm seeing two flights, then I'll pick the cheaper one.",
+  "I'm getting an error from the airline site.",
+  "I'm missing your address.",
+  "I'm thinking the 22nd works best.",
+  "I'm guessing you meant Thursday.",
+  "I'm assuming you meant the Lisbon trip.",
+  "I'm not able to reach the site.",
+  'Seeing two flights at $420 and $510.',
+  'Getting a 404 from the airline site.',
+  'Getting an error from the airline site.',
+  'Showing 3 flights under $500.',
+  'Running into a login wall on the site.',
+  'Having trouble reaching the site.',
+  'Finding nothing for that date.',
+  'Leaving at 7 is safest.',
+  'Booking it would cost $420.',
+  "It's 4 pm.",
+  'The flight is $420.',
+  'Done.',
+  'Yes.',
+  'Sent.',
+  'Booked.',
+  'Reminder set.',
+  'Saved to your notes.',
+  'Je vais vérifier le vol.',
+  'Voy a revisar el vuelo.',
+  'Revisando el vuelo ahora.',
+  'Ich prüfe den Flug.',
+  '我来查一下航班。',
+  'मैं फ़्लाइट देखता हूँ।',
+  'Verificando o voo agora.',
+  'Der Flug kostet 420 €.',
+];
+
 const textOf = (event: RuntimeEvent) => (event.type === 'text_delta' ? event.text : '');
 const said = (events: RuntimeEvent[]) =>
   events.map((event) => (event.type === 'text_delta' ? event.text : `<${event.type}>`)).join('');
@@ -156,6 +202,30 @@ describe('a plan line', () => {
       "No internet access here, so I can't install a library. I'll build the file directly.",
       'Dear Hiring Manager,',
       "Here's a relaxed Lisbon plan, with one or two things a day and long breaks.",
+    ])
+      expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: false });
+  });
+
+  test('a line that reports what was found, what went wrong or what is needed is content', () => {
+    for (const line of REAL_ANSWERS)
+      expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: false });
+  });
+
+  test('a step with a time and why the agent takes it is a plan; a time read back alone is not', () => {
+    for (const line of [
+      'Setting a timer for 7:53 AM so I can remind you to stretch.',
+      "I'll set a timer for 7:53 AM so I can remind you to stretch.",
+      'Setting a reminder for 9:37 pm so that I can nudge you.',
+    ])
+      expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: true });
+    for (const line of [
+      'Setting your reminder for 9:37 pm.',
+      "I'll set it for 9:37 pm.",
+      'Setting a timer for 7:53 AM so you can stretch.',
+      'Setting a timer for 7:53 AM so I can tell you the rate is 1.08.',
+      'Setting a timer for 7:53 AM so I can remind you, since the call is at 8.',
+      'Setting a timer for 7:53 AM so I can remind you about the $420 fare.',
+      "I'm guessing 7:53 AM so I can remind you before the call.",
     ])
       expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: false });
   });
@@ -623,6 +693,70 @@ describe('the first line of a turn', () => {
         expect({ label, gone: gone !== null }).toEqual({ label, gone: true });
         expect({ label, plan: isPlanLine(gone ?? '') }).toEqual({ label, plan: true });
       }
+    }
+  });
+
+  test('a real answer is said whole, in any attempt, after any steps, cut anywhere', async () => {
+    // Checked against a fixed list of answers, not against the gate's own
+    // reading of them, so a line it takes for a plan by mistake shows here.
+    let state = 23;
+    const random = () => {
+      state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return state / 2_147_483_648;
+    };
+    const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)] as T;
+    const step = () =>
+      random() < 0.5
+        ? tool()
+        : ({ ...base(), type: 'tool_result', call_id: 'c1', ok: true, result: {} } as RuntimeEvent);
+    for (let round = 0; round < 3_000; round++) {
+      const recorded: RuntimeEvent[] = [];
+      // A later attempt of an acknowledged turn, or this attempt's own line
+      // shown before its words, or shown after its first steps.
+      const mode = pick(['later', 'shown', 'shown_after_steps'] as const);
+      const gate = new FirstLine(
+        async (event) => {
+          recorded.push(event);
+        },
+        mode !== 'later',
+        mode === 'later',
+      );
+      if (mode === 'shown') {
+        gate.beginShow();
+        await gate.endShow(true);
+      }
+      const sent: RuntimeEvent[] = [];
+      const emit = async (event: RuntimeEvent) => {
+        sent.push(event);
+        await gate.emit(event);
+      };
+      for (let count = Math.floor(random() * 3); count > 0; count--) await emit(step());
+      if (mode === 'shown_after_steps') {
+        gate.beginShow();
+        await gate.endShow(true);
+      }
+      // The answer, cut into pieces at random, empty pieces included.
+      const answer = pick(REAL_ANSWERS);
+      const cuts = [0, answer.length];
+      for (let count = Math.floor(random() * 4); count > 0; count--)
+        cuts.push(Math.floor(random() * (answer.length + 1)));
+      cuts.sort((a, b) => a - b);
+      for (let at = 0; at + 1 < cuts.length; at++)
+        await emit(text(answer.slice(cuts[at], cuts[at + 1])));
+      const then = pick(['step', 'line', 'outcome', 'end'] as const);
+      if (then === 'step') await emit(step());
+      if (then === 'line') await emit(text('\n\nMore to follow.'));
+      if (then === 'outcome') await emit(outcome());
+      await gate.drain();
+      const label = `round ${round}: ${mode} ${JSON.stringify(sent.map((event) => textOf(event) || `<${event.type}>`))}`;
+      expect({ label, seqs: recorded.map((event) => event.local_seq) }).toEqual({
+        label,
+        seqs: sent.map((event) => event.local_seq),
+      });
+      expect({ label, said: recorded.map(textOf).join('').includes(answer) }).toEqual({
+        label,
+        said: true,
+      });
     }
   });
 

@@ -155,6 +155,8 @@ function planDetail(part: string): boolean {
 function intentWithDetail(text: string): boolean {
   if (!INTENT.test(text) && !INTENT_ING.test(text)) return false;
   if (/^let me know\b/i.test(text)) return false;
+  const doing = /^(?:i'm|i am)\s+([a-z]+ing)\b/i.exec(text)?.[1];
+  if (doing && NOT_A_STEP.has(doing.toLowerCase())) return false;
   const masked = text.replace(TIME, ' TIME ').replace(/[.!?…]+$/, '');
   if (/[:;]/.test(masked)) return false;
   if (/\bhere(?:'s|’s|\s+is|\s+are)\b/i.test(masked)) return false;
@@ -164,21 +166,77 @@ function intentWithDetail(text: string): boolean {
   return rest.length > 0 && rest.every((part) => part !== '' && planDetail(part));
 }
 
+/**
+ * Words that report what was found, what went wrong or how things stand,
+ * rather than what comes next: "I'm getting an error from the site", "Finding
+ * nothing for that date", "Leaving at 7 is safest", "Booking it would cost".
+ */
+const REPORT =
+  /\b(?:not|no|nothing|none|never|can't|cannot|couldn't|won't|didn't|doesn't|don't|isn't|aren't|wasn't|weren't|error|errors|failed|failing|fails|trouble|problem|problems|blocked|denied|unavailable|is|are|was|were|would|costs?|works?|meant|means|running into|ran into)\b/i;
+
+/** The agent's state or a guess, not its next step: "I'm seeing two fares", "I'm guessing Thursday". */
+const NOT_A_STEP = new Set([
+  'seeing',
+  'thinking',
+  'guessing',
+  'assuming',
+  'noticing',
+  'hearing',
+  'wondering',
+  'leaning',
+  'missing',
+  'having',
+]);
+
+/** "I'll need your address", "I'll be honest": a request or a remark, not a step. */
+const INTENT_STATE = /^(?:let me|i'll|i will)\s+(?:need|have to|be|want)\b/i;
+
+/** The -ing word that opens a line about the agent at work, if it is one. */
+function workVerb(text: string): string | null {
+  const intent = /^(?:i'm|i’m|i am)\s+([a-z]+ing)\b/i.exec(text);
+  if (intent) return (intent[1] as string).toLowerCase();
+  const [first = '', second = ''] = text.split(/\s+/);
+  const verb = first.replace(/[^A-Za-z]/g, '');
+  if (!/^[A-Z][a-z]+ing$/.test(verb) || NOT_AT_WORK.has(verb.toLowerCase())) return null;
+  return STATES.test(second.toLowerCase().replace(/[^a-z']/g, '')) ? null : verb.toLowerCase();
+}
+
+/**
+ * "Setting a timer for 7:53 AM so I can remind you to stretch.": a step, a
+ * time whose colon is the time's own, and why the agent takes it, in a few
+ * words that report nothing. A time read back with no such reason ("Setting
+ * your reminder for 9:37 pm.") is said.
+ */
+function stepWithPurpose(text: string): boolean {
+  const masked = text.replace(TIME, ' TIME ').replace(/[.!?…]+$/, '');
+  if (!masked.includes('TIME') || /[:;,]/.test(masked)) return false;
+  const [head = '', purpose, ...more] = masked.split(
+    /\bso (?:that )?I(?:'ll| can| could| will)\s+/i,
+  );
+  if (purpose === undefined || more.length || !head.includes('TIME')) return false;
+  if (purpose.split(/\s+/).length > 10 || FACT.test(purpose)) return false;
+  const verb = workVerb(head);
+  return INTENT.test(head) || (verb !== null && !NOT_A_STEP.has(verb));
+}
+
 /** One sentence of a plan: the agent saying what it is doing or will do. */
 function planSentence(sentence: string): boolean {
   const text = sentence.replace(LEAD_IN, '').trim();
   // "On it." alone says nothing beyond the line already shown.
   if (!text) return true;
+  // A number other than a time, or a word that reports what was found or how
+  // things stand, makes it an answer however it opens.
+  const masked = text.replace(TIME, ' TIME ');
+  if (/[\d$€£¥%]/.test(masked) || REPORT.test(masked)) return false;
+  if (INTENT_STATE.test(text)) return false;
+  if (stepWithPurpose(text)) return true;
   // A colon, a semicolon or a comma carries a fact or a condition: content,
   // unless the sentence is all intent and the comma adds when it happens.
   if (/[:;,]/.test(text)) return intentWithDetail(text);
   if (/^let me know\b/i.test(text)) return false;
   if (INTENT.test(text)) return true;
-  if (INTENT_ING.test(text)) return true;
-  const [first = '', second = ''] = text.split(/\s+/);
-  const verb = first.replace(/[^A-Za-z]/g, '');
-  if (!/^[A-Z][a-z]+ing$/.test(verb) || NOT_AT_WORK.has(verb.toLowerCase())) return false;
-  return !STATES.test(second.toLowerCase().replace(/[^a-z']/g, ''));
+  const verb = workVerb(text);
+  return verb !== null && !NOT_A_STEP.has(verb);
 }
 
 /**

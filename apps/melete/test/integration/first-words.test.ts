@@ -20,7 +20,15 @@ import {
 } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
-import { event, experienceTurn, job, owner, question, space } from '../../src/db/schema.ts';
+import {
+  attempt,
+  event,
+  experienceTurn,
+  job,
+  owner,
+  question,
+  space,
+} from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import type { AckCall } from '../../src/experience/ack.ts';
@@ -315,7 +323,12 @@ withDb('first words', () => {
    * ends without a word (here it fails and is retried); the second writes
    * `second`. Returns what the person was shown and what the turn kept.
    */
-  async function twoAttempts(first: string | null, second: (say: Say) => Promise<string>) {
+  async function twoAttempts(
+    first: string | null,
+    second: (say: Say) => Promise<string>,
+    /** How the first attempt ends: failed and retried, or lost and fenced. */
+    end: 'failed' | 'lost' = 'failed',
+  ) {
     let attempts = 0;
     const chatId = await runTurn('Which month had the most revenue in this file?', async (say) => {
       attempts++;
@@ -325,6 +338,7 @@ withDb('first words', () => {
         if (first) await say({ type: 'text_delta', text: first });
         await say({ type: 'tool_call_proposed', tool: 'file.save', call_id: 'f#0', arguments: {} });
         await say({ type: 'tool_result', call_id: 'f#0', ok: true, result: {} });
+        if (end === 'lost') throw new Error('The engine went away.');
         return { kind: 'failed', reason: 'The engine went away.', retryable: true };
       }
       const summary = await second(say);
@@ -332,6 +346,7 @@ withDb('first words', () => {
     });
     const row = await required(jobs).get(chatId);
     expect(row.state).toBe('queued');
+    if (row.nextWakeAt) await pause(Math.max(0, row.nextWakeAt.getTime() - Date.now()) + 20);
     await required(runner).handleWake({
       job_id: row.id,
       expected_epoch: row.leaseEpoch,
@@ -398,6 +413,48 @@ withDb('first words', () => {
       return 'For 2025: December.';
     });
     expect(spoken.words).toContain("I'll run the numbers on the file.");
+  });
+
+  test('words shown by an attempt that was then lost end the silence after the line', async () => {
+    const second = async (say: Say) => {
+      await say({ type: 'text_delta', text: "I'll run the numbers on the file." });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'sandbox.exec',
+        call_id: 's#0',
+        arguments: {},
+      });
+      await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: 'For 2025: December.' });
+      return 'For 2025: December.';
+    };
+    const shown = await twoAttempts('The file has two years in it.', second, 'lost');
+    const outcomes = await required(handle)
+      .db.select({ outcome: attempt.outcome })
+      .from(attempt)
+      .where(eq(attempt.jobId, shown.chatId))
+      .orderBy(attempt.epoch);
+    expect(outcomes.map((row) => row.outcome)).toEqual(['fenced', 'completed']);
+    // The person read the lost attempt's words after the line: the plan line
+    // that follows them is not the line again, and is said.
+    expect(shown.words).toContain("I'll run the numbers on the file.");
+    // Lost with nothing said after the line, the turn still rests on it.
+    const silent = await twoAttempts(null, second, 'lost');
+    expect(silent.words).not.toContain("I'll run the numbers");
+    expect(silent.words.trim()).toBe('For 2025: December.');
+    expect(silent.saved).toBe('For 2025: December.');
+    // A plan line opening the reply the retry ends on is neither shown nor kept.
+    const letter = "I'll draft it and check the word count.\n\nDear Hiring Manager,\n\nRiya";
+    const drafted = await twoAttempts(
+      null,
+      async (say) => {
+        await say({ type: 'text_delta', text: letter });
+        return letter;
+      },
+      'lost',
+    );
+    expect(drafted.words.trim()).toBe('Dear Hiring Manager,\n\nRiya');
+    expect(drafted.saved).toBe('Dear Hiring Manager,\n\nRiya');
   });
 
   test('turned off, no line is asked for and the agent’s words go out as written', async () => {
