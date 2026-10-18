@@ -184,7 +184,8 @@ const GUEST_ROUTES = [
 /**
  * Routes that read no sign-in at all, so a guest's is never used there: setup
  * and sign-in, invites, the MCP server's public routes, a paired computer's own
- * routes, and an app's or a preview's files, each authorised by its own token.
+ * routes, and an app's, a preview's or a connection page's files, each
+ * authorised by its own token.
  */
 const SIGNED_OUT_ROUTES = [
   /^GET \/(health|health\/detail|setup)$/,
@@ -196,7 +197,7 @@ const SIGNED_OUT_ROUTES = [
   /^(GET|POST|DELETE) \/mcp(\/.*)?$/,
   /^(GET|POST) \/oauth\/(authorize|token|register|revoke)$/,
   /^(GET|POST|PUT|DELETE) \/device\//,
-  /^GET \/(apps\/view|previews)\//,
+  /^GET \/(apps\/view|previews|pages\/view)\//,
   // The telephony provider's webhooks, believed only for their signature.
   /^POST \/reach\/twilio\//,
   /^POST \/sms\/twilio\//,
