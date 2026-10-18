@@ -737,6 +737,8 @@ export class AttemptRunner {
       // operator's log names what failed, never what was said.
       if (!bundle) {
         console.error(`attempt: ${BUNDLE_FAILED_CODE}:${unbuilt} (job ${row.id})`);
+        // Nothing read what the person sent, so the next turn reads it as new.
+        await unread();
         await this.finish(
           tx,
           row,

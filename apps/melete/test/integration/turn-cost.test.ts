@@ -335,11 +335,11 @@ withDb("a long chat's turns", () => {
     const again = await send(broken, 2);
     const { claimed } = await claim(runner, again);
     if (!claimed) throw new Error('the message sent again was not claimed');
-    const read = [...claimed.bundle.transcript, ...claimed.bundle.inputs.new_user_messages].map(
-      (message) => message.content,
-    );
-    expect(read).toContain('Step 1: run the check and tell me what changed.');
-    expect(read).toContain('Step 2: run the check and tell me what changed.');
+    // Nothing read the first message, so it is as new to this turn as the second.
+    expect(claimed.bundle.inputs.new_user_messages.map((message) => message.content)).toEqual([
+      'Step 1: run the check and tell me what changed.',
+      'Step 2: run the check and tell me what changed.',
+    ]);
     await answer(runner, claimed, 2);
   }, 60_000);
 });
