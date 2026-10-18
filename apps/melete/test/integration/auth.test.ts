@@ -126,6 +126,7 @@ describeWithDb('single-owner authentication against Postgres', () => {
       multiplayer: false,
       code_required: false,
       email_sign_in: false,
+      signin: { password: true, oidc: null },
     });
     expect((await api.request('/setup', credentials())).status).toBe(201);
     const after = await api.request('/setup');
@@ -135,6 +136,7 @@ describeWithDb('single-owner authentication against Postgres', () => {
       multiplayer: false,
       code_required: false,
       email_sign_in: false,
+      signin: { password: true, oidc: null },
     });
   });
 

@@ -73,9 +73,48 @@ export const principal = pgTable(
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
     /** When the person's routines last came back on after resting while they were away. */
     routinesResumedAt: timestamp('routines_resumed_at', { withTimezone: true }),
+    /**
+     * The id a system outside Melete knows this person by, such as a directory
+     * or customer number. Melete never reads it; whoever runs the installation
+     * sets it.
+     */
+    externalId: text('external_id').unique(),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );
+
+/**
+ * A person's account at the installation's OpenID Connect identity provider:
+ * the provider's issuer and its subject for them, which stays the same when
+ * their email changes. Made at their first sign-in through the provider.
+ */
+export const oidcIdentity = pgTable(
+  'oidc_identity',
+  {
+    issuer: text('issuer').notNull(),
+    subject: text('subject').notNull(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    createdAt: created(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.issuer, t.subject] }),
+    // One account at a provider per person: a second subject never takes over the first's account.
+    uniqueIndex('oidc_identity_principal_issuer_idx').on(t.principalId, t.issuer),
+    check('oidc_identity_subject', sql`length(${t.subject}) between 1 and 255`),
+  ],
+);
+
+/**
+ * Sign-ins through the identity provider that have come back, by a digest of
+ * their state, so the same answer is never used twice. Rows past their expiry
+ * are removed as new ones arrive.
+ */
+export const oidcSpentState = pgTable('oidc_spent_state', {
+  stateHash: text('state_hash').primaryKey(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
 
 export const space = pgTable('space', {
   id: text('id').primaryKey(),

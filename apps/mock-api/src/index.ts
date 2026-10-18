@@ -51,6 +51,8 @@ export type MockOptions = {
    * overrides the seed, setup, connection and "Needs you" options.
    */
   firstRun?: boolean;
+  /** `both` adds an identity provider's button; `oidc` makes it the only way in. */
+  signIn?: 'password' | 'both' | 'oidc';
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -85,6 +87,7 @@ export function createMock(given: MockOptions = {}) {
     multiplayer: options.multiplayer ?? false,
     composio: options.composio ?? false,
     firstRun: options.firstRun ?? false,
+    signIn: options.signIn ?? 'password',
   });
   if (options.connections === 'none') store.connections.clear();
   if (options.connections === 'apps') {
@@ -107,6 +110,10 @@ if (import.meta.main) {
     composio: process.env.MELETE_MOCK_COMPOSIO === 'on',
     firstRun: process.env.MELETE_MOCK_FIRST_RUN === 'on',
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
+    signIn:
+      process.env.MELETE_MOCK_SIGNIN === 'both' || process.env.MELETE_MOCK_SIGNIN === 'oidc'
+        ? process.env.MELETE_MOCK_SIGNIN
+        : 'password',
     connections:
       process.env.MELETE_MOCK_CONNECTIONS === 'none'
         ? 'none'

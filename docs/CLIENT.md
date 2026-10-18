@@ -284,6 +284,14 @@ configured for an address other machines reach; there `POST /setup` answers
 ([Claiming a new installation](DEPLOYMENT.md#claiming-a-new-installation)),
 so ask for the code whenever `code_required` is true.
 
+`signin` says how people sign in: `password` is false when the operator turned
+password sign-in off, and `oidc` is `{ label }` when an identity provider is set
+up, or null. Show a "Continue with <label>" button that opens
+`GET /signin/oidc/start?return=<path in the app>` in the browser itself (not a
+fetch). The browser comes back to `<MELETE_PUBLIC_URL>/#<path>` signed in, or to
+`#/welcome?signin_error=<code>` when the sign-in was refused
+([Sign-in with your identity provider](DEPLOYMENT.md#sign-in-with-your-identity-provider)).
+
 For email sign-in, configure `MELETE_PUBLIC_URL` and either the installation's
 account mail sender (`MELETE_SMTP_URL` and `MELETE_MAIL_FROM`; see
 [Account mail](DEPLOYMENT.md#account-mail)), which mails any account, or the

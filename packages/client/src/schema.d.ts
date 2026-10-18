@@ -21569,7 +21569,7 @@ export interface paths {
         };
         /**
          * Whether the first account still needs to be created
-         * @description Public, like setup itself, so a browser with no session can choose between creating the account and signing in. `needed` is true until an owner exists. `multiplayer` says whether rooms, shared spaces, guests and hand-offs are switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 `not_available`. `code_required` says whether setup needs the one-time setup code: when one is configured or issued, and also when none exists but `MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and `MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation can email sign-in and password reset links.
+         * @description Public, like setup itself, so a browser with no session can choose between creating the account and signing in. `needed` is true until an owner exists. `multiplayer` says whether rooms, shared spaces, guests and hand-offs are switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 `not_available`. `code_required` says whether setup needs the one-time setup code: when one is configured or issued, and also when none exists but `MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and `MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation can email sign-in and password reset links. `signin` says whether passwords sign in here and names the identity provider’s button, when there is one.
          */
         get: {
             parameters: {
@@ -21591,6 +21591,12 @@ export interface paths {
                             email_sign_in: boolean;
                             multiplayer: boolean;
                             needed: boolean;
+                            signin: {
+                                oidc: {
+                                    label: string;
+                                } | null;
+                                password: boolean;
+                            };
                         };
                     };
                 };
@@ -21943,6 +21949,170 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signin/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where the identity provider sends the browser back
+         * @description Checks the state against the cookie and spends it, exchanges the code, and verifies the ID token against the provider’s keys (issuer, audience, expiry, nonce, and a verified email). Signs in the account linked to the provider account or holding that email; with `MELETE_OIDC_ACCOUNTS=create` it makes one. A disabled account, a missing `MELETE_OIDC_REQUIRE_CLAIM` claim or any failed check returns to the sign-in page with `signin_error`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Into the app, signed in, or back to sign-in with signin_error */
+                302: {
+                    headers: {
+                        Location: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description No identity provider is set up */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+                /** @description No database is configured */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signin/oidc/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * OpenID Connect back-channel logout
+         * @description Called by the identity provider with a signed `logout_token`. Ends every browser session of the account linked to its subject.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/x-www-form-urlencoded": {
+                        logout_token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description The sessions have ended, or there were none */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description The logout token was refused */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description No identity provider is set up */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signin/oidc/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Begin signing in with the installation’s identity provider
+         * @description Opened by the browser, not fetched. Sends it to the OpenID Connect provider (`MELETE_OIDC_ISSUER`) with PKCE, a state and a nonce, which a sealed melete_oidc cookie keeps for ten minutes. `return` is a path in the app to land on afterwards; anything else lands on the home screen.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    return?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description To the identity provider, or back to sign-in with signin_error */
+                302: {
+                    headers: {
+                        Location: string;
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description No identity provider is set up */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema238"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;

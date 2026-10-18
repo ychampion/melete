@@ -31,6 +31,7 @@
         "hono": "4.13.7",
         "ical.js": "2.2.1",
         "imapflow": "2.0.2",
+        "jose": "6.2.12",
         "libsodium-wrappers": "0.8.4",
         "mailparser": "3.9.24",
         "nodemailer": "10.0.3",

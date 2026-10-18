@@ -96,6 +96,7 @@ const service = (url: string, multiplayer: boolean | null) =>
         multiplayer: true,
         code_required: false,
         email_sign_in: false,
+        signin: { password: true, oidc: null },
       });
       const setup = await call(on.app, '/setup', 'POST', {
         email: 'solo@example.test',
@@ -133,6 +134,7 @@ const service = (url: string, multiplayer: boolean | null) =>
         multiplayer: false,
         code_required: false,
         email_sign_in: false,
+        signin: { password: true, oidc: null },
       });
 
       // Making, reading, inviting to and posting in a room, accepting an

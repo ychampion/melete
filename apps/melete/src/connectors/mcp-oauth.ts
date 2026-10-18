@@ -249,6 +249,9 @@ const authorizationServerMetadata = z.object({
   code_challenge_methods_supported: z.array(z.string()).optional(),
   client_id_metadata_document_supported: z.boolean().optional(),
   authorization_response_iss_parameter_supported: z.boolean().optional(),
+  /** OpenID Connect: where the keys that sign its ID tokens are published. */
+  jwks_uri: z.string().optional(),
+  token_endpoint_auth_methods_supported: z.array(z.string()).optional(),
 });
 
 export type AuthorizationServer = z.infer<typeof authorizationServerMetadata>;
@@ -273,22 +276,32 @@ export function metadataLocations(issuer: string): string[] {
 /**
  * Step 2: the authorization server's metadata. The document must name exactly
  * the issuer it was fetched for, and must offer S256 PKCE, or sign-in stops.
+ * An OpenID Connect provider signing a person in with a confidential client
+ * may leave PKCE unlisted (`pkceListed: false`): PKCE is still sent, and the
+ * client secret and nonce protect the exchange whether or not it is honoured.
  */
 export async function discoverAuthorizationServer(
   issuer: string,
   fetcher: OAuthFetch,
+  options: { pkceListed?: boolean } = {},
 ): Promise<AuthorizationServer> {
   if (!secureEndpoint(issuer)) fail('authorization_server_refused');
   for (const location of metadataLocations(issuer)) {
     const parsed = authorizationServerMetadata.safeParse(await getJson(fetcher, location));
     if (!parsed.success) continue;
     if (parsed.data.issuer !== issuer) return fail('issuer_mismatch');
-    if (!parsed.data.code_challenge_methods_supported?.includes('S256'))
+    const methods = parsed.data.code_challenge_methods_supported;
+    if (
+      options.pkceListed === false
+        ? methods !== undefined && !methods.includes('S256')
+        : !methods?.includes('S256')
+    )
       return fail('pkce_unsupported');
     for (const endpoint of [
       parsed.data.authorization_endpoint,
       parsed.data.token_endpoint,
       ...(parsed.data.registration_endpoint ? [parsed.data.registration_endpoint] : []),
+      ...(parsed.data.jwks_uri ? [parsed.data.jwks_uri] : []),
     ])
       if (!secureEndpoint(endpoint)) return fail('authorization_server_refused');
     return parsed.data;
@@ -396,8 +409,11 @@ export function authorizationUrl(
     redirectUri: string;
     state: string;
     challenge: string;
-    resource: string;
+    /** The resource the token is for; an OpenID Connect sign-in names none. */
+    resource?: string;
     scope?: string;
+    /** OpenID Connect: the value the ID token must carry back. */
+    nonce?: string;
   },
 ): string {
   const url = new URL(server.authorization_endpoint);
@@ -407,8 +423,9 @@ export function authorizationUrl(
   url.searchParams.set('code_challenge', request.challenge);
   url.searchParams.set('code_challenge_method', 'S256');
   url.searchParams.set('state', request.state);
-  url.searchParams.set('resource', request.resource);
+  if (request.resource) url.searchParams.set('resource', request.resource);
   if (request.scope) url.searchParams.set('scope', request.scope);
+  if (request.nonce) url.searchParams.set('nonce', request.nonce);
   return url.href;
 }
 
@@ -438,6 +455,7 @@ const tokenResponse = z.object({
   expires_in: z.number().int().positive().max(31_536_000).optional(),
   refresh_token: z.string().min(1).max(16_384).optional(),
   scope: z.string().optional(),
+  id_token: z.string().min(1).max(16_384).optional(),
 });
 
 export type SignedInTokens = {
@@ -445,9 +463,15 @@ export type SignedInTokens = {
   refreshToken?: string;
   expiresAt?: string;
   scope?: string;
+  /** OpenID Connect: the ID token, not yet verified. */
+  idToken?: string;
 };
 
-/** Spends the code with its PKCE verifier, for the one resource the token is for. */
+/**
+ * Spends the code with its PKCE verifier, for the one resource the token is
+ * for. A client secret goes in the form unless the server lists only HTTP
+ * Basic, the OpenID Connect default, for its token endpoint.
+ */
 export async function exchangeCode(
   server: AuthorizationServer,
   request: {
@@ -455,7 +479,8 @@ export async function exchangeCode(
     verifier: string;
     redirectUri: string;
     client: RegisteredClient;
-    resource: string;
+    /** The resource the token is for; an OpenID Connect sign-in names none. */
+    resource?: string;
   },
   fetcher: OAuthFetch,
   now: number = Date.now(),
@@ -466,18 +491,28 @@ export async function exchangeCode(
     redirect_uri: request.redirectUri,
     client_id: request.client.clientId,
     code_verifier: request.verifier,
-    resource: request.resource,
   });
-  if (request.client.clientSecret) form.set('client_secret', request.client.clientSecret);
+  if (request.resource) form.set('resource', request.resource);
+  const methods = server.token_endpoint_auth_methods_supported;
+  const basic =
+    methods?.includes('client_secret_basic') === true && !methods.includes('client_secret_post');
+  const headers: Record<string, string> = {
+    'content-type': 'application/x-www-form-urlencoded',
+    accept: 'application/json',
+  };
+  if (basic && request.client.clientSecret) {
+    // RFC 6749 section 2.3.1: each part form-encoded, then joined and base64.
+    const part = (value: string) => encodeURIComponent(value).replace(/%20/g, '+');
+    headers.authorization = `Basic ${Buffer.from(
+      `${part(request.client.clientId)}:${part(request.client.clientSecret)}`,
+    ).toString('base64')}`;
+  } else if (request.client.clientSecret) form.set('client_secret', request.client.clientSecret);
   let response: Response;
   try {
     response = await fetcher(server.token_endpoint, {
       method: 'POST',
       redirect: 'error',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        accept: 'application/json',
-      },
+      headers,
       body: form,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -494,6 +529,7 @@ export async function exchangeCode(
       ? { expiresAt: new Date(now + parsed.data.expires_in * 1000).toISOString() }
       : {}),
     ...(parsed.data.scope ? { scope: parsed.data.scope } : {}),
+    ...(parsed.data.id_token ? { idToken: parsed.data.id_token } : {}),
   };
 }
 

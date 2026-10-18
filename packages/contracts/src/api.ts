@@ -127,6 +127,16 @@ export const setupStatusResponse = z.strictObject({
    * forgotten password needs the person who runs the installation.
    */
   email_sign_in: z.boolean(),
+  /**
+   * How people sign in here. `password` is false when the operator made the
+   * identity provider the only way in (`MELETE_PASSWORD_SIGNIN=off`); `oidc`
+   * names the provider's button (`Continue with <label>`, which opens
+   * `GET /signin/oidc/start`), or is null when none is set up.
+   */
+  signin: z.strictObject({
+    password: z.boolean(),
+    oidc: z.strictObject({ label: z.string().min(1).max(60) }).nullable(),
+  }),
 });
 
 // --------------------------------------------------------------------------

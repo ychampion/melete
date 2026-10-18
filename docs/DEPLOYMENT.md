@@ -1456,6 +1456,78 @@ model, and nobody can change the setup owner, who is always an admin. Only a
 person's account that can sign in holds admin; a disabled one administers
 nothing.
 
+## Sign-in with your identity provider
+
+People can sign in with your own identity provider: any OpenID Connect issuer,
+such as Google, Microsoft Entra ID, Okta, Authentik or Keycloak. The sign-in
+page then shows a "Continue with …" button, and you can make it the only way in.
+
+1. At the provider, register a web application (a confidential client) whose
+   redirect URI is `<MELETE_PUBLIC_URL>/api/signin/oidc/callback`, for example
+   `https://melete.example.com/api/signin/oidc/callback`.
+2. Put its details in `deploy/.env` and restart the service:
+
+| Setting | What it is |
+|---|---|
+| `MELETE_OIDC_ISSUER` | The issuer URL, exactly as the provider's `/.well-known/openid-configuration` names it, such as `https://accounts.google.com`. HTTPS, or plain HTTP on this machine only. |
+| `MELETE_OIDC_CLIENT_ID`, `MELETE_OIDC_CLIENT_SECRET` | The client the provider issued. All three settings are needed, or none, and so is `MELETE_PUBLIC_URL`. |
+| `MELETE_OIDC_LABEL` | What the button says after "Continue with", such as `Google`. Default `single sign-on`. |
+| `MELETE_OIDC_SCOPES` | The scopes asked for. Default `openid email profile`; `openid` is always included. |
+| `MELETE_OIDC_ACCOUNTS` | `existing` (the default) signs in only accounts that already exist here. `create` also makes a person account the first time someone signs in. |
+| `MELETE_OIDC_REQUIRE_CLAIM` | `name=value`: a claim the ID token must carry, such as `melete_access=true`, or `groups=melete` for a list of groups. Without it, nobody gets in through the provider. |
+| `MELETE_PASSWORD_SIGNIN` | `off` makes the provider the only way in: passwords, emailed sign-in links and password resets are refused. Default `on`. |
+
+How someone is matched to an account. The first time they sign in, Melete
+looks for the provider account they used, then for a person account with the
+email the provider gives. That email has to be verified at the provider
+(`email_verified`); otherwise the sign-in is refused. The provider account is
+then linked to that Melete account, and later sign-ins follow the link even if
+the email changes at the provider. Another provider account with the same email
+does not take over an account that is already linked. Guest accounts from room
+invites keep signing in the way they were invited.
+
+What is checked. The browser leaves with PKCE, a state and a nonce, kept in a
+sealed cookie for ten minutes. On the way back, the state has to match that
+cookie and can be used only once. The ID token has to be signed with one of the
+provider's published keys, using an asymmetric algorithm, and has to name the
+provider as issuer and this client as audience. It also has to be unexpired and
+carry the nonce. The cookie is sealed with a key derived from
+`MELETE_MASTER_KEY`. Without a master key, a sign-in has to come back to the
+same service process that started it.
+
+The first account. Sign-in through the provider needs an installation that
+already has its first account. Make it in the usual way
+([Claiming a new installation](#claiming-a-new-installation)), or with
+`bun run melete account create <email>` on the host. Use the email you have at
+the provider, then sign in with the button. With `MELETE_PASSWORD_SIGNIN=off`,
+that first account still has to be created this way.
+
+Turning someone off. `account disable <email>` works the same for people who
+sign in through the provider: the next sign-in is refused, and their browsers
+are already signed out. To keep someone out at the provider instead, remove the
+claim that `MELETE_OIDC_REQUIRE_CLAIM` names. Deleting an account removes its
+link to the provider, so in `create` mode the same person signing in again
+starts a new, empty account.
+
+Back-channel logout. If the provider supports OpenID Connect Back-Channel Logout,
+set its back-channel logout URI to `<MELETE_PUBLIC_URL>/api/signin/oidc/logout`.
+When the person signs out at the provider, every browser signed in to their
+Melete account here is signed out too. Logout by session id (`sid`) alone is
+not supported; the logout token has to name the subject.
+
+Notes for some providers:
+
+- Google: the issuer is `https://accounts.google.com`. Create an "OAuth client
+  ID" of type "Web application" in the Google Cloud console.
+- Microsoft Entra ID: use the tenant's own issuer,
+  `https://login.microsoftonline.com/<tenant-id>/v2.0`. The shared `common`
+  endpoint names no single issuer and isn't supported.
+- Okta, Authentik and Keycloak: use the issuer of the authorization server or
+  realm the client belongs to.
+- Every provider: the ID token has to carry `email` and `email_verified: true`.
+  A provider that leaves `email_verified` out of its ID tokens can't sign
+  anyone in yet.
+
 ## Signing out everywhere
 
 Settings › Account › Where you're signed in lists every browser signed in to the

@@ -33,6 +33,7 @@ import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountModelSettings } from './api/model-settings.ts';
 import { mountNeedsYouSource } from './api/needs-you-source.ts';
+import { mountOidc, passwordSignInGate } from './api/oidc.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountProviderSignIn } from './api/provider-signin.ts';
@@ -404,6 +405,8 @@ export function createApp(deps: AppDeps) {
         ...(deps.jobs ? { jobs: deps.jobs } : {}),
       })
     : undefined;
+  // With password sign-in off, its routes are refused before they run.
+  app.use(passwordSignInGate(deps.env));
   mountAuth(app, {
     ...deps,
     limits,
@@ -423,6 +426,8 @@ export function createApp(deps: AppDeps) {
         }
       : {}),
   });
+  // Sign-in through the installation's identity provider, when one is set.
+  mountOidc(app, { db: deps.db, env: deps.env });
   // Before every route that answers with a session, so its checks of a space
   // header, ?space_id and ?job_id run for all of them, files and apps included.
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);

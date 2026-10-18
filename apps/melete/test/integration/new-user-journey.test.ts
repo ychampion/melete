@@ -146,6 +146,7 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
         multiplayer: false,
         code_required: false,
         email_sign_in: false,
+        signin: { password: true, oidc: null },
       });
       const setup = await call('/setup', 'POST', {
         email: 'new@example.test',
@@ -163,6 +164,7 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
         multiplayer: false,
         code_required: false,
         email_sign_in: false,
+        signin: { password: true, oidc: null },
       });
 
       // The first onboarding question is answered into memory, on a space no job has touched.

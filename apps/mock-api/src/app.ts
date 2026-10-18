@@ -139,6 +139,11 @@ export type AppDeps = {
   composio?: boolean;
   /** A person's very first visit: Melete is the only agent (`MELETE_MOCK_FIRST_RUN=on`). */
   firstRun?: boolean;
+  /**
+   * How people sign in (`MELETE_MOCK_SIGNIN`): `password` alone, as by default;
+   * `both`, a password or an identity provider; `oidc`, the provider alone.
+   */
+  signIn?: 'password' | 'both' | 'oidc';
 };
 
 /** The routes the multiplayer switch covers, as the service lists them in rooms/preview.ts. */
@@ -350,8 +355,31 @@ export function createMockApp(deps: AppDeps) {
       multiplayer,
       code_required: false,
       email_sign_in: false,
+      signin: {
+        password: deps.signIn !== 'oidc',
+        oidc: deps.signIn === 'both' || deps.signIn === 'oidc' ? { label: 'Example ID' } : null,
+      },
     }),
   );
+
+  // Stands in for the identity provider approving at once: signs the account
+  // in and goes back to the app the browser came from.
+  app.get('/signin/oidc/start', (c) => {
+    if (deps.signIn !== 'both' && deps.signIn !== 'oidc')
+      return c.json(
+        fail('not_available', 'This installation has no identity provider set up.'),
+        404,
+      );
+    let back = 'http://localhost:5173';
+    try {
+      back = new URL(c.req.header('Referer') ?? back).origin;
+    } catch {}
+    const path = c.req.query('return');
+    if (!account) return c.redirect(`${back}/#/welcome?signin_error=setup_required`, 302);
+    roomsMock.signOutGuest();
+    experience.signedOut = false;
+    return c.redirect(`${back}/#${path && /^\/(?![/\\])/.test(path) ? path : '/'}`, 302);
+  });
 
   app.post('/setup', async (c) => {
     if (account) return c.json(fail('already_setup', 'The owner is already set up.'), 409);

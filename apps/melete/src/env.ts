@@ -870,6 +870,81 @@ const variables = z.object({
    * other machines, for the setup code.
    */
   MELETE_WEB_ORIGIN: unsetWhenBlank(z.string().max(2000).optional()),
+  /**
+   * Sign-in through an OpenID Connect identity provider (Google, Microsoft,
+   * Okta, Authentik, Keycloak, or any other issuer): its issuer URL and the
+   * client registered there, whose redirect is
+   * <MELETE_PUBLIC_URL>/api/signin/oidc/callback. All three, or none.
+   * docs/DEPLOYMENT.md, "Sign-in with your identity provider".
+   */
+  MELETE_OIDC_ISSUER: unsetWhenBlank(
+    z
+      .url()
+      .max(2000)
+      .refine((value) => {
+        const url = new URL(value);
+        const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+        return (
+          !url.username &&
+          !url.password &&
+          !url.hash &&
+          !url.search &&
+          (url.protocol === 'https:' || (url.protocol === 'http:' && local))
+        );
+      }, 'an https:// issuer URL with no query (plain http only on this machine)')
+      .optional(),
+  ),
+  MELETE_OIDC_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  MELETE_OIDC_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(2048).optional()),
+  /** What the sign-in button says after "Continue with", for example `Google`. */
+  MELETE_OIDC_LABEL: unsetWhenBlank(z.string().min(1).max(60).default('single sign-on')),
+  /** The scopes asked for; `openid` is always among them. */
+  MELETE_OIDC_SCOPES: unsetWhenBlank(
+    z
+      .string()
+      .max(1000)
+      .regex(
+        /^[\x21\x23-\x5b\x5d-\x7e]+( [\x21\x23-\x5b\x5d-\x7e]+)*$/,
+        'scopes separated by spaces',
+      )
+      .default('openid email profile')
+      .transform((value) => {
+        const scopes = value.split(' ');
+        return (scopes.includes('openid') ? scopes : ['openid', ...scopes]).join(' ');
+      }),
+  ),
+  /**
+   * `existing` signs in only accounts that already exist here, matched by
+   * verified email or by a provider account linked before. `create` also
+   * makes a person account at a first sign-in.
+   */
+  MELETE_OIDC_ACCOUNTS: unsetWhenBlank(z.enum(['existing', 'create']).default('existing')),
+  /**
+   * `name=value`: a claim the provider must put in the ID token for the person
+   * to get in, such as `melete_access=true` or a group in `groups=melete`.
+   * A list claim needs to contain the value.
+   */
+  MELETE_OIDC_REQUIRE_CLAIM: unsetWhenBlank(
+    z
+      .string()
+      .max(500)
+      .regex(/^[A-Za-z0-9_.:/-]+=.+$/, 'name=value')
+      .transform((value) => {
+        const at = value.indexOf('=');
+        return { name: value.slice(0, at), value: value.slice(at + 1) };
+      })
+      .optional(),
+  ),
+  /**
+   * `off` leaves the identity provider as the only way in: passwords, emailed
+   * sign-in links and password resets are refused. It needs MELETE_OIDC_ISSUER.
+   */
+  MELETE_PASSWORD_SIGNIN: unsetWhenBlank(
+    z
+      .enum(['on', 'off'])
+      .default('on')
+      .transform((value) => value === 'on'),
+  ),
 
   /**
    * What the engine in an attempt's cell is bounded by. Each is read again from
@@ -1234,6 +1309,37 @@ export const envSchema = variables.transform((value, context) => {
       path: [value.GITHUB_MCP_CLIENT_ID ? 'GITHUB_MCP_CLIENT_SECRET' : 'GITHUB_MCP_CLIENT_ID'],
       message:
         'set both GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET, or neither (a GitHub OAuth app whose callback is <MELETE_PUBLIC_URL>/api/oauth/callback; see docs/CONNECTORS.md)',
+    });
+  const oidc = [
+    value.MELETE_OIDC_ISSUER,
+    value.MELETE_OIDC_CLIENT_ID,
+    value.MELETE_OIDC_CLIENT_SECRET,
+  ];
+  if (oidc.some(Boolean) && !oidc.every(Boolean))
+    context.addIssue({
+      code: 'custom',
+      path: [
+        !value.MELETE_OIDC_ISSUER
+          ? 'MELETE_OIDC_ISSUER'
+          : !value.MELETE_OIDC_CLIENT_ID
+            ? 'MELETE_OIDC_CLIENT_ID'
+            : 'MELETE_OIDC_CLIENT_SECRET',
+      ],
+      message:
+        'set MELETE_OIDC_ISSUER, MELETE_OIDC_CLIENT_ID and MELETE_OIDC_CLIENT_SECRET together, or none of them (a client whose redirect is <MELETE_PUBLIC_URL>/api/signin/oidc/callback; see docs/DEPLOYMENT.md)',
+    });
+  if (value.MELETE_OIDC_ISSUER && !value.MELETE_PUBLIC_URL)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_PUBLIC_URL'],
+      message:
+        'MELETE_OIDC_ISSUER needs MELETE_PUBLIC_URL, the address the identity provider sends people back to',
+    });
+  if (!value.MELETE_PASSWORD_SIGNIN && !value.MELETE_OIDC_ISSUER)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_PASSWORD_SIGNIN'],
+      message: 'MELETE_PASSWORD_SIGNIN=off needs MELETE_OIDC_ISSUER, or nobody could sign in',
     });
   return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
 });
