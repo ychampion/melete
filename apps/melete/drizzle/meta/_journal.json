@@ -925,6 +925,13 @@
       "when": 1789232400111,
       "tag": "0131_chat_message_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 132,
+      "version": "7",
+      "when": 1789232400112,
+      "tag": "0132_step_up",
+      "breakpoints": true
     }
   ]
 }

@@ -5,6 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { ASK_PERSON_TOOL_NAME } from '../broker/ask-person.ts';
 import { ALWAYS_OFFERED_WEB_TOOLS } from '../broker/catalog.ts';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
+import { toldToSendIn } from '../broker/told.ts';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
@@ -72,11 +73,13 @@ export class RuntimeCatalog {
     // agent without the computer gets no engine terminal, and a narrowed agent
     // only its connections' tools. Anything more is offered and then refused.
     const access = await agentAccessIn(tx, claims.job_id);
+    // A send the person asked for in this turn is offered; otherwise it is drafted.
+    const told = access.chat && (await toldToSendIn(tx, claims.attempt_id));
     // How much of each kind this attempt's model has room for.
     const budget = attemptContextBudget(bundle.model.model, bundle.budget);
     const granted = (
       await this.toolsForSpace(claims.space_id, claims.scopes, tx, claims.job_id)
-    ).filter((tool) => offeredTo(access, tool));
+    ).filter((tool) => offeredTo(access, tool, told));
     // The engine builds its own terminal from the sandbox's terminal.run in this
     // list, and the plugin hands the terminal to it whenever the broker serves
     // that tool. So it keeps its place ahead of the cut: sorted by name, a

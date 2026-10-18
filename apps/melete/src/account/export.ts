@@ -46,6 +46,7 @@ const WITHHELD_TABLES = new Set([
   'secret',
   'session',
   'password_reset',
+  'step_up',
   'magic_link',
   'mcp_token',
   // A browser's push address and keys, which let whoever holds them notify it.

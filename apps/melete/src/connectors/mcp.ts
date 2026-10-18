@@ -123,6 +123,8 @@ export type McpWorker = {
    * from the live session only. Null without a session or for a tool without one.
    */
   pageUri(kind: string): string | null;
+  /** The server's own name for each brokered tool, by brokered name. */
+  rawNames?: ReadonlyMap<string, string>;
   catalog: { source: 'mcp' };
   execute(action: Action, context: McpExecutionContext): Promise<DispatchResult>;
   verify(): Promise<VerifyResult>;
@@ -218,6 +220,7 @@ export async function openMcpWorker(
   return {
     tools: structuredClone(initial.tools),
     definitions: structuredClone(initial.definitions),
+    rawNames: new Map(initial.rawNames),
     get readOnly() {
       return [...(current?.readOnly ?? [])];
     },
@@ -454,6 +457,7 @@ async function openMcpSession(
       definitions,
       readOnly,
       pages,
+      rawNames,
       catalog: { source: 'mcp' },
       async execute(action, context) {
         const tool = authoritative.get(action.kind);

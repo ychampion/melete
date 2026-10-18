@@ -474,6 +474,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /permissions/{id}': (spaceId, c, input) =>
       permissions?.decide(spaceId, c.req.param('id') ?? '', input) ??
       unavailable('Permissions are not connected yet.'),
+    'POST /permissions/{id}/step-up': (spaceId, c, input) =>
+      permissions?.stepUp(spaceId, c.req.param('id') ?? '', input) ??
+      unavailable('Permissions are not connected yet.'),
     'GET /approval-settings': (spaceId) =>
       permissions?.approvalSettings(spaceId) ?? unavailable('Approvals are not connected yet.'),
     'PUT /approval-settings': (spaceId, _c, input) =>

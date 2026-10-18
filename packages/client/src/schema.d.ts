@@ -1261,6 +1261,7 @@ export interface paths {
                         decision: "approved" | "denied";
                         note?: string;
                         payload_hash: string;
+                        step_up_token?: string;
                     };
                 };
             };
@@ -16474,6 +16475,7 @@ export interface paths {
                     "application/json": {
                         /** @constant */
                         option: "allow_once";
+                        step_up_token?: string;
                         together?: components["schemas"]["PermissionsSeen"];
                         version: components["schemas"]["__schema29"];
                     } | {
@@ -16507,6 +16509,56 @@ export interface paths {
                             rule: components["schemas"]["__schema380"] | null;
                             /** @constant */
                             status: "ok";
+                        } | components["schemas"]["__schema351"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/permissions/{id}/step-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /permissions/{id}/step-up
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        password: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            expires_at: components["schemas"]["__schema349"];
+                            step_up_token: string;
                         } | components["schemas"]["__schema351"];
                     };
                 };
@@ -26444,6 +26496,12 @@ export interface components {
             preview: components["schemas"]["__schema361"] | null;
             requested_by?: components["schemas"]["__schema372"];
             review?: components["schemas"]["__schema365"];
+            step_up?: {
+                available: boolean;
+                /** @constant */
+                method: "password";
+                reason: components["schemas"]["__schema346"];
+            };
             version: components["schemas"]["__schema345"];
             what: components["schemas"]["__schema346"];
             why: components["schemas"]["__schema346"][];

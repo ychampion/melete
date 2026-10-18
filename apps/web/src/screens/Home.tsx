@@ -17,6 +17,7 @@ import {
 } from 'react';
 import { useAttachments } from '../chat/attachments.ts';
 import { Composer } from '../chat/Composer.tsx';
+import { useStepUp } from '../chat/step-up.tsx';
 import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import { amountWords, matches, money } from '../companies/format.ts';
 import { statusOf } from '../companies/Ledger.tsx';
@@ -596,6 +597,7 @@ export function WaitingOnYou({
   const { permissions, questions } = decisions;
   const [frontId, setFrontId] = useState<string | null>(null);
   const flight = useInFlight();
+  const stepUp = useStepUp();
   // Decided here and answered by the service: gone from the queue before the next read.
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
   // After a decision, focus goes to the card that comes forward.
@@ -668,11 +670,15 @@ export function WaitingOnYou({
     together: readonly Permission[] = [],
   ) =>
     void flight.run(permission.id, async () => {
+      // A money move's Allow needs the person's password first; closing that asks nothing.
+      const token = option === 'allow_once' ? await stepUp.confirm(permission) : undefined;
+      if (token === null) return;
       const result = await adapter.decide(
         permission.id,
         option,
         permission.version,
         seenTogether(together),
+        token,
       );
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
@@ -703,6 +709,7 @@ export function WaitingOnYou({
 
   return (
     <section className="home-section" aria-labelledby="home-waiting">
+      {stepUp.dialog}
       <div className="home-section-head">
         <h2 id="home-waiting">
           Waiting on you

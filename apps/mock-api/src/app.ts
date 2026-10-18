@@ -366,6 +366,7 @@ export function createMockApp(deps: AppDeps) {
     account.password = next;
     return true;
   };
+  experience.checkPassword = (password) => Boolean(account && password === account.password);
   const owned = (row: NonNullable<typeof account>) => ({
     owner: { id: row.id, email: row.email, created_at: row.created_at },
   });

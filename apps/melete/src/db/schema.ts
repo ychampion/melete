@@ -677,10 +677,49 @@ export const approval = pgTable(
     // The doubts the person was shown. A decision is bound to this set, so an
     // approval given before an origin was known cannot be spent after.
     originWarnings: jsonb('origin_warnings').notNull().default([]),
+    /**
+     * The action moves money, so an Allow counts only with the person's own
+     * confirmation given for it (`step_up`), at the moment they answered.
+     */
+    stepUpRequired: boolean('step_up_required').notNull().default(false),
+    /** The confirmation an Allow of a money move was given with. */
+    stepUpId: text('step_up_id'),
   },
   // One live approval per action and payload: re-asking for the same bytes
   // reuses the record instead of stacking duplicates in the inbox.
   (t) => [uniqueIndex('approval_action_hash_idx').on(t.actionId, t.payloadHash)],
+);
+
+/**
+ * The person confirming it is them, with their own password, for one money
+ * move: one approval, one action, one exact payload. Its token is kept only
+ * as a hash, lasts two minutes and is spent by the one Allow it was made for.
+ */
+export const stepUp = pgTable(
+  'step_up',
+  {
+    id: text('id').primaryKey(),
+    tokenHash: text('token_hash').notNull().unique(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    approvalId: text('approval_id')
+      .notNull()
+      .references(() => approval.id, { onDelete: 'cascade' }),
+    actionId: text('action_id')
+      .notNull()
+      .references(() => action.id, { onDelete: 'cascade' }),
+    payloadHash: text('payload_hash').notNull(),
+    /** How the person confirmed: `password` now; a passkey later. */
+    method: text('method').notNull(),
+    createdAt: created(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('step_up_approval_idx').on(t.approvalId),
+    check('step_up_method', sql`${t.method} in ('password', 'passkey', 'oidc')`),
+  ],
 );
 
 export const event = pgTable(

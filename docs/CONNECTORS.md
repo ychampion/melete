@@ -26,8 +26,39 @@ select arbitrary code or credentials.
 | --- | --- |
 | `read` | Eligible for admission within scope and budget |
 | `write_reversible` | Eligible for admission within scope and budget; manifest approval requirements still apply |
-| `write_external` | Requires payload-bound approval, or an owner rule that covers this exact action |
-| `spend` | Requires approval and a budget reservation |
+| `write_external` | Requires payload-bound approval, or an owner rule that covers this exact action. A message the person said to send in the turn being answered goes without a card (below) |
+| `spend` | Moves money: requires the person's own confirmation on its card (see below). Melete's own metered speech and transcription instead require approval and a budget reservation |
+
+### Money moves
+
+The agent acts on its own and asks only for money moves and the person's own
+don't-rules. A money move is a payment, purchase, refund, transfer, or a
+booking or order that is paid for. The broker decides it from the tool's
+declared effect together with a maintained map of names and argument shapes
+(`apps/melete/src/broker/money.ts`), so a connected app's tool counts even when
+its server or the person declared it as something else:
+
+- declared `spend`, other than Melete's own metered capabilities;
+- a name that pays, charges, refunds, buys, checks out or invoices, unless it
+  only looks something up (`list_payments`);
+- a name that orders, books, reserves, transfers or subscribes, when its
+  arguments carry an amount with a currency or a way to pay;
+- any tool whose schema or call carries a way to pay (a card number, a payment
+  method, a bank account), whatever it is called;
+- a `browser.submit` whose form pays.
+
+A money move always waits on its card and can be allowed only once, never with
+"always". Allow needs the signed-in person's password at that moment:
+`POST /permissions/{id}/step-up` checks it and returns a token that counts
+once, for that card and its exact payload, for two minutes. No standing rule,
+reviewer, scoped grant, typed "yes" in a chat, room answer, Undo or other
+service path stands in for it, and admission and every dispatch check again
+that the Allow carries a spent confirmation by the person who gave it. A
+tool that can no longer be found is treated as one that moves money. An
+account with no password cannot allow money moves until it sets one.
+
+Purchases the agent makes by clicking through a site in its own computer's
+browser are outside this rule; only tools Melete executes are covered.
 
 A `write_external` action waits for the owner unless a rule the owner made
 covers it. Choosing `always` on a permission card writes that rule with a count
@@ -39,9 +70,19 @@ each use is recorded once, at admission. Rules exist for named kinds only:
 sending a message, creating, changing or removing an event, discarding a draft,
 saving or restoring a file, and pushing to `melete/` branches of one repository
 from the agent's computer
-([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)). A `spend` asks every time, and an action the
+([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)). A money move asks every time, and an action the
 owner is already reviewing keeps its own approval. [CLIENT](CLIENT.md)
 describes the cards, `GET /rules` and `DELETE /rules/{id}`.
+
+A message stays a draft unless the person said to send it. In a chat the agent
+drafts and the person sends from the draft card. When the person's own message
+in the turn being answered says to send ("send it", "reply to Sam that …",
+"forward this to Ana", or a short yes right after the agent offered to send),
+the send tools are offered and the send goes out without a card, held for undo
+and with a receipt that says why (`apps/melete/src/broker/told.ts`). Asking for
+a draft, saying not to send yet, or asking a question about sending does not
+count, and neither does a turn no person wrote. A recipient whose origin Melete
+cannot vouch for still asks.
 Evidence for the default effect gate is conformance 4, `An approval cannot be
 spent on different content`; a manifest's schema declares what a tool takes,
 and admission is what decides whether it runs.
@@ -156,8 +197,9 @@ does.
 `setup_hint`, sent only to the installation's owner, says what to set: a
 provider's OAuth client, or a `MELETE_PUBLIC_URL` to return the browser to. An
 entry may carry a `warning` to show before connecting: Stripe's says its tools
-can move money, and that those tools should be granted as `spend`, so each one
-waits for approval.
+can move money, and that those tools should be granted as `spend`. Each one,
+and any tool the broker recognises as moving money, waits for the person to
+confirm it is them.
 An entry that is available but offers less than it could here carries
 `limited_reason` instead: text messages without a public address can be sent
 but not received. Its `setup_hint`, again only for the owner, says what to set.

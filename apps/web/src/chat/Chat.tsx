@@ -98,6 +98,7 @@ import {
 } from './parts.tsx';
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
+import { useStepUp } from './step-up.tsx';
 import { OlderTurns, TurnSlot, WINDOW_FROM } from './TranscriptWindow.tsx';
 import { takeOverFromCard } from './take-over.ts';
 import { joinsRunningTurn, waitsForTurn } from './turn-wait.ts';
@@ -631,6 +632,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
   const flight = useInFlight();
+  const stepUp = useStepUp();
   // A message that failed to send keeps its request, so Retry resends that message once.
   const outbox = useRef<Outbox | null>(null);
   /**
@@ -1058,6 +1060,15 @@ export function ChatScreen({ id }: { id: string | null }) {
     together: Seen[] = [],
   ) =>
     void flight.run(id, async () => {
+      // A money move's Allow needs the person's password first; closing that asks nothing.
+      const card =
+        option === 'allow_once'
+          ? transcript.turns
+              .flatMap((turn) => turn.blocks)
+              .find((block) => block.type === 'permission' && block.permission.id === id)
+          : undefined;
+      const token = card?.type === 'permission' ? await stepUp.confirm(card.permission) : undefined;
+      if (token === null) return;
       const result =
         option === 'always' && bounds
           ? await adapter.decideAlways(id, version, bounds)
@@ -1066,6 +1077,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               option === 'always' ? 'allow_once' : option,
               version,
               together,
+              token,
             );
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
@@ -1553,6 +1565,7 @@ ${words}`
               </div>
             </div>
           ) : null}
+          {stepUp.dialog}
           {pending ? (
             <div className="decide-bar">
               <span className="decide-caption">

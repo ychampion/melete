@@ -218,10 +218,26 @@ export type RiskClass = 'spend' | 'credentials' | 'delete' | 'outside_send' | 'v
 
 /** Fields that pay or carry card details. */
 const PAYMENT_FIELD =
-  /(?:^|[_-])(?:card|cc|payment|pay|billing|iban|bic|routing|tip|deposit)(?:$|[_-])/i;
+  /(?:^|[_-])(?:card|cc|payment|pay|billing|iban|bic|routing|tip|deposit|cardnumber|ccnumber|ccnum|creditcard|debitcard|cardholder|cvv|cvc|csc|cvv2|card_?number|exp_?month|exp_?year|expiry|expiration)(?:$|[_-])/i;
 /** A form's own button that buys, pays or orders. */
 const PAYING_CONTROL =
-  /\b(?:pay|pay now|buy|buy now|purchase|checkout|check out|place order|order now|donate)\b/i;
+  /\b(?:pay|pay now|payment|buy|buy now|purchase|checkout|check out|place (?:your |my |the )?order|submit (?:your |my |the )?order|complete (?:your |my |the )?(?:order|purchase|payment|booking|reservation)|confirm (?:and pay|(?:your |my |the )?(?:order|purchase|payment|booking|reservation))|order now|book now|reserve now|start (?:my |your )?(?:paid )?(?:subscription|membership)|donate|send money|transfer (?:money|funds))\b/i;
+/** A value that is a card number: 13 to 19 digits, in groups or not, that pass the Luhn check. */
+function cardNumber(value: string): boolean {
+  if (!/^[\d -]{13,23}$/.test(value.trim())) return false;
+  const digits = value.replace(/[ -]/g, '');
+  if (digits.length < 13 || digits.length > 19) return false;
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let digit = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+  }
+  return sum % 10 === 0;
+}
 /** Fields that set who can see something. */
 const VISIBILITY_FIELD =
   /(?:^|[_-])(?:visibility|privacy|public|share|sharing|shared_with|audience|permission|permissions|access|role)(?:$|[_-])/i;
@@ -244,7 +260,20 @@ const RISK_REASON: Record<RiskClass, string> = {
  * let it through. Null for a form that does none of them. A field that only
  * guards the form against forgery (`csrf_token`) is not a credential.
  */
-export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: string } | null {
+/**
+ * Whether a form the agent submits pays: an amount among its fields, a field
+ * that is a way to pay, or a button that buys. Asked on its own, so a checkout
+ * form that also carries a card number counts as paying, not only as one that
+ * carries a payment detail.
+ */
+export function submitPays(payload: JsonObject): boolean {
+  return submitRisk(payload, true)?.risk === 'spend';
+}
+
+export function submitRisk(
+  payload: JsonObject,
+  paysOnly = false,
+): { risk: RiskClass; reason: string } | null {
   const intent =
     payload.intent && typeof payload.intent === 'object' && !Array.isArray(payload.intent)
       ? (payload.intent as JsonObject)
@@ -262,14 +291,16 @@ export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: stri
     );
   const found = (risk: RiskClass) => ({ risk, reason: RISK_REASON[risk] });
   const names = fields.map(([name]) => words(name).toLowerCase());
-  if (names.some((name) => CREDENTIAL_KEY.test(name) && !FORM_GUARD.test(name)))
+  if (!paysOnly && names.some((name) => CREDENTIAL_KEY.test(name) && !FORM_GUARD.test(name)))
     return found('credentials');
   if (
     named('amount') ||
     names.some((name) => PAYMENT_FIELD.test(name)) ||
+    fields.some(([, value]) => cardNumber(String(value))) ||
     PAYING_CONTROL.test(control)
   )
     return found('spend');
+  if (paysOnly) return null;
   const action = `${control} ${typeof intent.url === 'string' ? intent.url : ''}`
     .toLowerCase()
     .replace(/[\s/?=&]+/g, '_');
@@ -435,8 +466,11 @@ export function reviewTier(input: {
           : 'It is on your own calendar with no guests, touches nothing important, and can be undone.',
     };
   }
-  return person(`It sends or publishes outside ${instanceName()} and cannot be taken back.`);
+  return person(OUTSIDE_SEND_REASON);
 }
+
+/** Why a plain send or publish to someone outside is the person's: nothing else about it asks. */
+export const OUTSIDE_SEND_REASON = `It sends or publishes outside ${instanceName()} and cannot be taken back.`;
 
 /** The fields whose origin decides the tier: who, where and how much. */
 export const deciding = (payload: JsonObject, kind: string) =>

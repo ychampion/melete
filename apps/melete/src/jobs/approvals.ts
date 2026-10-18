@@ -5,9 +5,10 @@ import {
   jsonObject,
   waitSpec,
 } from '@melete/contracts';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { action, approval, job } from '../db/schema.ts';
+import { STEP_UP_NEEDED, stepUpDigest } from '../broker/step-up.ts';
+import { action, approval, job, stepUp } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { requireJobAccess, visibleJob } from '../principals/authority.ts';
@@ -147,9 +148,33 @@ export class ApprovalService {
         throw new ServiceError('approval_expired', 'This approval has expired.');
       if (effect.status !== 'needs_approval')
         throw new ServiceError('action_not_admissible', 'This action is not awaiting approval.');
+      // A money move is allowed only with the person's own step-up for it,
+      // spent here once; the broker checks it again before anything moves.
+      let stepUpId: string | null = null;
+      if (request.decision === 'approved' && decision.stepUpRequired) {
+        const [spent] = request.step_up_token
+          ? await tx
+              .update(stepUp)
+              .set({ usedAt: sql`clock_timestamp()` })
+              .where(
+                and(
+                  eq(stepUp.tokenHash, stepUpDigest(request.step_up_token)),
+                  eq(stepUp.principalId, ownerId),
+                  eq(stepUp.approvalId, id),
+                  eq(stepUp.actionId, effect.id),
+                  eq(stepUp.payloadHash, effect.payloadHash),
+                  isNull(stepUp.usedAt),
+                  sql`${stepUp.expiresAt} > clock_timestamp()`,
+                ),
+              )
+              .returning({ id: stepUp.id })
+          : [];
+        if (!spent) throw new ServiceError('step_up_required', STEP_UP_NEEDED, 403);
+        stepUpId = spent.id;
+      }
       const [updated] = await tx
         .update(approval)
-        .set({ decision: request.decision, decidedAt: new Date(), decidedBy: ownerId })
+        .set({ decision: request.decision, decidedAt: new Date(), decidedBy: ownerId, stepUpId })
         .where(eq(approval.id, id))
         .returning();
       if (!updated) throw new Error('locked approval disappeared');
