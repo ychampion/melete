@@ -522,6 +522,21 @@ dbTest('a skill given in full is not offered again as its own tool', async () =>
   expect(
     await rejectionOf(s.broker.discovery.callSkill(s.claims, 'skills.receipts', {})),
   ).toMatchObject({ code: 'unknown_tool' });
+  // Read by name anyway, it answers with a pointer, not the same words again,
+  // and adds no second "Used the skill" entry; a skill not given still reads.
+  const again = await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts' });
+  expect(again.name).toBe('receipts');
+  expect(String(again.body)).not.toContain('The receipts procedure.');
+  expect(String(again.body)).toContain('already in your instructions');
+  expect(await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'refunds' })).toEqual({
+    name: 'refunds',
+    body: 'The refunds procedure.',
+  });
+  const traced = await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id}
+    and type = 'notice' and payload->>'kind' = 'tool_trace'`;
+  expect(traced.map((row) => row.payload.call.id)).toEqual([
+    `skill-read:${s.claims.attempt_id}:refunds`,
+  ]);
 });
 
 dbTest('a private space skill is read only by the space’s own owner', async () => {
