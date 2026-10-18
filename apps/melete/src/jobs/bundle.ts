@@ -405,6 +405,45 @@ export function inTimeOrder(
   return [...merged, ...thread.slice(next)];
 }
 
+/**
+ * A room's thread and the request's bounded history, bounded again as one
+ * conversation. The calls of the request's turns that have ended stay
+ * conversation here as in the history's own bound (`boundTranscript`), so a
+ * long request in a room is never refused for them either. That bound copies
+ * the messages it keeps, so they are found again by call id; an id the turn
+ * under way also used stays the turn's.
+ */
+export function boundRoomTranscript(
+  thread: readonly CanonicalMessage[],
+  history: {
+    transcript: readonly CanonicalMessage[];
+    full: readonly CanonicalMessage[];
+    settled: ReadonlySet<CanonicalMessage>;
+  },
+): CanonicalMessage[] {
+  const call = (message: CanonicalMessage) =>
+    message.role === 'tool' && message.tool_call_id ? message.tool_call_id : null;
+  const underWay = new Set(
+    history.full.flatMap((message) =>
+      call(message) && !history.settled.has(message) ? [call(message)] : [],
+    ),
+  );
+  const ended = new Set(
+    [...history.settled].flatMap((message) => {
+      const id = call(message);
+      return id && !underWay.has(id) ? [id] : [];
+    }),
+  );
+  const merged = inTimeOrder(thread, history.transcript);
+  const settled = new Set(
+    merged.filter((message) => {
+      const id = call(message);
+      return id !== null && ended.has(id);
+    }),
+  );
+  return boundTranscript(merged, BASELINE_TRANSCRIPT, settled);
+}
+
 /** Pure assembly is shared by the database reader and focused replay tests. */
 export function assembleHistory(
   events: readonly HistoryEvent[],
@@ -1235,9 +1274,7 @@ export async function buildAttemptSkeleton(
     },
     inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
     since_last: delta,
-    transcript: room
-      ? boundTranscript(inTimeOrder(room.thread, history.transcript))
-      : history.transcript,
+    transcript: room ? boundRoomTranscript(room.thread, history) : history.transcript,
     // A room's thread is bounded with its own; only a conversation's is summarised.
     ...(!room && history.earlier ? { earlier: history.earlier } : {}),
     tools: [],
