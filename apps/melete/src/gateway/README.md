@@ -42,8 +42,13 @@ served over, the API mode every launcher hands its runtime (`modelApiMode`), and
 the start-up messages for a provider selection that can never answer.
 `providers.test.ts` and `configured.test.ts` cover them. Only the endpoints named
 in `OPENAI_COMPAT_BASE_URL` and `ANTHROPIC_BASE_URL` may be plain HTTP; every
-built-in upstream is HTTPS,
-and `OPENAI_API_KEY` stands in for that endpoint's key only when it is HTTPS.
+built-in upstream is HTTPS, and `OPENAI_API_KEY` stands in for the compatible
+endpoint's key only when it is HTTPS. Plain HTTP (`allowHttp`) and being a model
+on the person's own machine (`mayBeLocal`, read by `providerIsLocal`) are
+separate: only the OpenAI-compatible endpoint can be local. Anthropic behind
+`ANTHROPIC_BASE_URL` is priced, cached, rerouted and redacted as Anthropic at
+any address, and Settings › Models tests and lists it at the same address
+(`anthropic-base-url.test.ts`).
 
 The fixtures use fake transports/providers and local TLS. General real-provider
 compatibility and real-model quality are **not claimed**.

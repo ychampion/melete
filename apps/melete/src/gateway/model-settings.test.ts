@@ -56,6 +56,42 @@ describe('testing a model connection', () => {
     expect(google).toMatchObject({ ok: true, models: ['gemini-fixture'] });
   });
 
+  test('Anthropic’s test and model list go through the gateway ANTHROPIC_BASE_URL names', async () => {
+    const seen: Request[] = [];
+    const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:4610', ANTHROPIC_API_KEY: 'operator-key' };
+    const settings = new ModelSettingsService({
+      db: emptyDb,
+      env: loadEnv({ NODE_ENV: 'test', ...env }),
+      fetch: async (request) => {
+        seen.push(request);
+        return Response.json({ data: [{ id: 'claude-fixture' }] });
+      },
+      // The operator's address goes as it is, like OPENAI_COMPAT_BASE_URL: it is
+      // never resolved and pinned as an address chosen in the app would be.
+      resolve: async () => {
+        throw new Error('the operator’s address is not resolved here');
+      },
+    });
+    expect(await settings.test({ provider: 'anthropic' })).toMatchObject({
+      ok: true,
+      models: ['claude-fixture'],
+    });
+    expect(seen.map((request) => request.url)).toEqual(['http://127.0.0.1:4610/v1/models']);
+    expect(seen[0]?.headers.get('x-api-key')).toBe('operator-key');
+    // A typed address is only ever the OpenAI-compatible endpoint's.
+    await settings.test({
+      provider: 'anthropic',
+      api_key: 'sk-ant-typed',
+      base_url: 'https://elsewhere.example.net',
+    });
+    expect(seen[1]?.url).toBe('http://127.0.0.1:4610/v1/models');
+    // The privacy checks and the gateway are told the same address.
+    expect(await settings.providerAddress('anthropic')).toBe('http://127.0.0.1:4610/v1/');
+    expect(await service(async () => Response.json({})).providerAddress('anthropic')).toBe(
+      'https://api.anthropic.com/v1/',
+    );
+  });
+
   test('each refusal answers with its own plain sentence and the provider’s status', async () => {
     const cases: [number, string, RegExp][] = [
       [401, 'key_refused', /did not accept this key \(HTTP 401\)/],
@@ -407,6 +443,7 @@ describe('an endpoint the owner connects in the app', () => {
           apiKey: 'owner-key-1234',
           protocols: ['chat/completions'],
           allowHttp: true,
+          mayBeLocal: true,
           reach: 'installation',
         },
       ],

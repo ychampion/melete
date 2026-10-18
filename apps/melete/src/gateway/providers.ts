@@ -124,7 +124,8 @@ export function anthropicProvider(address: string | undefined, apiKey?: string):
     apiKey,
     protocols: [...PROVIDER_PROTOCOLS.anthropic],
     // Only an address the operator chose may be plain HTTP, as for the
-    // OpenAI-compatible endpoint.
+    // OpenAI-compatible endpoint. Whatever that address, Anthropic answers
+    // there, so it is never counted as a model on the person's own machine.
     ...(address ? { allowHttp: true } : {}),
   };
 }
@@ -143,6 +144,7 @@ export function openAiCompatibleProvider(baseUrl: string, apiKey?: string): Gate
     // The operator or owner chose this address, and it may be a model server
     // on their own network. Every built-in upstream stays HTTPS.
     allowHttp: true,
+    mayBeLocal: true,
   };
 }
 
@@ -227,6 +229,14 @@ export function providerAddressProblem(provider: GatewayProvider): string | null
       ? `ANTHROPIC_BASE_URL cannot be used: ${reason}. Give the gateway's address without /v1, for example https://gateway.example.net.`
       : `OPENAI_COMPAT_BASE_URL cannot be used: ${reason}. Give the endpoint's version prefix, for example https://models.example.net/v1.`;
   }
+  // The gateway adds /v1 to ANTHROPIC_BASE_URL itself, as the Anthropic SDKs
+  // do; an address that already has it would be called at /v1/v1/messages.
+  if (
+    provider.name === 'anthropic' &&
+    provider.allowHttp &&
+    /\/v1\/v1\/$/i.test(new URL(provider.baseUrl).pathname)
+  )
+    return "ANTHROPIC_BASE_URL ends in /v1, so calls would go to /v1/v1/messages. Give the gateway's address without /v1, for example https://gateway.example.net.";
   return null;
 }
 

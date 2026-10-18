@@ -9,7 +9,7 @@
  * Precedence, so the server's own configuration never changes under it:
  * - A key the environment names for a provider (FIREWORKS_API_KEY and the rest)
  *   is used for that provider, shown as set by the operator, and cannot be
- *   replaced here. The same holds for OPENAI_COMPAT_BASE_URL.
+ *   replaced here. The same holds for OPENAI_COMPAT_BASE_URL and ANTHROPIC_BASE_URL.
  * - MELETE_DEFAULT_PROVIDER and MELETE_DEFAULT_MODEL are the starting model. A
  *   model chosen in the app replaces them for new attempts until it is cleared,
  *   which goes back to them.
@@ -80,6 +80,7 @@ import type { Env } from '../env.ts';
 import { allowedChoices, modelAllowed, modelRefusal, readSpaceRules } from '../spaces/policy.ts';
 import type { ProviderSignIn } from './credentials.ts';
 import {
+  anthropicProvider,
   CHATGPT_PROVIDER,
   compatibleBaseUrl,
   OPENAI_COMPATIBLE,
@@ -1079,20 +1080,28 @@ export class ModelSettingsService {
     return isModelProvider(provider) ? this.configuredBase(provider) : undefined;
   }
 
-  /** The address a provider's model list is fetched from: built in, or the compatible endpoint's. */
+  /**
+   * The address a provider's model list is fetched from: built in, the
+   * compatible endpoint's, or Anthropic's gateway (ANTHROPIC_BASE_URL), the
+   * same address the gateway's calls go to.
+   */
   private async configuredBase(provider: ModelProvider): Promise<string | undefined> {
-    return provider === OPENAI_COMPATIBLE
-      ? (this.operatorBaseUrl() ??
-          this.usableRow(provider, await this.keyRows())?.baseUrl ??
-          undefined)
-      : BUILT_IN.get(provider)?.baseUrl;
+    if (provider === OPENAI_COMPATIBLE)
+      return (
+        this.operatorBaseUrl() ??
+        this.usableRow(provider, await this.keyRows())?.baseUrl ??
+        undefined
+      );
+    if (provider === 'anthropic') return anthropicProvider(this.env.ANTHROPIC_BASE_URL).baseUrl;
+    return BUILT_IN.get(provider)?.baseUrl;
   }
 
   /**
    * How a request to this provider's address goes out. An OpenAI-compatible
    * address the owner chose in the app may be on their own network, but it is
    * resolved, checked and pinned for each request, and never reaches cloud
-   * metadata. The operator's address and the built-in providers go as they are.
+   * metadata. The operator's addresses (OPENAI_COMPAT_BASE_URL and
+   * ANTHROPIC_BASE_URL) and the built-in providers go as they are.
    */
   private transportFor(
     provider: ModelProvider,

@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { fakeProvider } from './fake.ts';
 import {
+  anthropicProvider,
   modelApiMode,
+  openAiCompatibleProvider,
   protocolForApiMode,
   providerAddressProblem,
   providerKeyProblem,
@@ -10,6 +12,7 @@ import {
   providerUrl,
   requiresResponsesProtocol,
 } from './providers.ts';
+import { providerIsLocal } from './routing.ts';
 import type { GatewayProvider } from './types.ts';
 
 const providers = providersFromEnv({ OPENAI_COMPAT_BASE_URL: 'https://models.example.test/v1' });
@@ -144,6 +147,33 @@ describe('Anthropic through an operator gateway', () => {
     expect(provider.apiKey).toBe('anthropic-secret');
     expect(() => providerUrl(provider, 'messages')).toThrow('ANTHROPIC_BASE_URL');
     expect(providerAddressProblem(provider)).toContain('ANTHROPIC_BASE_URL cannot be used');
+  });
+
+  test('refuses an address that already ends in /v1, which would be called at /v1/v1', () => {
+    for (const address of [
+      'https://gateway.example.net/v1',
+      'https://gateway.example.net/v1/',
+      'http://127.0.0.1:4610/proxy/V1//',
+    ]) {
+      const problem = providerAddressProblem(anthropic({ ANTHROPIC_BASE_URL: address }));
+      expect(problem).toContain('ANTHROPIC_BASE_URL');
+      expect(problem).toContain('without /v1');
+    }
+    // A path that only contains v1 is the gateway's own.
+    for (const address of [
+      'https://gateway.example.net',
+      'https://gateway.example.net/v1beta',
+      'https://gateway.example.net/v1/anthropic',
+    ])
+      expect(providerAddressProblem(anthropic({ ANTHROPIC_BASE_URL: address }))).toBeNull();
+  });
+
+  test('is never a model on the person’s own machine, whatever its address', () => {
+    for (const address of ['http://127.0.0.1:1', 'http://192.168.1.20:4610', 'http://[::1]:4610'])
+      expect(providerIsLocal(anthropicProvider(address, 'anthropic-secret'))).toBe(false);
+    // The OpenAI-compatible endpoint at a local address still is.
+    expect(providerIsLocal(openAiCompatibleProvider('http://127.0.0.1:11434/v1/'))).toBe(true);
+    expect(providerIsLocal(openAiCompatibleProvider('https://models.example.net/v1/'))).toBe(false);
   });
 });
 

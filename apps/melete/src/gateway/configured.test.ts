@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { loadEnv } from '../env.ts';
 import { configuredProviders, signInIssuers } from './configured.ts';
 import { authorizeUrl, CHATGPT, type OAuthIssuer } from './oauth.ts';
+import { resolveRoute } from './providers.ts';
 
 function configure(source: Record<string, string>) {
   const warnings: string[] = [];
@@ -50,6 +51,38 @@ describe('the providers a service starts with', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('FIREWORKS_API_KEY');
     expect(configure({ FIREWORKS_API_KEY: 'key' }).warnings).toEqual([]);
+  });
+
+  test('Anthropic is reached at the gateway ANTHROPIC_BASE_URL names, with its own key', () => {
+    const { providers, warnings } = configure({
+      MELETE_DEFAULT_PROVIDER: 'anthropic',
+      MELETE_DEFAULT_MODEL: 'claude-sonnet-4-5',
+      ANTHROPIC_API_KEY: 'anthropic-key',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:4610/anthropic',
+    });
+    expect(providers.find((provider) => provider.name === 'anthropic')).toMatchObject({
+      baseUrl: 'http://127.0.0.1:4610/anthropic/v1/',
+      apiKey: 'anthropic-key',
+    });
+    expect(resolveRoute('/v1/messages', providers, 'anthropic').upstream.href).toBe(
+      'http://127.0.0.1:4610/anthropic/v1/messages',
+    );
+    expect(warnings).toEqual([]);
+    // Left empty, as Compose passes an unset variable, Anthropic is called directly.
+    expect(
+      configure({ ANTHROPIC_BASE_URL: '' }).providers.find(
+        (provider) => provider.name === 'anthropic',
+      )?.baseUrl,
+    ).toBe('https://api.anthropic.com/v1/');
+  });
+
+  test('an Anthropic address given with /v1 stops start-up and says to leave it off', () => {
+    expect(() => configure({ ANTHROPIC_BASE_URL: 'https://gateway.example.net/v1' })).toThrow(
+      'ANTHROPIC_BASE_URL',
+    );
+    expect(() => configure({ ANTHROPIC_BASE_URL: 'https://gateway.example.net/v1' })).toThrow(
+      'without /v1',
+    );
   });
 
   test('a local model server over plain HTTP is accepted with its own key', () => {
