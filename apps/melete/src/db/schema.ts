@@ -700,6 +700,10 @@ export const event = pgTable(
   (t) => [
     uniqueIndex('event_dedup_idx').on(t.dedupKey),
     index('event_job_seq_idx').on(t.jobId, t.seq),
+    // A page of a chat's messages reads the events of its turns alone.
+    index('event_experience_turn_idx')
+      .on(t.jobId, sql`(${t.payload}->>'turn_id')`, t.seq)
+      .where(sql`${t.payload}->>'kind' = 'experience'`),
     // What a connection reported and no job owns, found by its connection when
     // the connection is revoked or its space removed.
     index('event_connector_observation_idx')
@@ -1110,23 +1114,28 @@ export const eventRetention = pgTable('event_retention', {
   retainedAfter: bigint('retained_after', { mode: 'number' }).notNull().default(0),
 });
 
-export const experienceTurn = pgTable('experience_turn', {
-  id: text('id').primaryKey(),
-  jobId: text('job_id')
-    .notNull()
-    .references(() => job.id, { onDelete: 'cascade' }),
-  agentId: text('agent_id')
-    .notNull()
-    .references(() => agent.id),
-  submissionId: text('submission_id').notNull().unique(),
-  /** Who said this turn's words. Null on turns recorded before authors were. */
-  authorPrincipalId: text('author_principal_id').references(() => principal.id),
-  text: text('text').notNull(),
-  answer: text('answer').notNull().default(''),
-  status: text('status').notNull().default('queued'),
-  createdAt: created(),
-  finishedAt: timestamp('finished_at', { withTimezone: true }),
-});
+export const experienceTurn = pgTable(
+  'experience_turn',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agent.id),
+    submissionId: text('submission_id').notNull().unique(),
+    /** Who said this turn's words. Null on turns recorded before authors were. */
+    authorPrincipalId: text('author_principal_id').references(() => principal.id),
+    text: text('text').notNull(),
+    answer: text('answer').notNull().default(''),
+    status: text('status').notNull().default('queued'),
+    createdAt: created(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  // A chat's turns, newest first, a page at a time.
+  (t) => [index('experience_turn_job_created_idx').on(t.jobId, t.createdAt, t.id)],
+);
 
 export const experienceProfile = pgTable('experience_profile', {
   spaceId: text('space_id')

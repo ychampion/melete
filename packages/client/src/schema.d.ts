@@ -4757,7 +4757,12 @@ export interface paths {
          */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    before?: string;
+                    events?: "true" | "false";
+                    events_after?: number;
+                    limit?: number;
+                };
                 header?: never;
                 path: {
                     id: string;
@@ -4773,6 +4778,12 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            events?: components["schemas"]["__schema355"][];
+                            events_cursor?: components["schemas"]["__schema350"] | null;
+                            last_seq?: components["schemas"]["__schema350"];
+                            messages_after?: components["schemas"]["__schema350"];
+                            next_cursor?: string | null;
+                            total?: components["schemas"]["__schema350"];
                             turns: components["schemas"]["__schema353"][];
                         } | components["schemas"]["__schema351"];
                     };

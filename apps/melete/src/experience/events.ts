@@ -5,6 +5,7 @@ import {
   type ExperienceEvent,
   experienceEvent,
   MEMORY_TOOL_NOTICE,
+  MESSAGE_PAGE_EVENT_LIMIT,
   providerFailure,
   TOOL_TRACE_NOTICE,
   type ToolCall,
@@ -1232,6 +1233,108 @@ export class ExperienceEvents {
       });
     });
     return { events, next_cursor: events.at(-1)?.seq ?? after, has_more: rows.length > limit };
+  }
+
+  /**
+   * Where a page of a conversation's messages hands over to its stream: the
+   * newest event, once what the job did is projected. It is read before the
+   * page's turns. Events are written in seq order, so every event at or before
+   * it was there first and belongs to a turn the page then finds, and every
+   * one after it comes on the stream; a turn that begins while the page is
+   * read comes on the stream whole. Only reached once the chat was found to be
+   * the person's; projection checks that again for itself.
+   */
+  async cut(spaceId: string, jobId: string, principalId = requestPrincipal()): Promise<number> {
+    await this.sync(spaceId, jobId, principalId);
+    const [last] = await this.db
+      .select({ seq: sql<number | null>`max(${event.seq})` })
+      .from(event)
+      .where(and(eq(event.jobId, jobId), sql`${event.payload}->>'kind' = 'experience'`));
+    return Number(last?.seq ?? 0);
+  }
+
+  /**
+   * The events of some of a conversation's turns, oldest first, for a page of
+   * its messages, up to `until` (`cut`), read before the turns. The newest
+   * page also takes the events no turn owns from its first event on, as a full
+   * replay would. `last_seq` is `until`, where a stream carries on; nothing
+   * after it is here, so nothing comes twice. `events_cursor` is set when these
+   * turns have more events than `limit`, and is the seq the rest are read on
+   * from, as `after`. `from` is when the oldest of the turns was written:
+   * `messages_after` is where the job's own stream holds its message.
+   */
+  async ofTurns(
+    jobId: string,
+    turnIds: readonly string[],
+    page: { newest: boolean; until: number; from?: string; after?: number; limit?: number },
+  ) {
+    const { newest, until, from, after, limit = MESSAGE_PAGE_EVENT_LIMIT } = page;
+    const experience = sql`${event.payload}->>'kind' = 'experience'`;
+    const turnOf = sql<string | null>`${event.payload}->>'turn_id'`;
+    const lastSeq = until;
+    const owned = turnIds.length ? inArray(turnOf, [...turnIds]) : undefined;
+    // The person's message is written with its turn, at the same moment, so the
+    // job's own stream holds these turns' messages from there on.
+    const [opened] = from
+      ? await this.db
+          .select({ seq: sql<number | null>`min(${event.seq})` })
+          .from(event)
+          .where(
+            and(
+              eq(event.jobId, jobId),
+              eq(event.type, 'notice'),
+              sql`${event.payload}->>'kind' = 'user_message'`,
+              sql`${event.createdAt} >= ${from}::timestamptz`,
+            ),
+          )
+      : [];
+    const messagesAfter = opened?.seq != null ? Number(opened.seq) - 1 : lastSeq;
+    let which = owned;
+    if (newest) {
+      const [first] = owned
+        ? await this.db
+            .select({ seq: sql<number | null>`min(${event.seq})` })
+            .from(event)
+            .where(and(eq(event.jobId, jobId), experience, owned))
+        : [];
+      const loose = and(
+        sql`${turnOf} is null`,
+        first?.seq != null ? sql`${event.seq} >= ${first.seq}` : undefined,
+      );
+      which = owned ? or(owned, loose) : loose;
+    }
+    if (!which)
+      return { events: [], events_cursor: null, last_seq: lastSeq, messages_after: messagesAfter };
+    const rows = await this.db
+      .select()
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, jobId),
+          experience,
+          which,
+          lte(event.seq, until),
+          after === undefined ? undefined : gt(event.seq, after),
+        ),
+      )
+      .orderBy(asc(event.seq))
+      .limit(limit + 1);
+    const events = rows.slice(0, limit).map((row) => {
+      const payload = object(row.payload);
+      return experienceEvent.parse({
+        seq: row.seq,
+        conversation_id: row.jobId,
+        turn_id: payload.turn_id ?? null,
+        created_at: payload.at ?? row.createdAt.toISOString(),
+        item: payload.item,
+      });
+    });
+    return {
+      events,
+      events_cursor: rows.length > limit ? (events.at(-1)?.seq ?? null) : null,
+      last_seq: lastSeq,
+      messages_after: messagesAfter,
+    };
   }
 
   async response(
