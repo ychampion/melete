@@ -386,6 +386,23 @@ export const attemptBundle = z.object({
      * the value before and after, and the outputs that cited the old revision.
      */
     repair_briefs: z.array(repairBrief).default([]),
+    /**
+     * What earlier attempts of this same conversation turn already said to the
+     * person, which reached them however those attempts ended. An attempt that
+     * runs the turn again carries on from it instead of answering a second
+     * time. Optional, so an older producer still parses.
+     */
+    said_this_turn: z.string().max(8000).optional(),
+    /**
+     * Set when this turn's message answers a question an earlier turn ended
+     * on: that question, and what the earlier turn already said to the
+     * person, which they still have. The attempt replies to the answer
+     * instead of sending those words again. Optional, so an older producer
+     * still parses.
+     */
+    answered_question: z
+      .object({ question: z.string().max(2000), said: z.string().max(8000) })
+      .optional(),
   }),
   /**
    * What has happened since the last attempt, from durable rows. Additive: a

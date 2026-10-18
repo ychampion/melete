@@ -69,6 +69,7 @@ import { withSharedItems } from '../rooms/shares.ts';
 import { roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
+import { CARRIES_ON } from './answer-join.ts';
 import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import {
@@ -84,7 +85,13 @@ import {
   storedSummary,
 } from './history-summary.ts';
 import { localNow } from './local-now.ts';
-import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
+import {
+  answerKey,
+  PRIVACY_DECISION,
+  pickedForAgent,
+  questionView,
+  readDeferred,
+} from './questions.ts';
 import type { JobRow } from './service.ts';
 import { UNSETTLED_WAIT } from './unsettled.ts';
 
@@ -984,6 +991,104 @@ export async function readConversation(
   return { full: history.full, personWords: history.personWords, stored: history.stored };
 }
 
+/** The most of a turn's earlier words an attempt is shown: the start and the end, each half. */
+const SAID_SHOWN_CHARS = 6000;
+
+/**
+ * What the ended attempts of the job's current conversation turn said to the
+ * person, in order. Every word streamed reached them, whether its attempt then
+ * finished, failed and ran again, or was woken later by a step it started, so
+ * the next attempt of that turn carries on from these words rather than
+ * answering again. A failed attempt's words are in no transcript, so they are
+ * read here from its stream.
+ */
+async function saidThisTurn(
+  tx: Transaction,
+  row: JobRow,
+  /** The job's ended attempts, newest first. */
+  attempts: readonly {
+    id: string;
+    turnId: string | null;
+    outcome: string | null;
+    epoch: number;
+  }[],
+): Promise<string> {
+  if (!row.currentTurnId) return '';
+  const turn = attempts.filter((entry) => entry.turnId === row.currentTurnId);
+  // Only an answer, or a failure after words, is carried on from
+  // (`carriesOnAnswer`): an attempt that waited for an approval or an event
+  // is answered whole by the attempt that follows it.
+  const kept = turn.find((entry) => entry.outcome !== 'fenced');
+  if (!kept?.outcome || !CARRIES_ON.has(kept.outcome)) return '';
+  // Fenced attempts before the turn's first kept one were replaced by it
+  // (`answerJoin`); from that one on, every word stayed in view.
+  const first = [...turn].reverse().find((entry) => entry.outcome !== 'fenced') ?? kept;
+  const earlier = turn.filter((entry) => entry.epoch >= first.epoch).map((entry) => entry.id);
+  if (!earlier.length) return '';
+  const rows = await tx
+    .select({ attemptId: event.attemptId, payload: event.payload })
+    .from(event)
+    .where(
+      and(eq(event.jobId, row.id), eq(event.type, 'text_delta'), inArray(event.attemptId, earlier)),
+    )
+    .orderBy(asc(event.seq));
+  const pieces: string[] = [];
+  let from: string | null = null;
+  for (const entry of rows) {
+    const text = (entry.payload as { text?: unknown } | null)?.text;
+    if (typeof text !== 'string' || !text) continue;
+    // Each attempt's words start a new paragraph.
+    if (from !== null && entry.attemptId !== from) pieces.push('\n\n');
+    from = entry.attemptId;
+    pieces.push(text);
+  }
+  return shownSaid(pieces.join('').trim());
+}
+
+/** Words said to the person, cut to their start and end when long. */
+function shownSaid(said: string): string {
+  if (said.length <= SAID_SHOWN_CHARS) return said;
+  const half = SAID_SHOWN_CHARS / 2;
+  return `${said.slice(0, half).trimEnd()}\n[…]\n${said.slice(-half).trimStart()}`;
+}
+
+/**
+ * The question a conversation turn's message answers, when the person typed
+ * their answer to one an earlier turn ended on, and what that turn said to
+ * them. They still have those words, and the question is in no transcript, so
+ * without both the answer reads as a fresh go-ahead and the words are sent
+ * again whole.
+ */
+async function answeredQuestion(
+  tx: Transaction,
+  row: JobRow,
+  submissionId: string,
+): Promise<{ question: string; said: string } | null> {
+  const questionId = submissionId.slice(answerKey('').length);
+  if (answerKey(questionId) !== submissionId || !questionId) return null;
+  // Only the answer the question recorded as its own: a message that merely
+  // carries a key of that shape does not stand for one.
+  const [asked] = await tx
+    .select({ text: question.text, turnId: attempt.turnId })
+    .from(question)
+    .innerJoin(attempt, eq(attempt.id, question.attemptId))
+    .where(
+      and(
+        eq(question.id, questionId),
+        eq(question.jobId, row.id),
+        eq(question.state, 'answered'),
+        eq(question.answerSubmissionId, submissionId),
+      ),
+    );
+  if (!asked?.turnId) return null;
+  const [turn] = await tx
+    .select({ answer: experienceTurn.answer })
+    .from(experienceTurn)
+    .where(and(eq(experienceTurn.id, asked.turnId), eq(experienceTurn.jobId, row.id)));
+  const said = shownSaid(turn?.answer.trim() ?? '');
+  return said ? { question: asked.text.slice(0, 2000), said } : null;
+}
+
 export async function buildAttemptSkeleton(
   tx: Transaction,
   row: JobRow,
@@ -1034,6 +1139,8 @@ export async function buildAttemptSkeleton(
         }
       : entry;
   });
+  const said = await saidThisTurn(tx, row, attempts.filter(contextMatches));
+  if (said) history.inputs.said_this_turn = said;
   // What a wait can name. The attempt reads the id, the event and one plain
   // sentence; the spec itself stays on the row.
   const registered = await tx
@@ -1058,6 +1165,16 @@ export async function buildAttemptSkeleton(
   const [activeTurn] = row.currentTurnId
     ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
     : [];
+  // The person's message answers the question the last turn ended on: every
+  // attempt of this turn is told so, with the words they already have from
+  // that turn, until one of them has replied (then it carries on from its own
+  // words instead). A retry of an attempt that was lost or fenced has read the
+  // message already, so whether the message is new to it does not decide this.
+  const answered =
+    activeTurn && !history.inputs.said_this_turn
+      ? await answeredQuestion(tx, row, activeTurn.submissionId)
+      : null;
+  if (answered) history.inputs.answered_question = answered;
   // The turn's agent, else the job's. One deleted since answers no more: its
   // work goes to the space's own agent, Melete, as deleting it moves its chats.
   // A room's request always has an agent: the room's.

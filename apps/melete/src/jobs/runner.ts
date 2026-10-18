@@ -34,7 +34,7 @@ import {
   waitSpec,
 } from '@melete/contracts';
 import { withoutNarration, withoutUnbackedClaims } from '@melete/runtime-hermes';
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { personQuestionKey } from '../broker/ask-person.ts';
@@ -74,7 +74,7 @@ import { spaceAuthority } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
 import { EngineImageUnavailable } from '../runtime/cell-host.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
-import { type AnswerJoin, answerJoin } from './answer-join.ts';
+import { type AnswerJoin, answerJoin, carriesOnAnswer } from './answer-join.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildAttemptSkeleton, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
@@ -84,7 +84,7 @@ import { readGenerations, requireGenerations } from './generations.ts';
 import { personWords } from './history-summary.ts';
 import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { PROVIDER_FAILURE_NOTES } from './provider-notes.ts';
-import { persistQuestions, resolveQuestions } from './questions.ts';
+import { persistQuestions, resolveQuestions, withdrawSettledQuestion } from './questions.ts';
 import {
   ATTEMPT_QUEUES,
   type AttemptWake,
@@ -336,6 +336,94 @@ const PROGRESS_EVENTS = new Set<RuntimeEvent['type']>([
   'tool_result',
 ]);
 
+/** Action statuses that are not settled yet: waiting to be sent, sent, or unsure. */
+const OPEN_STEPS = [
+  'needs_approval',
+  'approved',
+  'admitted',
+  'dispatched',
+  'unknown',
+  'unresolved',
+];
+
+/**
+ * Whether this wake of a conversation only brings news of its answered turn's
+ * steps, all of it good: the turn's last attempt finished with its answer,
+ * nothing new came from the person or anything else, no step is open, and
+ * every step that settled after that answer went through.
+ */
+async function answeredTurnSettled(
+  tx: Transaction,
+  row: JobRow,
+  previous: typeof attempt.$inferSelect | undefined,
+  bundle: ResponsibilityAttemptBundle,
+): Promise<boolean> {
+  if (row.kind !== 'chat' || !row.currentTurnId || !previous?.endedAt) return false;
+  if (previous.turnId !== row.currentTurnId || previous.outcome !== 'completed') return false;
+  const { inputs } = bundle;
+  if (
+    inputs.new_user_messages.length ||
+    inputs.approval_results.length ||
+    inputs.trigger_events.length ||
+    inputs.repair_briefs.length ||
+    inputs.cancelled_wait
+  )
+    return false;
+  const steps = await tx
+    .select({ status: action.status, resolvedAt: action.resolvedAt })
+    .from(action)
+    .where(eq(action.jobId, row.id));
+  const answeredAt = previous.endedAt.getTime();
+  return steps.every(
+    (step) =>
+      !OPEN_STEPS.includes(step.status) &&
+      (!step.resolvedAt || step.resolvedAt.getTime() < answeredAt || step.status === 'succeeded'),
+  );
+}
+
+/**
+ * The saved answer of a turn whose attempt carried on from an answer already
+ * in (`carriesOnAnswer`): what the turn said before this attempt, then what
+ * this attempt added, the way a finished turn keeps an attempt's final words
+ * rather than everything it streamed (a reply cut back after it looped keeps
+ * its first copy). An attempt that added nothing leaves the turn as it is;
+ * so does one whose streamed words cannot be told apart from the rest.
+ */
+async function carriedOnAnswer(
+  tx: Transaction,
+  turnId: string,
+  attemptId: string,
+  added: string,
+): Promise<{ answer?: string }> {
+  if (!added.trim()) return {};
+  const [turn] = await tx
+    .select({ answer: experienceTurn.answer })
+    .from(experienceTurn)
+    .where(eq(experienceTurn.id, turnId));
+  const current = turn?.answer ?? '';
+  // Only words written while this attempt was current reached the turn.
+  const pieces = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(and(eq(event.attemptId, attemptId), eq(event.type, 'text_delta')))
+    .orderBy(asc(event.seq));
+  const streamed = pieces
+    .map((piece) => piece.payload as { text?: unknown; late?: unknown } | null)
+    .filter((payload) => payload?.late !== true && typeof payload?.text === 'string')
+    .map((payload) => String(payload?.text))
+    .join('');
+  // This attempt's words joined the turn's as a paragraph of their own.
+  const before = !streamed
+    ? current
+    : current === streamed
+      ? ''
+      : current.endsWith(`\n\n${streamed}`)
+        ? current.slice(0, current.length - streamed.length - 2)
+        : null;
+  if (before === null) return {};
+  return { answer: before.trim() ? `${before}\n\n${added}` : added };
+}
+
 /** The question a turn rests on when something it started has not reported back. */
 export const STILL_RUNNING_NOTE =
   'Something this turn started has not reported back yet. Its result will show here once it does, so nothing was run again.';
@@ -492,6 +580,9 @@ export class AttemptRunner {
       // A question left from before the request changed is closed first, so
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
+      // So is a conversation's question about steps that have all settled since:
+      // whatever this wake does, nothing is left to ask about them.
+      if (row.kind === 'chat') await withdrawSettledQuestion(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
       const chosen: { provider: string; model: string; vision?: boolean; refused?: string } =
         (await this.options.resolveModel?.(tx, row, cause.usageClass)) ?? {
@@ -632,6 +723,21 @@ export class AttemptRunner {
         this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
       if (settled) {
         await this.finish(tx, row, attemptId, settled, limits);
+        return null;
+      }
+      // A conversation turn whose answer is in, woken only because steps it
+      // left open have since gone through, has nothing for a model to do: the
+      // steps show on the turn's record and the answer stands. Running the
+      // turn would answer it a second time. A step that failed instead goes to
+      // an attempt, which is shown what was already said (`said_this_turn`).
+      if (await answeredTurnSettled(tx, row, previous, bundle)) {
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'completed', summary: '', evidence: [] },
+          limits,
+        );
         return null;
       }
       // An attempt that starts no engine reads none of its inputs: they are
@@ -840,8 +946,9 @@ export class AttemptRunner {
       const type = value.type === 'attempt_outcome' ? 'notice' : value.type;
       if (current && row.currentTurnId) await this.liveness(tx, row, execution.id, value);
       if (current && row.currentTurnId && value.type === 'text_delta') {
-        // A retried turn replaces the partial answer the lost attempt left; a
-        // turn that carries on after a wait starts a new paragraph.
+        // A turn run again after a lost attempt replaces what that attempt
+        // left; a turn that carries on from words the person already has
+        // (after a wait, a failure or its answer) starts a new paragraph.
         const join = await this.firstAnswerJoin(tx, execution.id, row.id);
         await tx
           .update(experienceTurn)
@@ -1464,11 +1571,25 @@ export class AttemptRunner {
                   answer: sql`case when ${experienceTurn.answer} = '' then ${PROVIDER_FAILURE_NOTES[outcome.failure]}
                   else ${experienceTurn.answer} || ${`\n\n${PROVIDER_FAILURE_NOTES[outcome.failure]}`} end`,
                 }
-              : 'summary' in outcome
-                ? { answer: outcome.summary }
-                : outcome.kind === 'waiting_for_input' && outcome.draft
-                  ? { answer: outcome.draft }
-                  : {}),
+              : // One that carried on from an answer already in keeps that
+                // answer, with what it added after it, as the person saw them.
+                row.kind === 'chat' && (await carriesOnAnswer(tx, attemptId))
+                ? await carriedOnAnswer(
+                    tx,
+                    row.currentTurnId,
+                    attemptId,
+                    'summary' in outcome
+                      ? outcome.summary
+                      : outcome.kind === 'waiting_for_input'
+                        ? (outcome.draft ?? '')
+                        : '',
+                  )
+                : // A conversation's attempt that adds nothing keeps the answer its turn has.
+                  'summary' in outcome && (outcome.summary || row.kind !== 'chat')
+                  ? { answer: outcome.summary }
+                  : outcome.kind === 'waiting_for_input' && outcome.draft
+                    ? { answer: outcome.draft }
+                    : {}),
           finishedAt: new Date(),
         })
         .where(eq(experienceTurn.id, row.currentTurnId));

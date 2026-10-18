@@ -396,7 +396,11 @@ function actionOutput(
         ? 'You declined this.'
         : failure === 'refused'
           ? (REFUSALS[refusal ?? ''] ?? REFUSED)
-          : 'This did not go through.',
+          : // A read that never answered is settled as failed and never asked
+            // about: the person sees here that the check did not finish.
+            row.effectClass === 'read'
+            ? 'This check did not finish, so it gave no result.'
+            : 'This did not go through.',
     );
   }
   const detail = object(object(row.receipt).detail);

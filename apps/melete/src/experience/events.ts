@@ -678,7 +678,7 @@ export class ExperienceEvents {
             if (reasoning) await emit(source, { type: 'reasoning', text: reasoning });
             const piece = typeof payload.text === 'string' ? payload.text : '';
             // A turn run again replaces what the lost attempt said; a turn that
-            // carries on after a wait starts a new paragraph.
+            // carries on from words the person already has starts a new paragraph.
             const join =
               text.fresh && source.attemptId ? await answerJoin(tx, source.attemptId) : 'none';
             text.fresh = false;
