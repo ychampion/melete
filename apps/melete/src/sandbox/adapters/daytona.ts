@@ -154,6 +154,7 @@ export function daytonaCapabilities(): SandboxCapabilities {
     regions: [],
     maxUploadBytes: 8 * MiB,
     keepAwake: false,
+    desktop: false,
   };
 }
 

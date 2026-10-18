@@ -127,6 +127,7 @@ import type {
   RunRecordPage,
   SandboxComputer,
   SandboxControl,
+  SandboxViewer,
   SearchResult,
   SendOutcome,
   SensitiveTopic,
@@ -1061,6 +1062,11 @@ export const adapter = {
     guard<SandboxControl>(() => api.POST('/sandbox/sessions/{id}/takeover', path(sessionId))),
   sandboxHandBack: (sessionId: string) =>
     guard<SandboxControl>(() => api.POST('/sandbox/sessions/{id}/handback', path(sessionId))),
+  /** A fresh link to a desktop shown through its provider's own viewer; never kept. */
+  sandboxViewer: (sessionId: string, mode: 'watch' | 'control') =>
+    guard<SandboxViewer>(() =>
+      api.POST('/sandbox/sessions/{id}/viewer', { ...path(sessionId), body: { mode } }),
+    ),
   sandboxLiveOpen: (sessionId: string) =>
     guard<LiveOpen>(() => api.POST('/sandbox/sessions/{id}/live', path(sessionId))),
   sandboxLiveInput: (sessionId: string, body: LiveUp) =>

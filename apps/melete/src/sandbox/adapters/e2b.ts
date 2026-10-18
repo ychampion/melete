@@ -99,6 +99,7 @@ export function e2bCapabilities(plan: 'hobby' | 'pro' = 'hobby'): SandboxCapabil
     regions: [],
     maxUploadBytes: 8 * MiB,
     keepAwake: true,
+    desktop: false,
   };
 }
 

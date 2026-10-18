@@ -229,6 +229,7 @@ export function dockerCapabilities(): SandboxCapabilities {
     regions: [],
     maxUploadBytes: 8 * MiB,
     keepAwake: true,
+    desktop: true,
   };
 }
 

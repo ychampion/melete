@@ -144,8 +144,22 @@ export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
  */
 export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adapter !== 'docker';
 
+/**
+ * Whether each adapter's computers have a desktop for the `computer.*` tools
+ * and for a person to take over. Every adapter says so here, so a new one
+ * cannot be added without deciding.
+ */
+export const SANDBOX_ADAPTER_DESKTOP: Readonly<Record<SandboxAdapter, boolean>> = {
+  docker: true,
+  maritime: true,
+  e2b: false,
+  daytona: false,
+  modal: false,
+};
+
 /** The adapters whose sandboxes have a desktop for the `computer.*` tools. */
-export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
+export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean =>
+  SANDBOX_ADAPTER_DESKTOP[adapter] === true;
 
 /**
  * `connected_hosts_only` lets out the hosts the operator lists in

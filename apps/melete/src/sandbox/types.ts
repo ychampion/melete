@@ -45,6 +45,12 @@ export type SandboxCapabilities = {
    * are stopped, with the reason, when the attempt that used it ends.
    */
   readonly keepAwake: boolean;
+  /**
+   * Whether the computer has a screen the `computer.*` tools can see and drive
+   * and a person can take over. Where it has none, the tools are not offered
+   * and a call to one is refused in plain words.
+   */
+  readonly desktop: boolean;
 };
 
 export type SandboxSpec = {

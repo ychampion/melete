@@ -2240,9 +2240,49 @@ installation's own computers.
 region choice, no custom images, and no live terminal stream. A single file
 transfer is at most 8 MiB: a larger upload is refused with a message that says
 so, and a larger download is read up to 8 MiB only when the caller asks for no
-more than that. The agent's `computer.*` desktop tools still run on the Docker
-computer; Maritime's screen, clicks and viewer links are in the adapter but
-not yet wired to the app.
+more than that. Of the desktop tools, `computer.open` is not offered (open an
+address by clicking the browser's address bar and typing it), and the screen is
+not read as text, so the agent reads the screenshot itself.
+
+**The desktop.** Computers on Maritime can now be driven by the agent and taken
+over in the app. The agent's `computer.*` tools (screenshot, click, type,
+keys, scroll and batch) run as Maritime actions, with the same receipts as on
+Docker: each step ends with a screenshot kept in the job's workspace. The
+screen is 1200x750, the frame Maritime's screenshots are taken in; positions
+the agent gives are in that frame, and are scaled if a computer's screenshots
+come back at another size.
+
+Watching and taking over happen in Maritime's own viewer, which opens in a new
+tab, since the app does not frame other sites:
+
+- *Watch in a new tab* asks for a fresh view-only link, valid for ten minutes.
+  Watching never stops the agent.
+- *Take over* parks the agent's work as on Docker. *Open the desktop* then asks
+  for a fresh link that drives the computer, valid for five minutes; *Open a
+  fresh link* replaces it, and the old one stops working. While that link is
+  out, Maritime refuses the agent's actions, and the agent is told so in a
+  plain sentence.
+- When you are done, press *Done* in the viewer, or *Hand back* in the app.
+  Handing back closes the computer's session, which ends every link it gave
+  out, and the agent carries on from a fresh screenshot. Maritime holds the
+  desktop for you from the moment a link to drive it is made, opened or not,
+  until *Done* or a minute or so after the link runs out. So a hand-back while it
+  still holds the desktop first asks for a new 30-second link, given to no one,
+  which ends yours; the agent then carries on once Maritime gives the desktop
+  back, about a minute and a half later, rather than being refused at every step.
+- If your link runs out while you still have the computer, the panel says so;
+  open a fresh link to carry on, or hand it back. Asking for links is limited to
+  twelve a minute per person and computer, since each one is a call on the
+  installation's Maritime key.
+
+Links are asked for each time they are opened and answered with
+`cache-control: no-store`. They are never kept, written to the timeline, a
+receipt or a log, and never given to the model. Only the person the job belongs
+to (or a room's owner) can get a link that drives the computer; a room's
+members can watch.
+
+E2B, Daytona and Modal computers have no desktop: the `computer.*` tools are
+not offered there, and a call to one is refused in a plain sentence.
 
 **Sizing.** Maritime limits how many computers an account keeps and how many
 are awake at once; a sleeping computer counts only toward the first. An account

@@ -349,6 +349,7 @@ const desktopNamed = (session: string, agent: string | null = 'nova'): SandboxCo
   control_epoch: 1,
   viewport: { width: 1024, height: 768 },
   egress: 'open',
+  view: 'stream',
 });
 const fakeCalls = (session: string | null, desktop: string | null = null) => ({
   computer: async () => ok(computerWith(session)),

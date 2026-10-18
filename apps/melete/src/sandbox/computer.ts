@@ -42,6 +42,8 @@ import {
   sandboxComputerQuery,
   sandboxControlRequest,
   sandboxControlResponse,
+  sandboxViewerRequest,
+  sandboxViewerResponse,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -54,12 +56,14 @@ import {
   type DockerSandboxProvider,
   isDesktopProvider,
 } from './adapters/docker.ts';
+import { isMaritimeProvider, type MaritimeProvider } from './adapters/maritime.ts';
 import {
   type ComputerControlState,
   type ComputerControls,
   PostgresComputerControls,
 } from './computer-control.ts';
 import { displayKey, ownerJobOf } from './displays.ts';
+import { SandboxGone } from './types.ts';
 import type { SandboxProviders } from './wiring.ts';
 
 /** Frames a second from the desktop: enough to follow a pointer, within the live byte budget. */
@@ -77,7 +81,10 @@ export class ComputerFault extends Error {
       | 'agent_control'
       | 'epoch_changed'
       | 'slow_down'
-      | 'no_desktop',
+      | 'no_desktop'
+      | 'own_viewer'
+      | 'live_view_only'
+      | 'too_many_links',
   ) {
     super(reason);
   }
@@ -93,6 +100,9 @@ const STATUS = {
   epoch_changed: 409,
   slow_down: 429,
   no_desktop: 409,
+  own_viewer: 409,
+  live_view_only: 409,
+  too_many_links: 429,
 } as const;
 
 type Binding = {
@@ -107,8 +117,43 @@ type Binding = {
   agentId: string | null;
   status: 'ready' | 'paused';
   egress: 'deny_all' | 'connected_hosts_only' | 'open';
-  provider: DockerSandboxProvider;
-};
+} & (
+  | { view: 'stream'; provider: DockerSandboxProvider }
+  /** Shown through the provider's own viewer, from a link asked for each time. */
+  | { view: 'link'; provider: MaritimeProvider }
+);
+
+/** How long a link to watch a desktop lasts. A link to drive one lasts the provider's default. */
+const WATCH_LINK_SECONDS = 600;
+
+/**
+ * The link to drive a desktop that a hand-back asks for, and never hands out,
+ * while the provider still says a person holds it: a new link to drive it ends
+ * the one before, so the tab the person may have left open stops working, and
+ * the provider gives the desktop back once this one, as short as it allows,
+ * runs out.
+ */
+const RELEASE_LINK_SECONDS = 30;
+
+/** How often a hand-back asks whether the provider has given the desktop back yet. */
+const RELEASE_POLL_MS = 5_000;
+
+/**
+ * How long a hand-back waits for that before the work goes on regardless: past
+ * the longest link to drive a desktop (ten minutes) and the minute or two the
+ * provider takes after one runs out.
+ */
+const RELEASE_WAIT_MS = 13 * 60_000;
+
+/**
+ * The links one person may ask for one desktop each minute. Each one is a call
+ * to the provider on the installation's own key, which every person shares; a
+ * person opening a fresh link now and then never comes near it.
+ */
+const VIEWER_LINKS_PER_MINUTE = 12;
+
+/** The screen of a desktop shown through its provider's viewer: its screenshots' frame. */
+const LINK_VIEWPORT = { width: 1200, height: 750 } as const;
 
 type Stream = { write: (event: LiveDown) => void; keepalive: () => void; close: () => void };
 
@@ -156,6 +201,9 @@ export type SandboxComputerOptions = {
   fps?: number;
   /** How often an open view asks again whether its viewer may still see the computer. */
   recheckMs?: number;
+  /** How often, and how long, a hand-back waits for a provider's viewer to give the desktop back. */
+  releasePollMs?: number;
+  releaseWaitMs?: number;
 };
 
 /** An open view is checked against its viewer's place this often. */
@@ -178,6 +226,10 @@ export class SandboxComputerService {
   private readonly presence: typeof LIVE_PRESENCE;
   private readonly fps: number;
   private readonly recheckMs: number;
+  private readonly releasePollMs: number;
+  private readonly releaseWaitMs: number;
+  /** When each person last asked for links to each desktop, in this process. */
+  private readonly linksAsked = new Map<string, number[]>();
 
   constructor(
     private readonly sql: Sql,
@@ -189,6 +241,8 @@ export class SandboxComputerService {
     this.presence = { ...LIVE_PRESENCE, ...options.presence };
     this.fps = options.fps ?? LIVE_FPS;
     this.recheckMs = options.recheckMs ?? LIVE_RECHECK_MS;
+    this.releasePollMs = options.releasePollMs ?? RELEASE_POLL_MS;
+    this.releaseWaitMs = options.releaseWaitMs ?? RELEASE_WAIT_MS;
     // Any change of hands ends the view opened under the epoch before it.
     this.controls.onChange((sandbox) => {
       const channel = this.bySandbox.get(sandbox);
@@ -208,17 +262,25 @@ export class SandboxComputerService {
     return Boolean(owned);
   }
 
-  private providerOf(connectionId: string): DockerSandboxProvider | null {
+  private providerOf(
+    connectionId: string,
+  ):
+    | { view: 'stream'; provider: DockerSandboxProvider }
+    | { view: 'link'; provider: MaritimeProvider }
+    | null {
     const held = this.providers().get(connectionId)?.provider;
-    return held && isDesktopProvider(held) ? held : null;
+    if (!held) return null;
+    if (isDesktopProvider(held)) return { view: 'stream', provider: held };
+    if (isMaritimeProvider(held)) return { view: 'link', provider: held };
+    return null;
   }
 
   private bindingOf(row: Record<string, unknown>): Binding | null {
-    const provider = this.providerOf(String(row.connection_id));
+    const shownBy = this.providerOf(String(row.connection_id));
     const egress = (row.egress_policy as { kind?: string } | null)?.kind;
     const shown = typeof row.display_id === 'string';
     const jobId = shown ? (row.display_job ?? row.owner_job_id) : row.job_id;
-    if (!provider || !jobId) return null;
+    if (!shownBy || !jobId) return null;
     const sandbox = String(row.provider_sandbox_id);
     const number = shown ? Number(row.display) : 0;
     return {
@@ -231,7 +293,7 @@ export class SandboxComputerService {
       agentId: (row.agent_id as string | null) ?? null,
       status: row.status === 'ready' ? 'ready' : 'paused',
       egress: egress === 'open' || egress === 'connected_hosts_only' ? egress : 'deny_all',
-      provider,
+      ...shownBy,
     };
   }
 
@@ -331,12 +393,13 @@ export class SandboxComputerService {
     for (const row of rows) {
       const binding = this.bindingOf(row);
       if (!binding) continue;
-      const running = await binding.provider
-        .running(
-          { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
-          AbortSignal.timeout(10_000),
-        )
-        .catch(() => false);
+      const handle = { providerSandboxId: binding.sandbox, imageDigest: null, region: null };
+      const running = await (binding.view === 'stream'
+        ? binding.provider.running(handle, AbortSignal.timeout(10_000))
+        : binding.provider
+            .inspect(handle, AbortSignal.timeout(10_000))
+            .then((state) => state === 'running')
+      ).catch(() => false);
       const held = await this.controls.state(binding.key);
       computers.push({
         session_id: binding.sessionId,
@@ -346,8 +409,12 @@ export class SandboxComputerService {
         running,
         control: held.control,
         control_epoch: held.epoch,
-        viewport: { width: LIVE_VIEWPORT.width, height: LIVE_VIEWPORT.height },
+        viewport:
+          binding.view === 'stream'
+            ? { width: LIVE_VIEWPORT.width, height: LIVE_VIEWPORT.height }
+            : { ...LINK_VIEWPORT },
         egress: binding.egress,
+        view: binding.view,
       });
     }
     return computers;
@@ -370,6 +437,19 @@ export class SandboxComputerService {
     const located = await this.keyOf(sessionId);
     const before = located ? await this.controls.state(located) : undefined;
     const binding = await this.steerable(sessionId, principalId);
+    // A provider's viewer holds the desktop for the person from the moment a
+    // link to drive it is made, opened or not, until they press Done there or a
+    // little after the link runs out. Read before the change: a hand-back here
+    // is the person's word that they are done either way.
+    const viewerHeld =
+      operation === 'handback' && binding.view === 'link'
+        ? (await binding.provider
+            .holder(
+              { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
+              AbortSignal.timeout(20_000),
+            )
+            .catch(() => null)) === 'human'
+        : false;
     const from = seenEpoch ?? before?.epoch ?? (await this.controls.state(binding.key)).epoch;
     const next = await this.controls.change(
       binding.key,
@@ -379,6 +459,9 @@ export class SandboxComputerService {
     if (!next) throw new ComputerFault('epoch_changed');
     if (operation === 'takeover') await this.park(binding);
     else {
+      // A desktop shown through its provider's viewer: the links handed out end
+      // now, so one left open in a tab stops working once the agent has it back.
+      if (binding.view === 'link') await this.endLinks(binding, viewerHeld);
       await this.sql.begin(async (tx) => {
         await lockEventOrderIn(tx);
         await appendEvent(tx, binding.jobId, null, 'notice', {
@@ -389,12 +472,80 @@ export class SandboxComputerService {
       });
       // The work the takeover paused goes on, from a fresh screenshot. The
       // hand-back has happened whatever that finds; a job left waiting still
-      // goes on when the person answers it.
-      await this.onHandedBack?.(binding.jobId, binding.sessionId).catch(() => {
-        process.stderr.write('computer hand-back could not resume its job\n');
-      });
+      // goes on when the person answers it. On a desktop the provider's viewer
+      // still holds, it goes on once the provider gives the desktop back, so
+      // its first steps are not refused.
+      if (binding.view === 'link' && viewerHeld) void this.resumeOnceReleased(binding, next.epoch);
+      else await this.resume(binding);
     }
     return { session_id: binding.sessionId, control: next.control, control_epoch: next.epoch };
+  }
+
+  private async resume(binding: Binding): Promise<void> {
+    await this.onHandedBack?.(binding.jobId, binding.sessionId).catch(() => {
+      process.stderr.write('computer hand-back could not resume its job\n');
+    });
+  }
+
+  /**
+   * End the links a provider's viewer handed out for this desktop. Where the
+   * viewer still holds it for a person, a new link to drive it, as short as
+   * the provider allows and handed to no one, first ends the one they had.
+   * Nothing here names a link, so no log line can carry one.
+   */
+  private async endLinks(binding: Binding & { view: 'link' }, held: boolean): Promise<void> {
+    const handle = { providerSandboxId: binding.sandbox, imageDigest: null, region: null };
+    const said = (error: unknown) => (error instanceof Error ? error.message : String(error));
+    if (held)
+      await binding.provider
+        .viewerLink(
+          handle,
+          { mode: 'control', ttlSeconds: RELEASE_LINK_SECONDS },
+          AbortSignal.timeout(20_000),
+        )
+        .catch((error: unknown) => {
+          // The person's own link still runs out by itself, within minutes.
+          process.stderr.write(
+            `the viewer link of ${binding.sandbox} could not be cut short: ${said(error)}\n`,
+          );
+        });
+    await binding.provider
+      .endViewers(handle, AbortSignal.timeout(20_000))
+      .catch((error: unknown) => {
+        // Links end by themselves within minutes, and the agent is refused while one drives.
+        process.stderr.write(
+          `the viewer links of ${binding.sandbox} could not be ended: ${said(error)}\n`,
+        );
+      });
+  }
+
+  /**
+   * The work goes on once the provider gives the desktop back, or after
+   * `releaseWaitMs` regardless. A takeover meanwhile ends the wait: the
+   * hand-back after it resumes the work instead.
+   */
+  private async resumeOnceReleased(
+    binding: Binding & { view: 'link' },
+    epoch: number,
+  ): Promise<void> {
+    const handle = { providerSandboxId: binding.sandbox, imageDigest: null, region: null };
+    const until = Date.now() + this.releaseWaitMs;
+    try {
+      while (Date.now() < until) {
+        await Bun.sleep(this.releasePollMs);
+        if ((await this.controls.state(binding.key)).epoch !== epoch) return;
+        const holder = await binding.provider
+          .holder(handle, AbortSignal.timeout(20_000))
+          .catch((error: unknown) => (error instanceof SandboxGone ? 'gone' : 'unknown'));
+        if (holder !== 'human' && holder !== 'unknown') break;
+      }
+      if ((await this.controls.state(binding.key)).epoch !== epoch) return;
+    } catch (error) {
+      process.stderr.write(
+        `waiting for the viewer of ${binding.sandbox} to give it back failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+    await this.resume(binding);
   }
 
   /** Fence the job's attempts and park it for the person, before the takeover answers. */
@@ -453,10 +604,61 @@ export class SandboxComputerService {
     if (fenced.length) this.onPark?.(binding.jobId, fenced);
   }
 
+  // ---- the provider's own viewer ----------------------------------------------
+
+  /**
+   * A fresh link to a desktop shown through its provider's viewer. Watching
+   * needs only the right to see the computer; driving needs control, taken
+   * over first, as input to the live view does. The link goes to the person
+   * who asked and nowhere else: it is not recorded on the timeline, kept or
+   * written to a log.
+   */
+  async viewer(
+    sessionId: string,
+    principalId: string,
+    mode: 'watch' | 'control',
+  ): Promise<{ mode: 'watch' | 'control'; url: string; expires_at: string }> {
+    const binding = await this.steerable(
+      sessionId,
+      principalId,
+      mode === 'control' ? 'steer' : 'watch',
+    );
+    if (binding.view !== 'link') throw new ComputerFault('live_view_only');
+    // Asked for in a burst, links are refused for a while rather than asked of the provider.
+    const asker = `${principalId}\u0000${binding.key}`;
+    const now = this.now();
+    const recent = (this.linksAsked.get(asker) ?? []).filter((at) => now - at < 60_000);
+    if (recent.length >= VIEWER_LINKS_PER_MINUTE) {
+      this.linksAsked.set(asker, recent);
+      throw new ComputerFault('too_many_links');
+    }
+    recent.push(now);
+    this.linksAsked.set(asker, recent);
+    for (const [key, times] of this.linksAsked)
+      if (!times.some((at) => now - at < 60_000)) this.linksAsked.delete(key);
+    if (mode === 'control') {
+      if ((await this.controls.state(binding.key)).control !== 'human')
+        throw new ComputerFault('agent_control');
+      // Asking for a link to drive it is using it: the hold is not handed back as unwatched.
+      await this.controls.seen(binding.key);
+    }
+    const link = await binding.provider.viewerLink(
+      { providerSandboxId: binding.sandbox, imageDigest: null, region: null },
+      mode === 'control' ? { mode } : { mode, ttlSeconds: WATCH_LINK_SECONDS },
+      AbortSignal.timeout(20_000),
+    );
+    // Control may have moved while the link was minted: a link to drive a
+    // computer the agent has again is not handed out.
+    if (mode === 'control' && (await this.controls.state(binding.key)).control !== 'human')
+      throw new ComputerFault('epoch_changed');
+    return { mode: link.mode, url: link.url, expires_at: link.expiresAt };
+  }
+
   // ---- live view ------------------------------------------------------------
 
   async open(sessionId: string, principalId: string, peer: string): Promise<LiveOpen> {
     const binding = await this.steerable(sessionId, principalId, 'watch');
+    if (binding.view !== 'stream') throw new ComputerFault('own_viewer');
     const held = await this.controls.state(binding.key);
     const current = this.bySandbox.get(binding.key);
     if (current && !current.ended) {
@@ -507,6 +709,7 @@ export class SandboxComputerService {
     if (!sameOrigin(c)) throw new ComputerFault('origin_refused');
     const principalId = c.get('owner').id as string;
     const binding = await this.steerable(sessionId, principalId, need);
+    if (binding.view !== 'stream') throw new ComputerFault('own_viewer');
     const channel = this.byId.get(id);
     if (!channel || channel.ended || channel.sessionId !== sessionId)
       throw new ComputerFault('live_closed');
@@ -566,7 +769,11 @@ export class SandboxComputerService {
   }
 
   /** Relays desktop frames to one attached viewer until it leaves or the channel ends. */
-  private async pump(channel: Channel, stream: Stream, binding: Binding): Promise<void> {
+  private async pump(
+    channel: Channel,
+    stream: Stream,
+    binding: Binding & { view: 'stream' },
+  ): Promise<void> {
     const controller = new AbortController();
     channel.pump?.abort();
     channel.pump = controller;
@@ -751,6 +958,9 @@ const REFUSAL_TEXT: Record<ComputerFault['reason'], string> = {
   epoch_changed: 'Control of the computer changed. Try again.',
   slow_down: 'Too many inputs at once. Slow down a little.',
   no_desktop: 'This computer has no desktop to show.',
+  own_viewer: 'This computer is shown in its own viewer. Open it from the computer panel.',
+  live_view_only: 'This computer is shown in the live view here, not through a link.',
+  too_many_links: 'Too many links asked for at once. Try again in a minute.',
 };
 
 function refused(error: unknown): never {
@@ -778,6 +988,16 @@ export function mountSandboxComputers(app: Hono, service: SandboxComputerService
         .catch((error: unknown) => refused(error));
       return c.json(sandboxControlResponse.parse(changed));
     });
+  app.post('/sandbox/sessions/:id/viewer', async (c) => {
+    if (!sameOrigin(c)) refused(new ComputerFault('origin_refused'));
+    const asked = sandboxViewerRequest.parse(await c.req.json().catch(() => ({})));
+    const link = await service
+      .viewer(id(c), c.get('owner').id, asked.mode)
+      .catch((error: unknown) => refused(error));
+    // A credential for the computer: never cached, by the browser or anything between.
+    c.header('cache-control', 'no-store');
+    return c.json(sandboxViewerResponse.parse(link));
+  });
   app.post('/sandbox/sessions/:id/live', async (c) => {
     if (!sameOrigin(c)) refused(new ComputerFault('origin_refused'));
     const opened = await service

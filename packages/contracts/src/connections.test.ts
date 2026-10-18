@@ -14,6 +14,8 @@ import {
   connectionResponse,
   createConnectionRequest,
   modalTokenParts,
+  SANDBOX_ADAPTER_DESKTOP,
+  SANDBOX_ADAPTERS,
   sandboxAdapterHasDesktop,
   sandboxAdapterTakesKey,
   sandboxCredentialRefusal,
@@ -841,11 +843,33 @@ describe('a sandbox on this service Docker engine', () => {
     expect(sandboxCredentialRefusal('docker', 'anything')).toContain('takes no key');
   });
 
+  test('each adapter says whether its computers have a desktop', () => {
+    expect(SANDBOX_ADAPTER_DESKTOP).toEqual({
+      docker: true,
+      maritime: true,
+      e2b: false,
+      daytona: false,
+      modal: false,
+    });
+    for (const adapter of SANDBOX_ADAPTERS)
+      expect([adapter, sandboxAdapterHasDesktop(adapter)]).toEqual([
+        adapter,
+        SANDBOX_ADAPTER_DESKTOP[adapter],
+      ]);
+  });
+
+  test('a Maritime computer takes a key and is granted the terminal and the desktop', () => {
+    const installed = sandbox('maritime', { api_key: 'mk_0123456789' });
+    expect(
+      installed.ok && installed.value.kind === 'sandbox' ? installed.value.scopes : [],
+    ).toEqual([...CONNECTION_KIND_SCOPES.sandbox]);
+    expect(sandboxAdapterHasDesktop('maritime')).toBe(true);
+  });
+
   test('an adapter without a desktop is granted the terminal and background processes alone', () => {
     for (const [adapter, key] of [
       ['e2b', 'e2b_0123456789'],
       ['daytona', 'dtn_0123456789'],
-      ['maritime', 'mk_0123456789'],
       ['modal', 'ak-token-id:as-token-secret'],
     ] as const) {
       const installed = sandbox(adapter, { api_key: key });

@@ -124,6 +124,8 @@ export type AppDeps = {
   voice?: boolean | 'private';
   /** The agent's browser and sandbox. On unless a demonstration of a fresh install turns it off. */
   computer?: boolean;
+  /** `link` gives each chat a desktop shown through its provider's own viewer (`MELETE_MOCK_DESKTOP=link`). */
+  desktop?: 'none' | 'link';
   /** A shared space the person owns, with others in it (`MELETE_MOCK_SPACE=shared`). */
   space?: 'personal' | 'shared';
   /** Texts and calls to the person's own number; off shows an installation without a provider. */
@@ -239,6 +241,7 @@ export function createMockApp(deps: AppDeps) {
   mountAppsMock(app, deps);
   mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
+  experience.computer.desktop = deps.desktop ?? 'none';
   experience.computer.mount(app);
   mountAttachmentsMock(app, experience);
   mountIntentsMock(app, { seeded: Boolean(deps.seedExperience) });

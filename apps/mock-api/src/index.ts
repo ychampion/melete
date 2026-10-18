@@ -30,6 +30,8 @@ export type MockOptions = {
   voice?: boolean | 'private';
   /** Off, conversations have no browser or sandbox, as on a fresh install. */
   computer?: boolean;
+  /** `link`: each chat has a desktop shown through its provider's own viewer. */
+  desktop?: 'none' | 'link';
   /** `shared` makes the session's space a shared one the person owns, with two others in it. */
   space?: 'personal' | 'shared';
   /**
@@ -81,6 +83,7 @@ export function createMock(given: MockOptions = {}) {
     setupNeeded: options.setupNeeded ?? false,
     voice: options.voice ?? true,
     computer: options.computer ?? true,
+    desktop: options.desktop ?? 'none',
     space: options.space ?? 'personal',
     needsYou: options.needsYou !== 'none',
     reach: options.reach ?? true,
@@ -105,6 +108,7 @@ if (import.meta.main) {
     experience: { seed: process.env.MOCK_SEED !== 'off' },
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
+    desktop: process.env.MELETE_MOCK_DESKTOP === 'link' ? 'link' : 'none',
     reach: process.env.MELETE_MOCK_REACH !== 'off',
     multiplayer: process.env.MELETE_MOCK_MULTIPLAYER === 'on',
     composio: process.env.MELETE_MOCK_COMPOSIO === 'on',
