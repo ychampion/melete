@@ -543,7 +543,11 @@ async function openMcpSession(
                 result,
               });
             } catch (error) {
-              if (error instanceof ConnectorFaultError) throw error;
+              // Not even a transport fault goes further: the call has been made,
+              // and a fault here would let a repair send it a second time.
+              console.error(
+                `mcp page: ${config.id} ${pageUri} was not shown: ${error instanceof Error ? error.message : String(error)}`,
+              );
               detail.page = {
                 shown: false,
                 note: 'The server said this tool shows a page, but it could not be shown, so the person has not seen it.',
