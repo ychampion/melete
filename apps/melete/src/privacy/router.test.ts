@@ -10,6 +10,7 @@ import {
   type GatewayProvider,
   type GatewaySettlement,
 } from '../gateway/index.ts';
+import { anthropicProvider } from '../gateway/providers.ts';
 import { toolWireName } from '../gateway/tool-names.ts';
 import {
   IMAGE_WITHHELD_DEVICE,
@@ -47,6 +48,7 @@ const PROVIDERS: GatewayProvider[] = [
     apiKey: 'compat-key',
     protocols: ['chat/completions', 'responses'],
     allowHttp: true,
+    mayBeLocal: true,
   },
   {
     // A proxy container on the same Docker network: a private address, a cloud model behind it.
@@ -55,6 +57,7 @@ const PROVIDERS: GatewayProvider[] = [
     apiKey: 'proxy-key',
     protocols: ['chat/completions'],
     allowHttp: true,
+    mayBeLocal: true,
   },
 ];
 
@@ -968,6 +971,24 @@ describe('a model address on this machine or network', () => {
     const refused = await other.post('/providers/litellm/v1/chat/completions', account);
     expect(refused.status).toBe(409);
     expect(other.captured).toHaveLength(0);
+  });
+
+  test('Anthropic through a gateway at a confirmed address is still a cloud model', async () => {
+    // Confirmed while a model the owner runs answered there; now the operator's
+    // Anthropic gateway listens at the same address.
+    const store = await inSpace({ model_on_device_url: 'http://127.0.0.1:11434/v1' });
+    const router = new PrivacyRouter({
+      store,
+      resolve: async () => [{ address: '93.184.216.34' }],
+    });
+    const prepared = await router.prepare({
+      principal: principal(),
+      provider: anthropicProvider('http://127.0.0.1:11434', 'anthropic-key'),
+      protocol: 'messages',
+      body: { messages: [{ role: 'user', content: `My account is ${SAM.account}` }] },
+    });
+    expect(prepared.route).toBe('cloud');
+    expect(JSON.stringify(prepared.body)).not.toContain(SAM.account);
   });
 
   test('a confirmed address that now resolves somewhere public is not trusted', async () => {

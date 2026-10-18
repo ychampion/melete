@@ -104,14 +104,15 @@ export function addressIsLocal(baseUrl: string | undefined): boolean {
 /**
  * A provider the operator or owner pointed at a model server on their own
  * machine or network. Its calls never move to another model, and cost nothing
- * unless the operator prices it.
+ * unless the operator prices it. Only the OpenAI-compatible endpoint can be
+ * one: a cloud provider behind a gateway at a local address is still the cloud.
  */
 export function providerIsLocal(provider: {
   baseUrl: string;
-  allowHttp?: boolean;
+  mayBeLocal?: boolean;
   fake?: boolean;
 }): boolean {
-  return !provider.fake && provider.allowHttp === true && addressIsLocal(provider.baseUrl);
+  return !provider.fake && provider.mayBeLocal === true && addressIsLocal(provider.baseUrl);
 }
 
 export const sameModel = (a: ModelChoice, b: ModelChoice) =>
