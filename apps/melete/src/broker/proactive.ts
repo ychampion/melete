@@ -297,11 +297,21 @@ export async function gatherEvidence(
   return evidence;
 }
 
-/** Whether this attempt is proactive: nobody is waiting on it (`attemptCause`). */
+/**
+ * Whether this attempt is proactive: nobody is waiting on it (`attemptCause`)
+ * and something woke it: a trigger or a situation, or a timer after the work
+ * rested. A job's own start is not a wake: work someone has just set going
+ * (a job created through the API, a retry of its first shift) is judged as
+ * before, so what is unsure of being a wake keeps the person's card.
+ */
 export async function proactiveAttempt(tx: Query, attemptId: string | null | undefined) {
   if (!attemptId) return false;
-  const [row] = await tx`select class from attempt where id = ${attemptId}`;
-  return row?.class === 'background';
+  const [row] = await tx`select a.class = 'background' and (
+      a.trigger_id is not null or a.situation_id is not null
+      or exists (select 1 from attempt p where p.job_id = a.job_id and p.epoch < a.epoch
+        and p.outcome = 'waiting_for_event_or_time')) as woke
+    from attempt a where a.id = ${attemptId}`;
+  return row?.woke === true;
 }
 
 /** The words a recipient goes by: the whole of it and an address's name. */

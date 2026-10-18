@@ -129,6 +129,9 @@ async function setup(
       values (${turnId}, ${seed.claims.job_id}, ${agentId}, ${recordId('sub')},
         ${usageClass === 'interactive' ? personId : null}, 'Go', '', 'running')`;
     const attemptId = recordId('att');
+    // The shift before rested until its schedule woke the work again.
+    await sql`update attempt set outcome = 'waiting_for_event_or_time', ended_at = now()
+      where job_id = ${seed.claims.job_id} and ended_at is null`;
     const [job] = await sql`update job set current_turn_id = ${turnId},
         lease_epoch = lease_epoch + 1 where id = ${seed.claims.job_id} returning lease_epoch`;
     await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, turn_id, class)
@@ -173,7 +176,27 @@ async function setup(
       where a.job_id = ${seed.claims.job_id} and p.decision is null`;
   const pushes = async () => sql`select id from push_intent where principal_id = ${personId}`;
 
-  return { sql, broker, attempt, remember, answered, suggestions, cards, pushes, dispatched };
+  /** The job's first shift, started in the background with nothing that woke it. */
+  const firstShift = async () => {
+    await sql`update attempt set class = 'background' where id = ${seed.claims.attempt_id}`;
+    return {
+      propose: (kind: string, payload: JsonObject) =>
+        broker.propose(seed.claims, { connection_id: seed.connectionId, kind, payload }),
+    };
+  };
+
+  return {
+    sql,
+    broker,
+    attempt,
+    firstShift,
+    remember,
+    answered,
+    suggestions,
+    cards,
+    pushes,
+    dispatched,
+  };
 }
 
 describe('work nobody is waiting on', () => {
@@ -297,6 +320,17 @@ describe('work nobody is waiting on', () => {
       const hold = await rejectionOf(woke.propose('test.send_message', messageBob()));
       expect(hold).toBeInstanceOf(ProactiveHold);
       expect(s.dispatched).toEqual([]);
+    },
+  );
+
+  databaseTest(
+    "a job's own first shift, which nothing woke, is asked about as before",
+    async () => {
+      const s = await setup({ routine: 'Every Friday, email Bob the weekly summary.' });
+
+      const fresh = await s.firstShift();
+      expect((await fresh.propose('test.send_email', mailBob())).status).toBe('needs_approval');
+      expect(await s.suggestions()).toHaveLength(0);
     },
   );
 
