@@ -1,3 +1,4 @@
+import { instanceName } from '../experience/instance.ts';
 /**
  * The bridge between a framed app and the Melete page around it.
  *
@@ -172,7 +173,7 @@ export function connectBridge(
       }
       inFlight += 1;
       work()
-        .catch(() => ({ ok: false as const, error: 'Couldn’t reach Melete.' }))
+        .catch(() => ({ ok: false as const, error: `Couldn’t reach ${instanceName()}.` }))
         .then((result) => {
           inFlight -= 1;
           reply(

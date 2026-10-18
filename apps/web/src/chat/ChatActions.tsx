@@ -19,6 +19,7 @@ import {
   Popover,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { Conversation } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -164,9 +165,9 @@ export function DeleteChatsDialog({
       title: gone.length === 1 ? 'Chat deleted' : `${gone.length} chats deleted`,
       sub: forget
         ? forgotten
-          ? `Melete also forgot ${forgotten === 1 ? 'one thing' : `${forgotten} things`} it learned there.`
-          : 'Melete had nothing saved from there to forget.'
-        : 'What Melete learned there is still in Memory, with the messages it learned it from.',
+          ? `${assistantName()} also forgot ${forgotten === 1 ? 'one thing' : `${forgotten} things`} it learned there.`
+          : `${assistantName()} had nothing saved from there to forget.`
+        : `What ${assistantName()} learned there is still in Memory, with the messages it learned it from.`,
     });
   };
   if (failed)
@@ -227,12 +228,12 @@ export function DeleteChatsDialog({
       sub={
         <>
           {busy
-            ? 'Melete stops what it is doing there first, and anything waiting for your OK is withdrawn. '
+            ? `${assistantName()} stops what it is doing there first, and anything waiting for your OK is withdrawn. `
             : ''}
-          The messages in {name} are deleted for good, apart from any Melete learned something from,
-          which stay with what it learned unless you choose below to forget that too. Files only{' '}
-          {one ? 'this chat' : 'these chats'} made on the computer are removed too. Files{' '}
-          {one ? 'it' : 'they'} changed that another chat or you also worked on stay. Anything{' '}
+          The messages in {name} are deleted for good, apart from any {assistantName()} learned
+          something from, which stay with what it learned unless you choose below to forget that
+          too. Files only {one ? 'this chat' : 'these chats'} made on the computer are removed too.
+          Files {one ? 'it' : 'they'} changed that another chat or you also worked on stay. Anything{' '}
           {one ? 'it' : 'they'} sent or changed stays listed in Settings, Activity.
         </>
       }
@@ -257,16 +258,16 @@ export function DeleteChatsDialog({
         <Checkbox
           checked={forget}
           onChange={setForget}
-          label={`Also forget what Melete learned from ${one ? 'this chat' : 'these chats'}`}
+          label={`Also forget what ${assistantName()} learned from ${one ? 'this chat' : 'these chats'}`}
         />
         <span className="col" style={{ gap: 2 }}>
           <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
-            Also forget what Melete learned from {one ? 'this chat' : 'these chats'}
+            Also forget what {assistantName()} learned from {one ? 'this chat' : 'these chats'}
           </span>
           <span style={{ fontSize: 13, color: 'var(--muted)' }}>
             {forget
               ? 'Details that came only from here are forgotten too, and no message from here is kept.'
-              : 'Left unticked, what Melete learned stays in Memory, with the words of the messages it learned it from.'}
+              : `Left unticked, what ${assistantName()} learned stays in Memory, with the words of the messages it learned it from.`}
           </span>
         </span>
       </label>

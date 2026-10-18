@@ -10,6 +10,7 @@ import { Button, Field, Input, Select } from '../design/primitives.tsx';
 import { keepingPushHere, NEW_PASSWORD_MIN } from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import { zoneName } from '../experience/plain.ts';
 import { givenName, UNNAMED } from '../experience/profile.ts';
 import { browserTimeZone, timeZoneChoices } from '../experience/timezone.ts';
@@ -122,7 +123,7 @@ function NameField() {
         });
       }}
     >
-      <Field label="Your name" hint="Melete greets you by it.">
+      <Field label="Your name" hint={`${assistantName()} greets you by it.`}>
         <Input
           value={value}
           onChange={(event) => setDraft(event.target.value)}

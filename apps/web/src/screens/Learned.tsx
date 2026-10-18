@@ -12,6 +12,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Badge, type BadgeTone, Button } from '../design/primitives.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type {
   LearnedChange,
   LearnedItem,
@@ -69,7 +70,9 @@ const dateOf = (iso: string) =>
 /** Where it came from, when, and who it reaches. */
 export function originLine(item: LearnedItem): string {
   const from =
-    item.source === 'engine' ? 'Melete wrote this for itself' : 'Learned from your correction';
+    item.source === 'engine'
+      ? `${assistantName()} wrote this for itself`
+      : 'Learned from your correction';
   return `${from} · ${dateOf(item.learned_at)}${item.shared ? ' · Shared with your space' : ''}`;
 }
 
@@ -188,7 +191,8 @@ export function LearnedRow({
               }}
             >
               <span>
-                Melete stops using this, and won’t write it again in any space until you say so.
+                {assistantName()} stops using this, and won’t write it again in any space until you
+                say so.
               </span>
               <span className="row" style={{ gap: 8 }}>
                 <Button
@@ -312,7 +316,7 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
         toast({
           kind: 'ok',
           title: `Trying “${item.name}”`,
-          sub: 'Melete uses it on your own work until you say to keep it or not.',
+          sub: `${assistantName()} uses it on your own work until you say to keep it or not.`,
         });
       } else if (action === 'approve') {
         const r = await adapter.approveSkill(item.id, loaded.space, item.definition_hash);
@@ -329,14 +333,14 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
         toast({
           kind: 'ok',
           title: 'Saved your version',
-          sub: 'Melete uses your words from now on.',
+          sub: `${assistantName()} uses your words from now on.`,
         });
       } else if (action === 'stop') {
         const r = await adapter.stopSkill(item.id, loaded.space, STOP_REASON);
         if (r.data === null) return failed(r, 'Couldn’t stop it');
         toast({
           kind: 'ok',
-          title: `Melete won’t do “${item.name}”`,
+          title: `${assistantName()} won’t do “${item.name}”`,
           sub: 'You can allow it again under Stopped skills.',
         });
         setStopped((n) => n + 1);
@@ -351,8 +355,8 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
   return (
     <div className="col" style={{ gap: 12 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        What Melete took from your corrections, and what it wrote down for itself. Pause, change or
-        remove anything; every change can be undone.
+        What {assistantName()} took from your corrections, and what it wrote down for itself. Pause,
+        change or remove anything; every change can be undone.
       </p>
       {learned.error ? (
         <p style={{ color: 'var(--danger)', fontSize: 13 }}>{learned.error}</p>
@@ -399,7 +403,7 @@ export function LearnedTab({ onCount }: { onCount?: (count: number) => void }) {
                 Nothing learned yet
               </span>
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                Correct Melete once and it’ll remember how you like it done.
+                Correct {assistantName()} once and it’ll remember how you like it done.
               </span>
             </div>
           ) : null}
@@ -434,7 +438,7 @@ export function StoppedSkills({ space }: { space: string }) {
     listed.set({ prohibitions: items.filter((entry) => entry.id !== item.id) });
     toast({
       kind: 'ok',
-      title: `Melete may write “${item.name}” again`,
+      title: `${assistantName()} may write “${item.name}” again`,
       sub: 'It asks for your OK before using it.',
     });
   };
@@ -444,7 +448,7 @@ export function StoppedSkills({ space }: { space: string }) {
         Stopped skills
       </h3>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
-        You told Melete not to do these. It won’t write them again until you allow it.
+        You told {assistantName()} not to do these. It won’t write them again until you allow it.
       </p>
       <div className="card-12" style={{ overflow: 'hidden' }}>
         {items.map((item, index) => (

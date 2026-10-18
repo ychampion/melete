@@ -154,6 +154,15 @@ const composeFile = z
     message: 'a file melete.deploy.json already chooses with its own keys',
   });
 
+/** Whether a Compose file name is one the contract's own keys choose. */
+export const isBuiltInComposeFile = (name: string): boolean => BUILT_IN_FILES.has(name);
+
+/** Why a path cannot be one of `compose_files`, or null when it can. */
+export function composeFileIssue(path: string): string | null {
+  const checked = composeFile.safeParse(path);
+  return checked.success ? null : (checked.error.issues[0]?.message ?? 'not a Compose file path');
+}
+
 /** A contract with no backup folder gets its project's own (defaultBackupDir). */
 function withProjectBackupDir(raw: unknown): unknown {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;

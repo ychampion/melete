@@ -56,6 +56,7 @@ import { showsRail } from './member-guards.ts';
 import { sidebarNav } from './nav.ts';
 import { weekStrip } from './week-strip.ts';
 import './shell.css';
+import { instanceName } from '../experience/instance.ts';
 
 export type ToastSpec = {
   id: number;
@@ -872,7 +873,7 @@ export function Shell({
                   }}
                 >
                   {agent && !phoneSub ? <AgentAvatar agent={agent} size={18} /> : null}
-                  <span className="clamp1">{title ?? 'Melete'}</span>
+                  <span className="clamp1">{title ?? instanceName()}</span>
                 </span>
                 {phoneSub ? <span className="phone-sub clamp1">{phoneSub}</span> : null}
               </div>

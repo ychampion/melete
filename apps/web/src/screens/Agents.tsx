@@ -37,6 +37,7 @@ import {
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, useApp, useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { Agent, AgentInput, AgentTemplate, Connection } from '../experience/types.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
@@ -489,8 +490,8 @@ function AgentEditor({
               <div className="row" style={{ gap: 12 }}>
                 <MeleteAvatar size={40} />
                 <p style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '19px' }}>
-                  Melete is always here. It takes every chat, routine and message from Home unless
-                  you choose another agent, and its name stays Melete.
+                  {assistantName()} is always here. It takes every chat, routine and message from
+                  Home unless you choose another agent, and its name stays {assistantName()}.
                 </p>
               </div>
             ) : null}
@@ -530,9 +531,9 @@ function AgentEditor({
           </>
         ) : fixedReach ? (
           <p style={{ fontSize: 13, color: 'var(--secondary)', lineHeight: '19px' }}>
-            Melete can use everything you connect, including what you connect later, the computer
-            and what it remembers about you. To keep something narrower, make an agent for that job
-            and choose what it can use.
+            {assistantName()} can use everything you connect, including what you connect later, the
+            computer and what it remembers about you. To keep something narrower, make an agent for
+            that job and choose what it can use.
           </p>
         ) : (
           <>
@@ -544,7 +545,7 @@ function AgentEditor({
             />
             <SwitchRow
               title="Reads memory"
-              hint="What Melete remembers about you is brought into its work."
+              hint={`What ${assistantName()} remembers about you is brought into its work.`}
               on={draft.reads_memory ?? true}
               onChange={(on) => setDraft({ ...draft, reads_memory: on })}
             />
@@ -929,7 +930,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
         kind: 'ok',
         title: `${gone.name} deleted`,
         sub: moved.length
-          ? `Melete now looks after its ${moved.join(' and ')}.${paused ? ` ${paused === 1 ? 'The routine is' : 'They are'} paused until you turn ${paused === 1 ? 'it' : 'them'} back on.` : ''}`
+          ? `${assistantName()} now looks after its ${moved.join(' and ')}.${paused ? ` ${paused === 1 ? 'The routine is' : 'They are'} paused until you turn ${paused === 1 ? 'it' : 'them'} back on.` : ''}`
           : undefined,
       });
       refreshAgents();
@@ -1054,8 +1055,9 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
           <div className="col" style={{ gap: 4 }}>
             <h1>Agents</h1>
             <p className="agents-lede">
-              Melete handles everything by default. Give it a face for a particular job, with its
-              own tone and only the tools it needs. Type @ and a name in any chat to ask one.
+              {assistantName()} handles everything by default. Give it a face for a particular job,
+              with its own tone and only the tools it needs. Type @ and a name in any chat to ask
+              one.
             </p>
           </div>
           <Button icon="plus" data-new-agent="" onClick={newAgent}>
@@ -1182,8 +1184,8 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
         title={`Delete ${deleting?.name ?? 'this agent'}?`}
         sub={
           agents.find((agent) => agent.is_default)?.fixed_reach
-            ? `Its chats move to Melete, which can use everything you've connected. Its routines are paused until you turn them back on. What ${deleting?.name ?? 'it'} said stays in those chats.`
-            : `Its chats and routines move to Melete, which can use only what you've chosen for it here. What ${deleting?.name ?? 'it'} said stays in those chats.`
+            ? `Its chats move to ${assistantName()}, which can use everything you've connected. Its routines are paused until you turn them back on. What ${deleting?.name ?? 'it'} said stays in those chats.`
+            : `Its chats and routines move to ${assistantName()}, which can use only what you've chosen for it here. What ${deleting?.name ?? 'it'} said stays in those chats.`
         }
         footer={
           <>

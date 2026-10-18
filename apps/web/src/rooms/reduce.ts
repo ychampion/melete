@@ -4,6 +4,8 @@
  * message that asked for it, and the live stream folded in. Pure functions, so
  * the same view comes out of a reload and of a stream.
  */
+
+import { assistantName } from '../experience/instance.ts';
 import type { RoomFrame, RoomMember, RoomMessage, RoomRequest, ThreadView } from './api.ts';
 
 /**
@@ -331,7 +333,7 @@ export function decisionWords(decision: RoomDecisionView): string {
     return `${decision.decision === 'approved' ? 'Allowed' : 'Denied'} by ${decision.decided_by.display_name}`;
   return decision.decision === 'approved'
     ? 'Allowed by the room’s settings'
-    : 'Withdrawn by Melete';
+    : `Withdrawn by ${assistantName()}`;
 }
 
 type PermissionView = NonNullable<RoomRequest['permissions']>[number];

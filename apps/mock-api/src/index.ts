@@ -51,6 +51,9 @@ export type MockOptions = {
    * overrides the seed, setup, connection and "Needs you" options.
    */
   firstRun?: boolean;
+  /** What the installation and its assistant are called; Melete when left out. */
+  instanceName?: string;
+  assistantName?: string;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -85,6 +88,8 @@ export function createMock(given: MockOptions = {}) {
     multiplayer: options.multiplayer ?? false,
     composio: options.composio ?? false,
     firstRun: options.firstRun ?? false,
+    ...(options.instanceName ? { instanceName: options.instanceName } : {}),
+    ...(options.assistantName ? { assistantName: options.assistantName } : {}),
   });
   if (options.connections === 'none') store.connections.clear();
   if (options.connections === 'apps') {
@@ -106,6 +111,9 @@ if (import.meta.main) {
     multiplayer: process.env.MELETE_MOCK_MULTIPLAYER === 'on',
     composio: process.env.MELETE_MOCK_COMPOSIO === 'on',
     firstRun: process.env.MELETE_MOCK_FIRST_RUN === 'on',
+    // The same settings the service reads, so a named installation can be tried against the mock.
+    instanceName: process.env.MELETE_INSTANCE_NAME?.trim() || undefined,
+    assistantName: process.env.MELETE_ASSISTANT_NAME?.trim() || undefined,
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
     connections:
       process.env.MELETE_MOCK_CONNECTIONS === 'none'

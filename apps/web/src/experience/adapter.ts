@@ -10,6 +10,7 @@
  */
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import { recordingFetch } from '../feedback/diagnostics.ts';
+import { instanceName } from './instance.ts';
 import { plainError } from './plain.ts';
 import { markValueMoment } from './push.ts';
 import { readTextPrefix } from './text-prefix.ts';
@@ -208,7 +209,7 @@ export const client = createMeleteClient({
   fetch: recordingFetch(globalThis.fetch.bind(globalThis)),
 });
 
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+const offline = () => `Couldn’t reach ${instanceName()}. Check that the service is running.`;
 
 const artifactUrl = (id: string): string =>
   `${client.options.baseUrl}/artifacts/${encodeURIComponent(id)}/content`;
@@ -263,7 +264,7 @@ function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Respon
   const code = (outcome.error as { error?: { code?: unknown } } | undefined)?.error?.code;
   return {
     data: null,
-    error: plainError(errorMessage(outcome.error, OFFLINE)),
+    error: plainError(errorMessage(outcome.error, offline())),
     unavailable: null,
     unauthorized: outcome.response?.status === 401,
     ...(typeof code === 'string' ? { code } : {}),
@@ -276,7 +277,7 @@ async function guard<T>(
   try {
     return settle<T>(await call());
   } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
+    return { data: null, error: offline(), unavailable: null };
   }
 }
 
@@ -335,6 +336,8 @@ export const adapter = {
     guard<{
       needed: boolean;
       multiplayer?: boolean;
+      instance_name?: string;
+      assistant_name?: string;
       code_required?: boolean;
       email_sign_in?: boolean;
     }>(() => api.GET('/setup')),
@@ -504,7 +507,7 @@ export const adapter = {
         return {
           data: null,
           error:
-            response.status === 404 ? 'This file is no longer the one that was saved.' : OFFLINE,
+            response.status === 404 ? 'This file is no longer the one that was saved.' : offline(),
           unavailable: null,
         };
       const type = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
@@ -525,7 +528,7 @@ export const adapter = {
         unavailable: null,
       };
     } catch {
-      return { data: null, error: OFFLINE, unavailable: null };
+      return { data: null, error: offline(), unavailable: null };
     }
   },
   questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
@@ -626,7 +629,7 @@ export const adapter = {
         ? { data: { status: 'ok' }, error: null, unavailable: null }
         : settle(outcome);
     } catch {
-      return { data: null, error: OFFLINE, unavailable: null };
+      return { data: null, error: offline(), unavailable: null };
     }
   },
 
@@ -1157,7 +1160,7 @@ async function binary<T>(
       const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
       return {
         data: null,
-        error: errorMessage(body, OFFLINE),
+        error: errorMessage(body, offline()),
         unavailable: null,
         unauthorized: response.status === 401,
         ...(typeof code === 'string' ? { code } : {}),
@@ -1166,7 +1169,7 @@ async function binary<T>(
     return { data: await read(response), error: null, unavailable: null };
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw error;
-    return { data: null, error: OFFLINE, unavailable: null };
+    return { data: null, error: offline(), unavailable: null };
   }
 }
 

@@ -14,6 +14,7 @@ import {
 import { useEffect, useState } from 'react';
 import { Button, Checkbox, Field, Input, Select } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { assistantName, instanceName } from '../experience/instance.ts';
 import type { DiscoveredMcpTool, McpSignInStart } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -55,8 +56,8 @@ export function ToolChoices({
         Its tools ({kept} of {choices.length} kept)
       </legend>
       <span className="app-connect-note">
-        Melete suggests how far each may act. Looking only runs without asking; changes that can be
-        undone are checked first; the rest ask you every time.
+        {assistantName()} suggests how far each may act. Looking only runs without asking; changes
+        that can be undone are checked first; the rest ask you every time.
       </span>
       <ul className="col mcp-tool-list" style={{ gap: 8 }}>
         {choices.map((item) => (
@@ -142,7 +143,8 @@ export function McpServerAdd({
       .then((r) => {
         if (!r.data) setError(r.error ?? r.unavailable ?? 'Couldn’t read its tools');
         else if (r.data.state === 'needs_sign_in') setNeedsSignIn(true);
-        else if (!r.data.tools.length) setError('The server lists no tools Melete can use.');
+        else if (!r.data.tools.length)
+          setError(`The server lists no tools ${assistantName()} can use.`);
         else setChoices(fromTools(r.data.tools));
       })
       .finally(() => setBusy(false));
@@ -207,8 +209,8 @@ export function McpServerAdd({
           Add an MCP server
         </span>
         <span style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-          Give its address and Melete reads what it can do. You choose which of its tools to use and
-          how far each may act.
+          Give its address and {instanceName()} reads what it can do. You choose which of its tools
+          to use and how far each may act.
         </span>
       </div>
       <Field label="Name">

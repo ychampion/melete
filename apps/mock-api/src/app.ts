@@ -139,6 +139,9 @@ export type AppDeps = {
   composio?: boolean;
   /** A person's very first visit: Melete is the only agent (`MELETE_MOCK_FIRST_RUN=on`). */
   firstRun?: boolean;
+  /** What the installation and its assistant are called, as MELETE_INSTANCE_NAME and MELETE_ASSISTANT_NAME set them. */
+  instanceName?: string;
+  assistantName?: string;
 };
 
 /** The routes the multiplayer switch covers, as the service lists them in rooms/preview.ts. */
@@ -350,8 +353,8 @@ export function createMockApp(deps: AppDeps) {
       multiplayer,
       code_required: false,
       email_sign_in: false,
-      instance_name: 'Melete',
-      assistant_name: 'Melete',
+      instance_name: deps.instanceName ?? 'Melete',
+      assistant_name: deps.assistantName ?? 'Melete',
     }),
   );
 

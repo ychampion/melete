@@ -8,6 +8,7 @@ import { Icon } from '../design/icons.tsx';
 import { Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { ApprovalSettings } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -60,13 +61,13 @@ const CLASSES: readonly { key: ClassKey; title: string; sub: string; reviewed: b
   },
 ];
 
-const ALWAYS_ASKS = [
+const alwaysAsks = () => [
   'Paying or spending money',
   'Sending, publishing or submitting anything, except an app for the same people as now',
   'An app that new people could open, that makes live calls, or that shows new data',
   'Deleting or removing anything',
   'Passwords, keys, codes or card details',
-  'A recipient, place or amount you didn’t give Melete yourself',
+  `A recipient, place or amount you didn’t give ${assistantName()} yourself`,
 ];
 
 export function ApprovalsTab() {
@@ -175,7 +176,7 @@ export function ApprovalsTab() {
               Always asks you
             </h2>
             <ul className="card-12 approvals-always">
-              {ALWAYS_ASKS.map((line) => (
+              {alwaysAsks().map((line) => (
                 <li key={line}>
                   <Icon name="lock" size={14} className="approvals-lock" />
                   <span>{line}</span>

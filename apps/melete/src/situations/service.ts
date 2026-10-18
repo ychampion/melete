@@ -71,6 +71,7 @@ import { workQuiet } from '../jobs/quiet.ts';
 import { jobMayUseConnection } from '../jobs/scopes.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { assistantName } from '../names.ts';
 import { ItemFailures } from '../ops/item-failures.ts';
 import { isQuiet } from '../push/policy.ts';
 import { documentSubjectKey } from '../signals/observations.ts';
@@ -1398,7 +1399,11 @@ export class SituationService {
     const now = this.now();
     const check = entry.check as ClockCheck;
     if (now > entry.fireAt.getTime() + LATE_MS && now > entry.dueAt.getTime())
-      return this.missed(entry, check, 'Melete could not look at this before it was due.');
+      return this.missed(
+        entry,
+        check,
+        `${assistantName()} could not look at this before it was due.`,
+      );
     // Someone who has left the space hears nothing more about it.
     const [present] = rows<{ ok: boolean }>(
       await this.db.execute(
@@ -1496,7 +1501,7 @@ export class SituationService {
         fingerprint: fingerprintOf(['unchecked', due]),
         urgency: 'soon',
         title: current.title,
-        reason: `Melete couldn't check this before it was due ${dueWords(due, zone, check.date_only ?? null)}.`,
+        reason: `${assistantName()} couldn't check this before it was due ${dueWords(due, zone, check.date_only ?? null)}.`,
         evidence: { due_at: due, checked: false },
         deadlineAt: due,
         expiresAt: new Date(current.dueAt.getTime() + DAY).toISOString(),
@@ -1506,7 +1511,7 @@ export class SituationService {
         personSet: true,
         because: [`clock:${current.id}`],
         origin: 'person',
-        pushBecause: 'Because you asked Melete to keep this deadline.',
+        pushBecause: `Because you asked ${assistantName()} to keep this deadline.`,
       });
       await tx
         .update(clock)
@@ -1700,8 +1705,7 @@ export class SituationService {
     );
     if (!watched.length)
       return {
-        refused:
-          'Melete was not watching the mailbox when this wait was found, so it stays on the waiting list only.',
+        refused: `${assistantName()} was not watching the mailbox when this wait was found, so it stays on the waiting list only.`,
       };
     if (!watched.some((row) => row.last_ok_at && new Date(row.last_ok_at) >= entry.createdAt))
       return 'retry';
@@ -1850,7 +1854,7 @@ export class SituationService {
         origin: current.personSet ? 'person' : 'service',
         jobIds: current.jobId ? [current.jobId] : [],
         pushBecause: current.personSet
-          ? 'Because you asked Melete to keep this deadline.'
+          ? `Because you asked ${assistantName()} to keep this deadline.`
           : 'Because it has a due date.',
       });
       // Something the person wants done that is not done near its deadline is at risk.

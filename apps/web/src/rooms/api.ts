@@ -7,6 +7,7 @@
 import type { paths } from '@melete/client';
 import { errorMessage, readSse } from '@melete/client';
 import { client, type Result } from '../experience/adapter.ts';
+import { instanceName } from '../experience/instance.ts';
 import { plainError } from '../experience/plain.ts';
 
 type Json<T> = T extends { content: { 'application/json': infer B } } ? B : never;
@@ -63,7 +64,7 @@ export type RoomFrame =
   | { seq: number; kind: 'message'; message: RoomMessage }
   | { seq: number; kind: 'request'; request_job_id: string; event: unknown };
 
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+const offline = () => `Couldn’t reach ${instanceName()}. Check that the service is running.`;
 const api = client.api;
 
 async function call<T>(
@@ -75,13 +76,13 @@ async function call<T>(
       return { data: outcome.data as T, error: null, unavailable: null };
     return {
       data: null,
-      error: plainError(errorMessage(outcome.error, OFFLINE)),
+      error: plainError(errorMessage(outcome.error, offline())),
       unavailable: null,
       unauthorized: outcome.response?.status === 401,
       ...(outcome.response ? { status: outcome.response.status } : {}),
     };
   } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
+    return { data: null, error: offline(), unavailable: null };
   }
 }
 

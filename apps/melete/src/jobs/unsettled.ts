@@ -12,6 +12,7 @@
 import type { QuestionSpec } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { actionLabel } from '../experience/projectors.ts';
+import { assistantName } from '../names.ts';
 import type { OfferedChoice } from './questions.ts';
 
 export const UNSETTLED_WAIT = 'unsettled_wait';
@@ -28,8 +29,7 @@ export const UNSETTLED_OPTIONS: OfferedChoice[] = [
 ];
 
 /** What the person is asked when something a turn sent has not been confirmed. */
-export const UNCONFIRMED_NOTE =
-  'Melete could not confirm whether something this turn sent went through. Check where it went, then say which, or have Melete check again.';
+export const UNCONFIRMED_NOTE = `${assistantName()} could not confirm whether something this turn sent went through. Check where it went, then say which, or have ${assistantName()} check again.`;
 
 /**
  * The step a question is about, in the words its card used: the summary the

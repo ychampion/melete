@@ -45,6 +45,7 @@ import { agent, connection, experienceTurn, job, question } from '../db/schema.t
 import type { Env } from '../env.ts';
 import { answerStream, answerText } from '../experience/answer-filter.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import { assistantName } from '../names.ts';
 import { ownJob } from '../principals/authority.ts';
 import { requireSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
@@ -146,7 +147,7 @@ const CLOUD =
 const OFF_HERE: Record<'private' | 'sensitive' | 'unchecked', string> = {
   private: `Voice is off here because this space or its agent is marked private. ${CLOUD}`,
   sensitive: `Voice is off in this conversation because it looks like it is about a sensitive topic. ${CLOUD}`,
-  unchecked: `Voice is off for now because Melete could not check this conversation’s privacy settings. ${CLOUD}`,
+  unchecked: `Voice is off for now because ${assistantName()} could not check this conversation’s privacy settings. ${CLOUD}`,
 };
 
 export function voiceProvidersFromEnv(env: Env): VoiceProviders {
@@ -192,8 +193,7 @@ const DAILY: Record<VoiceUsageKind, string> = {
   transcribe: 'You have used today’s allowance for voice messages. It frees up over the next day.',
   speech: 'You have used today’s allowance for replies read aloud. It frees up over the next day.',
   session: 'You have used today’s allowance of voice conversations. It frees up over the next day.',
-  aside:
-    'You have used today’s allowance for talking while Melete works. It frees up over the next day.',
+  aside: `You have used today’s allowance for talking while ${assistantName()} works. It frees up over the next day.`,
 };
 
 const providerFailed = (what: string) =>
@@ -474,7 +474,7 @@ export function mountVoice(
     if (!filename)
       throw new ServiceError(
         'recording_unreadable',
-        'That recording is not in a format Melete can read.',
+        `That recording is not in a format ${assistantName()} can read.`,
         400,
       );
     const limitMs = VOICE_LIMITS.recording_seconds * 1000;
@@ -525,7 +525,7 @@ export function mountVoice(
     if (!providers.live || !allowance || !companion)
       throw new ServiceError(
         'voice_unavailable',
-        'Talking while Melete works is not set up here.',
+        `Talking while ${assistantName()} works is not set up here.`,
         404,
       );
     // The same refusal as every voice route: a private place's words go nowhere.
@@ -563,7 +563,11 @@ export function mountVoice(
       // The person hears when the limit resets, not a general failure.
       if (result.failed === 'limit')
         throw new ServiceError('spending_limit_reached', result.message, 402);
-      throw new ServiceError('voice_aside_failed', 'Melete could not answer that just now.', 502);
+      throw new ServiceError(
+        'voice_aside_failed',
+        `${assistantName()} could not answer that just now.`,
+        502,
+      );
     }
     return c.json(voiceAside.parse(pointToQuestion(parsed.data, known, result.answer)));
   });
@@ -620,7 +624,7 @@ async function conversationContext(
     .where(and(eq(question.jobId, conversationId), eq(question.state, 'open')))
     .limit(1);
   return {
-    agentName: named?.name?.trim() || 'Melete',
+    agentName: named?.name?.trim() || assistantName(),
     asking: open !== undefined,
     turns: rows.reverse().map((row) => ({
       said: row.text,

@@ -16,6 +16,7 @@ import {
   NO_DECISIONS,
   useLoad,
 } from './experience/hooks.ts';
+import { instanceName, setInstance, useInstance } from './experience/instance.ts';
 import { latestOnly } from './experience/latest.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
@@ -68,7 +69,7 @@ function Unreachable({ error, onRetry }: { error: string; onRetry: () => void })
         }}
       >
         <MeleteMark width={64} />
-        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Couldn’t reach Melete</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Couldn’t reach {instanceName()}</h1>
         <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>{error}</p>
         <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 420 }}>
           It may be starting up or restarting. Try again in a moment.
@@ -145,16 +146,22 @@ export function App() {
     browser: false,
     multiplayer: false,
   });
-  // Whether the server has rooms switched on, read once whoever is signed in.
-  // A room or invite link waits for the answer rather than leaving early.
+  // Whether the server has rooms switched on, and the names the installation
+  // goes by, read once whoever is signed in. No screen is drawn before the
+  // answer, so every one of them starts with the right names.
   const [multiplayerKnown, setMultiplayerKnown] = useState(false);
+  const instance = useInstance();
   useEffect(() => {
     void adapter.setupStatus().then((status) => {
+      if (status.data) setInstance(status.data);
       const multiplayer = status.data?.multiplayer === true;
       setCapabilities((c) => ({ ...c, multiplayer }));
       setMultiplayerKnown(true);
     });
   }, []);
+  useEffect(() => {
+    document.title = instance.name;
+  }, [instance.name]);
 
   const refreshAgents = useCallback(() => {
     // A list that failed to load keeps what was last read; it never decides setup.
@@ -373,7 +380,7 @@ export function App() {
   }
 
   const [head, second] = route.parts;
-  if ((head === 'rooms' || head === 'invite') && !multiplayerKnown) return <BootFrame />;
+  if (!multiplayerKnown) return <BootFrame />;
 
   // A guest gets the rooms they were invited to, and nothing personal: no Home,
   // no chats, no setup. Their sign-in would be refused everywhere else.

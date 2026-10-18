@@ -5,6 +5,7 @@
  * settled. Never on the first visit.
  */
 import { adapter } from './adapter.ts';
+import { instanceName } from './instance.ts';
 import type { PushDevice } from './types.ts';
 
 const MOMENT_KEY = 'melete.push.moment';
@@ -138,8 +139,7 @@ export async function enablePush(): Promise<EnableResult> {
     return {
       ok: false,
       reason: 'unsupported',
-      message:
-        'This browser can’t receive pushes. On an iPhone, add Melete to your Home Screen first.',
+      message: `This browser can’t receive pushes. On an iPhone, add ${instanceName()} to your Home Screen first.`,
     };
   const key = await adapter.pushPublicKey();
   if (!key.data?.public_key)
@@ -153,7 +153,7 @@ export async function enablePush(): Promise<EnableResult> {
     return {
       ok: false,
       reason: 'denied',
-      message: 'Notifications are blocked for Melete. Allow them in your browser settings.',
+      message: `Notifications are blocked for ${instanceName()}. Allow them in your browser settings.`,
     };
   try {
     const registration = await navigator.serviceWorker.ready;

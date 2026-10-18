@@ -9,14 +9,14 @@
  * app that takes no client it did not register itself (GitHub) waits for one.
  */
 import type { McpCatalogEntry } from '@melete/contracts';
+import { instanceName } from '../names.ts';
 
 /** For whoever runs this Melete: the setting a sign-in's return needs. */
 export const RETURN_ADDRESS_NEEDED =
   'Signing in needs the address people open this service at. Set MELETE_PUBLIC_URL to an https:// address, or a localhost one.';
 
 /** The same, for the person: what is missing, without the setting. */
-export const RETURN_ADDRESS_MISSING =
-  'Signing in needs Melete to be opened at an https:// address, or on the computer it runs on. Whoever runs this Melete can give it one.';
+export const RETURN_ADDRESS_MISSING = `Signing in needs ${instanceName()} to be opened at an https:// address, or on the computer it runs on. Whoever runs this ${instanceName()} can give it one.`;
 
 export type CatalogAppMissing = { reason: string; hint: string };
 

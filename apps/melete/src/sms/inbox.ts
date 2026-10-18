@@ -24,6 +24,7 @@ import { type TwilioOptions, validTwilioSignature } from '../connectors/twilio.t
 import { answerText } from '../experience/projectors.ts';
 import type { ExperienceService } from '../experience/service.ts';
 import { newId } from '../ids.ts';
+import { assistantName, instanceName } from '../names.ts';
 import { principalContext } from '../principals/authority.ts';
 
 export type SmsInboxDeps = {
@@ -58,16 +59,14 @@ export function smsWebhookUrl(publicUrl: string | undefined, connectionId: strin
 }
 
 /** What everyone reads when texts can be sent from here but cannot reach Melete yet. */
-export const SMS_INBOUND_LIMITED =
-  'Texts can be sent from here, but texts to Melete cannot reach it on this Melete yet.';
+export const SMS_INBOUND_LIMITED = `Texts can be sent from here, but texts to ${assistantName()} cannot reach it on this ${instanceName()} yet.`;
 /** What the operator reads: what to set so texts reach Melete. */
 export const SMS_INBOUND_NEEDS =
   'Texting Melete needs the public https:// address Twilio can reach this service at. Set MELETE_PUBLIC_URL.';
 
 /** What the person is told by text when their text could not become a message. */
-const BUSY =
-  'Melete is still answering your last text. Send this one again when the answer arrives.';
-const NO_ASSISTANT = 'Choose an assistant in Melete first, then text again.';
+const BUSY = `${assistantName()} is still answering your last text. Send this one again when the answer arrives.`;
+const NO_ASSISTANT = `Choose an assistant in ${instanceName()} first, then text again.`;
 
 type ConnectionRow = {
   id: string;
@@ -282,8 +281,10 @@ export function replyText(status: string, answer: string): string {
   const said = answerText(answer).trim();
   if (status === 'done') return said || 'Done.';
   if (status === 'needs_you')
-    return said ? `${said}\n\nOpen Melete to go on.` : 'Melete needs you in the app to go on.';
-  return 'Melete could not finish that. Open the app to see what happened.';
+    return said
+      ? `${said}\n\nOpen ${instanceName()} to go on.`
+      : `${assistantName()} needs you in the app to go on.`;
+  return `${assistantName()} could not finish that. Open the app to see what happened.`;
 }
 
 /** Turns that finished long ago are left alone: an answer a day late is noise. */

@@ -13,6 +13,7 @@ import { Icon } from '../design/icons.tsx';
 import { Badge, Button, Dialog, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { instanceName } from '../experience/instance.ts';
 import type { Device, DeviceCapabilities, DevicePairing } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -469,8 +470,8 @@ export function DevicesTab({ onCount }: { onCount?: (count: number) => void }) {
     <div className="col" style={{ gap: 12 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 600 }}>
         Let your agent use your own computer alongside its own. A small companion program on the
-        computer connects out to Melete, uses only the folders you choose there, and asks you before
-        it runs a command or changes a file.
+        computer connects out to {instanceName()}, uses only the folders you choose there, and asks
+        you before it runs a command or changes a file.
       </p>
       {devices.error ? (
         <p style={{ color: 'var(--danger)', fontSize: 13 }}>{devices.error}</p>

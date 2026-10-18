@@ -64,6 +64,7 @@ import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { UNSETTLED_OPTIONS } from '../jobs/unsettled.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
+import { assistantName, instanceName } from '../names.ts';
 import { PathRefusal, routeEffect, unsettledBefore } from '../paths/gate.ts';
 import { recordPathOutcome, taskKindOf } from '../paths/registry.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
@@ -296,8 +297,7 @@ type PendingReview = {
   input: ReviewInput;
 };
 
-const question =
-  'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
+const question = `${assistantName()} cannot confirm whether this was sent. Check the destination, then mark it.`;
 /** What resuming an approved change from the command line says instead of sending it. */
 export const EGRESS_RERUN =
   'Approved. This change is made by a command in your computer, not resent from here: run the same command again, unchanged, and it goes through once.';
@@ -398,7 +398,7 @@ const needsApproval = (tool: ConnectorTool) =>
   tool.requires_approval || tool.effect_class === 'write_external' || tool.effect_class === 'spend';
 
 const untrustedOrigin = (warnings: OriginWarning[]) =>
-  `This effect uses ${warnings.length === 1 ? 'a value' : 'values'} Melete cannot vouch for: ` +
+  `This effect uses ${warnings.length === 1 ? 'a value' : 'values'} ${assistantName()} cannot vouch for: ` +
   `${warnings.map((warning) => `${warning.field} (${warning.origin_trust})`).join(', ')}. ` +
   'It needs your approval with that in front of you, whatever was agreed before.';
 
@@ -423,7 +423,7 @@ export function dispositionMessage(
   const already = repeated ? 'already ' : '';
   switch (action.status) {
     case 'proposed':
-      return 'Proposed. Nothing has left Melete yet.';
+      return `Proposed. Nothing has left ${instanceName()} yet.`;
     case 'needs_approval':
       return `This effect is ${already}waiting for your approval. Nothing has been sent.`;
     case 'approved':
@@ -433,7 +433,7 @@ export function dispositionMessage(
     case 'admitted':
       // A message waits a few seconds before it goes, so the person can cancel it.
       if (held)
-        return `This message is ${already}held and sends at ${action.retry_after_at} unless the person cancels it first. Nothing has left Melete yet; do not send it again.`;
+        return `This message is ${already}held and sends at ${action.retry_after_at} unless the person cancels it first. Nothing has left ${instanceName()} yet; do not send it again.`;
       return `This effect is ${already}admitted and has not been dispatched yet.`;
     case 'dispatched':
       return `This effect was ${already}dispatched and the result has not come back yet.`;
@@ -1248,7 +1248,8 @@ export class BrokerService implements BrokerOperations {
         action.kind === 'calendar.create' ? null : await eventBefore(this.sql, spaceId, action);
       const spans = spansOf(action.kind, action.canonical_payload, before);
       const window = windowOf(spans);
-      if (!window) return { concern: 'Melete could not tell when this event is.', reversible };
+      if (!window)
+        return { concern: `${assistantName()} could not tell when this event is.`, reversible };
       // Every calendar the person has connected here, not only the one written:
       // a clash on another calendar matters as much. One that cannot be read
       // leaves the change with the person.
@@ -3200,10 +3201,10 @@ export class BrokerService implements BrokerOperations {
     const reconnect = run.disposition === 'needs_reconnect';
     const uncertain = run.disposition === 'needs_reconciliation';
     const text = reconnect
-      ? 'This connection no longer permits the send. Reconnect it and Melete will carry on from here.'
+      ? `This connection no longer permits the send. Reconnect it and ${assistantName()} will carry on from here.`
       : uncertain
         ? (run.question as string)
-        : `Melete could not finish this and stopped rather than guess. ${run.question}`;
+        : `${assistantName()} could not finish this and stopped rather than guess. ${run.question}`;
     const because = [
       `${action.kind} stopped at ${run.disposition.replace(/_/g, ' ')} after ${run.executions} ${
         run.executions === 1 ? 'attempt' : 'attempts'

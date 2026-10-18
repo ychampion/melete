@@ -10,6 +10,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Button, Chip, Field, Input } from '../design/primitives.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { SpaceRulesChange, SpaceRulesView } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -110,7 +111,11 @@ export function SpaceRules({ spaceId }: { spaceId: string | undefined }) {
       return;
     }
     loaded.set(result.data);
-    toast({ kind: 'ok', title: 'Rules saved', sub: 'They apply from the next thing Melete does.' });
+    toast({
+      kind: 'ok',
+      title: 'Rules saved',
+      sub: `They apply from the next thing ${assistantName()} does.`,
+    });
   };
 
   if (loaded.error)

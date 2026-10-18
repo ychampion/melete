@@ -32,6 +32,7 @@ import {
 import { displayFor } from './live-card.ts';
 import { ProcessesPanel } from './ProcessesPanel.tsx';
 import './computer.css';
+import { assistantName } from '../experience/instance.ts';
 
 const POLL_MS = 3000;
 
@@ -717,7 +718,7 @@ export function ComputerPanel({
   /** Control changed; the computer is read again. */
   onChanged: () => void;
 }) {
-  const agentName = agent?.name ?? 'Melete';
+  const agentName = agent?.name ?? assistantName();
   const [busy, setBusy] = useState(false);
   const [releasing, setReleasing] = useState(false);
   const [live, setLive] = useState<{ url: string; title: string } | null>(null);

@@ -24,6 +24,7 @@ import {
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { agentById, defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { Plan } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
@@ -556,7 +557,7 @@ function PlanSheet({
             });
           }}
         >
-          Ask Melete about this plan
+          Ask {assistantName()} about this plan
         </Button>
       </div>
     </aside>

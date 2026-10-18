@@ -48,6 +48,7 @@ import { requireCurrentAttempt } from '../jobs/fence.ts';
 import { personZone } from '../jobs/local-now.ts';
 import type { JobService } from '../jobs/service.ts';
 import { OUTDATED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
+import { assistantName, instanceName } from '../names.ts';
 import { principalContext } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
 import type { SituationService } from '../situations/service.ts';
@@ -102,7 +103,7 @@ function goalOf(row: {
     row.words ? `What the person asked for, in their words: "${row.words}"` : null,
     `What it means: ${row.title} (${row.kind}).`,
     `Read back to them: ${row.line}`,
-    `Details marked ${GUESS} are your reading, not theirs: check them with the person before anything goes outside Melete on them.`,
+    `Details marked ${GUESS} are your reading, not theirs: check them with the person before anything goes outside ${instanceName()} on them.`,
     row.deadline
       ? `It has to be done by ${row.deadline}${row.deadlineOrigin === 'inferred' ? ` ${GUESS}` : ''}.`
       : null,
@@ -304,7 +305,7 @@ export class IntentService {
       if (error instanceof ServiceError && error.code === 'too_many_runs')
         throw new ServiceError(
           'too_many_intents',
-          'Melete is already working on as many things in the background here as it can at once. Tell the person this one is not kept yet, and that they can cancel something under What I’m on at Home, then ask again.',
+          `${assistantName()} is already working on as many things in the background here as it can at once. Tell the person this one is not kept yet, and that they can cancel something under What I’m on at Home, then ask again.`,
           409,
         );
       throw error;
@@ -693,12 +694,16 @@ export class IntentService {
       if (!parsed.success)
         throw new ServiceError(
           'invalid_request',
-          'One of those details is not one Melete can keep.',
+          `One of those details is not one ${assistantName()} can keep.`,
           400,
         );
       const due = deadline ? dueOf(deadline, zone) : null;
       if (due !== null && Number.isNaN(due))
-        throw new ServiceError('invalid_deadline', 'That is not a time Melete can read.', 400);
+        throw new ServiceError(
+          'invalid_deadline',
+          `That is not a time ${assistantName()} can read.`,
+          400,
+        );
       const [updated] = await tx
         .update(intent)
         .set({
@@ -1045,7 +1050,7 @@ export class IntentService {
           fingerprint: `expired:${row.deadlineAt?.toISOString() ?? ''}`,
           urgency: row.deadlineOrigin === 'person' ? 'soon' : 'normal',
           title: row.title,
-          reason: 'Its deadline passed before it was done. Melete stopped working on it.',
+          reason: `Its deadline passed before it was done. ${assistantName()} stopped working on it.`,
           evidence: { due_at: row.deadlineAt?.toISOString() ?? null },
           deadlineAt: row.deadlineAt?.toISOString() ?? null,
           expiresAt: new Date(at.getTime() + DAY).toISOString(),
@@ -1057,7 +1062,7 @@ export class IntentService {
           origin: row.deadlineOrigin === 'person' ? 'person' : 'service',
           pushBecause:
             row.deadlineOrigin === 'person'
-              ? 'Because you asked Melete to have this done by then.'
+              ? `Because you asked ${assistantName()} to have this done by then.`
               : 'Because it had a deadline.',
         });
       }
@@ -1104,7 +1109,7 @@ function nextStep(
 }
 
 /** Said where a cancel stopped partway, until what it changed has been taken back. */
-const STILL_TAKING_BACK = 'You cancelled it. Melete is still taking back what it changed.';
+const STILL_TAKING_BACK = `You cancelled it. ${assistantName()} is still taking back what it changed.`;
 const REMOVED = 'Its work was removed, so nothing more is being done on it.';
 
 /** Why a step could not be taken back, in the words `reverse` gave, or plainly. */

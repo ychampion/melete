@@ -11,6 +11,7 @@ import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { clockTime, isYesterday, monthDay, sameDay } from '../experience/clock.ts';
 import { agentById, faceOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { Conversation } from '../experience/types.ts';
 import { isWaiting, waitingOn, waitingUntilWords } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
@@ -216,7 +217,7 @@ export function ChatsScreen() {
                     {chat.title}
                   </span>
                   <span className="clamp1" style={{ fontSize: 13, color: 'var(--muted)' }}>
-                    {agent?.name ?? 'Melete'} · {statusWord(chat, waiting)}
+                    {agent?.name ?? assistantName()} · {statusWord(chat, waiting)}
                   </span>
                 </span>
                 <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>

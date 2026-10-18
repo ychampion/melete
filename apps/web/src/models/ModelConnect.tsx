@@ -27,6 +27,7 @@ import {
 } from './api.ts';
 import { UsageThisMonth } from './Usage.tsx';
 import './models.css';
+import { instanceName } from '../experience/instance.ts';
 
 /** Where each provider hands out keys, in the words its own console uses. */
 const KEY_HINT: Partial<Record<ModelProvider, string>> = {
@@ -121,10 +122,10 @@ export function visionLine(active: ModelSettings['active']): { text: string; hin
       : active.vision_source === 'operator'
         ? 'Set in the server’s configuration.'
         : active.vision
-          ? 'This model reads images, by Melete’s list.'
+          ? `This model reads images, by ${instanceName()}’s list.`
           : active.provider_vision
             ? 'Your provider says this model can read images. Turn this on to send it screenshots as pictures.'
-            : 'Melete doesn’t know this model to read images. If it does, turn this on.';
+            : `${instanceName()} doesn’t know this model to read images. If it does, turn this on.`;
   return { text, hint: `${now} ${why}` };
 }
 
@@ -170,9 +171,9 @@ function VisionSetting({
             variant="ghost"
             disabled={busy}
             style={{ alignSelf: 'flex-start' }}
-            onClick={() => save(null, 'Back to Melete’s list for this model')}
+            onClick={() => save(null, `Back to ${instanceName()}’s list for this model`)}
           >
-            Use Melete’s list
+            Use {instanceName()}’s list
           </Button>
         ) : null}
       </div>
@@ -745,8 +746,8 @@ function SignInPanel({
       <div className="col" style={{ gap: 4 }}>
         <span className="models-panel-title">{status.label}</span>
         <span className="models-hint">
-          Use the models in your ChatGPT plan by signing in once. Melete keeps the sign-in sealed on
-          this server and renews it.
+          Use the models in your ChatGPT plan by signing in once. {instanceName()} keeps the sign-in
+          sealed on this server and renews it.
         </span>
       </div>
       {signIn.error ? <span className="models-readonly">{signIn.error}</span> : null}

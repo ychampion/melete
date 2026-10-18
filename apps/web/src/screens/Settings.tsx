@@ -30,6 +30,7 @@ import { PeopleTab } from './People.tsx';
 import { PrivacyTab, SignedInSites } from './Privacy.tsx';
 import { SpaceRules } from './SpaceRules.tsx';
 import './settings.css';
+import { assistantName, instanceName } from '../experience/instance.ts';
 
 const dateOf = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
@@ -135,10 +136,11 @@ export function ConnectionCard({
 
 /** What the watch switch says it does, for a mailbox or a calendar, on or off. */
 export function watchWords(app: string, on: boolean): string {
-  if (!on) return 'Off. Melete still reads this account for things you asked it to watch.';
+  if (!on)
+    return `Off. ${assistantName()} still reads this account for things you asked it to watch.`;
   return /calendar/i.test(app)
-    ? 'Melete reads each event’s title, time and place to notice changes and clashes.'
-    : 'Melete reads new mail’s sender and subject to notice what needs you.';
+    ? `${assistantName()} reads each event’s title, time and place to notice changes and clashes.`
+    : `${assistantName()} reads new mail’s sender and subject to notice what needs you.`;
 }
 
 /**
@@ -215,7 +217,8 @@ function ConnectedAssistants() {
         Connected assistants
       </h2>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
-        Other assistants you let use Melete as you. Disconnecting one ends its access at once.
+        Other assistants you let use {instanceName()} as you. Disconnecting one ends its access at
+        once.
       </p>
       {clients.length === 0 ? (
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>No assistant is connected.</span>
@@ -361,9 +364,9 @@ export function ConnectionsTab({
   return (
     <div className="col" style={{ gap: 12 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        Melete looks things up and makes changes in the apps you connect, and keeps a record of what
-        it did. It asks you first before it sends, posts or pays for anything. Choose what each
-        agent may use on its Access tab.
+        {assistantName()} looks things up and makes changes in the apps you connect, and keeps a
+        record of what it did. It asks you first before it sends, posts or pays for anything. Choose
+        what each agent may use on its Access tab.
       </p>
       {connections.error ? (
         <LoadError what="your connections" error={connections.error} onRetry={connections.reload} />
@@ -382,7 +385,7 @@ export function ConnectionsTab({
           <summary>
             <span className="connect-advanced-title">Built-in tools</span>
             <span className="connect-advanced-note">
-              What Melete has without connecting anything, such as files and the web
+              What {assistantName()} has without connecting anything, such as files and the web
             </span>
           </summary>
           <div className="col" style={{ gap: 8, paddingTop: 12 }}>
@@ -497,8 +500,8 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
             <h1>{memory ? 'Memory' : 'Settings'}</h1>
             <p style={{ fontSize: 14, color: 'var(--muted)' }}>
               {memory
-                ? 'What Melete has learned about you, where it learned it, and how to change it.'
-                : 'What Melete may reach, what it may do without asking, and your account.'}
+                ? `What ${assistantName()} has learned about you, where it learned it, and how to change it.`
+                : `What ${assistantName()} may reach, what it may do without asking, and your account.`}
             </p>
           </div>
         </div>
