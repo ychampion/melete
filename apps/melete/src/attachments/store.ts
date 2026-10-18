@@ -406,16 +406,25 @@ export async function attachTurn(
     .where(and(eq(attachment.jobId, jobId), inArray(attachment.id, [...ids])));
 }
 
-/** What the next attempt's prompt is built from: each sent file's text, by id. */
+/**
+ * What the next attempt's prompt is built from: each sent file's text, by id.
+ * Only the files named, when `ids` names them.
+ */
 export async function attachmentTexts(
   tx: Transaction,
   jobIds: readonly string[],
+  ids?: readonly string[],
 ): Promise<Map<string, AttachmentRow>> {
-  if (!jobIds.length) return new Map();
+  if (!jobIds.length || ids?.length === 0) return new Map();
   const rows = await tx
     .select()
     .from(attachment)
-    .where(inArray(attachment.jobId, [...jobIds]))
+    .where(
+      and(
+        inArray(attachment.jobId, [...jobIds]),
+        ids ? inArray(attachment.id, [...ids]) : undefined,
+      ),
+    )
     .orderBy(asc(attachment.createdAt));
   return new Map(rows.map((row) => [row.id, row]));
 }

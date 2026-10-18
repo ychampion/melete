@@ -55,6 +55,17 @@ export function inTransaction<T>(body: () => T): T {
   return scopes.run(scope, body);
 }
 
+const watchers = new Set<(heldMs: number, site: string) => void>();
+
+/**
+ * Be told how long each transaction that took the event order lock held it,
+ * and where it was taken; for tests and benchmarks. Returns the way to stop.
+ */
+export function onEventOrderHeld(watch: (heldMs: number, site: string) => void): () => void {
+  watchers.add(watch);
+  return () => watchers.delete(watch);
+}
+
 /** Close a transaction's scope, reporting a hold long enough to pause everyone. */
 export function transactionEnded(scope: Scope | undefined): void {
   if (!scope || scope.done) return;
@@ -62,6 +73,7 @@ export function transactionEnded(scope: Scope | undefined): void {
   if (!scope.holds) return;
   scope.holds = false;
   const held = performance.now() - scope.since;
+  for (const watch of watchers) watch(held, scope.site);
   if (held >= SLOW_HOLD_MS)
     console.error(
       `event order lock: held for ${(held / 1000).toFixed(1)} s, which pauses every event writer (lock taken at ${scope.site || 'an unknown place'})`,
