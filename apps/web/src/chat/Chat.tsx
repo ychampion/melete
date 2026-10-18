@@ -8,7 +8,15 @@
 
 import type { AttachmentView } from '@melete/contracts/attachments';
 import { mentionedAgent } from '@melete/contracts/mention';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { amountWords } from '../companies/format.ts';
 import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
@@ -87,6 +95,7 @@ import {
 } from './parts.tsx';
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
+import { OlderTurns, TurnSlot, WINDOW_FROM } from './TranscriptWindow.tsx';
 import { takeOverFromCard } from './take-over.ts';
 import { joinsRunningTurn, waitsForTurn } from './turn-wait.ts';
 import { VoicePanel } from './VoiceMode.tsx';
@@ -526,6 +535,8 @@ function Answer({ text }: { text: string }) {
   );
 }
 
+const NO_REACTIONS: Reaction[] = [];
+
 /** The transcript reaches the turn views through a tiny context, to keep props short. */
 import { createContext, useContext } from 'react';
 import type { Transcript } from '../experience/reduce.ts';
@@ -676,6 +687,44 @@ export function ChatScreen({ id }: { id: string | null }) {
   useEffect(() => setShowAll(false), [conversationId]);
   const folded = foldedTurns(transcript.turns);
   const hidden = showAll ? 0 : folded.count;
+  const older = state.older;
+  // Turns not read yet count among the earlier messages: a person's message and an answer each.
+  const unread = older.more && older.total !== null ? older.total - transcript.turns.length : 0;
+  const earlierCount = folded.messages + 2 * Math.max(0, unread);
+  // A long transcript draws only the turns near what is on screen.
+  const windowed = transcript.turns.length - hidden > WINDOW_FROM;
+  // Where the scroll stood before older turns went in above, to hold the view still.
+  const prepending = useRef<{ height: number; top: number; first: string | undefined } | null>(
+    null,
+  );
+  const loadEarlier = useCallback(() => {
+    const node = scrollRef.current;
+    if (node)
+      prepending.current = {
+        height: node.scrollHeight,
+        top: node.scrollTop,
+        first: transcript.turns[0]?.id,
+      };
+    void older.load();
+  }, [older, transcript.turns]);
+  useLayoutEffect(() => {
+    const was = prepending.current;
+    const node = scrollRef.current;
+    if (!was || !node || transcript.turns[0]?.id === was.first) return;
+    prepending.current = null;
+    node.scrollTop = was.top + (node.scrollHeight - was.height);
+  }, [transcript.turns]);
+  const reactionsByTurn = useMemo(() => {
+    const by = new Map<number, Reaction[]>();
+    for (const reaction of reactions) {
+      const index = turnIndexForReaction(transcript, reaction);
+      if (index < 0) continue;
+      const list = by.get(index);
+      if (list) list.push(reaction);
+      else by.set(index, [reaction]);
+    }
+    return by;
+  }, [reactions, transcript]);
   const composerState = transcript.composer;
   // A spent quick edit comes free once the conversation moves on.
   useEffect(() => quick.settle(composerState), [quick, composerState]);
@@ -799,7 +848,14 @@ export function ChatScreen({ id }: { id: string | null }) {
   useEffect(() => {
     if (!focusTurn || focusedTurn.current === focusTurn) return;
     const index = transcript.turns.findIndex((turn) => turn.id === focusTurn);
-    if (index < 0) return;
+    if (index < 0) {
+      // Not among the turns read yet: read further back until it is, or there is no more.
+      if (older.more && !older.loading && !older.error) {
+        setShowAll(true);
+        void older.load();
+      }
+      return;
+    }
     if (index < hidden) {
       setShowAll(true);
       return;
@@ -811,7 +867,7 @@ export function ChatScreen({ id }: { id: string | null }) {
     focusedTurn.current = focusTurn;
     setStuck(false);
     node.scrollIntoView({ block: 'start' });
-  }, [focusTurn, transcript, hidden]);
+  }, [focusTurn, transcript, hidden, older]);
 
   const onScroll = () => {
     const node = scrollRef.current;
@@ -1333,9 +1389,16 @@ export function ChatScreen({ id }: { id: string | null }) {
               {folded.count > 0 && !showAll ? (
                 <EarlierMessages
                   summarised={folded.summarised > 0}
-                  messages={folded.messages}
+                  messages={earlierCount}
                   open={false}
                   onToggle={() => setShowAll(true)}
+                />
+              ) : older.more && (showAll || folded.count === 0) ? (
+                <OlderTurns
+                  root={scrollRef}
+                  loading={older.loading}
+                  error={older.error}
+                  onLoad={loadEarlier}
                 />
               ) : null}
               {transcript.turns.map((turn, index) =>
@@ -1344,40 +1407,44 @@ export function ChatScreen({ id }: { id: string | null }) {
                     {index > hidden && index === folded.summarised ? (
                       <EarlierMessages
                         summarised
-                        messages={folded.messages}
+                        messages={earlierCount}
                         open
                         onToggle={folded.count > 0 ? () => setShowAll(false) : undefined}
                       />
                     ) : null}
-                    <TurnView
-                      turn={turn}
-                      now={now}
-                      touch={touch}
-                      latest={turn.id === lastId}
-                      waitingUntil={
-                        turn.id === lastId ? (conversation?.waiting_until ?? null) : null
-                      }
-                      onDecide={decide}
-                      onSendDraft={sendDraft}
-                      onUndo={undo}
-                      onTakeOver={takeOver}
-                      onOpenComputer={openComputer}
-                      onAnswer={answer}
-                      onOwn={(own) => void send(own)}
-                      unknown={turn.id === lastId ? unknown : undefined}
-                      onResolve={resolve}
-                      busy={(id) => flight.has(id)}
-                      onRetry={retry}
-                      conversationAgentId={conversation?.agent_id ?? null}
-                      reactions={reactions.filter(
-                        (r) => turnIndexForReaction(transcript, r) === index,
-                      )}
-                      onReact={
-                        reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
-                          ? (emoji) => react(turn, emoji)
-                          : undefined
-                      }
-                    />
+                    <TurnSlot
+                      root={scrollRef}
+                      windowed={windowed}
+                      near={index >= transcript.turns.length - WINDOW_FROM}
+                    >
+                      <TurnView
+                        turn={turn}
+                        now={now}
+                        touch={touch}
+                        latest={turn.id === lastId}
+                        waitingUntil={
+                          turn.id === lastId ? (conversation?.waiting_until ?? null) : null
+                        }
+                        onDecide={decide}
+                        onSendDraft={sendDraft}
+                        onUndo={undo}
+                        onTakeOver={takeOver}
+                        onOpenComputer={openComputer}
+                        onAnswer={answer}
+                        onOwn={(own) => void send(own)}
+                        unknown={turn.id === lastId ? unknown : undefined}
+                        onResolve={resolve}
+                        busy={(id) => flight.has(id)}
+                        onRetry={retry}
+                        conversationAgentId={conversation?.agent_id ?? null}
+                        reactions={reactionsByTurn.get(index) ?? NO_REACTIONS}
+                        onReact={
+                          reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
+                            ? (emoji) => react(turn, emoji)
+                            : undefined
+                        }
+                      />
+                    </TurnSlot>
                   </Fragment>
                 ),
               )}

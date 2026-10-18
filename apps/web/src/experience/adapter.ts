@@ -137,6 +137,7 @@ import type {
   Task,
   TaskInput,
   Turn,
+  TurnPage,
   VoiceAside,
   VoiceAsideRequest,
   VoiceSession,
@@ -412,6 +413,28 @@ export const adapter = {
   turns: (id: string) =>
     guard<{ turns: Turn[] }>(() => api.GET('/conversations/{id}/messages', path(id))),
   /**
+   * The newest turns older than `before` (the newest of all without it), and
+   * with `events` their events too. A service that does not page answers with
+   * every turn and no `next_cursor`.
+   */
+  turnsPage: (
+    id: string,
+    page: { limit: number; before?: string; events?: boolean; eventsAfter?: number },
+  ) =>
+    guard<TurnPage>(() =>
+      api.GET('/conversations/{id}/messages', {
+        params: {
+          path: { id },
+          query: {
+            limit: page.limit,
+            ...(page.before ? { before: page.before } : {}),
+            ...(page.events ? { events: 'true' as const } : {}),
+            ...(page.eventsAfter !== undefined ? { events_after: page.eventsAfter } : {}),
+          },
+        },
+      }),
+    ),
+  /**
    * `attachments` names files uploaded for this message, in the order they show;
    * `pasted` says which stretches of `text` the person pasted rather than typed.
    */
@@ -568,8 +591,9 @@ export const adapter = {
   saveApprovalSettings: (body: ApprovalSettings) =>
     guard<ApprovalSettingsView>(() => api.PUT('/approval-settings', { body })),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
-  messageEvents: (conversationId: string, signal: AbortSignal) =>
-    subscribeEvents(client, { jobId: conversationId, signal }),
+  /** The job's own stream, after `after`: where the messages people react to get their ids. */
+  messageEvents: (conversationId: string, signal: AbortSignal, after = 0) =>
+    subscribeEvents(client, { jobId: conversationId, signal, after }),
   reactions: (conversationId: string) =>
     guard<{ reactions: Reaction[] }>(() =>
       api.GET('/jobs/{jobId}/reactions', { params: { path: { jobId: conversationId } } }),

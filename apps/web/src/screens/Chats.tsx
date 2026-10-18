@@ -10,6 +10,7 @@ import { Button, Checkbox } from '../design/primitives.tsx';
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { clockTime, isYesterday, monthDay, sameDay } from '../experience/clock.ts';
+import { prefetchOn } from '../experience/history.ts';
 import { agentById, faceOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
 import type { Conversation } from '../experience/types.ts';
 import { isWaiting, waitingOn, waitingUntilWords } from '../experience/waiting.ts';
@@ -241,7 +242,13 @@ export function ChatsScreen() {
                 {body}
               </label>
             ) : (
-              <a key={chat.id} className="list-row" href={href(`/chat/${chat.id}`)} style={first}>
+              <a
+                key={chat.id}
+                className="list-row"
+                href={href(`/chat/${chat.id}`)}
+                style={first}
+                {...prefetchOn(chat.id)}
+              >
                 {body}
                 <span style={{ color: 'var(--secondary)', display: 'flex' }}>
                   <Icon name="chevronRight" size={16} />

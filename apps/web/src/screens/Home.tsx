@@ -27,6 +27,7 @@ import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { clockTime, displayZone, hourOfDay, sameDay, weekday } from '../experience/clock.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
+import { prefetchOn } from '../experience/history.ts';
 import {
   agentById,
   faceOf,
@@ -823,7 +824,12 @@ function InMotion({ now }: { now: number }) {
         {rows.map((conversation) => {
           const agent = agentById(agents, conversation.agent_id);
           return (
-            <a key={conversation.id} className="motion-row" href={href(`/chat/${conversation.id}`)}>
+            <a
+              key={conversation.id}
+              className="motion-row"
+              href={href(`/chat/${conversation.id}`)}
+              {...prefetchOn(conversation.id)}
+            >
               <AgentAvatar
                 agent={agent}
                 size={28}

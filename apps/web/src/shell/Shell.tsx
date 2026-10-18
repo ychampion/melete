@@ -36,6 +36,7 @@ import {
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { clockTime, displayZone, sameDay, weekday } from '../experience/clock.ts';
+import { prefetchOn } from '../experience/history.ts';
 import {
   agentById,
   type Loaded,
@@ -355,6 +356,7 @@ function Sidebar({
               href={href(`/chat/${chat.id}`)}
               aria-current={chat.id === activeChat ? 'page' : undefined}
               onClick={onClose}
+              {...prefetchOn(chat.id)}
             >
               <span className="chat-face">
                 <AgentAvatar agent={agent} size={16} state={live ? 'working' : 'idle'} />

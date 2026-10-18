@@ -9,6 +9,7 @@ import { stopPushHere } from './experience/account.ts';
 import { adapter, type Result, SESSION_ENDED_EVENT, servesBrowser } from './experience/adapter.ts';
 import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import { setDisplayZone } from './experience/clock.ts';
+import { forgetEveryConversation } from './experience/history.ts';
 import {
   AppContext,
   type AppContextValue,
@@ -281,6 +282,8 @@ export function App() {
 
   // What this browser held for the account goes when its sign-in ends.
   const clearSignedIn = useCallback(() => {
+    // Nothing read under this sign-in is drawn under the next one.
+    forgetEveryConversation();
     setAgents([]);
     setAgentsLoaded(false);
     setConversations([]);

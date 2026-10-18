@@ -230,6 +230,12 @@
   flex-direction: column;
   gap: 12px;
 }
+/* A turn's bubble and answer sit as they did straight in the transcript. */
+.turn-slot {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+}
 .turn-text {
   display: flex;
   flex-direction: row;
