@@ -39,7 +39,12 @@ import { leftOnComputer, removeMovedFromComputers } from '../sandbox/move-out.ts
 import { SandboxProcesses } from '../sandbox/processes.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
-import { ManagedCallMeter } from '../signals/managed-calls.ts';
+import {
+  CAP_WORDS,
+  ComposioCapReached,
+  ComposioMeter,
+  meterSettings,
+} from '../signals/managed-calls.ts';
 import { type BlobStore, configuredBlobStore } from '../storage/blob.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
 import { type BrowserWorkerEndpoint, BrowserWorkerPool } from '../workers/browser/client.ts';
@@ -50,16 +55,19 @@ import { createArtifactsConnector } from './artifacts.ts';
 import { createBrowserConnector } from './browser.ts';
 import { builtinEnvironment } from './builtin.ts';
 import { CalendarConnector } from './calendar.ts';
-import { ComposioClient } from './composio.ts';
+import { ComposioClient, TOOLKIT_SLUG } from './composio.ts';
+import { ComposioAppConnector } from './composio-app.ts';
 import {
-  composioProxyFetch,
+  composioToolFetch,
   MANAGED_GOOGLE_BASES,
   MANAGED_READS,
+  MANAGED_TOOLKITS,
   MANAGED_WRITES,
+  type ManagedRule,
   managedAccess,
   namesManagedAuthority,
-  type ProxyRule,
 } from './composio-fetch.ts';
+import { ComposioRunner } from './composio-sessions.ts';
 import { EmailConnector } from './email.ts';
 import { createExecConnector } from './exec.ts';
 import { ConnectorFaultError } from './faults.ts';
@@ -293,10 +301,11 @@ export type ConnectorOptions = {
    */
   google?: { client: AccountClient; endpoints?: GoogleEndpoints };
   /**
-   * Composio, for Google accounts signed in through it (`COMPOSIO_API_KEY`).
-   * Without it, such a connection offers nothing. `meter` counts each call.
+   * Composio, for accounts and apps signed in through it (`COMPOSIO_API_KEY`).
+   * Without it, such a connection offers nothing. `meter` counts each call
+   * and holds it to the operator's limits; `runner` runs every tool call.
    */
-  composio?: { client: ComposioClient; meter?: ManagedCallMeter };
+  composio?: { client: ComposioClient; meter?: ComposioMeter; runner?: ComposioRunner };
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
   /** Where a command-line account's own check goes. Only a test replaces it. */
@@ -363,6 +372,13 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('google_drive'), account: z.email(), ...managedFields }),
   z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
   z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
+  z.object({
+    kind: z.literal('composio_app'),
+    toolkit: z.string().regex(TOOLKIT_SLUG),
+    title: z.string().min(1).max(80),
+    via: z.literal('composio'),
+    connected_account_id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  }),
   storedSandboxConnection,
   z.object({ kind: z.literal('sms'), sms: smsConnectionConfig }),
 ]);
@@ -372,6 +388,15 @@ const storedConfiguration = z.discriminatedUnion('kind', [
  * in an owner-audience space and never to a public compartment, which is the
  * rule an installed MCP server already follows.
  */
+/** The plain sentence for a spent limit, when that is why a call stopped. */
+function capReached(error: unknown): string | null {
+  for (let at = error, depth = 0; at && depth < 5; depth++) {
+    if (at instanceof ComposioCapReached) return CAP_WORDS[at.dimension];
+    at = (at as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
 function ownerOnly<T extends Connector>(connector: T): T {
   return Object.assign(connector, {
     catalog: { ...connector.catalog, audience: 'owner' as const },
@@ -715,6 +740,21 @@ export class ConnectorFactory {
             : undefined;
       return ownerOnly(createCommandLineConnector(adapter as never, health ? { health } : {}));
     }
+    if (stored?.kind === 'composio_app' && row.provider === 'composio') {
+      const composio = this.options.composio;
+      if (!composio) return undefined;
+      return ownerOnly(
+        new ComposioAppConnector({
+          id: row.id,
+          spaceId: row.spaceId,
+          toolkit: stored.toolkit,
+          title: stored.title,
+          connectedAccountId: stored.connected_account_id,
+          client: composio.client,
+          runner: this.composioRunner(composio),
+        }),
+      );
+    }
     if (
       (stored?.kind === 'gmail' && row.provider === 'imap') ||
       (stored?.kind === 'google_calendar' && row.provider === 'caldav') ||
@@ -924,16 +964,17 @@ export class ConnectorFactory {
         : stored.kind === 'google_calendar'
           ? 'calendar'
           : 'documents';
+    const runner = this.composioRunner(composio);
     const meter = composio.meter;
-    const fetcher = (rules: readonly ProxyRule[]) =>
-      composioProxyFetch({
-        client: composio.client,
+    const fetcher = (rules: readonly ManagedRule[]) =>
+      composioToolFetch({
+        runner,
         connectedAccountId: accountId,
+        toolkit: MANAGED_TOOLKITS[part],
         rules,
-        ...(meter ? { charge: () => meter.charge(row.spaceId) } : {}),
       });
     const access = managedAccess(composio.client, accountId);
-    const build = (rules: readonly ProxyRule[]): Connector => {
+    const build = (rules: readonly ManagedRule[]): Connector => {
       const config = { id: row.id, spaceId: row.spaceId, access, fetcher: fetcher(rules) };
       if (stored.kind === 'google_drive')
         return new GoogleDriveConnector({ ...config, base: MANAGED_GOOGLE_BASES.drive });
@@ -977,7 +1018,18 @@ export class ConnectorFactory {
               detail:
                 'A tool call cannot name the account it acts for; the connection decides that.',
             });
-          const result = await execute(action, ctx);
+          // A spent limit is said plainly before anything is tried; the count
+          // itself is still taken atomically when each call is sent.
+          if (await meter?.spent('tool_calls'))
+            return { outcome: 'failed', reason: CAP_WORDS.tool_calls, retryable: false };
+          let result: Awaited<ReturnType<Connector['execute']>>;
+          try {
+            result = await execute(action, ctx);
+          } catch (error) {
+            const reached = capReached(error);
+            if (reached) return { outcome: 'failed', reason: reached, retryable: false };
+            throw error;
+          }
           return result.outcome === 'succeeded'
             ? { ...result, receipt: throughComposio(result.receipt) }
             : result;
@@ -993,6 +1045,15 @@ export class ConnectorFactory {
         },
       }),
     );
+  }
+
+  private sharedRunner: ComposioRunner | undefined;
+
+  /** The one runner every Composio connection shares, so each account keeps one session. */
+  composioRunner(composio: NonNullable<ConnectorOptions['composio']>): ComposioRunner {
+    if (composio.runner) return composio.runner;
+    this.sharedRunner ??= new ComposioRunner(composio.client, composio.meter);
+    return this.sharedRunner;
   }
 
   /** Publishing by email uses whichever mailbox connectors are registered, whenever they arrive. */
@@ -1208,7 +1269,7 @@ export function connectorOptionsFromEnv(
               apiKey: env.COMPOSIO_API_KEY,
               baseUrl: env.COMPOSIO_BASE_URL,
             }),
-            meter: new ManagedCallMeter(sql, env.MELETE_MANAGED_CALLS_MONTHLY_CAP ?? null),
+            meter: new ComposioMeter(sql, meterSettings(env)),
           },
         }
       : {}),

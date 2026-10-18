@@ -15,6 +15,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   check,
   index,
   integer,
@@ -131,12 +132,60 @@ export const managedCall = pgTable(
 );
 
 /**
+ * What this installation has spent at Composio in each billing period, by
+ * billable dimension (tool calls, trigger events). A call is counted here
+ * before it is sent, under a lock, so concurrent calls cannot pass a limit
+ * together; one that was definitely never sent is taken back. `reported` is
+ * the count Composio's own usage numbers gave for the period, when read; the
+ * larger of the two is what a limit is checked against. Only counts are kept.
+ */
+export const composioUsage = pgTable(
+  'composio_usage',
+  {
+    /** The first day of the billing period, `YYYY-MM-DD` in UTC. */
+    period: text('period').notNull(),
+    dimension: text('dimension').notNull(),
+    used: bigint('used', { mode: 'number' }).notNull().default(0),
+    /** Composio's own count for the period, as last read. */
+    reported: bigint('reported', { mode: 'number' }),
+    /** Melete's own count when Composio's was read, so calls since then are added to it. */
+    usedAtReport: bigint('used_at_report', { mode: 'number' }).notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.period, table.dimension] }),
+    check('composio_usage_period_check', sql`${table.period} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`),
+    check('composio_usage_dimension_check', sql`${table.dimension} ~ '^[a-z_]{1,40}$'`),
+    check('composio_usage_used_check', sql`${table.used} >= 0`),
+  ],
+);
+
+/**
+ * Each trigger delivery from Composio that was taken, by its `webhook-id`, so
+ * a delivery sent again (a retry, or a replay within the signature's
+ * tolerance) is counted and acted on once. Rows older than a day are removed.
+ */
+export const composioDelivery = pgTable(
+  'composio_delivery',
+  {
+    id: text('id').primaryKey(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('composio_delivery_received_idx').on(table.receivedAt),
+    check('composio_delivery_id_check', sql`${table.id} ~ '^[A-Za-z0-9_.:-]{1,128}$'`),
+  ],
+);
+
+/**
  * Composio accounts waiting to be revoked and deleted there: one whose space
  * was removed, one whose disconnection could not reach Composio, and one made
  * for a sign-in that was never finished, due once that sign-in has expired.
  * A row stays until Composio confirms the account is gone, or until a live
  * connection is found acting for it, so nothing is dropped on a failure. Only
- * the account id is kept, never the key or anything the account holds.
+ * the account id is kept, never the key or anything the account holds. A row
+ * whose id starts `slot_` is a place held for a sign-in under way, counted
+ * against the account limit and never sent to Composio.
  */
 export const managedAccountRemoval = pgTable(
   'managed_account_removal',

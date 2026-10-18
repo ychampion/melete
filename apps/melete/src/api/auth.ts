@@ -41,6 +41,7 @@ import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { mountAccountAccess, sessionLabel } from './account-access.ts';
+import { COMPOSIO_EVENTS_PATH, MAX_DELIVERY_BYTES } from './composio.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import { ServiceError } from './errors.ts';
@@ -67,6 +68,7 @@ const SESSION_BODY_BYTES = 8 * 1024 * 1024;
 const tooLarge = (c: Context) =>
   c.json({ error: { code: 'request_too_large', message: 'The request is too large.' } }, 413);
 const publicBody = bodyLimit({ maxSize: PUBLIC_BODY_BYTES, onError: tooLarge });
+const composioDeliveryBody = bodyLimit({ maxSize: MAX_DELIVERY_BYTES, onError: tooLarge });
 const sessionLimit = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
 /**
  * A file uploaded for a message may be larger than any JSON body: the file at
@@ -438,6 +440,10 @@ export function mountAuth(
     if (c.req.method === 'POST' && REACH_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
     // So does a text to a person's own Twilio connection (see sms/routes.ts).
     if (c.req.method === 'POST' && SMS_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
+    // So does a trigger delivery from Composio (see api/composio.ts).
+    // Its own limit: a new-mail delivery carries the message's text.
+    if (c.req.method === 'POST' && c.req.path === COMPOSIO_EVENTS_PATH)
+      return composioDeliveryBody(c, next);
     // A paired computer's companion holds no session. Every `/device/` route
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.

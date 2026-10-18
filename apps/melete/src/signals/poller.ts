@@ -121,6 +121,11 @@ export const MANAGED_WATCH_SECONDS: Record<string, { day: number; night: number 
   mail: { day: 600, night: 3600 },
   calendar: { day: 900, night: 3600 },
 };
+/**
+ * An account Composio's trigger watches is read when the trigger says
+ * something changed, and otherwise only hourly, in case an event was lost.
+ */
+export const TRIGGERED_WATCH_SECONDS = { day: MAX_POLL_SECONDS, night: MAX_POLL_SECONDS };
 
 /**
  * The stream a watched account is read on, by provider: a mailbox's mail, a
@@ -180,6 +185,12 @@ export type SignalPollerDeps = {
    * say why. Without it, they are read as any other.
    */
   managedCalls?: { standing(): Promise<ManagedStanding> };
+  /**
+   * Set when Composio's triggers watch accounts signed in through it. An
+   * account with a trigger is then read hourly unless its trigger rings,
+   * while trigger events are within their limit.
+   */
+  managedTriggers?: boolean;
   /** Called after a calendar read has kept its fields, to move clocks and look for overlaps. */
   afterCalendarRead?: (connectionId: string) => Promise<void>;
   now?: () => number;
@@ -368,7 +379,7 @@ export class SignalPoller {
     // What it reports still reaches only the work the connection serves.
     const watched = await this.deps.sql`
       select c.id, c.space_id, c.provider, c.watch_changes, s.kind,
-        c.configuration->>'via' as via,
+        c.configuration->>'via' as via, c.configuration->>'trigger_id' as trigger_id,
         pr.day_start, pr.day_end, pr.time_zone
       from connection c join space s on s.id = c.space_id
         left join lateral (select p.day_start, p.day_end, p.time_zone from experience_profile p
@@ -377,6 +388,16 @@ export class SignalPoller {
             and ps.kind = 'personal' limit 1) pr on true
       where c.status = 'active' and s.removed_at is null
         and c.provider in ${this.deps.sql(Object.keys(WATCHED_PROVIDERS))}`;
+    // Whether Composio's triggers are on: set up, and their events within the limit.
+    let triggers: Promise<boolean> | undefined;
+    const triggersOn = () => {
+      triggers ??= (async () => {
+        if (!this.deps.managedTriggers) return false;
+        const standing = await this.deps.managedCalls?.standing().catch(() => null);
+        return standing?.dimensions?.trigger_events?.state !== 'reached';
+      })();
+      return triggers;
+    };
     for (const row of watched) {
       const watchChanges = row.watch_changes === null ? null : Boolean(row.watch_changes);
       if (!watchedByDefault(String(row.kind), watchChanges)) continue;
@@ -387,7 +408,12 @@ export class SignalPoller {
         end: row.day_end ? String(row.day_end) : '22:00',
         timeZone: row.time_zone ? String(row.time_zone) : 'UTC',
       });
-      const managed = row.via === 'composio' ? MANAGED_WATCH_SECONDS[stream] : undefined;
+      const managed =
+        row.via !== 'composio'
+          ? undefined
+          : row.trigger_id && (await triggersOn())
+            ? TRIGGERED_WATCH_SECONDS
+            : MANAGED_WATCH_SECONDS[stream];
       const seconds = managed
         ? night
           ? managed.night
@@ -551,10 +577,18 @@ export class SignalPoller {
       return { delivered: 0, failed: false };
     }
     const context: ReadContext = { generation: Number(current.generation), abandoned: false };
-    // Near or past this month's limit of calls through Composio, the account
-    // is read less often, never not at all, and says why.
+    // Near this month's limit of calls through Composio, the account is read
+    // less often; past it, not at all until the month resets. It says why.
     const slowed = row.managed ? await this.managedSlowdown(row.interval_s) : null;
     const interval = slowed?.seconds ?? row.interval_s;
+    // Past the limit, nothing is read: a read would be refused before it left.
+    if (slowed?.paused) {
+      await this.deps.sql`update source_cursor
+        set last_error = ${slowed.note},
+          next_poll_at = ${new Date(this.now() + interval * 1000).toISOString()}::timestamptz
+        where connection_id = ${row.connection_id} and stream = ${row.stream}`;
+      return { delivered: 0, failed: false };
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const reading = this.poll(row, source, context);
@@ -619,13 +653,14 @@ export class SignalPoller {
 
   /**
    * How much slower an account signed in through Composio is read this month:
-   * twice its interval once the month's calls are close to the limit, once an
-   * hour once they reach it. Null when they are not near it, or a standing
-   * could not be read, in which case reading goes on as usual.
+   * twice its interval once the month's calls are close to the limit, and not
+   * at all once they reach it (looked at again hourly, at no cost, until the
+   * month resets). Null when they are not near it, or a standing could not be
+   * read, in which case reading goes on and each call is still held to the limit.
    */
   private async managedSlowdown(
     seconds: number,
-  ): Promise<{ seconds: number; note: string } | null> {
+  ): Promise<{ seconds: number; note: string; paused?: boolean } | null> {
     if (!this.deps.managedCalls) return null;
     let standing: ManagedStanding;
     try {
@@ -635,7 +670,7 @@ export class SignalPoller {
       return null;
     }
     if (standing.state === 'reached')
-      return { seconds: MAX_POLL_SECONDS, note: MANAGED_REACHED_WORDS };
+      return { seconds: MAX_POLL_SECONDS, note: MANAGED_REACHED_WORDS, paused: true };
     if (standing.state === 'near')
       return { seconds: Math.min(MAX_POLL_SECONDS, seconds * 2), note: MANAGED_NEAR_WORDS };
     return null;

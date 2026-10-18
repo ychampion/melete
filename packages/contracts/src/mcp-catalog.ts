@@ -43,6 +43,12 @@ export type McpCatalogEntry = {
    * `meanwhile` is how a person connects the same account without one.
    */
   client?: { id_setting: string; secret_setting: string; register_at: string; meanwhile?: string };
+  /**
+   * The products the entry connects when they go by other names than its id
+   * (Atlassian: Jira and Confluence). With the id, they say which apps this
+   * entry already offers, so the same app is not offered again another way.
+   */
+  products?: readonly string[];
   tools: readonly McpCatalogTool[];
 };
 
@@ -121,6 +127,7 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
     description:
       'Search Jira and Confluence, read issues and pages, and keep issues and pages up to date. New issues, pages and comments go out after you approve them.',
     url: 'https://mcp.atlassian.com/v2/mcp',
+    products: ['jira', 'confluence'],
     tools: [
       read('atlassianUserInfo', 'user_info', 'See which account is connected'),
       read('getAccessibleAtlassianResources', 'list_sites', 'List your Atlassian sites'),
@@ -279,6 +286,25 @@ export const MCP_CATALOG: readonly McpCatalogEntry[] = [
 
 export const mcpCatalogEntry = (id: string): McpCatalogEntry | undefined =>
   MCP_CATALOG.find((entry) => entry.id === id);
+
+/** A name with case, spaces and punctuation set aside: `microsoft_teams` and `Microsoft Teams` match. */
+const plainName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Whether an app, by the name another catalog gives it (a Composio toolkit
+ * such as `jira`), is one this catalog already connects: an entry's id or one
+ * of its products. This catalog's entry is the one offered for it, so the app
+ * is not offered a second time another way.
+ */
+export function mcpCatalogCovers(app: string): boolean {
+  const name = plainName(app);
+  return (
+    name.length > 0 &&
+    MCP_CATALOG.some((entry) =>
+      [entry.id, ...(entry.products ?? [])].some((covered) => plainName(covered) === name),
+    )
+  );
+}
 
 /**
  * The installation an entry makes, for the tools named (all of them unless a
