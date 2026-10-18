@@ -1286,6 +1286,7 @@ export async function bootstrap(
       jobs.standingWork = {
         restAfterDays: env.MELETE_REST_ROUTINES_AFTER_DAYS,
         routinesPerPerson: env.MELETE_ROUTINES_PER_PERSON_MAX,
+        activeRunsPerSpace: env.MELETE_RUNS_ACTIVE_PER_SPACE_MAX,
       };
     }
     runs = jobs ? new RunService(jobs) : undefined;

@@ -87,9 +87,6 @@ export function gatewayExtractor(options: {
   };
 }
 
-/** Model calls one person's scans may make in a day when the operator sets none. */
-export const DEFAULT_DAILY_SCAN_CALLS = 500;
-
 /**
  * The model a scan extracts with, or null for the scripted extractor.
  *
@@ -97,8 +94,8 @@ export const DEFAULT_DAILY_SCAN_CALLS = 500;
  * model this release was measured with). Left unset, a real provider with its
  * key extracts with the model the installation serves, so a production map is
  * read by a model without a setting nobody knew to make. The demonstration,
- * and a provider still without a key, stay scripted. The daily allowance below
- * bounds what either model path spends.
+ * and a provider still without a key, stay scripted. The daily allowance below,
+ * when the operator sets one, bounds what either model path spends.
  */
 export function companiesExtraction(
   env: Env,
@@ -120,7 +117,8 @@ export function companiesExtraction(
 
 /**
  * The daily allowance of model calls per person, when a live model runs.
- * `MELETE_COMPANIES_DAILY_CALLS` sets it; a scripted scan spends nothing and has none.
+ * `MELETE_COMPANIES_DAILY_CALLS` sets it; unset, there is none. A scripted
+ * scan spends nothing and has none either. Calls are counted either way.
  */
 export function configuredDailyCalls(env: Env): number | undefined {
   if (!companiesExtraction(env)) return undefined;
@@ -128,12 +126,12 @@ export function configuredDailyCalls(env: Env): number | undefined {
 }
 
 /** The allowance `MELETE_COMPANIES_DAILY_CALLS` sets, for a model that reads scans. */
-function dailyCallsSetting(): number {
+function dailyCallsSetting(): number | undefined {
   // An empty value is an unset one: `Number('')` is 0, which would stop every scan.
   const written = process.env.MELETE_COMPANIES_DAILY_CALLS?.trim();
-  if (!written) return DEFAULT_DAILY_SCAN_CALLS;
+  if (!written) return undefined;
   const raw = Number(written);
-  return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_DAILY_SCAN_CALLS;
+  return Number.isInteger(raw) && raw >= 0 ? raw : undefined;
 }
 
 /**
@@ -264,7 +262,7 @@ export function companiesDeps(options: {
   spending?: GatewayOptions['spending'];
 }): CompaniesDeps {
   const { jobs, triggers } = options;
-  // A model connected in the app may read any scan, so its allowance applies
+  // A model connected in the app may read any scan, so a set allowance applies
   // unless the installation only ever runs the demonstration.
   const dailyCalls =
     configuredDailyCalls(options.env) ??

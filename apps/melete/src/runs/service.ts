@@ -151,8 +151,6 @@ const QUIET_OCCURRENCE = /^nothing to report\b/i;
 
 /** A run that has not reported for this long gets a short summary written for it. */
 const REPORT_EVERY_MS = 24 * 60 * 60_000;
-/** Runs one space may have going at once. */
-const ACTIVE_RUN_LIMIT = 10;
 /** Progress notifications one run sends at most this often; its result and questions always go. */
 const PUSH_EVERY_MS = 30 * 60_000;
 /** Kinds of entry that mark where a result stands: offered, checked, given. */
@@ -309,24 +307,28 @@ export class RunService {
     },
   ) {
     const input = runCreateRequest.parse(raw);
-    // Counted inside a service transaction, which holds the event order lock:
-    // two starts at once are counted one after the other.
-    const [active] = await tx
-      .select({ n: sql<number>`count(*)::int` })
-      .from(job)
-      .where(
-        and(
-          eq(job.spaceId, spaceId),
-          eq(job.kind, 'run'),
-          notInArray(job.state, ['completed', 'failed', 'cancelled']),
-        ),
-      );
-    if (Number(active?.n ?? 0) >= ACTIVE_RUN_LIMIT)
-      throw new ServiceError(
-        'too_many_runs',
-        `There are already ${ACTIVE_RUN_LIMIT} pieces of long work going. Finish or stop one first.`,
-        409,
-      );
+    // The operator's limit (MELETE_RUNS_ACTIVE_PER_SPACE_MAX); unset is no limit.
+    const limit = this.jobs.standingWork.activeRunsPerSpace;
+    if (limit !== undefined) {
+      // Counted inside a service transaction, which holds the event order lock:
+      // two starts at once are counted one after the other.
+      const [active] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(job)
+        .where(
+          and(
+            eq(job.spaceId, spaceId),
+            eq(job.kind, 'run'),
+            notInArray(job.state, ['completed', 'failed', 'cancelled']),
+          ),
+        );
+      if (Number(active?.n ?? 0) >= limit)
+        throw new ServiceError(
+          'too_many_runs',
+          `There are already ${limit} pieces of long work going. Finish or stop one first.`,
+          409,
+        );
+    }
     const title = input.title ?? clip(input.goal.split('\n')[0] ?? input.goal, 120);
     const create = () =>
       this.jobs.createInTransaction(
