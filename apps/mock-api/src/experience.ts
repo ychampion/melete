@@ -123,6 +123,12 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
   'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
   'tasks.create': { what: 'Add a task', where: 'Tasks', reversible: true },
   'payments.pay': { what: 'Pay a bill', where: 'your card', reversible: false },
+  // The agent's own computer pressing Pay, as the service words its card.
+  'computer.click': {
+    what: 'Your agent is about to pay on shop.example.com',
+    where: 'its own computer',
+    reversible: false,
+  },
 };
 
 /** A run the mock keeps no thread for. */

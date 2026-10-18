@@ -295,3 +295,22 @@ test('a handed-back URL loses short mixed tokens, encoded tokens and matrix para
   ] as const)
     expect([url, handbackUrl(url)]).toEqual([url, seen]);
 });
+
+test('a card number goes from page text, however it is written; other long numbers stay', () => {
+  for (const card of [
+    '4111111111111111',
+    '4111 1111 1111 1111',
+    '4111-1111-1111-1111',
+    '378282246310005',
+    '\u0664\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661\u0661',
+  ]) {
+    const shown = redactSecretText(`n5 textbox value="${card}" box=0,0,10,10`);
+    expect([card, shown.includes(card)]).toEqual([card, false]);
+    expect(shown).toContain(REDACTED);
+  }
+  // A number that is no card network's stays, as a tracking number does.
+  expect(redactSecretText('Tracking 9400100000000000000000')).toBe(
+    'Tracking 9400100000000000000000',
+  );
+  expect(redactSecretText('Order 4111111111111112')).toBe('Order 4111111111111112');
+});

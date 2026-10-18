@@ -319,7 +319,10 @@ export type MoneyMove = {
   /** Why it counts, in the person's words. */
   reason: string;
   /** Which part of the classification decided it. */
-  by: 'declared' | 'name' | 'arguments' | 'form';
+  by: 'declared' | 'name' | 'arguments' | 'form' | 'screen';
+  /** Where it pays, and how much, when the page it pays on says (`pay-moment.ts`). */
+  site?: string | null;
+  amount?: string | null;
 };
 
 const MOVES_MONEY = 'It moves money.';
