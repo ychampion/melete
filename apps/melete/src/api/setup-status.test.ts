@@ -213,6 +213,42 @@ describe('features an operator turns off', () => {
     expect((await app.request('/sandbox/computers')).status).toBe(401);
   });
 
+  test('a provider’s webhook for a feature that is off is refused before anything is read', async () => {
+    const app = appWith(owned, {
+      MELETE_FEATURE_SMS: 'off',
+      MELETE_FEATURE_PHONE: 'off',
+      MELETE_FEATURE_COMPUTER: 'off',
+      MELETE_FEATURE_VOICE: 'off',
+    });
+    // Twilio posts a form, signed or not; nothing behind the gate is reached.
+    const form = {
+      'content-type': 'application/x-www-form-urlencoded',
+      'X-Twilio-Signature': 'unchecked',
+    };
+    const refused: [string, string][] = [
+      ['/sms/twilio/conn_01M2000000000000000000000A', 'Texting your agent'],
+      ['/reach/twilio/sms', 'Texts and calls to your phone'],
+      ['/reach/twilio/status/rch_1', 'Texts and calls to your phone'],
+      ['/reach/twilio/key/rch_1', 'Texts and calls to your phone'],
+      ['/sandbox/processes/prc_1/stop', 'The agent’s computer'],
+      ['/conversations/cnv_1/call', 'Voice'],
+    ];
+    for (const [path, said] of refused) {
+      const response = await app.request(path, {
+        method: 'POST',
+        headers: form,
+        body: 'From=%2B15550001111&Body=hello',
+      });
+      expect([path, response.status]).toEqual([path, 404]);
+      const body = (await response.json()) as { error: { code: string; message: string } };
+      expect([path, body.error.code]).toEqual([path, 'not_available']);
+      expect(body.error.message.startsWith(said)).toBe(true);
+    }
+    // A preview of a server in the agent's computer is refused as well.
+    expect((await app.request('/previews/tok_1/')).status).toBe(404);
+    expect((await app.request('/conversations/cnv_1/computer')).status).toBe(404);
+  });
+
   test('MELETE_FEATURE_MULTIPLAYER wins over the preview switch', async () => {
     const on = appWith(owned, { MELETE_FEATURE_MULTIPLAYER: 'on' });
     expect(setupStatusResponse.parse(await (await on.request('/setup')).json()).multiplayer).toBe(

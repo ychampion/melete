@@ -5,11 +5,15 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
+import type { Sql } from 'postgres';
+import { builtinEnvironment } from './connectors/builtin.ts';
+import { ConnectorFactory } from './connectors/configured.ts';
 import { loadEnv } from './env.ts';
 import {
   FEATURE_NAMES,
   FEATURES,
   featureEnvName,
+  featureOfConnectionKind,
   featureOfPath,
   installationFeatures,
   mountPersonFeatureGate,
@@ -88,9 +92,24 @@ describe('routes', () => {
     expect(featureOfPath('GET', '/connections/conn_1/texts')).toBe('sms');
     expect(featureOfPath('GET', '/browser/sites')).toBe('browser');
     expect(featureOfPath('POST', '/sandbox/sessions/s_1/live')).toBe('computer');
+    expect(featureOfPath('POST', '/sandbox/processes/prc_1/stop')).toBe('computer');
+    expect(featureOfPath('GET', '/previews/tok_1/index.html')).toBe('computer');
+    expect(featureOfPath('GET', '/conversations/cnv_1/computer')).toBe('computer');
+    // A call, as its routes are named once it lands.
+    expect(featureOfPath('POST', '/conversations/cnv_1/call')).toBe('voice');
+    expect(featureOfPath('GET', '/voice/call/upstream')).toBe('voice');
     expect(featureOfPath('GET', '/spaces/spc_1/companies')).toBe('companies');
     expect(featureOfPath('GET', '/rooms')).toBe('multiplayer');
-    for (const path of ['/conversations', '/voiceless', '/reached', '/spaces/spc_1', '/me'])
+    for (const path of [
+      '/conversations',
+      '/voiceless',
+      '/reached',
+      '/spaces/spc_1',
+      '/me',
+      '/sandboxes',
+      '/conversations/cnv_1/callers',
+      '/conversations/cnv_1/computers',
+    ])
       expect([path, featureOfPath('GET', path)]).toEqual([path, null]);
   });
 
@@ -113,6 +132,99 @@ describe('routes', () => {
     });
     const other = await app.request('/voice', { headers: { 'x-person': 'prn_other' } });
     expect(other.status).toBe(200);
+  });
+});
+
+describe('the agent’s tools follow the switches', () => {
+  const browserRow = {
+    id: 'conn_01M2000000000000000000000B',
+    spaceId: 'spc_01M2000000000000000000000A',
+    provider: 'web',
+    secretRef: null,
+    configuration: null,
+  };
+  const smsRow = {
+    id: 'conn_01M2000000000000000000000S',
+    spaceId: 'spc_01M2000000000000000000000A',
+    provider: 'twilio',
+    secretRef: 'sec_01M2000000000000000000000S',
+    configuration: { kind: 'sms', sms: { allowed_numbers: [] } },
+  };
+  const sandboxRow = {
+    id: 'conn_01M2000000000000000000000X',
+    spaceId: 'spc_01M2000000000000000000000A',
+    provider: 'sandbox',
+    secretRef: 'sec_01M2000000000000000000000X',
+    configuration: {
+      kind: 'sandbox',
+      sandbox: {
+        adapter: 'e2b',
+        image: 'base',
+        egress: 'deny_all',
+        persistence: 'ephemeral',
+        lifetime_seconds: 600,
+      },
+    },
+  };
+  const factory = (env: Record<string, string>) =>
+    new ConnectorFactory({
+      sql: {} as Sql,
+      workRoot: '/tmp/work',
+      spacesRoot: '/tmp/spaces',
+      env,
+      // The operator's own file names the browser connection.
+      connections: [{ kind: 'browser', id: browserRow.id }],
+      sandbox: {
+        sessions: {} as never,
+        project: 'test',
+        e2bPlan: 'hobby',
+        snapshotTtlSeconds: 3600,
+        maxConcurrent: 1,
+        maxPerConnection: 1,
+        modalRefusal: null,
+      },
+    });
+  const tools = async (made: ConnectorFactory, row: Parameters<ConnectorFactory['open']>[0]) =>
+    (await made.open(row))?.manifest.tools.map((tool) => tool.name) ?? [];
+
+  test('browser off: the operator’s browser connection opens to nothing instead of stopping the start', async () => {
+    // Started with the browser off, the service has no browser sessions at all.
+    expect(await factory({ MELETE_FEATURE_BROWSER: 'off' }).open(browserRow)).toBeUndefined();
+  });
+
+  test('texting off: a texting connection offers no tool, so the agent sends no text', async () => {
+    expect(await tools(factory({}), smsRow)).toContain('sms.send');
+    expect(await factory({ MELETE_FEATURE_SMS: 'off' }).open(smsRow)).toBeUndefined();
+  });
+
+  test('computer off: the agent has no computer, and its sandboxes can still be stopped', async () => {
+    expect(await tools(factory({}), sandboxRow)).toContain('terminal.run');
+    const off = factory({ MELETE_FEATURE_COMPUTER: 'off' });
+    expect(await off.open(sandboxRow)).toBeUndefined();
+    // The sweep and a removal still reach the provider to stop what is running.
+    expect(off.sandboxProviders.has(sandboxRow.id)).toBe(true);
+  });
+
+  test('computer off: no space is given the default computer', () => {
+    const env = {
+      MELETE_RUNTIME_ADAPTER: 'docker',
+      MELETE_RUNTIME_SUPERVISOR: 'none',
+      MELETE_SANDBOX_PROVIDER: 'docker',
+      MELETE_SANDBOX_PROJECT: 'test',
+    };
+    expect(builtinEnvironment(env as never).sandbox).not.toBeNull();
+    expect(
+      builtinEnvironment({ ...env, MELETE_FEATURE_COMPUTER: 'off' } as never).sandbox,
+    ).toBeNull();
+  });
+});
+
+describe('connection kinds follow the switches', () => {
+  test('texting and the computer are the features of their kinds; others belong to none', () => {
+    expect(featureOfConnectionKind('sms')).toBe('sms');
+    expect(featureOfConnectionKind('sandbox')).toBe('computer');
+    for (const kind of ['mail', 'caldav', 'ics', 'mcp', 'mcp_stdio', 'command_line'])
+      expect([kind, featureOfConnectionKind(kind)]).toEqual([kind, null]);
   });
 });
 

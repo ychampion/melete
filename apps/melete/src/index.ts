@@ -814,7 +814,7 @@ export function createApp(deps: AppDeps) {
     mountBrowserSites(app, deps.browserSessions.sites);
   }
   if (deps.sandboxComputers && features.computer) mountSandboxComputers(app, deps.sandboxComputers);
-  if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
+  if (deps.sandboxPreviews && features.computer) mountSandboxPreviews(app, deps.sandboxPreviews);
 
   mountHealthDetail(app, {
     token: deps.env.MELETE_OPERATOR_TOKEN,

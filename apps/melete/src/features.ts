@@ -20,6 +20,7 @@
  */
 import type { Context, Hono } from 'hono';
 import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled, multiplayerPath } from './rooms/preview.ts';
+import { PREVIEW_PREFIX } from './sandbox/preview-path.ts';
 
 type Feature = {
   /** What the feature is, for the docs and the setup status. */
@@ -50,11 +51,12 @@ export const FEATURES = {
     offForYou: MULTIPLAYER_UNAVAILABLE.message,
   },
   voice: {
-    about: 'Talking to the agent: push-to-talk, voice mode and replies read aloud.',
+    about: 'Talking to the agent: push-to-talk, voice mode, calls and replies read aloud.',
     default: true,
     perPerson: true,
+    // `/conversations/:id/call` and `/voice/call/…` are a call's.
     path: (_method, path) =>
-      under(path, '/voice') || /^\/conversations\/[^/]+\/voice(\/|$)/.test(path),
+      under(path, '/voice') || /^\/conversations\/[^/]+\/(voice|call)(\/|$)/.test(path),
     off: 'Voice is turned off on this server.',
     offForYou: 'Voice is turned off for your account.',
   },
@@ -84,12 +86,16 @@ export const FEATURES = {
     offForYou: 'The agent’s browser is turned off for your account.',
   },
   computer: {
-    about: 'Watching the desktop of the agent’s computer and taking it over.',
+    about:
+      'The agent’s own computer: its desktop, terminal and programs, and watching it and taking it over.',
     default: true,
     perPerson: true,
-    path: (_method, path) => under(path, '/sandbox/computers') || under(path, '/sandbox/sessions'),
-    off: 'Watching the agent’s computer is turned off on this server.',
-    offForYou: 'Watching the agent’s computer is turned off for your account.',
+    path: (_method, path) =>
+      under(path, '/sandbox') ||
+      path.startsWith(PREVIEW_PREFIX) ||
+      /^\/conversations\/[^/]+\/computer$/.test(path),
+    off: 'The agent’s computer is turned off on this server.',
+    offForYou: 'The agent’s computer is turned off for your account.',
   },
   companies: {
     about:
@@ -147,6 +153,18 @@ export function personFeatures(installation: Features, own: Partial<Features> = 
   for (const name of FEATURE_NAMES)
     if (FEATURES[name].perPerson && own[name] === false) features[name] = false;
   return features;
+}
+
+/**
+ * The feature a kind of connection belongs to, if any. Off, the kind is not
+ * offered or installed, and a connection of it already made offers the agent
+ * no tool (`ConnectorFactory.open`). The browser and rooms have no kind a
+ * person installs: the operator's file names a browser, and rooms are defaults.
+ */
+export function featureOfConnectionKind(kind: string): FeatureName | null {
+  if (kind === 'sms') return 'sms';
+  if (kind === 'sandbox') return 'computer';
+  return null;
 }
 
 /** The feature a route belongs to, if any. */

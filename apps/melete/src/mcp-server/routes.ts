@@ -24,6 +24,7 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { ExperienceEffects } from '../experience/effects.ts';
+import { installationFeatures } from '../features.ts';
 import { type LimitStore, PostgresLimitStore, WindowLimiter } from '../ops/limiter.ts';
 import { principalContext } from '../principals/authority.ts';
 import { resolveSessionSpace, selectedSpace } from '../principals/session-space.ts';
@@ -38,7 +39,7 @@ import {
   type OAuthStoreOptions,
   protectedResourceMetadata,
 } from './oauth.ts';
-import { callTool, TOOL_DEFINITIONS, UnknownTool } from './tools.ts';
+import { callTool, offeredTools, UnknownTool } from './tools.ts';
 
 /** The versions this server speaks, newest first. */
 export const MCP_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
@@ -172,6 +173,8 @@ export function mountMcpServer(app: Hono, deps: McpServerDeps) {
       ? new ExperienceEffects(deps.sql, deps.broker, deps.registry)
       : undefined;
   const sendConnection = spaceSendConnection({ sql: deps.sql });
+  // Companies turned off: its tools are not listed, and a call to one is refused by its route.
+  const companies = installationFeatures(deps.env).companies;
   const formKey = consentKey(deps.env.MELETE_MASTER_KEY);
   // Small fixed windows per client address, for the endpoints anyone can call.
   const limits = deps.limits ?? new PostgresLimitStore(deps.sql);
@@ -592,7 +595,7 @@ ${whoIsAsking(client)}
       case 'ping':
         return c.json({ jsonrpc: '2.0', id, result: {} });
       case 'tools/list':
-        return c.json({ jsonrpc: '2.0', id, result: { tools: TOOL_DEFINITIONS } });
+        return c.json({ jsonrpc: '2.0', id, result: { tools: offeredTools(companies) } });
       case 'tools/call': {
         const name = message.params?.name;
         if (typeof name !== 'string') return c.json(rpcError(id, -32602, 'Name a tool.'));
