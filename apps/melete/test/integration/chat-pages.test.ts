@@ -13,7 +13,6 @@ import {
   dedupKey,
   type ExperienceEvent,
   experienceEvent,
-  type Turn,
   turnList,
 } from '@melete/contracts';
 import { session } from '../../src/db/auth-schema.ts';
@@ -61,6 +60,7 @@ if (handle) {
   });
 }
 const withDb = handle ? describe : describe.skip;
+type Turn = ReturnType<typeof turnList.parse>['turns'][number];
 
 function required<T>(value: T | null | undefined): T {
   if (value == null) throw new Error('Expected test fixture');
