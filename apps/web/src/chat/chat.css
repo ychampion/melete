@@ -1269,6 +1269,58 @@ a.log-line-link > .log-chevron {
   font-size: 12px;
 }
 
+/* the card that asks once how much the agent does on its own */
+.autonomy-ask {
+  margin: 0;
+  min-width: 0;
+}
+.autonomy-ask-title {
+  float: left;
+  width: 100%;
+  padding: 0 2px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.autonomy-ask-why,
+.autonomy-ask-foot {
+  clear: both;
+  margin: 0;
+  padding: 0 2px 2px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+}
+.autonomy-ask-foot {
+  padding-top: 2px;
+}
+.autonomy-ask-option {
+  align-items: flex-start;
+  cursor: pointer;
+  padding: 10px 12px;
+}
+.autonomy-ask-option .radio {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.autonomy-ask-option:has(.radio:checked) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.autonomy-ask-option:has(.radio:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.autonomy-ask-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.autonomy-ask-means {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+}
 /* questionnaire */
 .question {
   display: flex;

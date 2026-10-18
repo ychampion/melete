@@ -5,10 +5,10 @@
  */
 import { useRef } from 'react';
 import { Icon } from '../design/icons.tsx';
-import { Toggle } from '../design/primitives.tsx';
+import { Select, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
-import type { ApprovalSettings } from '../experience/types.ts';
+import type { ApprovalSettings, AutonomyLevel, TaskKind } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
 type Mode = ApprovalSettings['mode'];
@@ -62,7 +62,7 @@ const CLASSES: readonly { key: ClassKey; title: string; sub: string; reviewed: b
 
 const ALWAYS_ASKS = [
   'Paying or spending money',
-  'Sending, publishing or submitting anything, except an app for the same people as now',
+  'Sending, publishing or submitting anything, except an app for the same people as now and what you let go on its own above',
   'An app that new people could open, that makes live calls, or that shows new data',
   'Deleting or removing anything',
   'Passwords, keys, codes or card details',
@@ -170,7 +170,10 @@ export function ApprovalsTab() {
             ) : null}
           </section>
 
+          <SendingOnItsOwn />
+
           <section className="col" style={{ gap: 8 }} aria-labelledby="approvals-always">
+            {' '}
             <h2 id="approvals-always" className="approvals-head">
               Always asks you
             </h2>
@@ -190,5 +193,85 @@ export function ApprovalsTab() {
         </>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * How much the agent does on its own for each kind of task that reaches other
+ * people. Each kind is also asked about once in a conversation, the first
+ * time it comes up, and the person can change it there or by saying so.
+ */
+function SendingOnItsOwn() {
+  const loaded = useLoad(() => adapter.autonomy(), []);
+  const latest = useRef(0);
+  const list = loaded.data;
+  const save = (task: TaskKind, level: AutonomyLevel) => {
+    if (!list) return;
+    loaded.set({
+      ...list,
+      tasks: list.tasks.map((item) =>
+        item.task === task ? { ...item, level, chosen: true } : item,
+      ),
+    });
+    const turn = ++latest.current;
+    void adapter.saveAutonomy({ task, level, from: 'settings' }).then((r) => {
+      if (turn !== latest.current) return;
+      if (r.data === null) {
+        toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t save that' });
+        loaded.reload();
+        return;
+      }
+      loaded.set(r.data);
+      toast({ kind: 'ok', title: 'Approvals updated' });
+    });
+  };
+  if (loaded.unavailable) return null;
+  return (
+    <section className="col" style={{ gap: 8 }} aria-labelledby="approvals-sending">
+      <h2 id="approvals-sending" className="approvals-head">
+        Sending on its own
+      </h2>
+      <p style={{ fontSize: 12, color: 'var(--muted)', maxWidth: 560 }}>
+        For each kind of task that reaches other people, choose how much it does without you. Money,
+        your don’t-rules, deleting and passwords still ask, whatever you choose.
+      </p>
+      {loaded.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{loaded.error}</p> : null}
+      {list ? (
+        <div className="card-12" style={{ overflow: 'hidden' }}>
+          <div style={{ height: 1 }} />
+          {list.tasks.map((item) => {
+            const id = `autonomy-${item.task}`;
+            const means = list.choices.find((choice) => choice.level === item.level)?.means;
+            return (
+              <div key={item.task} className="list-row approvals-row">
+                <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
+                  <label htmlFor={id} className="approvals-title">
+                    {item.title}
+                  </label>
+                  <span className="approvals-sub">
+                    {means}
+                    {item.chosen ? '' : ' This is the starting choice.'}
+                  </span>
+                </span>
+                <span className="approvals-select">
+                  <Select
+                    id={id}
+                    label={item.title}
+                    height={32}
+                    width="100%"
+                    value={item.level}
+                    onChange={(value) => save(item.task, value as AutonomyLevel)}
+                    options={list.choices.map((choice) => ({
+                      value: choice.level,
+                      label: choice.label,
+                    }))}
+                  />
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
   );
 }

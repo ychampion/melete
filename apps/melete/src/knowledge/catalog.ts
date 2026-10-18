@@ -3,6 +3,12 @@ import { SANDBOX_TERMINAL_TOOL } from '@melete/runtime-hermes';
 import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
 import { ASK_PERSON_TOOL_NAME } from '../broker/ask-person.ts';
+import {
+  type AutonomyLevel,
+  attemptLevelsIn,
+  sendsFromChat,
+  type TaskKind,
+} from '../broker/autonomy.ts';
 import { ALWAYS_OFFERED_WEB_TOOLS } from '../broker/catalog.ts';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { toldToSendIn } from '../broker/told.ts';
@@ -38,6 +44,8 @@ export class RuntimeCatalog {
   constructor(
     private readonly db: Database,
     private readonly connectors: ConnectorLookup,
+    /** The levels each kind of task starts at, with the operator's setting. */
+    private readonly levelDefaults?: Record<TaskKind, AutonomyLevel>,
   ) {}
 
   /**
@@ -73,13 +81,20 @@ export class RuntimeCatalog {
     // agent without the computer gets no engine terminal, and a narrowed agent
     // only its connections' tools. Anything more is offered and then refused.
     const access = await agentAccessIn(tx, claims.job_id);
-    // A send the person asked for in this turn is offered; otherwise it is drafted.
+    // A send the person asked for in this turn is offered, and so is one whose
+    // kind of task they let go on its own sometimes; otherwise it is drafted.
     const told = access.chat && (await toldToSendIn(tx, claims.attempt_id));
+    const levels =
+      access.chat && !told
+        ? await attemptLevelsIn(tx, claims.job_id, claims.attempt_id, this.levelDefaults)
+        : null;
     // How much of each kind this attempt's model has room for.
     const budget = attemptContextBudget(bundle.model.model, bundle.budget);
     const granted = (
       await this.toolsForSpace(claims.space_id, claims.scopes, tx, claims.job_id)
-    ).filter((tool) => offeredTo(access, tool, told));
+    ).filter((tool) =>
+      offeredTo(access, tool, told || (levels !== null && sendsFromChat(tool.name, false, levels))),
+    );
     // The engine builds its own terminal from the sandbox's terminal.run in this
     // list, and the plugin hands the terminal to it whenever the broker serves
     // that tool. So it keeps its place ahead of the cut: sorted by name, a

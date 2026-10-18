@@ -135,6 +135,8 @@ import type {
   SpaceRulesView,
   StreamGap,
   Task,
+  TaskAutonomyList,
+  TaskAutonomyUpdate,
   TaskInput,
   Turn,
   VoiceAside,
@@ -587,6 +589,10 @@ export const adapter = {
   approvalSettings: () => guard<ApprovalSettingsView>(() => api.GET('/approval-settings')),
   saveApprovalSettings: (body: ApprovalSettings) =>
     guard<ApprovalSettingsView>(() => api.PUT('/approval-settings', { body })),
+  /** How much the agent does on its own for each kind of task that reaches other people. */
+  autonomy: () => guard<TaskAutonomyList>(() => api.GET('/autonomy')),
+  saveAutonomy: (body: TaskAutonomyUpdate) =>
+    guard<TaskAutonomyList>(() => api.PUT('/autonomy', { body })),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
   messageEvents: (conversationId: string, signal: AbortSignal) =>
     subscribeEvents(client, { jobId: conversationId, signal }),

@@ -21,10 +21,11 @@
  *   each;
  * - a recipient whose origin Melete cannot vouch for: the score is 0.
  *
- * Mail also needs the standing instruction itself: a preference and past
- * sends alone never send an email. Messages to others on chat apps follow
- * the same score, or, with `messages_to_others: draft_only`, are never sent
- * by proactive work.
+ * How the score is used depends on the person's level for the kind of task
+ * (`autonomy.ts`): a kind kept as a draft (mail, by default) also needs the
+ * standing instruction itself, so a preference and past sends alone never send
+ * an email; a kind left to confidence (chat apps' messages, by default) goes on
+ * the score; a kind the person lets always send is not scored.
  */
 import type { JsonObject, JsonValue } from '@melete/contracts';
 import { memoryScopeForSpace } from '../memory/broker-trust.ts';
@@ -33,7 +34,7 @@ import type { Query } from './records.ts';
 import { collectOriginFields } from './trust.ts';
 
 export const PROACTIVE_DEFAULT_THRESHOLD = 0.6;
-export type MessagesToOthers = 'confidence' | 'draft_only';
+export type { MessagesToOthers } from './autonomy.ts';
 
 export const WEIGHTS = {
   instruction: 0.6,
@@ -380,17 +381,29 @@ function tokens(recipient: string): string[] {
  */
 export function judge(
   evidence: readonly Evidence[],
-  options: { threshold: number; doubted: boolean; mail: boolean; draftOnly: boolean },
+  options: {
+    threshold: number;
+    doubted: boolean;
+    mail?: boolean;
+    draftOnly?: boolean;
+    /**
+     * Set when only the person's own instruction lets it go (a kind of task
+     * kept as a draft): what to say when there is none.
+     */
+    needsInstruction?: string;
+  },
 ): Confidence {
   const sum = evidence.reduce((total, item) => total + item.weight, 0);
   const score = options.doubted ? 0 : Math.round(Math.min(1, Math.max(0, sum)) * 100) / 100;
   const instructed = evidence.some((item) => item.kind === 'instruction');
+  const needs = options.mail === true || options.needsInstruction !== undefined;
   const missing: string[] = [];
   if (options.doubted) missing.push('Melete cannot vouch for where its recipient came from');
   if (options.draftOnly) missing.push('messages to others are kept as drafts here');
-  if (options.mail && !instructed)
+  if (needs && !instructed)
     missing.push(
-      'an email goes out on its own only when your routine or its instructions say to send it',
+      options.needsInstruction ??
+        'an email goes out on its own only when your routine or its instructions say to send it',
     );
   if (score < options.threshold && !options.doubted)
     missing.push(
@@ -399,10 +412,7 @@ export function judge(
         : 'nothing you said asks for this, and there is no similar one you asked for or allowed',
     );
   const act =
-    score >= options.threshold &&
-    !options.doubted &&
-    !options.draftOnly &&
-    (!options.mail || instructed);
+    score >= options.threshold && !options.doubted && !options.draftOnly && (!needs || instructed);
   const shown = score.toFixed(2);
   const because = evidence
     .filter((item) => item.weight > 0)

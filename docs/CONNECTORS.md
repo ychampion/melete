@@ -107,9 +107,24 @@ they name one) +0.6, something they told Melete about this recipient +0.3, each
 similar action to the same recipient they asked for or allowed in the last 90
 days +0.15 (two at most), each one they said no to or took back -0.5, and 0 for
 a recipient whose origin Melete cannot vouch for. An email also needs the
-routine or the instructions to ask for it. `MELETE_PROACTIVE_CONFIDENCE` and
-`MELETE_MESSAGES_TO_OTHERS` set the threshold and whether chat-app messages
-follow the score or always stay suggestions (`apps/melete/src/broker/proactive.ts`).
+routine or the instructions to ask for it. `MELETE_PROACTIVE_CONFIDENCE` sets the
+threshold (`apps/melete/src/broker/proactive.ts`).
+
+Each kind of send has a level the person picks once: email to other people,
+messages on chat apps, calendar invites to other people, public posts, and
+anything else sent outside. `draft` drafts it unless the person said to send
+it; `when_confident` sends it when the score above clears the threshold (a
+level the person chose counts as their instruction, +0.6); `always` sends it
+whenever the agent does it. Email, invites, public posts and anything else start
+at `draft`; chat-app messages start at `when_confident`, or at the level
+`MELETE_MESSAGES_TO_OTHERS` names. The first time a kind comes up, a card in
+the conversation asks once, with the default chosen, and the work goes on at
+the default. The choice is kept per person and kind, changed in Settings, or by
+the person saying so in their own message (`just send Slack replies from now
+on`), read under the same rule as being told to send: never from quoted,
+forwarded or pasted text, nor from a tool's output. Money moves, don't-rules,
+and sends that also delete or carry a password still ask at every level
+(`apps/melete/src/broker/autonomy.ts`).
 
 Evidence for the default effect gate is conformance 4, `An approval cannot be
 spent on different content`; a manifest's schema declares what a tool takes,

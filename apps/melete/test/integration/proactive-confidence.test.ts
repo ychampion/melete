@@ -266,7 +266,7 @@ describe('work nobody is waiting on', () => {
         outcome: 'auto_approved',
         by: 'policy',
         reason:
-          'Confidence is 0.60 from what you said before: your routine says “Every Friday, email Bob the weekly summary.”.',
+          'Confidence is 0.60 from what you said before: your routine says “Every Friday, email Bob the weekly summary.”. The default for email to other people: “Draft”.',
       });
     },
   );
@@ -392,16 +392,34 @@ describe('work nobody is waiting on', () => {
   });
 
   databaseTest(
-    'with messages to others kept as drafts, a message is left as a suggestion',
+    'with messages to others kept as drafts, only the routine asking for it lets one go',
     async () => {
-      const s = await setup({
-        routine: 'When I am running late, message Bob.',
-        messagesToOthers: 'draft_only',
-      });
+      // What would be enough on confidence alone is not, once messages start as drafts.
+      const s = await setup({ messagesToOthers: 'draft_only' });
+      await s.remember('I always message Bob when I am running late.');
+      await s.answered('test.send_message', messageBob('Late, sorry.'), 'approved');
+      await s.answered('test.send_message', messageBob('Ten minutes behind.'), 'approved');
       const woke = await s.attempt('background');
       const hold = await rejectionOf(woke.propose('test.send_message', messageBob()));
       expect(hold).toBeInstanceOf(ProactiveHold);
-      expect(s.dispatched).toEqual([]);
+      expect((hold as ProactiveHold).confidence.missing.join(' ')).toContain(
+        'a message to someone goes out on its own only when your routine',
+      );
+      expect(s.dispatched).toEqual(['test.send_message', 'test.send_message']);
+
+      // The person's own routine asking for it is them saying to send it.
+      const asked = await setup({
+        routine: 'When I am running late, message Bob.',
+        messagesToOthers: 'draft_only',
+      });
+      const sent = await (await asked.attempt('background')).propose(
+        'test.send_message',
+        messageBob(),
+      );
+      expect(sent.status).toBe('succeeded');
+      expect((await actionReviewView(asked.sql, sent.action_id))?.reason).toEndWith(
+        'The default for messages to other people: “Draft”.',
+      );
     },
   );
 

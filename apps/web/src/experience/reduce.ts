@@ -8,6 +8,7 @@
 import type { MeleteEvent } from '@melete/client';
 import type { ToolEntry } from './trace.ts';
 import type {
+  AutonomyAsk,
   ComposerState,
   Draft,
   ExperienceDecision,
@@ -43,7 +44,9 @@ export type TurnBlock =
    * `answered` is the option id, `withdrawn` when the person stopped the turn
    * while it waited, or `closed` when the turn moved on after an answer given elsewhere.
    */
-  | { type: 'question'; question: Question; answered: string | null };
+  | { type: 'question'; question: Question; answered: string | null }
+  /** Asks once how much the agent does on its own for a kind of task; never waits. */
+  | { type: 'autonomy'; autonomy: AutonomyAsk };
 
 /**
  * What a turn did, in the order it happened: each stretch of the agent's own
@@ -222,7 +225,9 @@ export const blockId = (block: TurnBlock): string =>
       ? block.receipt.id
       : block.type === 'permission'
         ? block.permission.id
-        : block.question.id;
+        : block.type === 'autonomy'
+          ? block.autonomy.id
+          : block.question.id;
 
 const hasBlock = (transcript: Transcript, id: string): boolean =>
   transcript.turns.some((turn) => turn.blocks.some((block) => blockId(block) === id));
@@ -324,6 +329,19 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
     return mapReceipts(base, (block) =>
       block.receipt.id === item.receipt.id ? { ...block, receipt: item.receipt } : block,
     );
+  // A choice made later, here or in Settings, is drawn in the card that asked.
+  if (item.type === 'autonomy' && hasBlock(base, item.autonomy.id))
+    return {
+      ...base,
+      turns: base.turns.map((turn) => ({
+        ...turn,
+        blocks: turn.blocks.map((block) =>
+          block.type === 'autonomy' && block.autonomy.id === item.autonomy.id
+            ? { ...block, autonomy: item.autonomy }
+            : block,
+        ),
+      })),
+    };
   if (
     (item.type === 'card' && hasBlock(base, item.card.id)) ||
     (item.type === 'permission' && hasBlock(base, item.permission.id)) ||
@@ -361,6 +379,7 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
   // elsewhere answers it), so while it waits, anything but the status that
   // says so, a pause or a step means it was answered somewhere else.
   const stillWaiting =
+    item.type === 'autonomy' ||
     (item.type === 'status' && ['needs_you', 'paused', 'queued', 'idle'].includes(item.status)) ||
     (item.type === 'action' && item.tool !== undefined);
   const waited = stillWaiting
@@ -528,6 +547,12 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         ...turn,
         blocks: [...turn.blocks, { type: 'question', question: item.question, answered: null }],
         flow: [...turn.flow, { type: 'block', id: item.question.id }],
+      }));
+    case 'autonomy':
+      return patchTurn(base, event.turn_id, (turn) => ({
+        ...turn,
+        blocks: [...turn.blocks, { type: 'autonomy', autonomy: item.autonomy }],
+        flow: [...turn.flow, { type: 'block', id: item.autonomy.id }],
       }));
     case 'status': {
       if (replayedStatus(base, event)) return base;

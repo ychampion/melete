@@ -482,6 +482,10 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'PUT /approval-settings': (spaceId, _c, input) =>
       permissions?.saveApprovalSettings(spaceId, input) ??
       unavailable('Approvals are not connected yet.'),
+    'GET /autonomy': () =>
+      permissions?.autonomy() ?? unavailable('Approvals are not connected yet.'),
+    'PUT /autonomy': (_spaceId, _c, input) =>
+      permissions?.saveAutonomy(input) ?? unavailable('Approvals are not connected yet.'),
     'GET /rules': (spaceId) =>
       permissions?.rules(spaceId) ?? unavailable('Rules are not connected yet.'),
     'DELETE /rules/{id}': (spaceId, c) =>

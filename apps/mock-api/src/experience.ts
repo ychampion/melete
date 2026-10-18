@@ -177,6 +177,9 @@ export class ExperienceMock {
   readonly unwatched = new Set<string>();
   /** Settings → Approvals, as the person last saved them. */
   approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
+  /** The level the person chose for each kind of task, and the card that asked about each. */
+  readonly autonomy = new Map<C.TaskKind, C.AutonomyLevel>();
+  readonly autonomyAsks = new Map<C.TaskKind, { chatId: string; id: string }>();
   readonly questions = new Map<string, Question>();
   readonly plans = new Map<string, Plan>();
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
@@ -646,6 +649,43 @@ export class ExperienceMock {
    * its seq is a message id the reaction routes accept and the two streams
    * share one seq space. Streamed text keeps its type; the rest are notices.
    */
+  /** The level each kind of task starts at in the mock: messages on confidence, the rest drafted. */
+  private autonomyLevel(task: C.TaskKind): C.AutonomyLevel {
+    return this.autonomy.get(task) ?? (task === 'chat_message' ? 'when_confident' : 'draft');
+  }
+
+  private autonomyCard(task: C.TaskKind, id: string): C.AutonomyAsk {
+    return {
+      id,
+      task,
+      title: C.TASK_TITLES[task],
+      explanation: C.AUTONOMY_ASK_EXPLANATION,
+      level: this.autonomyLevel(task),
+      chosen: this.autonomy.get(task) ?? null,
+      choices: [...C.AUTONOMY_CHOICES],
+    };
+  }
+
+  private askAutonomy(chat: Chat, task: C.TaskKind) {
+    if (this.autonomy.has(task) || this.autonomyAsks.has(task)) return;
+    const id = newId('ask');
+    this.autonomyAsks.set(task, { chatId: chat.view.id, id });
+    this.event(chat, { type: 'autonomy', autonomy: this.autonomyCard(task, id) });
+  }
+
+  private autonomyList() {
+    return {
+      tasks: C.TASK_KINDS.map((task) => ({
+        task,
+        title: C.TASK_TITLES[task],
+        level: this.autonomyLevel(task),
+        default_level: (task === 'chat_message' ? 'when_confident' : 'draft') as C.AutonomyLevel,
+        chosen: this.autonomy.has(task),
+      })),
+      choices: [...C.AUTONOMY_CHOICES],
+    };
+  }
+
   event(chat: Chat, item: C.ExperienceEvent['item']) {
     const mirrored = this.deps.store.append({
       type: item.type === 'text_delta' ? 'text_delta' : 'notice',
@@ -995,6 +1035,8 @@ export class ExperienceMock {
       });
       chat.cards.push(card);
       this.event(chat, { type: 'card', card });
+      // The first message to someone asks once how much the agent sends on its own.
+      this.askAutonomy(chat, 'chat_message');
     } else if (step.step === 'ask') {
       this.flush(chat);
       const question = C.experienceQuestion.parse({
@@ -2070,6 +2112,21 @@ export class ExperienceMock {
         return { rules: [...this.rules.values()] };
       case 'GET /approval-settings':
         return { settings: this.approvalSettings, reviewer_available: true };
+      case 'GET /autonomy':
+        return this.autonomyList();
+      case 'PUT /autonomy': {
+        const update = C.taskAutonomyUpdate.parse(input);
+        this.autonomy.set(update.task, update.level);
+        // The card that asked shows the choice, wherever it was made.
+        const asked = this.autonomyAsks.get(update.task);
+        const chat = asked ? this.chats.get(asked.chatId) : undefined;
+        if (asked && chat)
+          this.event(chat, {
+            type: 'autonomy',
+            autonomy: this.autonomyCard(update.task, asked.id),
+          });
+        return this.autonomyList();
+      }
       case 'PUT /approval-settings':
         this.approvalSettings = C.approvalSettings.parse(input);
         return { settings: this.approvalSettings, reviewer_available: true };
