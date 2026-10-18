@@ -16,6 +16,11 @@
  *   Sam.") and end at its next step or at the end of their line. Anything else
  *   is the answer, and goes out as it came, a moment later. Only the opening is
  *   judged, once; a whole reply is never dropped.
+ * - A turn can run as several attempts (it waited on a step, an approval or a
+ *   retry). When an earlier attempt showed the acknowledgement and nothing has
+ *   been said since, the agent's first words in a later attempt are the first
+ *   the person reads after the line, so they are judged the same way, after
+ *   any steps that come first.
  *
  * The runtime's events keep their order and their sequence numbers: a dropped
  * line goes out as empty text, so the record has no gap. A line dropped from
@@ -96,16 +101,80 @@ const NOT_AT_WORK = new Set([
 const STATES =
   /^(?:is|are|was|were|has|have|had|will|would|can|could|should|may|might|must|does|did|do|isn't|aren't|wasn't|won't|can't|[a-z]+ed)$/;
 
+/** The agent saying what it will do: "I'll", "Let me", "I'm going to", "I'm checking". */
+const INTENT = /^(?:let me|let's|i'll|i will|i'm going to|i am going to)\s/i;
+const INTENT_ING = /^(?:i'm|i’m|i am)\s+[a-z]+ing\b/i;
+
+/**
+ * A time of day or a stretch of time: "7:14 AM", "9 pm", "3 minutes", "the
+ * 22nd". Inside a statement of intent it is a detail of the plan ("I'll set a
+ * timer for 7:14 AM"), not a result; any other number may be the answer.
+ */
+const TIME =
+  /\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)(?=[\s,.!?]|$)|\b\d{1,2}:\d{2}\b|\b\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\b|\b\d{1,2}(?:st|nd|rd|th)\b/gi;
+
+/** Words that say when, in a detail after a comma: "three minutes from now". */
+const WHEN =
+  /\b(?:now|today|tonight|tomorrow|morning|afternoon|evening|noon|midnight|later|soon|seconds?|minutes?|hours?|days?|weeks?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|TIME)\b/i;
+
+/** How a detail about when can start: a time, a count, or a word like "in" or "by". */
+const WHEN_START =
+  /^(?:TIME|in|at|by|on|for|from|around|about|within|until|before|after|right|first|now|today|tonight|tomorrow|this|next|every|a|an|half|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|forty-five|sixty|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+
+/**
+ * Words that make a clause a statement of fact or a condition rather than a
+ * detail of the plan: "it is a bad deal", "but the rate is 1.08", "since the
+ * form asks for it", "here's the draft".
+ */
+const FACT =
+  /\b(?:is|are|was|were|be|been|isn't|aren't|wasn't|weren't|it's|that's|there's|here's|here|has|have|had|hasn't|haven't|does|did|doesn't|didn't|because|since|but|so|although|though|unless|if|which|who|whose|when|while|whereas|yet|however|otherwise|found|shows|says|said|means|looks|seems|costs|came|got|returned)\b/i;
+
+/** A detail after a comma that keeps a sentence a plan: a time, or more of the same plan. */
+function planDetail(part: string): boolean {
+  if (FACT.test(part)) return false;
+  // "then check the word count", "and I'll tell you": the plan goes on. Not
+  // "then the rate fell": a subject after "then" starts a statement.
+  if (
+    /^(?:and\s+)?then\s+(?!(?:the|a|an|it|its|they|he|she|we|you|that|this|there|your|my)\b)[a-z]/i.test(
+      part,
+    )
+  )
+    return true;
+  if (INTENT.test(part.replace(/^and\s+/i, ''))) return true;
+  // "three minutes from now", "TIME": when, and nothing else.
+  return part.split(/\s+/).length <= 8 && WHEN_START.test(part) && WHEN.test(part);
+}
+
+/**
+ * A statement of intent with a detail after a comma: "I'll set a timer for
+ * 7:14 AM, three minutes from now." It stays a plan only when the whole of it
+ * is intent: no number other than a time (a number may be the answer), no
+ * "here is", no colon or semicolon outside a time, and every part after a
+ * comma a time or more of the plan. Anything else is content.
+ */
+function intentWithDetail(text: string): boolean {
+  if (!INTENT.test(text) && !INTENT_ING.test(text)) return false;
+  if (/^let me know\b/i.test(text)) return false;
+  const masked = text.replace(TIME, ' TIME ').replace(/[.!?…]+$/, '');
+  if (/[:;]/.test(masked)) return false;
+  if (/\bhere(?:'s|’s|\s+is|\s+are)\b/i.test(masked)) return false;
+  if (/[\d$€£¥%]/.test(masked)) return false;
+  const [head = '', ...rest] = masked.split(',').map((part) => part.trim());
+  if (!head || /\b(?:but|because|since|though|although|unless)\b/i.test(head)) return false;
+  return rest.length > 0 && rest.every((part) => part !== '' && planDetail(part));
+}
+
 /** One sentence of a plan: the agent saying what it is doing or will do. */
 function planSentence(sentence: string): boolean {
   const text = sentence.replace(LEAD_IN, '').trim();
   // "On it." alone says nothing beyond the line already shown.
   if (!text) return true;
-  // A colon, a semicolon or a comma carries a fact or a condition: content.
-  if (/[:;,]/.test(text)) return false;
+  // A colon, a semicolon or a comma carries a fact or a condition: content,
+  // unless the sentence is all intent and the comma adds when it happens.
+  if (/[:;,]/.test(text)) return intentWithDetail(text);
   if (/^let me know\b/i.test(text)) return false;
-  if (/^(?:let me|let's|i'll|i will|i'm going to|i am going to)\s/i.test(text)) return true;
-  if (/^(?:i'm|i’m|i am)\s+[a-z]+ing\b/i.test(text)) return true;
+  if (INTENT.test(text)) return true;
+  if (INTENT_ING.test(text)) return true;
   const [first = '', second = ''] = text.split(/\s+/);
   const verb = first.replace(/[^A-Za-z]/g, '');
   if (!/^[A-Z][a-z]+ing$/.test(verb) || NOT_AT_WORK.has(verb.toLowerCase())) return false;
@@ -155,12 +224,16 @@ export class FirstLine {
   /**
    * `pass` records one event, in order. With `acknowledging` false there is
    * no acknowledgement to wait for, and every event goes straight through.
+   * With `acknowledged`, an earlier attempt of this turn showed the line and
+   * nothing has been said since: this attempt's opening is held and judged
+   * from its start.
    */
   constructor(
     private readonly pass: (event: RuntimeEvent) => Promise<void>,
     acknowledging: boolean,
+    acknowledged = false,
   ) {
-    this.state = acknowledging ? 'waiting' : 'open';
+    this.state = acknowledged ? 'holding' : acknowledging ? 'waiting' : 'open';
   }
 
   /** The agent has said nothing yet, and the acknowledgement may still be shown. */

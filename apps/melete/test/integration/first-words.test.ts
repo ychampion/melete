@@ -310,6 +310,96 @@ withDb('first words', () => {
     expect(words.trim()).toBe('Hi Sam,\n\nI can’t make Thursday.\n\nRiya');
   });
 
+  /**
+   * A turn run as two attempts: the first shows the line, works in silence and
+   * ends without a word (here it fails and is retried); the second writes
+   * `second`. Returns what the person was shown and what the turn kept.
+   */
+  async function twoAttempts(first: string | null, second: (say: Say) => Promise<string>) {
+    let attempts = 0;
+    const chatId = await runTurn('Which month had the most revenue in this file?', async (say) => {
+      attempts++;
+      if (attempts === 1) {
+        await pause(300);
+        await say({ type: 'turn_started', turn: 0 });
+        if (first) await say({ type: 'text_delta', text: first });
+        await say({ type: 'tool_call_proposed', tool: 'file.save', call_id: 'f#0', arguments: {} });
+        await say({ type: 'tool_result', call_id: 'f#0', ok: true, result: {} });
+        return { kind: 'failed', reason: 'The engine went away.', retryable: true };
+      }
+      const summary = await second(say);
+      return { kind: 'completed', summary, evidence: [] };
+    });
+    const row = await required(jobs).get(chatId);
+    expect(row.state).toBe('queued');
+    await required(runner).handleWake({
+      job_id: row.id,
+      expected_epoch: row.leaseEpoch,
+      expected_version: row.stateVersion,
+      reason: 'recovery',
+    });
+    expect(attempts).toBe(2);
+    const words = (await items(chatId))
+      .filter((item) => item.type === 'text_delta')
+      .map((item) => (item as { text: string }).text)
+      .join('');
+    const [saved] = await required(handle)
+      .db.select({ answer: experienceTurn.answer })
+      .from(experienceTurn)
+      .where(eq(experienceTurn.jobId, chatId));
+    return { chatId, words, saved: saved?.answer };
+  }
+
+  test('a later attempt of the turn does not say the acknowledged plan again after its steps', async () => {
+    const answer = 'For 2025: December was the best month, at $19,032.';
+    const { chatId, words, saved } = await twoAttempts(null, async (say) => {
+      await say({ type: 'turn_started', turn: 0 });
+      await say({ type: 'text_delta', text: "I'll run the numbers on the" });
+      await say({ type: 'text_delta', text: ' file.' });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'sandbox.exec',
+        call_id: 's#0',
+        arguments: {},
+      });
+      await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: answer });
+      return answer;
+    });
+    // One line, asked for once, by the first attempt.
+    expect(writer.calls).toHaveLength(1);
+    expect(await acknowledgements(chatId)).toEqual(['Checking the ECB rate now.']);
+    expect(words).not.toContain("I'll run the numbers");
+    expect(words.trim()).toBe(answer);
+    expect(saved).toBe(answer);
+  });
+
+  test('a later attempt keeps its answer, and its plan line once the turn has spoken', async () => {
+    const dinners = "Here are three dinner ideas for tonight. They're all vegetarian:";
+    const kept = await twoAttempts(null, async (say) => {
+      await say({ type: 'tool_call_proposed', tool: 'memory.read', call_id: 'm#0', arguments: {} });
+      await say({ type: 'tool_result', call_id: 'm#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: `${dinners}\n\n1. Lentil soup` });
+      return `${dinners}\n\n1. Lentil soup`;
+    });
+    expect(kept.words.trim()).toBe(`${dinners}\n\n1. Lentil soup`);
+    expect(kept.saved).toBe(`${dinners}\n\n1. Lentil soup`);
+    // The first attempt said something: the line is no longer the last thing read.
+    const spoken = await twoAttempts('The file has two years in it.', async (say) => {
+      await say({ type: 'text_delta', text: "I'll run the numbers on the file." });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'sandbox.exec',
+        call_id: 's#0',
+        arguments: {},
+      });
+      await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: 'For 2025: December.' });
+      return 'For 2025: December.';
+    });
+    expect(spoken.words).toContain("I'll run the numbers on the file.");
+  });
+
   test('turned off, no line is asked for and the agent’s words go out as written', async () => {
     const options = required(runner).options;
     const before = options.acknowledge;

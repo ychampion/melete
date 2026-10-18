@@ -353,7 +353,41 @@ type ConversationTurn = {
   principalId?: string;
   /** The person is waiting on it: their message started it. */
   interactive: boolean;
+  /**
+   * An earlier attempt of the turn showed the acknowledgement and nothing has
+   * been said in the turn since: this attempt's first words are judged
+   * against it (`FirstLine`).
+   */
+  acknowledged?: boolean;
 };
+
+/**
+ * Whether the turn's acknowledgement has been shown and is still the last
+ * thing the person read in it: no words of the agent's, and no line it said,
+ * since. A dropped plan line was recorded as empty text and counts as nothing.
+ */
+async function acknowledgedInSilence(
+  tx: Transaction,
+  jobId: string,
+  turnId: string,
+): Promise<boolean> {
+  const [said] = await tx
+    .select({
+      acknowledged: sql<boolean>`coalesce(bool_or(${event.type} = 'notice' and ${event.payload}->>'acknowledgement' = 'true'), false)`,
+      spoken: sql<boolean>`coalesce(bool_or(not (${event.type} = 'notice' and ${event.payload}->>'acknowledgement' = 'true')), false)`,
+    })
+    .from(event)
+    .innerJoin(attempt, eq(attempt.id, event.attemptId))
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        eq(attempt.turnId, turnId),
+        sql`((${event.type} = 'text_delta' and btrim(${event.payload}->>'text') <> '')
+          or (${event.type} = 'notice' and ${event.payload}->>'kind' = 'experience_say'))`,
+      ),
+    );
+  return Boolean(said?.acknowledged) && !said?.spoken;
+}
 /** What the attempt raised besides its outcome, handed to every finish handler. */
 export type OutcomeContext = {
   questions: readonly QuestionSpec[];
@@ -730,6 +764,9 @@ export class AttemptRunner {
               spaceId: row.spaceId,
               ...(access.principalId ? { principalId: access.principalId } : {}),
               interactive: cause.usageClass === 'interactive',
+              ...((await acknowledgedInSilence(tx, row.id, row.currentTurnId))
+                ? { acknowledged: true }
+                : {}),
             }
           : undefined;
       return { bundle, claims, ...(turn ? { turn } : {}) };
@@ -2070,13 +2107,19 @@ export class AttemptRunner {
     // A read of a skill given in full is a pointer while the agent still holds it.
     skillsGiven(claims.attempt_id, bundle.skills);
     // The turn's first line is said once: by the acknowledgement or by the
-    // agent, never both (first-line.ts).
+    // agent, never both (first-line.ts). One already shown in this turn, with
+    // nothing said since, has this attempt's first words judged against it.
+    const acknowledged = Boolean(claim.turn?.acknowledged);
+    const acknowledging = Boolean(
+      !acknowledged && claim.turn?.interactive && this.acknowledges(bundle),
+    );
     const firstLine = new FirstLine(
       (event) => this.emit(claims, event),
-      Boolean(claim.turn?.interactive && this.acknowledges(bundle)),
+      acknowledging,
+      acknowledged,
     );
     const acknowledgement =
-      claim.turn?.interactive && this.acknowledges(bundle)
+      acknowledging && claim.turn
         ? this.acknowledgeLater(claims, claim.turn, bundle, firstLine)
         : null;
     let timeout: ReturnType<typeof setTimeout> | undefined;

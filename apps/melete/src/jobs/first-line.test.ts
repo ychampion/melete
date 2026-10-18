@@ -89,6 +89,77 @@ describe('a plan line', () => {
       expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: false });
   });
 
+  test('a statement of intent with when it happens after a comma is a plan', () => {
+    for (const line of [
+      "I'll set a timer for 7:14 AM, three minutes from now.",
+      "I'll set a timer for 7:07 AM, three minutes from your request.",
+      "I'll set a reminder for 9 pm, an hour from now.",
+      "I'll check the forecast, then tell you.",
+      "Sure, I'll draft it now, then check the word count.",
+      "I'm setting a timer for 7:14 AM, 3 minutes from now.",
+      "Let me pull the file first, then I'll run the numbers.",
+    ])
+      expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: true });
+  });
+
+  test('a comma after intent that carries a fact, a result or a condition is content', () => {
+    for (const line of [
+      "I'll be honest, it is a bad deal.",
+      "I'll check, but the rate is 1.08.",
+      "I'll convert it at 1.08, the ECB rate today.",
+      "I'll book the taxi, Sam lands tonight.",
+      "I'll set it for 7:14 AM, which is three minutes from now.",
+      "I'll set a timer for 7:14 AM, here's why.",
+      "I'll remind you at 7:14 AM, three minutes from now: stretch.",
+      "I'll run the numbers, then the total is $155,233.",
+      "I'll check the rate, then the euro fell.",
+      "I'll message you, when it's done.",
+      'Let me know by 5 pm, then I will book it.',
+      "I'll need your address, since the form asks for it.",
+      "If it rains, I'll move it indoors.",
+      'Setting a reminder for 7:14 AM, three minutes from now.',
+      "I'll set it for 9:37 pm.",
+    ])
+      expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: false });
+  });
+
+  test('the lines a live run showed after the acknowledgement: the doubles are plans', () => {
+    // Each came after an acknowledgement line saying the same thing.
+    for (const line of [
+      "I'll run the numbers on the file.",
+      "I'll draft it and check the word count.",
+      "I'll set a timer for 7:14 AM, three minutes from now.",
+      "I'll set a timer for 7:07 AM, three minutes from your request.",
+      "I'll check what I know about your book club first.",
+      'Checking what I know about your book club first.',
+      'Searching Wikipedia for Ada Lovelace.',
+    ])
+      expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: true });
+  });
+
+  test('the lines a live run showed after the acknowledgement: the answers are content', () => {
+    for (const line of [
+      "Here are three dinner ideas for tonight. They're all vegetarian and peanut-free:",
+      'Here are three dinners that are vegetarian and peanut-free:',
+      'Your reminder to stretch is set for 7:14 AM, three minutes from now.',
+      "Your reminder to stretch is set for 7:06 AM, three minutes after you asked. I'll message you then.",
+      'For 2025:',
+      'Bills total 1,850 + 210 + 340 + 65 = $2,465, so $2,735 is left each month.',
+      "The weather tool only returned today, so I'll pull tomorrow's forecast from Open-Meteo.",
+      "I don't have your club's details saved, so I'll build the deck with marked gaps.",
+      "The search went straight to her article. Now I'll read the birth date.",
+      "I found the range on the Fed's page. I'll check it against the statement.",
+      "Got it: you're vegetarian.",
+      "Here's your finished cover letter at 203 words, signature included.",
+      '1 USD is about 0.89 EUR right now, so 1 EUR is about 1.12 USD.',
+      'Tomorrow (Mon, Oct 19) the forecast high is about 62°F.',
+      "No internet access here, so I can't install a library. I'll build the file directly.",
+      'Dear Hiring Manager,',
+      "Here's a relaxed Lisbon plan, with one or two things a day and long breaks.",
+    ])
+      expect({ line, plan: isPlanLine(line) }).toEqual({ line, plan: false });
+  });
+
   test('a plan may open with a short lead-in or run to a second plan sentence', () => {
     for (const line of [
       'Sure — let me check.',
@@ -259,6 +330,92 @@ describe('the first line of a turn', () => {
     );
   });
 
+  test('in a later attempt of an acknowledged turn, a plan line after steps is not said', async () => {
+    const recorded: RuntimeEvent[] = [];
+    // An earlier attempt showed the line; this one says nothing until after its steps.
+    const gate = new FirstLine(
+      async (event) => {
+        recorded.push(event);
+      },
+      false,
+      true,
+    );
+    expect(gate.silent).toBe(false);
+    expect(gate.beginShow()).toBe(false);
+    await gate.emit({ ...base(), type: 'turn_started', turn: 0 } as RuntimeEvent);
+    await gate.emit(tool());
+    await gate.emit(text("I'll run the numbers on the"));
+    await gate.emit(text(' file.'));
+    await gate.emit(tool());
+    await gate.emit(text('For 2025: the total was $155,233.'));
+    await gate.drain();
+    expect(said(recorded)).toBe(
+      '<turn_started><tool_call_proposed><tool_call_proposed>For 2025: the total was $155,233.',
+    );
+    expect(recorded).toHaveLength(6);
+  });
+
+  test('in a later attempt of an acknowledged turn, an answer after steps is said whole', async () => {
+    for (const answer of [
+      "Here are three dinner ideas for tonight. They're all vegetarian and peanut-free:",
+      'Your reminder to stretch is set for 7:14 AM, three minutes from now.',
+      'The table shows a change on the 17th.',
+    ]) {
+      const recorded: RuntimeEvent[] = [];
+      const gate = new FirstLine(
+        async (event) => {
+          recorded.push(event);
+        },
+        false,
+        true,
+      );
+      await gate.emit(tool());
+      await gate.emit(text(answer));
+      await gate.emit(tool());
+      await gate.emit(text(' More.'));
+      await gate.drain();
+      expect(said(recorded)).toBe(`<tool_call_proposed>${answer}<tool_call_proposed> More.`);
+    }
+  });
+
+  test('in a later attempt of an acknowledged turn, a short whole reply is the answer', async () => {
+    const recorded: RuntimeEvent[] = [];
+    const gate = new FirstLine(
+      async (event) => {
+        recorded.push(event);
+      },
+      false,
+      true,
+    );
+    await gate.emit(tool());
+    await gate.emit(text("I'll set a timer for 7:14 AM, three minutes from now."));
+    await gate.emit(outcome());
+    expect(said(recorded)).toBe(
+      "<tool_call_proposed>I'll set a timer for 7:14 AM, three minutes from now.<attempt_outcome>",
+    );
+  });
+
+  test('in a later attempt of an acknowledged turn, the saved reply leaves out its plan line', async () => {
+    const recorded: RuntimeEvent[] = [];
+    const gate = new FirstLine(
+      async (event) => {
+        recorded.push(event);
+      },
+      false,
+      true,
+    );
+    const reply = "I'll draft it and check the word count.\n\nDear Hiring Manager,";
+    await gate.emit(text(reply));
+    await gate.emit({
+      ...base(),
+      type: 'attempt_outcome',
+      outcome: { kind: 'completed', summary: reply, evidence: [] },
+    } as RuntimeEvent);
+    expect(said(recorded)).toBe('Dear Hiring Manager,<attempt_outcome>');
+    const ended = recorded.at(-1) as Extract<RuntimeEvent, { type: 'attempt_outcome' }>;
+    expect(ended.outcome).toMatchObject({ summary: 'Dear Hiring Manager,' });
+  });
+
   test('a first line that only looks like a plan is said', async () => {
     const { gate, recorded } = shownGate();
     await gate.endShow(true);
@@ -387,6 +544,78 @@ describe('the first line of a turn', () => {
         continue;
       }
       // At most the opening is gone, and only when it reads as a plan.
+      if (after !== before) {
+        const lost = before.trimStart();
+        const kept = after.trimStart();
+        const gone = lost.endsWith(kept) ? lost.slice(0, lost.length - kept.length) : null;
+        expect({ label, gone: gone !== null }).toEqual({ label, gone: true });
+        expect({ label, plan: isPlanLine(gone ?? '') }).toEqual({ label, plan: true });
+      }
+    }
+  });
+
+  test('with steps first, in this attempt or a later one, only a plan opening is ever lost', async () => {
+    let state = 11;
+    const random = () => {
+      state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return state / 2_147_483_648;
+    };
+    const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)] as T;
+    // Lines a live run showed after the acknowledgement, plans and answers, and pieces of them.
+    const pieces = [
+      "I'll run the numbers on the",
+      ' file.',
+      "I'll draft it and check the word count.",
+      "I'll set a timer for 7:14 AM, three minutes from now.",
+      'Here are three dinner ideas for tonight.',
+      " They're all vegetarian and peanut-free:",
+      'Your reminder to stretch is set for 7:14 AM, three minutes from now.',
+      'For 2025:',
+      '\n\n',
+      'Total: $155,233.',
+      "I'll check, but the rate is 1.08.",
+      "I'll book the taxi, Sam lands tonight.",
+      'Dear Hiring Manager,',
+      ' ',
+      '',
+      'Searching Wikipedia for Ada Lovelace.',
+      'x'.repeat(120),
+    ];
+    const step = () =>
+      random() < 0.5
+        ? tool()
+        : ({ ...base(), type: 'tool_result', call_id: 'c1', ok: true, result: {} } as RuntimeEvent);
+    for (let round = 0; round < 3_000; round++) {
+      const recorded: RuntimeEvent[] = [];
+      // A later attempt of a turn whose line an earlier attempt showed, or this
+      // attempt's own line shown before its first event.
+      const later = random() < 0.5;
+      const gate = new FirstLine(
+        async (event) => {
+          recorded.push(event);
+        },
+        !later,
+        later,
+      );
+      if (!later) {
+        expect(gate.beginShow()).toBe(true);
+        await gate.endShow(true);
+      }
+      const sent: RuntimeEvent[] = [];
+      // Steps first, as an attempt that works before it writes.
+      for (let count = Math.floor(random() * 3); count > 0; count--) sent.push(step());
+      for (let count = 1 + Math.floor(random() * 6); count > 0; count--)
+        sent.push(random() < 0.3 ? step() : text(pick(pieces)));
+      if (random() < 0.5) sent.push(outcome());
+      for (const event of sent) void gate.emit(event);
+      await gate.drain();
+      const label = `round ${round}: later ${later} ${JSON.stringify(sent.map((event) => textOf(event) || `<${event.type}>`))}`;
+      expect({ label, seqs: recorded.map((event) => event.local_seq) }).toEqual({
+        label,
+        seqs: sent.map((event) => event.local_seq),
+      });
+      const before = sent.map(textOf).join('');
+      const after = recorded.map(textOf).join('');
       if (after !== before) {
         const lost = before.trimStart();
         const kept = after.trimStart();
