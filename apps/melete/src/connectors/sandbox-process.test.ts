@@ -934,6 +934,29 @@ withDb('background processes in the agent computer', () => {
     ).toHaveLength(1);
   }, 60_000);
 
+  test('with no daily allowance set, awake time is counted but nothing is stopped or refused', async () => {
+    const s = await setup({ limits: { awakeSecondsPerDay: undefined } });
+    const id = String(s.detail(await s.run('process.start', { command: 'serve' })).process_id);
+    await wiringFor(s).settleAttempt(s.firstAttempt, AbortSignal.timeout(10_000));
+    await db()`update sandbox_session set opened_at = opened_at - interval '5 seconds'
+      where held_by = 'processes'`;
+    expect(await s.processes.awakeSecondsToday(s.scope.spaceId)).toBeGreaterThanOrEqual(5);
+    const later = await s.job();
+    const on = { jobId: later, attemptId: await s.attempt(later) };
+    const started = await s.run('process.start', { command: 'another' }, on);
+    expect(started.result.outcome).not.toBe('failed');
+    const [day] = await db()`select seconds from sandbox_awake_day
+      where space_id = ${s.scope.spaceId}`;
+    expect(Number(day?.seconds)).toBeGreaterThanOrEqual(5);
+    await s.processes.sweep(s.providers, AbortSignal.timeout(10_000));
+    const [row] = await db()`select state from sandbox_process where id = ${id}`;
+    expect(row?.state).toBe('running');
+    expect(
+      await db()`select 1 from event
+        where job_id = ${s.scope.jobId} and payload->>'kind' = 'processes_stopped'`,
+    ).toHaveLength(0);
+  }, 60_000);
+
   test('where a computer cannot be kept running, its processes stop when the attempt ends, and the start says so', async () => {
     const s = await setup({ capabilities: { keepAwake: false } });
     const started = s.detail(await s.run('process.start', { command: 'serve' }));

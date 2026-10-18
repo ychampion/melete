@@ -677,6 +677,12 @@ const variables = z.object({
       .optional(),
   ),
   /**
+   * Asides (short words with the agent while it works in voice mode) one
+   * person may have in a day. Unset or blank: no daily limit; asides are
+   * still counted, so a limit set later holds from the first day.
+   */
+  MELETE_VOICE_DAILY_ASIDES: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`
    * keeps structured observations only and makes no model call.
@@ -761,6 +767,13 @@ const variables = z.object({
    * once. Unset or blank: no limit.
    */
   MELETE_ROUTINES_PER_PERSON_MAX: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(100_000).optional(),
+  ),
+  /**
+   * How many pieces of long work (runs) one space may have going at once.
+   * Unset or blank: no limit.
+   */
+  MELETE_RUNS_ACTIVE_PER_SPACE_MAX: unsetWhenBlank(
     z.coerce.number().int().min(1).max(100_000).optional(),
   ),
   /**
@@ -1012,10 +1025,10 @@ const variables = z.object({
    * How long a space's background processes may keep its computers running
    * in one day (UTC), after the turns that used them ended, added up over its
    * computers. Past it they are stopped and new ones refused until the next
-   * day.
+   * day. Unset or blank: no daily limit; awake time is still counted.
    */
   MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY: unsetWhenBlank(
-    z.coerce.number().int().positive().default(PROCESS_LIMITS.awake_seconds_per_day),
+    z.coerce.number().int().positive().optional(),
   ),
   /** How long a suspended workspace is kept while nobody resumes it. */
   MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: unsetWhenBlank(

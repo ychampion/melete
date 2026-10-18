@@ -22,6 +22,8 @@ export type StandingWorkSettings = {
   restAfterDays?: number;
   /** Routines and repeating work one person may keep. Unset: no limit. */
   routinesPerPerson?: number;
+  /** Pieces of long work (runs) one space may have going at once. Unset: no limit. */
+  activeRunsPerSpace?: number;
 };
 
 /** What the person reads once their routines are back on. */

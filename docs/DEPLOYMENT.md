@@ -537,6 +537,10 @@ days and `20` routines are a good start:
 bun run melete set MELETE_REST_ROUTINES_AFTER_DAYS=14 MELETE_ROUTINES_PER_PERSON_MAX=20
 ```
 
+`MELETE_RUNS_ACTIVE_PER_SPACE_MAX` is how many pieces of long work (runs) one
+space may have going at once; one more is refused until one finishes or is
+stopped. It is empty, and so no limit, unless you set it.
+
 ### How long call records are kept
 
 Every model call writes a row to `model_usage`, and every message, meeting,
@@ -1959,6 +1963,11 @@ and models. `MELETE_VOICE_DAILY_SECONDS`, `MELETE_VOICE_DAILY_CHARACTERS` and
 (no cap) unless you set it. [VOICE](VOICE.md) describes each setting and
 feature.
 
+`MELETE_VOICE_DAILY_ASIDES` is how many asides (the short words with the agent
+while it works in voice mode) one person may have in a day. It is empty, and so
+no limit, unless you set it; asides are counted either way, so a limit set later
+holds from the first day.
+
 ### Auto-review
 
 People choose in Settings → Approvals whether an agent's low-risk actions can go
@@ -2142,10 +2151,11 @@ alone, and `MELETE_COMPANIES_PROVIDER` another provider for it. The
 demonstration, and an installation whose provider has no key yet, read mail with
 the built-in rules instead, which find less and cost nothing.
 
-Model calls are bounded per person: across all their spaces, one person's scans
-make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it is
-unset, and each scan reads at most fifty messages. A message past the allowance
-is read on a later scan. Set these in `deploy/.env` and recreate the service.
+Each scan reads at most fifty messages. `MELETE_COMPANIES_DAILY_CALLS`, when
+set, is how many model calls one person's scans may make in any 24 hours,
+across all their spaces; it is empty, and so no limit, unless you set it. Calls
+are counted either way. A message past the allowance is read on a later scan.
+Set these in `deploy/.env` and recreate the service.
 
 ## Phone notifications
 

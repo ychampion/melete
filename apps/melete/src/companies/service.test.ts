@@ -21,7 +21,6 @@ import {
   companiesExtraction,
   configuredDailyCalls,
   configuredExtractor,
-  DEFAULT_DAILY_SCAN_CALLS,
   gatewayExtractor,
   SCAN_CALL_CEILING,
 } from './service.ts';
@@ -219,10 +218,10 @@ describe('the daily allowance setting', () => {
     }
   };
 
-  test('an empty setting is no setting, so the default applies', () => {
-    expect(read({ model: 'default', calls: '' })).toBe(DEFAULT_DAILY_SCAN_CALLS);
-    expect(read({ model: 'default', calls: '  ' })).toBe(DEFAULT_DAILY_SCAN_CALLS);
-    expect(read({ model: 'default', calls: undefined })).toBe(DEFAULT_DAILY_SCAN_CALLS);
+  test('unset or empty is no limit', () => {
+    expect(read({ model: 'default', calls: '' })).toBeUndefined();
+    expect(read({ model: 'default', calls: '  ' })).toBeUndefined();
+    expect(read({ model: 'default', calls: undefined })).toBeUndefined();
   });
 
   test('a number is taken as written, including zero', () => {
@@ -247,7 +246,8 @@ describe('which extractor a scan runs', () => {
       provider: 'anthropic',
       model: 'claude-sonnet-5',
     });
-    expect(configuredDailyCalls(env)).toBe(DEFAULT_DAILY_SCAN_CALLS);
+    // No daily limit unless the operator sets MELETE_COMPANIES_DAILY_CALLS.
+    expect(configuredDailyCalls(env)).toBeUndefined();
   });
 
   test('the demonstration, and a provider without its key, stay scripted', () => {

@@ -57,6 +57,7 @@ All optional. An empty value uses the default.
 | `MELETE_VOICE_DAILY_SECONDS` | not set (no cap) | Seconds of push-to-talk recording one person may have transcribed in a day, for example `1800`. |
 | `MELETE_VOICE_DAILY_CHARACTERS` | not set (no cap) | Characters of replies one person may have read aloud in a day, for example `20000`. |
 | `MELETE_VOICE_DAILY_SESSIONS` | not set (no cap) | Voice mode conversations one person may start in a day, for example `30`. |
+| `MELETE_VOICE_DAILY_ASIDES` | not set (no cap) | Asides (short words with the agent while it works in voice mode) one person may have in a day. |
 | `ELEVENLABS_SPEECH_ENGINE_ID` | made at the first call | A speech engine of your own for calls (`seng_…`). |
 | `MELETE_CALL_MONTHLY_MINUTES` | not set (no cap) | Minutes of calls one person may have in 30 days. A call that reaches the cap ends. |
 

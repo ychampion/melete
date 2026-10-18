@@ -132,6 +132,28 @@ withDb('long work in shifts', () => {
     await handle?.close();
   }, 30000);
 
+  test('how much long work a space may have going is the operator’s setting, off unless set', async () => {
+    const busy = newId('sp');
+    await required(handle)
+      .db.insert(space)
+      .values({ id: busy, name: 'Busy', gitPath: `/s/${busy}` });
+    const startIn = (n: number) =>
+      required(jobs).transaction((tx) =>
+        required(runs).create(tx, busy, { goal: `Long work ${n}` }, {}),
+      );
+    // Unset: well past the old fixed ten, every start is taken.
+    for (let n = 0; n < 12; n++) await startIn(n);
+    const standing = required(jobs).standingWork;
+    required(jobs).standingWork = { ...standing, activeRunsPerSpace: 12 };
+    try {
+      const refused = await startIn(12).catch((error: unknown) => error);
+      expect(refused).toMatchObject({ code: 'too_many_runs' });
+      expect(String((refused as Error).message)).toContain('already 12 pieces of long work');
+    } finally {
+      required(jobs).standingWork = standing;
+    }
+  }, 60_000);
+
   test('a run continues from its handoff, shift after shift, until it says it is done', async () => {
     const run = await start({
       goal: 'Find the fastest sort for our data',

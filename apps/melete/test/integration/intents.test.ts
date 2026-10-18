@@ -883,26 +883,33 @@ withDb('intents', () => {
     await required(handle)
       .db.insert(space)
       .values({ id: crowded, name: 'Busy', gitPath: `/s/${crowded}` });
-    await required(jobs).transaction(async (tx) => {
-      for (let n = 0; n < 10; n++)
-        await required(runs).create(tx, crowded, { goal: `Background work ${n}` }, {});
-    });
-    const chat = await required(jobs).transaction((tx) =>
-      required(jobs).createInTransaction(
-        tx,
-        { space_id: crowded, title: 'Busy', objective: 'Busy' },
-        { kind: 'chat' },
-      ),
-    );
-    await required(jobs).input(chat.id, 'Book Haidilao tomorrow');
-    const turn = await claim(chat.id);
-    expect(
-      String(
-        await required(intents)
-          .capture(turn.claims, { title: 'Book Haidilao', kind: 'booking' })
-          .catch((error: Error) => error.message),
-      ),
-    ).toContain('What I’m on');
+    // There is no limit unless the operator sets one.
+    const standing = required(jobs).standingWork;
+    required(jobs).standingWork = { ...standing, activeRunsPerSpace: 10 };
+    try {
+      await required(jobs).transaction(async (tx) => {
+        for (let n = 0; n < 10; n++)
+          await required(runs).create(tx, crowded, { goal: `Background work ${n}` }, {});
+      });
+      const chat = await required(jobs).transaction((tx) =>
+        required(jobs).createInTransaction(
+          tx,
+          { space_id: crowded, title: 'Busy', objective: 'Busy' },
+          { kind: 'chat' },
+        ),
+      );
+      await required(jobs).input(chat.id, 'Book Haidilao tomorrow');
+      const turn = await claim(chat.id);
+      expect(
+        String(
+          await required(intents)
+            .capture(turn.claims, { title: 'Book Haidilao', kind: 'booking' })
+            .catch((error: Error) => error.message),
+        ),
+      ).toContain('What I’m on');
+    } finally {
+      required(jobs).standingWork = standing;
+    }
   }, 60_000);
 
   /** A commitment Melete found, taken up by the person over Handle it's own hooks. */
