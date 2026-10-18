@@ -9,7 +9,7 @@ import {
 import type { Sql } from 'postgres';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
-import type { IdentitySigner } from '../identity/assertion.ts';
+import { type IdentitySigner, identityAudience } from '../identity/assertion.ts';
 import { newId } from '../ids.ts';
 import { connectionServesJob } from '../jobs/scopes.ts';
 import type { OpenPageInput } from '../pages/service.ts';
@@ -119,7 +119,7 @@ export function mcpConnector(
     )?.name;
     if (config?.identity && services?.identity && endpoint && personId)
       headers[IDENTITY_HEADER] = services.identity.issue({
-        audience: new URL(endpoint).origin,
+        audience: identityAudience(endpoint),
         principalId: personId,
         entitlements: await services.entitlements(sql, personId),
         actionId: action.id,

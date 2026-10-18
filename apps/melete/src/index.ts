@@ -550,7 +550,12 @@ export function createApp(deps: AppDeps) {
   if (db && deps.sql) mountEntitlements(app, { db, sql: deps.sql });
   {
     const signer = new IdentitySigner(pageSecret(deps.env), identityIssuer(deps.env));
-    app.get(IDENTITY_JWKS_PATH, (c) => c.json(signer.jwks()));
+    // Public and the same for everyone: a server may keep it a few minutes, and
+    // reads it again when it meets a key it does not know.
+    app.get(IDENTITY_JWKS_PATH, (c) => {
+      c.header('Cache-Control', 'public, max-age=300');
+      return c.json(signer.jwks());
+    });
   }
   const noticing =
     deps.situations ??

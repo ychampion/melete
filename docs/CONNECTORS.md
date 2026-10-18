@@ -924,12 +924,17 @@ Only the account that set Melete up grants them: `PUT` and `DELETE
 A remote server whose policy sets `"identity": true` is sent, with each call, a
 signed identity assertion in the `Melete-Identity` header: a JWT signed with
 EdDSA (Ed25519) whose keys are at `<API>/.well-known/jwks.json`. Its claims are
-`iss` (this installation's API address), `aud` (the server's origin), `sub` (an
-id for the person that only this server sees, never an email), `ent` (the
-entitlements the person holds), `jti` (the action), `act` (the server's tool
-name), and `iat`/`exp` five minutes apart. The model never sees or sets it. A
-server can then refuse on its own side too, so the check sits where its
-credentials are. Evidence: [assertion.test.ts](../apps/melete/src/identity/assertion.test.ts).
+`iss` (this installation's API address), `aud` (the server's endpoint address
+as the policy names it, without query, fragment or trailing slash, such as
+`https://tools.example.com/mcp`), `sub` (an id for the person that only this
+server sees, never an email), `ent` (the entitlements the person holds), `jti`
+(the action), `act` (the server's tool name), and `iat`/`exp` five minutes
+apart. The model never sees or sets it. A server checks `aud` against its own
+endpoint address, so an assertion sent to one server is refused by another,
+even one on the same host. The key set is served with `Cache-Control: public,
+max-age=300`; a server that meets an unknown `kid` reads it again. A server can
+then refuse on its own side too, so the check sits where its credentials are.
+Evidence: [assertion.test.ts](../apps/melete/src/identity/assertion.test.ts).
 ### Signing in to an MCP server
 
 A server that asks for OAuth can be connected by signing in from the browser

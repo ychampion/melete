@@ -5,7 +5,7 @@
  *
  * Each is a compact JWT signed with EdDSA (Ed25519), valid for five minutes
  * and for one call: `iss` is the installation's API address, `aud` the
- * connection's server (its endpoint's origin), `sub` an id for the person that
+ * connection's server (its endpoint's address, `identityAudience`), `sub` an id for the person that
  * only this audience sees, `ent` every entitlement the person holds, `jti` the
  * action the call carries out and `act` the server's own name for the tool.
  * Melete sends it in the `Melete-Identity` request header, which the model
@@ -32,6 +32,17 @@ import { IDENTITY_JWKS_PATH, type IdentityClaims, identityClaims } from '@melete
 export { IDENTITY_JWKS_PATH };
 /** How long an assertion is good for. */
 export const ASSERTION_TTL_SECONDS = 5 * 60;
+
+/**
+ * The audience of an assertion for a connection: its endpoint's address,
+ * without query, fragment or trailing slash. Not just the origin: two servers
+ * behind one host (a gateway that serves each from its own path) each get
+ * their own audience, so one cannot pass a person's assertion on to the other.
+ */
+export function identityAudience(endpointUrl: string): string {
+  const url = new URL(endpointUrl);
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
 
 /** The PKCS #8 prefix of an Ed25519 private key, before its 32-byte seed. */
 const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');

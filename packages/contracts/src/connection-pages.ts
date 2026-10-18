@@ -170,7 +170,7 @@ export type EntitlementList = z.infer<typeof entitlementList>;
 export const identityClaims = z.strictObject({
   /** The installation: its public address, or `melete` without one. */
   iss: z.string(),
-  /** The connection's server: its endpoint's origin. */
+  /** The connection's server: its endpoint's address, without query or trailing slash. */
   aud: z.string(),
   /**
    * The person the call is made for, as an id only this audience sees: the
