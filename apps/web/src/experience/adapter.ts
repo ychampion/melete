@@ -52,6 +52,8 @@ import type {
   ConnectionInstalled,
   ConnectionKind,
   ConnectionLifecycle,
+  ConnectionPageList,
+  ConnectionPageView,
   Conversation,
   ConversationCreate,
   ConversationDeleted,
@@ -1072,6 +1074,14 @@ export const adapter = {
     guard<ProcessOutput>(() => api.GET('/sandbox/processes/{id}/output', path(processId))),
   processStop: (processId: string) =>
     guard<ProcessStopped>(() => api.POST('/sandbox/processes/{id}/stop', path(processId))),
+  /** The pages a conversation's connections showed. */
+  conversationPages: (conversationId: string) =>
+    guard<ConnectionPageList>(() => api.GET('/conversations/{id}/pages', path(conversationId))),
+  /** A frame for one open page, in this browser session. */
+  pageView: (pageId: string) =>
+    guard<ConnectionPageView>(() => api.POST('/pages/{id}/views', path(pageId))),
+  /** Where a page's frame loads: the API's own address, then the view's path. */
+  pageSource: (view: ConnectionPageView) => `${API_BASE_URL}${view.view_path}`,
   /** Where a preview's page loads: the API's own address, then the preview's path. */
   previewSource: (preview: ProcessPreview) => `${API_BASE_URL}${preview.path}`,
   /** Where a file or picture the service keeps is served, with the session's cookie. */

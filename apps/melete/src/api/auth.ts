@@ -25,10 +25,12 @@ import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import type { AccountMailer } from '../experience/account-mail.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
+import { IDENTITY_JWKS_PATH } from '../identity/assertion.ts';
 import { newId } from '../ids.ts';
 import { markSeen } from '../jobs/resting.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
 import { type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
+import { PAGE_REPORT_PATH } from '../pages/routes.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import {
   resolveSessionSpace,
@@ -413,6 +415,8 @@ export function mountAuth(
         (c.req.path === '/health' ||
           c.req.path === '/health/detail' ||
           c.req.path === '/setup' ||
+          // A connection's server checks the identity assertions Melete hands it.
+          c.req.path === IDENTITY_JWKS_PATH ||
           // An authorization server reads this client's metadata without a session.
           c.req.path === '/oauth/client-metadata.json')) ||
       mcpPublicPath(c.req.method, c.req.path) ||
@@ -444,6 +448,9 @@ export function mountAuth(
     // Its own limit: a new-mail delivery carries the message's text.
     if (c.req.method === 'POST' && c.req.path === COMPOSIO_EVENTS_PATH)
       return composioDeliveryBody(c, next);
+    // A connection's server reporting on its page; believed only for its
+    // signature (see pages/service.ts).
+    if (c.req.method === 'POST' && PAGE_REPORT_PATH.test(c.req.path)) return publicBody(c, next);
     // A paired computer's companion holds no session. Every `/device/` route
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.

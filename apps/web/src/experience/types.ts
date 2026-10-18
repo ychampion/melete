@@ -215,6 +215,9 @@ export type ComputerCommand = AgentComputer['terminal'][number];
 /** One background process in the agent's computer, as the person may see it. */
 export type ComputerProcess = AgentComputer['processes'][number];
 export type ProcessPreview = Ok<paths['/sandbox/processes/{id}/previews'], 'post'>;
+export type ConnectionPageList = Ok<paths['/conversations/{id}/pages'], 'get'>;
+export type ConnectionPage = ConnectionPageList['pages'][number];
+export type ConnectionPageView = Ok<paths['/pages/{id}/views'], 'post'>;
 export type ProcessOutput = Ok<paths['/sandbox/processes/{id}/output'], 'get'>;
 export type ProcessStopped = Ok<paths['/sandbox/processes/{id}/stop'], 'post'>;
 export type BrowserControl = Ok<paths['/browser/sessions/{id}/takeover'], 'post'>;

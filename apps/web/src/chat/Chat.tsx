@@ -73,6 +73,7 @@ import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
 import { headState } from './head-state.ts';
 import { runningTurn, workerName } from './live-card.ts';
 import { Markdown } from './Markdown.tsx';
+import { ConnectionPages } from './PageCard.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
 import {
@@ -1398,6 +1399,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                 ),
               )}
               <RunChatCards conversationId={conversationId} refresh={transcript.status} />
+              <ConnectionPages conversationId={conversationId} refresh={transcript.status} />
               {transcript.gaps.map((gap) => (
                 <div key={`gap-${gap.after}`} className="marker" role="status">
                   <Icon name="info" size={14} />

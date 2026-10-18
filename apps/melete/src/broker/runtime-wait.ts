@@ -59,6 +59,7 @@ const eventWaitInput = z.object({
 });
 const triggerId = prefixedId(ID_PREFIXES.trigger);
 const PROCESS_EVENT = /^process:(prc_[A-Za-z0-9]{8,64})$/;
+const PAGE_EVENT = /^page:(cpg_[0-9A-Z]{26})$/;
 
 export async function requestRuntimeWait(sql: Sql, claims: CapabilityClaims, input: unknown) {
   const event = eventWaitInput.safeParse(input);
@@ -87,11 +88,18 @@ export async function requestRuntimeWait(sql: Sql, claims: CapabilityClaims, inp
     if (name !== undefined) {
       // `process:<id>` names this job's watch on that background process.
       const processId = PROCESS_EVENT.exec(name)?.[1];
+      // `page:<id>` names the wait on a connection's page this job opened.
+      const pageId = PAGE_EVENT.exec(name)?.[1];
       const matches = processId
         ? await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true AND kind='watch'
             AND spec #>> '{predicate,all,0,field}' = 'process_id'
             AND spec #>> '{predicate,all,0,value}' = ${processId} ORDER BY id LIMIT 2`
-        : await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true
+        : pageId
+          ? await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true AND kind='watch'
+            AND spec->>'event_name' = 'page.settled'
+            AND spec #>> '{predicate,all,0,field}' = 'page_id'
+            AND spec #>> '{predicate,all,0,value}' = ${pageId} ORDER BY id LIMIT 2`
+          : await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true
             AND spec->>'event_name'=${name} ORDER BY id LIMIT 2`;
       if (matches.length === 0 && processId) {
         const [process] =

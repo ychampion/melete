@@ -21,8 +21,10 @@ import {
   question,
   replyObligation,
 } from '../db/schema.ts';
+import { IDENTITY_JWKS_PATH } from '../identity/assertion.ts';
 import type { JobService } from '../jobs/service.ts';
 import { mcpPublicPath } from '../mcp-server/actor.ts';
+import { PAGE_REPORT_PATH } from '../pages/routes.ts';
 import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
@@ -64,6 +66,12 @@ export function mountPrincipals(
       return next();
     // So does a trigger delivery from Composio; api/composio.ts checks its signature.
     if (c.req.method === 'POST' && c.req.path === COMPOSIO_EVENTS_PATH && !c.get('owner'))
+      return next();
+    // A connection's server reads the identity keys, and reports on its page,
+    // without a session; the report is believed only for its signature.
+    if (c.req.method === 'GET' && c.req.path === IDENTITY_JWKS_PATH && !c.get('owner'))
+      return next();
+    if (c.req.method === 'POST' && PAGE_REPORT_PATH.test(c.req.path) && !c.get('owner'))
       return next();
     const actor = c.get('owner').id;
     const path = c.req.path;

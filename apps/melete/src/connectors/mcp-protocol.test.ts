@@ -8,6 +8,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { type FakeMcpAuth, startFakeMcpAuth } from './fixtures/fake-mcp-auth.ts';
 import { type McpExecutionContext, mcpServerConfig, openMcpWorker } from './mcp.ts';
 import { mcpHeaderValue, mcpParamHeaders, mcpParamHeaderValues } from './mcp-headers.ts';
+import { mcpClientCapabilities } from './mcp-transport.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
 
 const binding = { connectionId: 'conn_01J00000000000000000000000', spaceId: 'sp_01' };
@@ -134,7 +135,7 @@ describe('the revision a server settles on', () => {
       const meta = message.params._meta as Record<string, unknown>;
       expect(meta['io.modelcontextprotocol/protocolVersion']).toBe('2026-07-28');
       expect(meta['io.modelcontextprotocol/clientInfo']).toMatchObject({ name: 'melete' });
-      expect(meta['io.modelcontextprotocol/clientCapabilities']).toEqual({});
+      expect(meta['io.modelcontextprotocol/clientCapabilities']).toEqual(mcpClientCapabilities());
     }
     const sent = server.messages.find(
       (message) => message.method === 'tools/call' && message.params.name === 'write_file',

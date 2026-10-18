@@ -9,16 +9,26 @@
  *   disable <email>        stops the account signing in and ends all its access
  *   enable <email>         lets a disabled account sign in again
  *   setup-code             a new one-time code for creating the first account
+ *   entitlements <email>   what the operator granted the account
+ *   grant <email> <name>   grants an entitlement (`verified`)
+ *   revoke <email> <name>  takes one away
  *
  * `--web-url <url>` is the address links open at when MELETE_PUBLIC_URL is not
  * set; `--json` prints one JSON object instead of sentences. Exit codes: 0
  * done, 1 refused (an unknown account, an owner that already exists), 2 usage.
  */
+
+import { ENTITLEMENT_KEYS, entitlementKey } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { endAccess } from '../api/account-access.ts';
 import { issuePasswordReset, principalByEmail, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { issueSetupCode, SETUP_CODE_HOURS, setupLink } from '../api/setup-code.ts';
 import { newId } from '../ids.ts';
+import {
+  grantEntitlement,
+  listEntitlements,
+  revokeEntitlement,
+} from '../principals/entitlements.ts';
 import { isRemovedEmail } from './removal.ts';
 import { describeReset, operatorReset } from './reset-password.ts';
 
@@ -29,6 +39,9 @@ export const ACCOUNT_USAGE = `Usage: bun run melete account <command> [--json]
   disable <email>      Stop the account signing in, and end its sessions, devices and connected apps
   enable <email>       Let a disabled account sign in again
   setup-code           A new one-time code for creating the first account
+  entitlements <email> What the operator granted the account
+  grant <email> <name> Grant an entitlement the installation's connections can require (verified)
+  revoke <email> <name> Take an entitlement away; calls not yet made are refused
 `;
 
 export type AccountOutcome = { ok: boolean; text: string; json: Record<string, unknown> };
@@ -188,6 +201,37 @@ export async function newSetupCodeFor(
   };
 }
 
+/** The operator's grants on one account, from the host. */
+export async function entitlementCommand(
+  sql: Sql,
+  command: 'entitlements' | 'grant' | 'revoke',
+  email: string,
+  key: string | undefined,
+): Promise<AccountOutcome> {
+  const person = await principalByEmail(sql, email.trim().toLowerCase());
+  if (!person) return refused(`No account signs in as ${email}.`);
+  if (command !== 'entitlements') {
+    const name = entitlementKey.safeParse(key);
+    if (!name.success)
+      return refused(
+        `${key ?? 'That'} is not an entitlement. Known: ${ENTITLEMENT_KEYS.join(', ')}.`,
+      );
+    if (command === 'grant') {
+      if (!(await grantEntitlement(sql, person.id, name.data, 'operator')))
+        return refused(`${email} is not a person's account.`);
+    } else await revokeEntitlement(sql, person.id, name.data);
+  }
+  const list = await listEntitlements(sql, person.id);
+  const held = list.entitlements.map((grant) => grant.key);
+  return {
+    ok: true,
+    text: held.length
+      ? `${email} holds: ${held.join(', ')}.\n`
+      : `${email} holds no entitlements.\n`,
+    json: { ok: true, email, entitlements: list.entitlements },
+  };
+}
+
 export function parseAccountArgs(argv: readonly string[]) {
   const args: string[] = [];
   let json = false;
@@ -212,9 +256,18 @@ export async function runAccount(
 ): Promise<{ code: number; out: string }> {
   const parsed = parseAccountArgs(argv);
   const webUrl = publicUrl ?? parsed.webUrl;
-  const needsEmail = ['create', 'reset', 'disable', 'enable'].includes(parsed.command);
+  const needsEmail = [
+    'create',
+    'reset',
+    'disable',
+    'enable',
+    'entitlements',
+    'grant',
+    'revoke',
+  ].includes(parsed.command);
+  const needsName = ['grant', 'revoke'].includes(parsed.command);
   const usage = { code: 2, out: ACCOUNT_USAGE };
-  if (parsed.extra.length) return usage;
+  if (parsed.extra.length !== (needsName ? 1 : 0)) return usage;
   if (needsEmail && !parsed.target?.includes('@')) return usage;
   if (!needsEmail && parsed.target !== undefined) return usage;
   let outcome: AccountOutcome;
@@ -234,6 +287,11 @@ export async function runAccount(
       break;
     case 'setup-code':
       outcome = await newSetupCodeFor(sql, webUrl, configuredHash);
+      break;
+    case 'entitlements':
+    case 'grant':
+    case 'revoke':
+      outcome = await entitlementCommand(sql, parsed.command, parsed.target ?? '', parsed.extra[0]);
       break;
     default:
       return usage;

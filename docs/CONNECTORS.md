@@ -817,7 +817,8 @@ policy, and a server tool the policy does not name is ignored.
 The worker runs outside the runtime cell. Its test stdio transport uses a
 filtered environment and its own temporary working directory. It receives neither vault
 credentials nor database, broker or provider keys. It offers the server no
-roots, sampling or other client capabilities. HTTP redirects, automatic call
+roots, sampling or elicitation; the one capability it declares is the MCP Apps
+extension (see [Pages a server shows](#pages-a-server-shows)). HTTP redirects, automatic call
 replay and unbounded responses are refused. Results retain external-content
 provenance and action evidence handles. A lost acknowledgement remains unknown;
 generic MCP verification cannot prove that an effect happened.
@@ -830,7 +831,7 @@ stores the policy.
 
 Over HTTP the client speaks every revision of the MCP transport in use. It first
 sends `server/discover` the stateless way (revision `2026-07-28`): with the
-revision, the client's name and its (empty) capabilities in the request's
+revision, the client's name and its capabilities (the MCP Apps extension) in the request's
 `_meta`, and the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. A
 server that answers is spoken to that way from then on: no `initialize`, no
 session, a header for each tool parameter whose schema marks it with
@@ -846,6 +847,94 @@ fails without a retry. A call whose answer never came stays unknown and is never
 sent again, whatever the revision. Evidence:
 [mcp-protocol.test.ts](../apps/melete/src/connectors/mcp-protocol.test.ts).
 
+### Pages a server shows
+
+A tool can show the person an interactive page in the conversation, with the
+MCP Apps extension (`io.modelcontextprotocol/ui`): the tool's `_meta.ui.resourceUri`
+names a `ui://` resource of type `text/html;profile=mcp-app`. When such a call
+succeeds over HTTP, Melete reads the page with `resources/read`, keeps it, and
+shows it in the conversation under the connection's name and its server's
+address. A tool whose `_meta.ui.visibility` leaves out `model` is meant for the
+page alone and is never offered to the model.
+
+The page runs in a sandboxed frame with an opaque origin. It is served from
+`/pages/view/<token>` with `Content-Security-Policy: sandbox allow-scripts
+allow-forms` (no `allow-same-origin`, popups or top navigation), `default-src
+'none'`, and the domains the page declared in its resource's `_meta.ui.csp`
+(`connectDomains`, `resourceDomains`, `frameDomains`) that the connection allows:
+its server's own origin and the origins in the policy's `pages.origins`. The
+token is for one page, one person and one browser session; the page is served
+only into a frame, and only while it is open and that session is signed in.
+The page talks to Melete only through MCP Apps messages: `ui/initialize`, the
+tool call's input and result, its size, and `ui/open-link` for an address on
+an allowed origin, which opens in a new tab once the person agrees. Every other
+request, such as `tools/call` or `ui/message`, is refused. When the person's
+theme changes, the page gets `ui/notifications/host-context-changed` with the
+new `theme`. Report the size as
+the height of the page's body: the document's scroll height never drops below
+the frame's own, so a frame sized by it can only grow.
+
+A page whose work must happen at the top level of the browser (a form a third
+party's script must own, for one) asks to open its own address that way.
+
+**Waiting on a page.** The tool call carries `_meta["io.melete/page"]` with the
+page's `id`, a `report_url` and a `report_key` made for that page alone. The
+turn that showed the page ends, and the conversation waits for the page the way
+it waits for an approval, until the server reports or the page expires (30
+minutes, or the server's `_meta["io.melete/page"].expires_in_seconds` on its
+result, at most a day). The person can still write in the meantime.
+
+Only the server can end the wait. It posts to `report_url` a body
+`{status: completed|failed|cancelled, summary, data?}`, signed like a Standard
+Webhooks message: `webhook-id`, `webhook-timestamp` (within five minutes) and
+`webhook-signature: v1,<base64 HMAC-SHA256 of id.timestamp.body>` with the
+`report_key` (a `whsec_` secret). Melete keeps no copy of the key; it derives it
+again from its own secret. The page never sees the key, so nothing it says or
+posts can settle it. A report settles an open page once; the same report again
+is answered as before, a different one is refused (409), and one after the page
+expired is refused (410). The conversation then goes on with the server's
+summary and data as external content. `report_base_url` in the policy names
+the address the server reaches Melete at when it is not `MELETE_PUBLIC_URL`.
+Evidence: [connection-pages.test.ts](../apps/melete/test/integration/connection-pages.test.ts),
+[page-bridge.test.ts](../apps/web/src/chat/page-bridge.test.ts).
+
+### Entitlements and identity
+
+The operator can grant a person's account an entitlement, from a closed list
+that starts with `verified`, and a connection can require one:
+
+```json
+{ "tools": [{ "name": "reserve", "alias": "reserve", "required_scopes": ["desk.reserve"],
+    "requires_entitlements": ["verified"] }] }
+```
+
+A call to such a tool, by a person without the entitlement, is refused before
+anyone is asked to approve it and before anything reaches the server, and again
+just before it is sent, in case the grant was taken away in between. The person
+reads `MELETE_GATE_MESSAGE` (default: "Contact support to get your account
+verified."). Entitlements are read from the database, never from what the model
+says.
+
+Only the account that set Melete up grants them: `PUT` and `DELETE
+/operator/people/{id}/entitlements/{key}` (with an optional `value` of
+`method` and `level` strings and an `expires_at`), or on the host
+`bun run melete account grant|revoke <email> verified` and
+`bun run melete account entitlements <email>`. A lapsed grant counts for nothing.
+
+A remote server whose policy sets `"identity": true` is sent, with each call, a
+signed identity assertion in the `Melete-Identity` header: a JWT signed with
+EdDSA (Ed25519) whose keys are at `<API>/.well-known/jwks.json`. Its claims are
+`iss` (this installation's API address), `aud` (the server's endpoint address
+as the policy names it, without query, fragment or trailing slash, such as
+`https://tools.example.com/mcp`), `sub` (an id for the person that only this
+server sees, never an email), `ent` (the entitlements the person holds), `jti`
+(the action), `act` (the server's tool name), and `iat`/`exp` five minutes
+apart. The model never sees or sets it. A server checks `aud` against its own
+endpoint address, so an assertion sent to one server is refused by another,
+even one on the same host. The key set is served with `Cache-Control: public,
+max-age=300`; a server that meets an unknown `kid` reads it again. A server can
+then refuse on its own side too, so the check sits where its credentials are.
+Evidence: [assertion.test.ts](../apps/melete/src/identity/assertion.test.ts).
 ### Signing in to an MCP server
 
 A server that asks for OAuth can be connected by signing in from the browser

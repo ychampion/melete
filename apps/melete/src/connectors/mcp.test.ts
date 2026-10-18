@@ -2,11 +2,13 @@ import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import type { JsonObject } from '@melete/contracts';
 import { mcpFixtureConfig } from '../../test/fixtures/mcp-config.ts';
+import { ConnectorFaultError } from './faults.ts';
 import { type McpExecutionContext, mcpServerConfig, openMcpWorker } from './mcp.ts';
 import {
   filteredMcpEnvironment,
   MCP_PROTOCOL_VERSION,
   type McpTransport,
+  mcpClientCapabilities,
   openHttpMcpTransport,
   openStdioMcpTransport,
 } from './mcp-transport.ts';
@@ -91,7 +93,8 @@ test('local stdio worker ignores dishonest annotations, denies client roots, and
     expect(result.outcome).toBe('succeeded');
     if (result.outcome !== 'succeeded') throw new Error('read failed');
     const data = (result.receipt.detail.result as JsonObject).structuredContent as JsonObject;
-    expect(data.client_capabilities).toEqual({});
+    // Melete declares only the MCP Apps extension: no roots, sampling or elicitation.
+    expect(data.client_capabilities).toEqual(mcpClientCapabilities());
     expect(data.client_request_denials).toEqual([-32601]);
     expect(data.home).toBe(data.cwd);
     expect(data.cwd).not.toBe(process.cwd());
@@ -221,6 +224,56 @@ test('MCP discovery refuses an async server schema before exposing or invoking t
   expect(failure).toContain('MCP asynchronous schemas ($async) are unsupported');
   expect(requests).toEqual(['initialize', 'tools/list']);
   expect(closed).toBe(true);
+});
+
+test('a call that succeeded is never sent again because its page could not be read', async () => {
+  const requests: string[] = [];
+  const transport: McpTransport = {
+    async request(method) {
+      requests.push(method);
+      if (method === 'initialize')
+        return {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: { tools: {}, resources: {} },
+        };
+      if (method === 'tools/list')
+        return {
+          tools: [
+            { name: 'read', inputSchema: { type: 'object' } },
+            {
+              name: 'write',
+              inputSchema: { type: 'object' },
+              _meta: { ui: { resourceUri: 'ui://fixture/form' } },
+            },
+          ],
+        };
+      if (method === 'tools/call') return { content: [{ type: 'text', text: 'done' }] };
+      // The page read fails the way a busy or briefly unreachable server does.
+      throw new ConnectorFaultError({
+        kind: 'transient_before_dispatch',
+        detail: 'Too many MCP requests are open at once; nothing was sent',
+      });
+    },
+    async notify() {},
+    async close() {},
+  };
+  const worker = await openMcpWorker(mcpFixtureConfig(), binding, { transport });
+  try {
+    const action = connectorAction('mcp_fixture.write', { body: 'once' });
+    action.effect_class = 'write_external';
+    const result = await worker.execute(action, {
+      ...context(action),
+      opened: async () => ({ shown: true }),
+    });
+    // The tool ran; a fault here would let a retry run it a second time.
+    expect(result.outcome).toBe('succeeded');
+    expect(result.outcome === 'succeeded' && result.receipt.detail.page).toMatchObject({
+      shown: false,
+    });
+    expect(requests.filter((method) => method === 'tools/call')).toHaveLength(1);
+  } finally {
+    await worker.close();
+  }
 });
 
 test('MCP discovery fails closed on cyclic pagination and always closes the worker', async () => {

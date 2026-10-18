@@ -357,6 +357,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   experience_rule: 'operational',
   approval_review_policy: 'operational',
   action_review: 'operational',
+  // A page a connection showed in a chat goes with the chat.
+  connection_page: 'operational',
   activity_record: 'operational',
   knowledge_record: 'operational',
   learning_evaluation_lease: 'operational',

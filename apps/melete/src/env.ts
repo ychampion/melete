@@ -165,6 +165,14 @@ const variables = z.object({
    * a self-hosted push server, or a test's stand-in.
    */
   MELETE_PUSH_EXTRA_ORIGINS: unsetWhenBlank(z.string().optional()),
+  /**
+   * What a person is told when a connection's tool requires an entitlement
+   * their account does not hold. Operators grant entitlements, so the default
+   * points the person at them.
+   */
+  MELETE_GATE_MESSAGE: unsetWhenBlank(
+    z.string().trim().min(1).max(300).default('Contact support to get your account verified.'),
+  ),
   MELETE_PUBLIC_URL: unsetWhenBlank(
     z
       .url()
