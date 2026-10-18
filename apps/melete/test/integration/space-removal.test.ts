@@ -649,6 +649,22 @@ describe.if(handle !== null)('removing a space', () => {
     expect(await countOf(sql, 'artifact', sql`source_job_id = ${seeded.jobId}`)).toBe(0);
   });
 
+  test('a_time_zone_note_kept_past_its_chat_goes_with_its_space — and only with its own', async () => {
+    const seeded = await seed('shared');
+    const other = `${seeded.spaceId}x`;
+    for (const spaceId of [seeded.spaceId, other])
+      await sql`insert into event (job_id, type, payload, dedup_key)
+        values (null, 'notice', '{"kind": "time_zone_mismatch"}'::jsonb,
+          ${`time-zone-mismatch:${spaceId}:UTC:Asia/Kolkata`})`;
+    const kept = (spaceId: string) =>
+      countOf(sql, 'event', sql`dedup_key = ${`time-zone-mismatch:${spaceId}:UTC:Asia/Kolkata`}`);
+
+    await removeCompletely(seeded);
+
+    expect(await kept(seeded.spaceId)).toBe(0);
+    expect(await kept(other)).toBe(1);
+  });
+
   test('a_prohibition_outlives_its_space — removal completes, and the person’s "don’t do this" stands on', async () => {
     if (!handle) throw new Error('Postgres unavailable');
     const seeded = await seed('shared');
