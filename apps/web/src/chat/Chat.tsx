@@ -1391,7 +1391,15 @@ export function ChatScreen({ id }: { id: string | null }) {
                   summarised={folded.summarised > 0}
                   messages={earlierCount}
                   open={false}
-                  onToggle={() => setShowAll(true)}
+                  onToggle={() => {
+                    setShowAll(true);
+                    // The fold gives way to the line that reads earlier turns; the focus goes there.
+                    requestAnimationFrame(() =>
+                      scrollRef.current
+                        ?.querySelector<HTMLElement>('button.previous-messages')
+                        ?.focus({ preventScroll: true }),
+                    );
+                  }}
                 />
               ) : older.more && (showAll || folded.count === 0) ? (
                 <OlderTurns
