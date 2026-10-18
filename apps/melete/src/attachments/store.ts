@@ -289,10 +289,21 @@ export class AttachmentService {
     return (await this.deleteUnsent(rows.map((row) => row.id))).length;
   }
 
-  /** The files sent in these chats' turns, by turn, in the order they were sent. */
-  async forTurns(jobId: string): Promise<Map<string, AttachmentView[]>> {
-    const rows = await this.sql<AttachmentRecord[]>`select * from attachment
-      where job_id = ${jobId} and turn_id is not null order by turn_id, position, id`;
+  /**
+   * The files sent in these chats' turns, by turn, in the order they were sent:
+   * of every turn, or of `turnIds` alone.
+   */
+  async forTurns(
+    jobId: string,
+    turnIds?: readonly string[],
+  ): Promise<Map<string, AttachmentView[]>> {
+    if (turnIds && !turnIds.length) return new Map();
+    const rows = turnIds
+      ? await this.sql<AttachmentRecord[]>`select * from attachment
+          where job_id = ${jobId} and turn_id = any(${[...turnIds]})
+          order by turn_id, position, id`
+      : await this.sql<AttachmentRecord[]>`select * from attachment
+          where job_id = ${jobId} and turn_id is not null order by turn_id, position, id`;
     const byTurn = new Map<string, AttachmentView[]>();
     for (const record of rows) {
       const row = fromRecord(record);

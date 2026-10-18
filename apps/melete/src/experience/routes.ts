@@ -691,8 +691,26 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     },
     'PATCH /conversations/{id}/agent': (spaceId, c, input) =>
       service.switchAgent(spaceId, c.req.param('id') ?? '', String(input.agent_id)),
-    'GET /conversations/{id}/messages': (spaceId, c) =>
-      service.messages(spaceId, c.req.param('id') ?? ''),
+    'GET /conversations/{id}/messages': async (spaceId, c) => {
+      const id = c.req.param('id') ?? '';
+      const query = c.req.query();
+      const page = await service.messages(spaceId, id, query);
+      if (query.events !== 'true' || page.next_cursor === undefined) return page;
+      // The newest page carries the events after it too; an older one only its own.
+      return {
+        ...page,
+        ...(await events.ofTurns(
+          spaceId,
+          id,
+          page.turns.map((turn) => turn.id),
+          {
+            newest: !query.before,
+            from: page.turns[0]?.created_at,
+            after: query.events_after === undefined ? undefined : Number(query.events_after),
+          },
+        )),
+      };
+    },
     'POST /conversations/{id}/messages': (spaceId, c, input) =>
       service.message(spaceId, c.req.param('id') ?? '', input, c.req.header('Idempotency-Key')),
     'POST /conversations/{id}/stop': (spaceId, c) => service.stop(spaceId, c.req.param('id') ?? ''),

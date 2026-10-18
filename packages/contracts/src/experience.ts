@@ -798,7 +798,59 @@ export function decodeConversationCursor(cursor: string): ConversationCursor | n
   if (extra !== undefined || !updatedAt || !id || !date.safeParse(updatedAt).success) return null;
   return { updated_at: updatedAt, id };
 }
-export const turnList = z.strictObject({ turns: z.array(conversationTurn) });
+/**
+ * A chat's messages. Without `limit` every turn comes back, oldest first. With
+ * `limit`, the newest turns older than `before` come back (all of the newest
+ * when `before` is left out), still oldest first, with `next_cursor` to read
+ * the turns before those. `events=true` adds the events of those turns.
+ */
+export const MESSAGE_PAGE_LIMIT = 200;
+export const conversationMessagesQuery = z.strictObject({
+  limit: z.coerce.number().int().positive().max(MESSAGE_PAGE_LIMIT).optional(),
+  before: z.string().min(1).max(200).optional(),
+  events: z.enum(['true', 'false']).optional(),
+  /** With `events=true`, only the events after this seq: an `events_cursor` read on from. */
+  events_after: z.coerce.number().int().nonnegative().optional(),
+});
+/** The most events one page of messages carries; `events_cursor` says where the rest continue. */
+export const MESSAGE_PAGE_EVENT_LIMIT = 2000;
+export const turnList = z.strictObject({
+  turns: z.array(conversationTurn),
+  /** Present on a page: where the turns before these continue, or null at the first turn. */
+  next_cursor: z.string().max(200).nullable().optional(),
+  /** Present on a page: how many turns the chat has in all. */
+  total: count.optional(),
+  /**
+   * Present with `events=true`: these turns' events, oldest first. The newest
+   * page also carries events no turn owns from its first event on.
+   */
+  events: z.array(experienceEvent).optional(),
+  /**
+   * Present with `events=true`: when more of these turns' events follow than one
+   * page carries, the seq to ask for the same page again from, as `events_after`.
+   */
+  events_cursor: count.nullable().optional(),
+  /** Present with `events=true`: the chat's newest event when this was read; a stream follows on after it. */
+  last_seq: count.optional(),
+  /**
+   * Present with `events=true`: the job stream (`GET /jobs/{id}/events`) read
+   * after this seq holds these turns' messages and everything since.
+   */
+  messages_after: count.optional(),
+});
+
+/** Where a page of turns ends: the oldest one's time and id, opaque to a client. */
+export type TurnCursor = { created_at: string; id: string };
+export function encodeTurnCursor(position: TurnCursor): string {
+  return Buffer.from(`t|${position.created_at}|${position.id}`, 'utf8').toString('base64url');
+}
+/** Null for anything that is not a cursor a page of turns handed out. */
+export function decodeTurnCursor(cursor: string): TurnCursor | null {
+  const [tag, createdAt, id, extra] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+  if (tag !== 't' || extra !== undefined || !createdAt || !id || !date.safeParse(createdAt).success)
+    return null;
+  return { created_at: createdAt, id };
+}
 
 export const agentInput = z.strictObject({
   name: z.string().min(1).max(40),
@@ -1399,7 +1451,7 @@ export const experienceOperations = {
     request: conversationSwitchAgent,
     response: conversationResponse,
   },
-  'GET /conversations/{id}/messages': { response: turnList },
+  'GET /conversations/{id}/messages': { query: conversationMessagesQuery, response: turnList },
   'POST /conversations/{id}/messages': {
     request: conversationMessage,
     response: messageAcceptance,
