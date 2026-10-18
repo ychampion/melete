@@ -11,6 +11,7 @@ import {
   forgetEveryConversation,
   keepConversation,
   keptConversation,
+  keptFrom,
   openConversation,
   prefetchConversation,
   prependOlder,
@@ -104,6 +105,35 @@ test('a chat opens on its newest turns, with every one of their events however m
   );
 });
 
+test('a page read in parts stops where the first part handed over to the stream', async () => {
+  const turns = Array.from({ length: 3 }, (_, n) => turnOf(n + 1));
+  const events = turns.flatMap((_, n) => [
+    delta(n * 2 + 1, n + 1, 'Answer '),
+    delta(n * 2 + 2, n + 1, `${n + 1}`),
+  ]);
+  const reads = serve(turns, events, 2);
+  // After the first part, the newest turn goes on writing, and so does a turn begun since.
+  const page = adapter.turnsPage;
+  let first = true;
+  Object.assign(adapter, {
+    turnsPage: async (...args: Parameters<typeof page>) => {
+      const read = await page(...args);
+      if (first) {
+        first = false;
+        events.push(delta(7, 3, ' more'), delta(8, 4, 'New'), delta(9, 3, ' again'));
+      }
+      return read;
+    },
+  });
+  const opened = (await openConversation('job_1'))?.data;
+  if (!opened) throw new Error('expected the chat to open');
+  // The stream takes over after the sixth event, so nothing after it is drawn
+  // from the page and the stream brings the seventh and eighth too.
+  expect(opened.cursor).toBe(6);
+  expect(opened.transcript.lastSeq).toBe(6);
+  expect(reads.length).toBeLessThanOrEqual(3);
+});
+
 test('older turns go in front once each, drawn from their own events', async () => {
   const turns = Array.from({ length: 20 }, (_, n) => turnOf(n + 1));
   const events = turns.map((_, n) => delta(n + 1, n + 1, `Answer ${n + 1}`));
@@ -155,6 +185,67 @@ test('a service that does not page is read the old way, from the first event', a
   expect(opened?.older).toBeNull();
   expect(opened?.cursor).toBe(2);
   expect(opened?.transcript.turns).toHaveLength(2);
+});
+
+test('a chat that is gone for this person is forgotten, and a failed read keeps the copy', async () => {
+  const copy = {
+    conversation: CHAT,
+    transcript: { turns: [] } as never,
+    older: null,
+    total: 1,
+    at: Date.now(),
+  };
+  keepConversation('job_1', copy);
+  Object.assign(adapter, {
+    conversation: async () => ({ data: null, error: 'Offline', unavailable: null }),
+    turnsPage: async () => ({ data: null, error: 'Offline', unavailable: null }),
+    drafts: async () => ok({ drafts: [] }),
+  });
+  const offline = await openConversation('job_1');
+  expect(offline?.data).toBeNull();
+  expect(offline && 'gone' in offline).toBe(false);
+  expect(keptConversation('job_1')).toBeDefined();
+  // Deleted on another device: the service says it is not there.
+  const missing = {
+    data: null,
+    error: 'That item is not here.',
+    unavailable: null,
+    code: 'not_found',
+  };
+  Object.assign(adapter, {
+    conversation: async () => missing,
+    turnsPage: async () => missing,
+  });
+  const gone = await openConversation('job_1');
+  expect(gone?.data).toBeNull();
+  expect(gone && 'gone' in gone && gone.gone).toBe(true);
+  expect(keptConversation('job_1')).toBeUndefined();
+});
+
+test('a copy keeps the turns the chat opened on, however far back the person read', async () => {
+  const turns = Array.from({ length: 50 }, (_, n) => turnOf(n + 1));
+  const events = turns.map((_, n) => delta(n + 1, n + 1, `Answer ${n + 1}`));
+  serve(turns, events);
+  const opened = (await openConversation('job_1'))?.data;
+  if (!opened) throw new Error('expected the chat to open');
+  let transcript = opened.transcript;
+  let before = opened.older;
+  while (before) {
+    const older = (await readOlder('job_1', before, transcript)).data;
+    if (!older) throw new Error('expected older turns');
+    transcript = prependOlder(transcript, older);
+    before = older.older;
+  }
+  expect(transcript.turns).toHaveLength(50);
+  const on = { oldest: opened.turns[0]?.id ?? null, older: opened.older };
+  const kept = keptFrom(transcript, on, null);
+  expect(kept.transcript.turns.map((turn) => turn.id)).toEqual(
+    opened.transcript.turns.map((turn) => turn.id),
+  );
+  // Where the kept turns begin is where the turns before them continue.
+  expect(kept.older).toBe(opened.older);
+  // A copy that never went further back is kept as it is.
+  expect(keptFrom(opened.transcript, on, opened.older).transcript).toBe(opened.transcript);
 });
 
 test('copies are kept for the chats gone between, the oldest let go, none past a sign-out or delete', async () => {

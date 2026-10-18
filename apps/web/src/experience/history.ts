@@ -53,10 +53,17 @@ export type Opened = {
   messagesAfter: number;
 };
 
-export type Read<T> = { data: T; error: null } | { data: null; error: string };
+/** `gone` when the service says the chat is not there for this person: deleted, or never theirs. */
+export type Read<T> = { data: T; error: null } | { data: null; error: string; gone?: true };
 
-const failed = (result: { error: string | null; unavailable: string | null }, what: string) =>
-  ({ data: null, error: result.error ?? result.unavailable ?? what }) as const;
+const failed = (
+  result: { error: string | null; unavailable: string | null; code?: string },
+  what: string,
+): { data: null; error: string; gone?: true } => ({
+  data: null,
+  error: result.error ?? result.unavailable ?? what,
+  ...(result.code === 'not_found' ? { gone: true as const } : {}),
+});
 
 /**
  * One page with all its events: the first answer, then the same page again
@@ -72,15 +79,19 @@ async function pageWithEvents(
   if (first.data === null) return failed(first, 'Couldn’t read the messages.');
   const page = first.data;
   if (page.next_cursor === undefined) return { data: page, error: null };
+  // The stream carries on after the first read's last event. Each later read
+  // is a read of its own and may go past that, and the turns it lists may not
+  // be these, so what it has past that point is left to the stream.
+  const until = page.last_seq ?? Number.POSITIVE_INFINITY;
   const events = [...(page.events ?? [])];
   let after = page.events_cursor ?? null;
   for (let reads = 0; after !== null && reads < EVENT_READS; reads++) {
     const more = await adapter.turnsPage(id, { ...query, events: true, eventsAfter: after });
     if (signal?.aborted) return null;
     if (more.data === null) return failed(more, 'Couldn’t read the messages.');
-    events.push(...(more.data.events ?? []));
+    events.push(...(more.data.events ?? []).filter((event) => event.seq <= until));
     const next = more.data.events_cursor ?? null;
-    after = next !== null && next > after ? next : null;
+    after = next !== null && next > after && next < until ? next : null;
   }
   return { data: { ...page, events, events_cursor: null }, error: null };
 }
@@ -119,9 +130,14 @@ export async function openConversation(
     adapter.drafts(id),
   ]);
   if (signal?.aborted || read === null) return null;
-  if (head.data === null) return failed(head, 'Couldn’t read this chat.');
-  // Messages that could not be read are not an empty chat.
-  if (read.data === null) return read;
+  // A chat that is not there any more, deleted on another device, is never drawn from a copy.
+  const refused = head.data === null ? failed(head, 'Couldn’t read this chat.') : read;
+  if (refused.data === null) {
+    if (refused.gone) forgetConversation(id);
+    // Messages that could not be read are not an empty chat.
+    return refused;
+  }
+  if (head.data === null || read.data === null) return null;
   const page = read.data;
   const conversation = head.data.conversation;
   let transcript = fromTurns(page.turns, conversation.composer, conversation.status);
@@ -205,6 +221,29 @@ export function prependOlder(transcript: Transcript, older: OlderPage): Transcri
     messages: { ...older.messages, ...transcript.messages },
     approvals: { ...older.approvals, ...transcript.approvals },
   };
+}
+
+/**
+ * What is kept of a chat: from the oldest turn it opened on, with where the
+ * turns before that continue. Going back to the chat reads its newest turns
+ * again and draws those, so turns read further back would only take room; a
+ * copy is the size of an open however far back the person read.
+ */
+export function keptFrom(
+  transcript: Transcript,
+  opened: { oldest: string | null; older: string | null },
+  older: string | null,
+): { transcript: Transcript; older: string | null } {
+  const from = opened.oldest ? transcript.turns.findIndex((turn) => turn.id === opened.oldest) : -1;
+  if (from <= 0) return { transcript, older };
+  const turns = transcript.turns.slice(from);
+  const ids = new Set(turns.map((turn) => turn.id));
+  const messages = Object.fromEntries(
+    Object.entries(transcript.messages).filter(
+      ([, message]) => message.turnId === null || ids.has(message.turnId),
+    ),
+  );
+  return { transcript: { ...transcript, turns, messages }, older: opened.older };
 }
 
 /* ---------- what was read, kept for going back ---------- */

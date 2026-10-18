@@ -10,6 +10,7 @@ import {
   FIRST_PAGE,
   keepConversation,
   keptConversation,
+  keptFrom,
   openConversation,
   prependOlder,
   readOlder,
@@ -285,6 +286,11 @@ export function useConversation(id: string | null): ConversationState {
     total: null,
   });
   const olderLoading = useRef(false);
+  /** The oldest turn the chat opened on, and where the turns before it continue (`keptFrom`). */
+  const openedOn = useRef<{ oldest: string | null; older: string | null }>({
+    oldest: null,
+    older: null,
+  });
   const transcriptRef = useRef(transcript);
   transcriptRef.current = transcript;
   const currentId = useRef(id);
@@ -307,6 +313,10 @@ export function useConversation(id: string | null): ConversationState {
     setError(null);
     // A chat read before is drawn at once from what was read, and read again behind it.
     const copy = keptConversation(id);
+    openedOn.current = {
+      oldest: copy?.transcript.turns[0]?.id ?? null,
+      older: copy?.older ?? null,
+    };
     if (copy) {
       setConversation(copy.conversation);
       setTranscriptState(copy.transcript);
@@ -326,12 +336,18 @@ export function useConversation(id: string | null): ConversationState {
       if (controller.signal.aborted || opened === null) return;
       if (opened.data === null) {
         // Messages that could not be read are not an empty chat: say so, and offer to read
-        // again. A copy kept from before stays on screen under the error.
+        // again. A copy kept from before stays on screen under the error, unless the chat
+        // is not there any more: then nothing of it is shown.
+        if (opened.gone) {
+          setConversation(null);
+          setTranscriptState(emptyTranscript());
+        }
         setError(opened.error);
         setLoading(false);
         return;
       }
       const { conversation, transcript: initial, turns: savedTurns, ended, cursor } = opened.data;
+      openedOn.current = { oldest: opened.data.turns[0]?.id ?? null, older: opened.data.older };
       setConversation(conversation);
       // A message sent while this was read, from the copy kept before, stays drawn.
       setTranscriptState((previous) => withLocalTurns(initial, previous));
@@ -438,8 +454,7 @@ export function useConversation(id: string | null): ConversationState {
     if (!id || !conversation || conversation.id !== id || loading) return;
     keepConversation(id, {
       conversation,
-      transcript,
-      older: olderRef.current.cursor,
+      ...keptFrom(transcript, openedOn.current, olderRef.current.cursor),
       total: olderRef.current.total,
       at: Date.now(),
     });

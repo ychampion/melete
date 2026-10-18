@@ -20,6 +20,7 @@ function transcript(turns: number) {
         <TurnSlot
           // biome-ignore lint/suspicious/noArrayIndexKey: the fixture's turns never move
           key={index}
+          turnId={`turn_${index}`}
           root={root}
           windowed={windowed}
           near={index >= turns - WINDOW_FROM}

@@ -17,16 +17,22 @@ export const UNDRAWN_HEIGHT = 240;
 
 /** One turn in the transcript. A turn holding the keyboard focus is never let go. */
 export function TurnSlot({
+  turnId,
   root,
   windowed,
   near: startsNear,
   children,
 }: {
+  /** The turn, named on the slot so it can be found while it is not drawn. */
+  turnId: string;
   /** The scrolling transcript. */
   root: RefObject<HTMLDivElement | null>;
   /** Whether the transcript is long enough to draw only near the view. */
   windowed: boolean;
-  /** Drawn before the first look at where it is: the newest turns. */
+  /**
+   * Drawn before the first look at where it is: the newest turns, and older
+   * ones as they go in above, so the view is held against their real height.
+   */
   near: boolean;
   children: ReactNode;
 }) {
@@ -63,6 +69,7 @@ export function TurnSlot({
     <div
       ref={ref}
       className="turn-slot"
+      data-slot={turnId}
       data-drawn={drawn ? undefined : 'false'}
       style={drawn ? undefined : { height: height.current ?? UNDRAWN_HEIGHT }}
     >

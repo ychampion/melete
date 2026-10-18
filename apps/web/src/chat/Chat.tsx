@@ -693,27 +693,45 @@ export function ChatScreen({ id }: { id: string | null }) {
   const earlierCount = folded.messages + 2 * Math.max(0, unread);
   // A long transcript draws only the turns near what is on screen.
   const windowed = transcript.turns.length - hidden > WINDOW_FROM;
-  // Where the scroll stood before older turns went in above, to hold the view still.
-  const prepending = useRef<{ height: number; top: number; first: string | undefined } | null>(
-    null,
-  );
+  // Older turns go in above the first one shown, and the view is held on that
+  // turn: where it stood from the top of the view when they were asked for, or
+  // when the person last scrolled while they were read. Held on the turn rather
+  // than on the scroll height, an answer still growing below does not move it.
+  const prepending = useRef<{ first: string; offset: number } | null>(null);
+  const offsetOf = useCallback((turnId: string): number | null => {
+    const node = scrollRef.current;
+    const slot = node?.querySelector<HTMLElement>(`[data-slot="${CSS.escape(turnId)}"]`);
+    if (!node || !slot) return null;
+    return slot.getBoundingClientRect().top - node.getBoundingClientRect().top;
+  }, []);
   const loadEarlier = useCallback(() => {
-    const node = scrollRef.current;
-    if (node)
-      prepending.current = {
-        height: node.scrollHeight,
-        top: node.scrollTop,
-        first: transcript.turns[0]?.id,
-      };
+    const first = transcript.turns[0]?.id;
+    const offset = first ? offsetOf(first) : null;
+    prepending.current = first && offset !== null ? { first, offset } : null;
     void older.load();
-  }, [older, transcript.turns]);
+  }, [older, transcript.turns, offsetOf]);
+  // The turns that just went in above, drawn at once so the view is held against
+  // their real height; the window lets go of the far ones once they are measured.
+  const shownFirst = useRef(transcript.turns[0]?.id);
+  const wentInAbove = (() => {
+    const was = shownFirst.current;
+    if (!was || transcript.turns[0]?.id === was) return 0;
+    return Math.max(
+      0,
+      transcript.turns.findIndex((turn) => turn.id === was),
+    );
+  })();
   useLayoutEffect(() => {
+    shownFirst.current = transcript.turns[0]?.id;
     const was = prepending.current;
-    const node = scrollRef.current;
-    if (!was || !node || transcript.turns[0]?.id === was.first) return;
+    if (!was || transcript.turns[0]?.id === was.first) return;
     prepending.current = null;
-    node.scrollTop = was.top + (node.scrollHeight - was.height);
-  }, [transcript.turns]);
+    const node = scrollRef.current;
+    const now = offsetOf(was.first);
+    // At once: the transcript scrolls smoothly, and a glide here would show the jump it hides.
+    if (node && now !== null)
+      node.scrollTo({ top: node.scrollTop + now - was.offset, behavior: 'instant' });
+  }, [transcript.turns, offsetOf]);
   const reactionsByTurn = useMemo(() => {
     const by = new Map<number, Reaction[]>();
     for (const reaction of reactions) {
@@ -873,6 +891,10 @@ export function ChatScreen({ id }: { id: string | null }) {
     const node = scrollRef.current;
     if (!node) return;
     setStuck(node.scrollHeight - node.scrollTop - node.clientHeight < 80);
+    // Scrolled while older turns are read: the view is held where the person left it.
+    const holding = prepending.current;
+    const offset = holding ? offsetOf(holding.first) : null;
+    if (holding && offset !== null) holding.offset = offset;
   };
 
   const send = useCallback(
@@ -1421,9 +1443,10 @@ export function ChatScreen({ id }: { id: string | null }) {
                       />
                     ) : null}
                     <TurnSlot
+                      turnId={turn.id}
                       root={scrollRef}
                       windowed={windowed}
-                      near={index >= transcript.turns.length - WINDOW_FROM}
+                      near={index >= transcript.turns.length - WINDOW_FROM || index < wentInAbove}
                     >
                       <TurnView
                         turn={turn}
