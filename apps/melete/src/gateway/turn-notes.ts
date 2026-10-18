@@ -197,8 +197,14 @@ export function withTurnNotes(
     turn.pinned.set(latest.id, [before, ...turn.pending.splice(0)].filter(Boolean).join('\n\n'));
   }
   // An acknowledgement shown before the first step: the note goes beside the
-  // person's message, so the first request already knows what was said.
-  const ending = latest ? null : endingMessage(body, protocol);
+  // person's message, so the first request already knows what was said. Only
+  // in the agent's own requests, which carry its tools: a side call of the
+  // attempt, such as the engine's compaction summary, also ends on a "user"
+  // message, and taking the note there would keep it from the agent.
+  const ending =
+    latest || !Array.isArray(body.tools) || !body.tools.length
+      ? null
+      : endingMessage(body, protocol);
   if (ending && turn.pending.length)
     turn.pinned.set(userKey(ending.index, ending.words), turn.pending.splice(0).join('\n\n'));
   if (!turn.pinned.size) return body;

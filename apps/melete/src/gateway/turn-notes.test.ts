@@ -15,6 +15,7 @@ const T0 = 1_000_000;
 
 /** A chat/completions request that ends on `results` tool results. */
 const chat = (results: number) => ({
+  tools: [{ type: 'function', function: { name: 'web_search' } }],
   messages: [
     { role: 'system', content: 'You are Melete.' },
     { role: 'user', content: 'Compare three monitors' },
@@ -55,11 +56,32 @@ describe('turn notes', () => {
     expect(notes(later)).toHaveLength(1);
   });
 
+  test('a side call of the attempt, such as a compaction summary, does not take the note', () => {
+    turnStarted(ATTEMPT, T0);
+    turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0 + 1_000);
+    // The engine's summary call: no tools, one message from "the user".
+    const summary = {
+      messages: [
+        {
+          role: 'user',
+          content:
+            'You are a summarization agent creating a context checkpoint. Target ~800 tokens.',
+        },
+      ],
+    };
+    expect(withTurnNotes(summary, 'chat/completions', ATTEMPT, T0 + 1_100)).toBe(summary);
+    // The agent's own next request is still told.
+    const first = withTurnNotes(chat(0), 'chat/completions', ATTEMPT, T0 + 1_200);
+    expect(notes(first)).toHaveLength(1);
+    expect(notes(first)[0]).toContain('"Looking at monitors now."');
+  });
+
   test('on the messages protocol the note joins the person message as a text block', () => {
     turnStarted(ATTEMPT, T0);
     turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0 + 1_000);
     const body = {
       system: 'You are Melete.',
+      tools: [{ name: 'web_search' }],
       messages: [{ role: 'user', content: 'Compare three monitors' }],
     };
     const first = withTurnNotes(body, 'messages', ATTEMPT, T0 + 1_100);
