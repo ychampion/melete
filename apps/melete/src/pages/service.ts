@@ -391,48 +391,52 @@ export async function settlePage(
   // The signature first: nothing is said about a page to anyone who cannot sign for it.
   if (!reportSigned(pageReportKey(secret, pageId), headers, body, now))
     return { ok: false, status: 401, message: 'The report is not signed for this page.' };
-  const [found] = await sql<PageRow[]>`select p.*, c.label from connection_page p
-    join connection c on c.id = p.connection_id where p.id = ${pageId}`;
-  if (!found) return { ok: false, status: 404, message: 'No such page.' };
-  const row = asPage(found);
-  let report: PageReport;
-  try {
-    report = pageReport.parse(JSON.parse(body));
-  } catch {
-    return { ok: false, status: 400, message: 'The report is not a page report.' };
-  }
-  if (Buffer.byteLength(JSON.stringify(report.data ?? {})) > PAGE_LIMITS.report_max_bytes)
-    return { ok: false, status: 400, message: 'The report is too large.' };
-  const state = stateOf(row, now);
-  if (state !== 'open') {
-    if (state === report.status && row.summary === report.summary)
-      return { ok: true, state, repeated: true };
-    return state === 'expired'
-      ? { ok: false, status: 410, message: 'The page expired before this report.' }
-      : { ok: false, status: 409, message: 'The page was already settled.' };
-  }
-  // The event first: it is delivered once whatever happens below, and a
-  // report sent again after a failure here finds it and settles the row.
-  await deliver({
-    connection_id: row.connection_id,
-    event_name: PAGE_SETTLED,
-    cursor: pageId,
-    dedup_key: `page:${pageId}`,
-    payload: {
-      page_id: pageId,
-      status: report.status,
-      summary: report.summary,
-      ...(report.data ? { data: report.data } : {}),
-      origin_trust: 'external_content',
-    },
-  });
-  const [settled] = await sql`update connection_page
-    set state = ${report.status}, summary = ${report.summary},
-      report_data = ${report.data ? JSON.stringify(report.data) : null}::jsonb,
-      report_id = ${headers.id ?? null}, settled_at = now()
-    where id = ${pageId} and state = 'open' returning id`;
-  if (!settled) return { ok: false, status: 409, message: 'The page was already settled.' };
-  return { ok: true, state: report.status, repeated: false };
+  // One report at a time per page: the row stays locked from the read until it
+  // is settled, so two reports sent together cannot deliver one outcome to the
+  // conversation and leave the other on the page.
+  return (await sql.begin(async (tx) => {
+    const [found] = await tx<PageRow[]>`select p.*, c.label from connection_page p
+      join connection c on c.id = p.connection_id where p.id = ${pageId} for update of p`;
+    if (!found) return { ok: false, status: 404, message: 'No such page.' };
+    const row = asPage(found);
+    let report: PageReport;
+    try {
+      report = pageReport.parse(JSON.parse(body));
+    } catch {
+      return { ok: false, status: 400, message: 'The report is not a page report.' };
+    }
+    if (Buffer.byteLength(JSON.stringify(report.data ?? {})) > PAGE_LIMITS.report_max_bytes)
+      return { ok: false, status: 400, message: 'The report is too large.' };
+    const state = stateOf(row, now);
+    if (state !== 'open') {
+      if (state === report.status && row.summary === report.summary)
+        return { ok: true, state, repeated: true };
+      return state === 'expired'
+        ? { ok: false, status: 410, message: 'The page expired before this report.' }
+        : { ok: false, status: 409, message: 'The page was already settled.' };
+    }
+    // The event first: it is delivered once whatever happens below, and a
+    // report sent again after a failure here finds it and settles the row.
+    await deliver({
+      connection_id: row.connection_id,
+      event_name: PAGE_SETTLED,
+      cursor: pageId,
+      dedup_key: `page:${pageId}`,
+      payload: {
+        page_id: pageId,
+        status: report.status,
+        summary: report.summary,
+        ...(report.data ? { data: report.data } : {}),
+        origin_trust: 'external_content',
+      },
+    });
+    await tx`update connection_page
+      set state = ${report.status}, summary = ${report.summary},
+        report_data = ${report.data ? JSON.stringify(report.data) : null}::jsonb,
+        report_id = ${headers.id ?? null}, settled_at = now()
+      where id = ${pageId}`;
+    return { ok: true, state: report.status, repeated: false };
+  })) as ReportOutcome;
 }
 
 const PAGE_COLUMNS = (sql: Sql) => sql`p.id, p.job_id, p.connection_id, p.principal_id,
