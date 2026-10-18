@@ -179,6 +179,7 @@ export function builtinEnvironment(
     OPENAI_COMPAT_BASE_URL?: string;
     MELETE_ENABLE_FAKE_PROVIDER?: boolean;
     MELETE_PREVIEW_MULTIPLAYER?: boolean | string;
+    MELETE_FEATURE_MULTIPLAYER?: string;
   } & Partial<Omit<DockerSandboxEnv, 'MELETE_RUNTIME_ADAPTER'>>,
 ): BuiltinEnvironment {
   const capabilities = capabilitiesFromEnv({

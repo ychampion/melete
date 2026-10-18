@@ -25,6 +25,12 @@ import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import type { AccountMailer } from '../experience/account-mail.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
+import {
+  type Features,
+  installationFeatures,
+  type PersonFeatureSource,
+  personFeatures,
+} from '../features.ts';
 import { newId } from '../ids.ts';
 import { markSeen } from '../jobs/resting.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
@@ -36,7 +42,7 @@ import {
   selectedSpace,
 } from '../principals/session-space.ts';
 import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
-import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled } from '../rooms/preview.ts';
+import { MULTIPLAYER_UNAVAILABLE } from '../rooms/preview.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
@@ -304,6 +310,8 @@ export function mountAuth(
     accountMail?: AccountMailer;
     /** Closes the connections of paired computers that ending an account's access disconnected. */
     devicesEnded?: (principalId: string, deviceIds: string[]) => Promise<void>;
+    /** Each person's own feature values; left out, everyone has the installation's. */
+    personFeatures?: PersonFeatureSource;
   },
 ): void {
   const { db, env, registry } = deps;
@@ -311,7 +319,19 @@ export function mountAuth(
   const setupCodeHash = env.MELETE_SETUP_CODE_HASH;
   // Reachable from other machines with no code to ask for: the first visitor is turned away.
   const claimRefused = openClaimRefused(env);
-  const multiplayer = multiplayerEnabled(env);
+  const features = installationFeatures(env);
+  const multiplayer = features.multiplayer;
+  // What the browser asking has on: the installation's features, narrowed by
+  // the signed-in person's own where a source of them is given. A missing,
+  // expired or guest session is answered with the installation's.
+  const featuresFor = async (c: Context): Promise<Features> => {
+    const source = deps.personFeatures;
+    const token = getCookie(c, SESSION_COOKIE);
+    if (!source || !db || !token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return features;
+    const active = await activeSession(db, token);
+    if (!active || active.owner.kind === 'guest') return features;
+    return personFeatures(features, await source(active.owner.id));
+  };
   const signInKinds = multiplayer ? SIGN_IN_KINDS : ['person'];
   const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
   // Each signed-in request, and each use through another assistant, is the
@@ -590,6 +610,7 @@ export function mountAuth(
     return c.json({
       needed,
       multiplayer,
+      features: await featuresFor(c),
       code_required:
         needed &&
         (claimRefused || (handle ? await setupCodeRequired(handle, setupCodeHash) : false)),

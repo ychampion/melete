@@ -23,7 +23,7 @@ const profile = (role: 'owner' | 'member'): Profile => ({
 
 function render(node: React.ReactNode, member: boolean) {
   const app = {
-    capabilities: { calendar: false, browser: false, multiplayer: true },
+    capabilities: { calendar: false, browser: false, multiplayer: true, features: {} },
     profile: profile(member ? 'member' : 'owner'),
     onboarded: true,
     setOnboarded: () => {},

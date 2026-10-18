@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Button, Input, Select, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { featureOn } from '../experience/features.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import {
   dismissOffer,
@@ -66,7 +67,7 @@ function Row({ title, sub, children }: { title: string; sub: string; children: R
 }
 
 export function NotificationsTab() {
-  const { profile, refreshProfile, member } = useApp();
+  const { profile, refreshProfile, member, capabilities } = useApp();
   const key = useLoad(() => adapter.pushPublicKey(), []);
   const devices = useLoad(() => adapter.pushDevices(), []);
   const settings = useLoad(() => adapter.pushSettings(), []);
@@ -275,7 +276,7 @@ export function NotificationsTab() {
         </>
       ) : null}
 
-      <ReachMe />
+      {featureOn(capabilities, 'phone') ? <ReachMe /> : null}
     </div>
   );
 }

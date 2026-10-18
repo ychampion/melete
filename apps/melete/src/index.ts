@@ -107,6 +107,12 @@ import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
+import {
+  installationFeatures,
+  mountFeatureGate,
+  mountPersonFeatureGate,
+  type PersonFeatureSource,
+} from './features.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
 import { feedbackWebhook, mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
@@ -208,7 +214,6 @@ import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
 import { requestFailureText } from './request-failure.ts';
-import { mountMultiplayerGate, multiplayerEnabled } from './rooms/preview.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
@@ -349,6 +354,11 @@ export type AppDeps = {
   triage?: TriageService;
   /** Sends sign-in and reset links. Left out, the sender MELETE_SMTP_URL configures, if any. */
   accountMail?: AccountMailer;
+  /**
+   * Each person's own feature values, which can only turn a feature off for
+   * them. Left out, everyone has the installation's features.
+   */
+  personFeatures?: PersonFeatureSource;
 };
 
 export function createApp(deps: AppDeps) {
@@ -377,8 +387,10 @@ export function createApp(deps: AppDeps) {
   app.use(`${PREVIEW_PREFIX}*`, isolated);
   // Rooms, shared spaces, guests and hand-offs answer 404 while switched off,
   // before sign-in, so an invite link and a guest's session meet the same answer.
-  const multiplayer = multiplayerEnabled(deps.env);
-  mountMultiplayerGate(app, multiplayer);
+  // The same for every feature the operator has turned off (features.ts).
+  const features = installationFeatures(deps.env);
+  const multiplayer = features.multiplayer;
+  mountFeatureGate(app, features);
   // No name, address, id or search holds a NUL, and the database refuses one in
   // any text it is given: a query that carries one is refused here, for every
   // route, as invalid request data, never answered with a server error.
@@ -423,6 +435,8 @@ export function createApp(deps: AppDeps) {
         }
       : {}),
   });
+  // Once sign-in has named the person: a feature turned off for them alone.
+  mountPersonFeatureGate(app, features, deps.personFeatures);
   // Before every route that answers with a session, so its checks of a space
   // header, ?space_id and ?job_id run for all of them, files and apps included.
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
@@ -611,7 +625,7 @@ export function createApp(deps: AppDeps) {
             markSeen(reachDb, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
         })
       : undefined);
-  if (reaching) mountReach(app, reaching);
+  if (reaching && features.phone) mountReach(app, reaching);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the
   // one Settings → Privacy edits.
@@ -640,7 +654,7 @@ export function createApp(deps: AppDeps) {
       resolveSpace: personalSpace,
     });
   if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
-  if (deps.db)
+  if (deps.db && features.voice)
     mountVoice(app, {
       db: deps.db,
       allowance: deps.sql ? new PostgresVoiceAllowance(deps.sql) : undefined,
@@ -666,7 +680,7 @@ export function createApp(deps: AppDeps) {
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
       changes: deps.events,
-      browser: Boolean(deps.browserSessions),
+      browser: Boolean(deps.browserSessions) && features.browser,
       privacy,
       runs: longWork,
       attachments: deps.attachments,
@@ -695,7 +709,7 @@ export function createApp(deps: AppDeps) {
       triggers: deps.triggers,
       surfaces: deps.roomSurfaces,
     });
-  if (connections) {
+  if (connections && features.sms) {
     const factory = connectorFactoryFor(connections.registry, () =>
       connectorOptionsFromEnv(connections.sql, connections.env),
     );
@@ -710,7 +724,7 @@ export function createApp(deps: AppDeps) {
         markSeen(connections.db, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
     });
   }
-  if (deps.db)
+  if (deps.db && features.companies)
     mountCompanies(app, {
       ...companiesDeps({
         db: deps.db,
@@ -794,10 +808,12 @@ export function createApp(deps: AppDeps) {
         },
       }),
     );
-  if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
-  if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
-  if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
-  if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
+  if (deps.browserSessions && features.browser) {
+    mountBrowserSessions(app, deps.browserSessions);
+    mountBrowserLive(app, deps.browserSessions);
+    mountBrowserSites(app, deps.browserSessions.sites);
+  }
+  if (deps.sandboxComputers && features.computer) mountSandboxComputers(app, deps.sandboxComputers);
   if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
 
   mountHealthDetail(app, {
@@ -884,6 +900,8 @@ export async function bootstrap(
   } = {},
 ) {
   const env = options.env ?? loadEnv();
+  // A feature the operator turned off is not started at all, besides its routes being refused.
+  const features = installationFeatures(env);
   // Compose selects the supervised Docker adapter before any dependencies start.
   if (!options.runtime && !['hermes', 'docker', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
     throw new Error('MELETE_RUNTIME_ADAPTER must be hermes, docker or stub.');
@@ -1155,7 +1173,10 @@ export async function bootstrap(
       // Before the registry is built, so an upgraded database gains its default connectors now.
       await ensureBuiltinConnections(handle.sql, builtinEnvironment(env));
       connections = await readConnectionConfig(env.MELETE_CONNECTIONS_FILE);
-      browser = await configuredBrowserSessions({ sql: handle.sql, env, connections });
+      // Turned off, the agent has no browser of its own (MELETE_FEATURE_BROWSER).
+      browser = features.browser
+        ? await configuredBrowserSessions({ sql: handle.sql, env, connections })
+        : undefined;
       // Stdio MCP servers run in containers through the same socket as the attempts.
       if (env.MELETE_RUNTIME_ADAPTER === 'docker' && !options.runtime) {
         const hostname = process.env.HOSTNAME ?? '';
@@ -1212,11 +1233,12 @@ export async function bootstrap(
       );
       sandboxes = startSandboxesFromEnv(handle.sql, env, connectors);
       // Answers to texts go back from the service itself, once each turn a text began has ended.
-      smsReplies = startSmsReplies({
-        sql: handle.sql,
-        secrets: connectors.secrets,
-        twilio: connectors.options.twilio,
-      });
+      if (features.sms)
+        smsReplies = startSmsReplies({
+          sql: handle.sql,
+          secrets: connectors.secrets,
+          twilio: connectors.options.twilio,
+        });
       // A sandbox connection's key is the only way into its account, so a
       // revocation destroys what the connection holds before the key goes.
       sandboxTeardown = connectors.sandboxTeardownProviders();
@@ -1347,7 +1369,7 @@ export async function bootstrap(
       : undefined;
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
-    if (handle && voiceProvidersFromEnv(env).live)
+    if (handle && features.voice && voiceProvidersFromEnv(env).live)
       voiceCompanion = await configuredVoiceCompanion(env, options.fakeProvider, privacy, {
         settings: modelSettings,
         signIn,
@@ -1903,17 +1925,19 @@ export async function bootstrap(
         // company that answered the same day would be followed up on anyway.
         const connectors = registry;
         if (handle && connectors) {
-          companyReplies = new CompanyReplyPoller({
-            sql: handle.sql,
-            triggers,
-            mailboxFor: (candidate) =>
-              connectorReplyMailbox({
-                registry: connectors,
-                connectionId: candidate.connectionId,
-                spaceId: candidate.spaceId,
-              }),
-          });
-          await companyReplies.start();
+          if (features.companies) {
+            companyReplies = new CompanyReplyPoller({
+              sql: handle.sql,
+              triggers,
+              mailboxFor: (candidate) =>
+                connectorReplyMailbox({
+                  registry: connectors,
+                  connectionId: candidate.connectionId,
+                  spaceId: candidate.spaceId,
+                }),
+            });
+            await companyReplies.start();
+          }
           // New mail and calendar changes in the accounts some live trigger
           // listens to, read from each account's own change feed, by one
           // instance at a time. A connection installed through another
@@ -2006,7 +2030,7 @@ export async function bootstrap(
         }
         // A deadline the person set that goes unanswered climbs from push to
         // a text and a call to their own verified number.
-        if (handle && situations) {
+        if (handle && situations && features.phone) {
           const noticing = situations;
           reach = new ReachService({
             db: handle.db,

@@ -119,6 +119,12 @@ export const setupStatusResponse = z.strictObject({
   needed: z.boolean(),
   /** Whether rooms, shared spaces, guests and hand-offs are switched on here. */
   multiplayer: z.boolean(),
+  /**
+   * Each feature an operator can turn on or off, by name (`voice`, `browser`,
+   * `companies`, …), and whether it is on for whoever is asking. A surface
+   * whose feature is false is left out; its routes are refused anyway.
+   */
+  features: z.record(z.string().regex(/^[a-z][a-z0-9_]*$/), z.boolean()),
   /** Whether creating the first account needs the installation's one-time setup code. */
   code_required: z.boolean(),
   /**

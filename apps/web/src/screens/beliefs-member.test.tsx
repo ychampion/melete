@@ -9,7 +9,7 @@ import { MemoryPanel } from './Beliefs.tsx';
 
 function render(node: React.ReactNode, member: boolean) {
   const app = {
-    capabilities: { calendar: false, browser: false, multiplayer: true },
+    capabilities: { calendar: false, browser: false, multiplayer: true, features: {} },
     profile: null,
     onboarded: true,
     setOnboarded: () => {},

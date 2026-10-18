@@ -74,6 +74,11 @@ function brokerUrlMismatch(bind: string, url: string): string | null {
 const unsetWhenBlank = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
 
+/** One `MELETE_FEATURE_<NAME>` switch: `on`, `off`, or left out for the feature's default. */
+const featureSwitch = unsetWhenBlank(
+  z.enum(['on', 'off'], { message: 'Write on or off' }).optional(),
+);
+
 /**
  * Whether the Postgres client can read this address. It is judged here, the
  * way the client reads it (only the first of several hosts goes through the URL
@@ -398,6 +403,19 @@ const variables = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * Whole features an operator turns on or off (features.ts). Left out, each
+   * keeps its default: multiplayer follows MELETE_PREVIEW_MULTIPLAYER, and
+   * every other feature is on. Off, its routes answer 404 `not_available`
+   * with a plain sentence and the web leaves it out.
+   */
+  MELETE_FEATURE_MULTIPLAYER: featureSwitch,
+  MELETE_FEATURE_VOICE: featureSwitch,
+  MELETE_FEATURE_PHONE: featureSwitch,
+  MELETE_FEATURE_SMS: featureSwitch,
+  MELETE_FEATURE_BROWSER: featureSwitch,
+  MELETE_FEATURE_COMPUTER: featureSwitch,
+  MELETE_FEATURE_COMPANIES: featureSwitch,
   MELETE_ENABLE_FAKE_PROVIDER: z
     .enum(['true', 'false'])
     .default('false')

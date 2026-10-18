@@ -1177,7 +1177,7 @@ export function connectorOptionsFromEnv(
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     attachments: extra.attachments,
     cellIsolated: builtinEnvironment(env).cellIsolated,
-    multiplayer: env.MELETE_PREVIEW_MULTIPLAYER,
+    multiplayer: multiplayerEnabled(env),
     // Nothing is created until the first write.
     blobs: configuredBlobStore(env),
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET

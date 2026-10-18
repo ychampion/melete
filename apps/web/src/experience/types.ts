@@ -249,6 +249,11 @@ export type Capabilities = {
   browser: boolean;
   /** Rooms, shared spaces, guests and hand-offs, as the server's switch has them. */
   multiplayer: boolean;
+  /**
+   * The features the operator can turn on or off, as the setup status names
+   * them for whoever is signed in; read through `featureOn` (features.ts).
+   */
+  features: Record<string, boolean>;
 };
 
 export type TourStage = 'calendar' | 'drafting' | 'browser' | 'plans' | 'memory';

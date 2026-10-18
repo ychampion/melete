@@ -36,6 +36,7 @@ import {
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { clockTime, displayZone, sameDay, weekday } from '../experience/clock.ts';
+import { featureOn } from '../experience/features.ts';
 import {
   agentById,
   type Loaded,
@@ -258,7 +259,12 @@ function Sidebar({
     member,
     capabilities,
   } = useApp();
-  const nav = sidebarNav(guest === true, capabilities.multiplayer, member === true);
+  const nav = sidebarNav(
+    guest === true,
+    capabilities.multiplayer,
+    member === true,
+    featureOn(capabilities, 'companies'),
+  );
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));

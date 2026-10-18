@@ -335,6 +335,7 @@ export const adapter = {
     guard<{
       needed: boolean;
       multiplayer?: boolean;
+      features?: Record<string, boolean>;
       code_required?: boolean;
       email_sign_in?: boolean;
     }>(() => api.GET('/setup')),

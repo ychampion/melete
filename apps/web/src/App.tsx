@@ -9,6 +9,7 @@ import { stopPushHere } from './experience/account.ts';
 import { adapter, type Result, SESSION_ENDED_EVENT, servesBrowser } from './experience/adapter.ts';
 import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import { setDisplayZone } from './experience/clock.ts';
+import { featureOn } from './experience/features.ts';
 import {
   AppContext,
   type AppContextValue,
@@ -144,6 +145,7 @@ export function App() {
     calendar: false,
     browser: false,
     multiplayer: false,
+    features: {},
   });
   // Whether the server has rooms switched on, read once whoever is signed in.
   // A room or invite link waits for the answer rather than leaving early.
@@ -151,7 +153,9 @@ export function App() {
   useEffect(() => {
     void adapter.setupStatus().then((status) => {
       const multiplayer = status.data?.multiplayer === true;
-      setCapabilities((c) => ({ ...c, multiplayer }));
+      // What the operator turned off, for whoever is signed in; a surface that is off is left out.
+      const features = status.data?.features ?? {};
+      setCapabilities((c) => ({ ...c, multiplayer, features }));
       setMultiplayerKnown(true);
     });
   }, []);
@@ -324,7 +328,11 @@ export function App() {
 
   const value = useMemo<AppContextValue>(
     () => ({
-      capabilities,
+      // The browser is drawn only where the service has one and the operator left it on.
+      capabilities: {
+        ...capabilities,
+        browser: capabilities.browser && featureOn(capabilities, 'browser'),
+      },
       profile: signedIn ? (profile.data?.profile ?? null) : null,
       onboarded,
       setOnboarded,
@@ -416,7 +424,7 @@ export function App() {
     screen = <PlansScreen selected={second ?? null} />;
   } else if (head === 'rooms' && capabilities.multiplayer) {
     screen = <RoomsRoute parts={route.parts} />;
-  } else if (head === 'companies') {
+  } else if (head === 'companies' && featureOn(capabilities, 'companies')) {
     screen = <CompaniesScreen />;
   } else if (head === 'runs') {
     screen = <WorkScreen key={second ?? 'all'} id={second ?? null} />;

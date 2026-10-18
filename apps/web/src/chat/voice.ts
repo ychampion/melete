@@ -12,6 +12,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { adapter } from '../experience/adapter.ts';
+import { featureOn } from '../experience/features.ts';
+import { useApp } from '../experience/hooks.ts';
 import type { VoiceStatus } from '../experience/types.ts';
 
 /* ---------- whether voice is here at all ---------- */
@@ -24,11 +26,13 @@ export type VoicePlace = { conversationId: string | null; agentId: string | null
  * Read again when the place changes: a private space or agent, or a
  * conversation about a sensitive topic, has voice off. `null` is a place with
  * no voice at all, such as a routine's thread, which takes no messages: it is
- * not asked about.
+ * not asked about. Where the operator turned voice off, nothing is asked and
+ * no voice is offered.
  */
 export function useVoiceStatus(place: VoicePlace | null): VoiceStatus | null {
   const [value, setValue] = useState<VoiceStatus | null>(null);
-  const asked = place !== null;
+  const { capabilities } = useApp();
+  const asked = place !== null && featureOn(capabilities, 'voice');
   const conversationId = place?.conversationId ?? null;
   const agentId = place?.agentId ?? null;
   useEffect(() => {

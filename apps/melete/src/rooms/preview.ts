@@ -15,10 +15,18 @@ export const MULTIPLAYER_UNAVAILABLE = {
   message: 'Rooms and shared spaces are not available on this server.',
 } as const;
 
-/** Whether the switch is on, read from parsed settings or from raw environment strings. */
+/**
+ * Whether the switch is on, read from parsed settings or from raw environment
+ * strings. `MELETE_FEATURE_MULTIPLAYER=on|off` (features.ts) wins when set.
+ */
 export function multiplayerEnabled(
-  env: { MELETE_PREVIEW_MULTIPLAYER?: boolean | string } | undefined,
+  env:
+    | { MELETE_PREVIEW_MULTIPLAYER?: boolean | string; MELETE_FEATURE_MULTIPLAYER?: string }
+    | undefined,
 ): boolean {
+  const feature = env?.MELETE_FEATURE_MULTIPLAYER;
+  if (feature === 'on') return true;
+  if (feature === 'off') return false;
   const value = env?.MELETE_PREVIEW_MULTIPLAYER;
   return value === true || value === 'true';
 }
