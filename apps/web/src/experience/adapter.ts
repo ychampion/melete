@@ -341,7 +341,14 @@ export const adapter = {
       multiplayer?: boolean;
       code_required?: boolean;
       email_sign_in?: boolean;
+      signin?: { password: boolean; oidc: { label: string } | null };
     }>(() => api.GET('/setup')),
+  /**
+   * Where the browser goes to sign in with the installation's identity
+   * provider; it comes back to `returnTo` in the app, signed in.
+   */
+  oidcSignInUrl: (returnTo: string) =>
+    `${API_BASE_URL}/signin/oidc/start?return=${encodeURIComponent(returnTo)}`,
   /** Creates the first account and signs this browser in. */
   createAccount: (email: string, password: string, setup_code?: string) =>
     guard<{ owner: SignedInOwner }>(() =>

@@ -11,6 +11,7 @@ import {
   canonicalResource,
   discoverAuthorizationServer,
   discoverProtectedResource,
+  exchangeCode,
   McpSignInFailure,
   metadataLocations,
   type OAuthFetch,
@@ -434,6 +435,70 @@ describe('asking for more access', () => {
       expect(needed).toEqual(['files:write']);
     } finally {
       server.stop(true);
+    }
+  });
+});
+
+describe('client authentication at the token endpoint', () => {
+  const server = (methods?: string[]) => ({
+    issuer: 'https://as.example.test',
+    authorization_endpoint: 'https://as.example.test/authorize',
+    token_endpoint: 'https://as.example.test/token',
+    ...(methods ? { token_endpoint_auth_methods_supported: methods } : {}),
+  });
+  const capture = () => {
+    const seen: { headers: Headers; body: URLSearchParams }[] = [];
+    const recording: OAuthFetch = async (_url, init) => {
+      seen.push({
+        headers: new Headers(init?.headers),
+        body: new URLSearchParams(String(init?.body)),
+      });
+      return Response.json({ access_token: 'a', token_type: 'Bearer' });
+    };
+    return { seen, recording };
+  };
+  const exchange = (methods: string[] | undefined, clientId: string, clientSecret: string) => {
+    const { seen, recording } = capture();
+    return exchangeCode(
+      server(methods),
+      {
+        code: 'c',
+        verifier: 'v',
+        redirectUri: 'https://melete.example.test/api/oauth/callback',
+        client: { clientId, clientSecret, method: 'pre_registered' },
+        resource: 'https://mcp.example.test',
+      },
+      recording,
+    ).then(() => seen[0] as { headers: Headers; body: URLSearchParams });
+  };
+
+  test('a server listing only HTTP Basic gets the form-encoded id and secret in it (RFC 6749 2.3.1)', async () => {
+    const clientId = 'id:with spaces+plus%/é';
+    const clientSecret = "s3cr:t !*'()~+&=%é";
+    const sent = await exchange(['client_secret_basic'], clientId, clientSecret);
+    expect(sent.body.has('client_secret')).toBe(false);
+    const header = sent.headers.get('authorization') ?? '';
+    expect(header.startsWith('Basic ')).toBe(true);
+    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    // Exactly one raw colon: the id's own colon is encoded.
+    expect(decoded.split(':')).toHaveLength(2);
+    const [id, secret] = decoded.split(':') as [string, string];
+    const formDecode = (value: string) => new URLSearchParams(`v=${value}`).get('v') ?? '';
+    expect(formDecode(id)).toBe(clientId);
+    expect(formDecode(secret)).toBe(clientSecret);
+    // The resource still goes in the form.
+    expect(sent.body.get('resource')).toBe('https://mcp.example.test');
+  });
+
+  test('a server listing the form method, both, or none gets the secret in the form, as before', async () => {
+    for (const methods of [
+      ['client_secret_post'],
+      ['client_secret_post', 'client_secret_basic'],
+      undefined,
+    ]) {
+      const sent = await exchange(methods, 'client', 'secret');
+      expect(sent.body.get('client_secret')).toBe('secret');
+      expect(sent.headers.has('authorization')).toBe(false);
     }
   });
 });

@@ -191,6 +191,9 @@ const SIGNED_OUT_ROUTES = [
   /^GET \/(health|health\/detail|setup)$/,
   /^POST \/(setup|login|password-reset|password-reset\/check|password-reset\/consume)$/,
   /^POST \/signin\/[a-z-]+(\/check|\/consume)?$/,
+  // Signing in through the installation's identity provider, and its back-channel logout.
+  /^GET \/signin\/oidc\/(start|callback)$/,
+  /^POST \/signin\/oidc\/logout$/,
   /^POST \/invites\/(view|accept)$/,
   /^GET \/oauth\/client-metadata\.json$/,
   /^GET \/\.well-known\//,

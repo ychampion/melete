@@ -46,6 +46,7 @@ describe('GET /setup', () => {
       email_sign_in: false,
       instance_name: 'Melete',
       assistant_name: 'Melete',
+      signin: { password: true, oidc: null },
     });
   });
 
@@ -93,6 +94,7 @@ describe('GET /setup', () => {
       email_sign_in: false,
       instance_name: 'Melete',
       assistant_name: 'Melete',
+      signin: { password: true, oidc: null },
     });
   });
 
@@ -174,6 +176,7 @@ describe('the multiplayer switch', () => {
       email_sign_in: false,
       instance_name: 'Melete',
       assistant_name: 'Melete',
+      signin: { password: true, oidc: null },
     });
     for (const route of covered) {
       const response = await send(app, route);
@@ -200,6 +203,7 @@ describe('the multiplayer switch', () => {
       email_sign_in: false,
       instance_name: 'Melete',
       assistant_name: 'Melete',
+      signin: { password: true, oidc: null },
     });
     for (const route of covered.filter(([, path]) => !path.startsWith('/invites/'))) {
       const response = await send(app, route);

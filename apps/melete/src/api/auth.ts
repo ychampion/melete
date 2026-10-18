@@ -49,6 +49,7 @@ import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cooki
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
+import { oidcPublicPath, signInMethods } from './oidc-paths.ts';
 import { mountPassword } from './password.ts';
 import { requireStrongPassword } from './password-policy.ts';
 import {
@@ -420,6 +421,8 @@ export function mountAuth(
           // An authorization server reads this client's metadata without a session.
           c.req.path === '/oauth/client-metadata.json')) ||
       mcpPublicPath(c.req.method, c.req.path) ||
+      // Signing in through the identity provider, and its back-channel logout.
+      oidcPublicPath(c.req.method, c.req.path) ||
       (c.req.method === 'POST' &&
         [
           '/setup',
@@ -612,7 +615,9 @@ export function mountAuth(
       code_required:
         needed &&
         (claimRefused || (handle ? await setupCodeRequired(handle, setupCodeHash) : false)),
-      email_sign_in: needed || !signIn ? false : await signIn.canSend(),
+      email_sign_in:
+        needed || !signIn || !env.MELETE_PASSWORD_SIGNIN ? false : await signIn.canSend(),
+      signin: signInMethods(env),
       // What the installation and its assistant are called, for the sign-in
       // and setup pages, which load before anyone is signed in.
       instance_name: env.MELETE_INSTANCE_NAME,

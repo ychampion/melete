@@ -45,8 +45,15 @@ if (import.meta.main) {
   }
   const { openDatabase } = await import('../db/client.ts');
   const { withFileSettings } = await import('../env.ts');
+  const settings = withFileSettings(process.env);
+  if (settings.MELETE_PASSWORD_SIGNIN?.trim() === 'off') {
+    process.stderr.write(
+      'Password sign-in is off here (MELETE_PASSWORD_SIGNIN=off), so a reset link would not work.\nTo let passwords in again, set MELETE_PASSWORD_SIGNIN=on and restart the service.\n',
+    );
+    process.exit(1);
+  }
   // In the service's container the address is a file the database's setup step wrote.
-  const url = withFileSettings(process.env).DATABASE_URL;
+  const url = settings.DATABASE_URL;
   if (!url) {
     process.stderr.write('Set DATABASE_URL to the database this Melete uses.\n');
     process.exit(2);

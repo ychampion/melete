@@ -2677,7 +2677,9 @@ export function buildOpenApiDocument() {
               'code: when one is configured or issued, and also when none exists but ' +
               '`MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and ' +
               '`MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation ' +
-              'can email sign-in and password reset links. `instance_name` and `assistant_name` ' +
+              'can email sign-in and password reset links. `signin` says whether passwords ' +
+              'sign in here and names the identity provider’s button, when there is one. ' +
+              '`instance_name` and `assistant_name` ' +
               'are what the installation and its assistant are called (`MELETE_INSTANCE_NAME`, ' +
               '`MELETE_ASSISTANT_NAME`), both Melete unless set.',
             responses: {
@@ -2710,6 +2712,64 @@ export function buildOpenApiDocument() {
               '409': problem('The owner is already set up'),
               '429': rateLimited('Too many setup attempts from this address'),
               '503': problem('No database is configured'),
+            },
+          },
+        },
+
+        '/signin/oidc/start': {
+          get: {
+            tags: ['account'],
+            summary: 'Begin signing in with the installation’s identity provider',
+            description:
+              'Opened by the browser, not fetched. Sends it to the OpenID Connect provider ' +
+              '(`MELETE_OIDC_ISSUER`) with PKCE, a state and a nonce, which a sealed ' +
+              'melete_oidc cookie keeps for ten minutes. `return` is a path in the app to ' +
+              'land on afterwards; anything else lands on the home screen.',
+            requestParams: { query: z.object({ return: z.string().max(512).optional() }) },
+            responses: {
+              '302': redirect('To the identity provider, or back to sign-in with signin_error'),
+              '404': problem('No identity provider is set up'),
+            },
+          },
+        },
+
+        '/signin/oidc/callback': {
+          get: {
+            tags: ['account'],
+            summary: 'Where the identity provider sends the browser back',
+            description:
+              'Checks the state against the cookie and spends it, exchanges the code, and ' +
+              'verifies the ID token against the provider’s keys (issuer, audience, expiry, ' +
+              'nonce, and a verified email). Signs in the account linked to the provider ' +
+              'account or holding that email; with `MELETE_OIDC_ACCOUNTS=create` it makes one. ' +
+              'A disabled account, a missing `MELETE_OIDC_REQUIRE_CLAIM` claim or any failed ' +
+              'check returns to the sign-in page with `signin_error`.',
+            responses: {
+              '302': redirect('Into the app, signed in, or back to sign-in with signin_error'),
+              '404': problem('No identity provider is set up'),
+              '503': problem('No database is configured'),
+            },
+          },
+        },
+
+        '/signin/oidc/logout': {
+          post: {
+            tags: ['account'],
+            summary: 'OpenID Connect back-channel logout',
+            description:
+              'Called by the identity provider with a signed `logout_token`. Ends every browser ' +
+              'session of the account linked to its subject.',
+            requestBody: {
+              content: {
+                'application/x-www-form-urlencoded': {
+                  schema: z.object({ logout_token: z.string() }),
+                },
+              },
+            },
+            responses: {
+              '200': { description: 'The sessions have ended, or there were none' },
+              '400': { description: 'The logout token was refused' },
+              '404': problem('No identity provider is set up'),
             },
           },
         },

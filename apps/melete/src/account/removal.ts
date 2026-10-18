@@ -61,6 +61,7 @@ export const SETUP_OWNER_KEPT =
 const ACCOUNT_RECORDS = [
   'session',
   'principal_identity',
+  'oidc_identity',
   'password_reset',
   'mcp_authorization',
   'mcp_token',
