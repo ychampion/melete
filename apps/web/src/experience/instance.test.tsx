@@ -15,8 +15,8 @@ import {
   DEFAULT_NAME,
   instanceName,
   setInstance,
-  useInstance,
 } from './instance.ts';
+import { useInstance } from './use-instance.ts';
 
 // The screens read the window size and the address; on the server there is no
 // window, so a small one stands in, and is taken away again afterwards.

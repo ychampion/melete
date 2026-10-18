@@ -4,13 +4,11 @@
  * (`MELETE_ASSISTANT_NAME`). Both are "Melete" until the status says
  * otherwise, so an installation that sets neither reads exactly as before.
  *
- * Components read them with `useInstance()`. Strings made outside a component
+ * Components read them with `useInstance()` (`use-instance.ts`). Strings made outside a component
  * (an adapter's error, a toast built in a helper) read `assistantName()` or
  * `instanceName()` at the moment they are made. The app waits for the setup
  * status before it draws a screen, so both are known by the first render.
  */
-import { useSyncExternalStore } from 'react';
-
 export type Instance = {
   /** What the app calls itself: page titles, sign-in, "this installation". */
   name: string;
@@ -40,12 +38,10 @@ export const assistantName = (): string => current.assistant;
 /** What the app calls itself, read when a string is made. */
 export const instanceName = (): string => current.name;
 
-const subscribe = (listener: () => void) => {
+/** Calls `listener` whenever the names change; returns how to stop. */
+export const subscribeInstance = (listener: () => void): (() => void) => {
   listeners.add(listener);
-  return () => listeners.delete(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 };
-
-/** The installation's names, drawn again when the setup status changes them. */
-export function useInstance(): Instance {
-  return useSyncExternalStore(subscribe, currentInstance, currentInstance);
-}

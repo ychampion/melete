@@ -16,10 +16,11 @@ import {
   NO_DECISIONS,
   useLoad,
 } from './experience/hooks.ts';
-import { instanceName, setInstance, useInstance } from './experience/instance.ts';
+import { instanceName, setInstance } from './experience/instance.ts';
 import { latestOnly } from './experience/latest.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
+import { useInstance } from './experience/use-instance.ts';
 import { useFocusBeat } from './push-focus.ts';
 import { roomsApi } from './rooms/api.ts';
 import { InviteScreen } from './rooms/InviteScreen.tsx';
