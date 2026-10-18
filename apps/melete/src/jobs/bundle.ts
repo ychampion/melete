@@ -30,7 +30,20 @@ import {
   triggerSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
@@ -1814,6 +1827,13 @@ export async function completionFacts(
       and (q.attempt_id = ${action.attemptId}
         or q.created_at >= coalesce(${action.dispatchedAt}, ${action.createdAt}))
       and q.options @> ${JSON.stringify([{ id: UNSETTLED_WAIT }])}::jsonb)`;
+  // Only the steps `evaluateCompletion` can learn anything from: those not at
+  // rest, which decide whether all are, and those the outcome cites, the only
+  // ones whose receipts it reads. A step at rest that is not cited counts for
+  // nothing, and a long chat has thousands, each with its receipt.
+  const cited = outcomeCompleted.evidence.flatMap((ref) =>
+    ref.kind === 'action' ? [ref.action_id] : [],
+  );
   const actions = await tx
     .select({
       id: action.id,
@@ -1822,7 +1842,10 @@ export async function completionFacts(
       kind: action.kind,
       effectClass: action.effectClass,
       status: action.status,
-      receipt: action.receipt,
+      receipt: (cited.length
+        ? sql`case when ${inArray(action.id, cited)} then ${action.receipt} end`
+        : sql`null`
+      ).mapWith(action.receipt),
       spaceId: connection.spaceId,
       closedStep: closedComputerStepColumn,
       provider: connection.provider,
@@ -1832,6 +1855,10 @@ export async function completionFacts(
     .where(
       and(
         eq(action.jobId, row.id),
+        or(
+          notInArray(action.status, [...TERMINAL_ACTION_STATUSES]),
+          cited.length ? inArray(action.id, cited) : undefined,
+        ),
         attemptId ? sql`(${action.attemptId} = ${attemptId} or not ${askedAbout})` : undefined,
       ),
     );
