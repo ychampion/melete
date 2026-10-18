@@ -10,6 +10,7 @@ import { estimateInputTokens } from '../gateway/metering.ts';
 import {
   assembleHistory,
   BundleContextLimitError,
+  boundRoomTranscript,
   boundTranscript,
   type CompletionRecords,
   evaluateCompletion,
@@ -73,6 +74,117 @@ const storedAction: CompletionRecords['actions'][number] = {
 };
 
 describe('durable attempt context', () => {
+  test("a long chat's earlier turns never crowd out the turn under way with their tool calls", () => {
+    // 150 finished turns of one tool call each: more calls than the transcript has messages.
+    const turns = 150;
+    const events: Parameters<typeof assembleHistory>[0][number][] = [];
+    const settledAttempts = new Set<string>();
+    for (let n = 0; n < turns; n++) {
+      const time = new Date(Date.parse(at) + n * 1000);
+      events.push({
+        seq: n * 2 + 1,
+        type: 'notice',
+        payload: { kind: 'user_message', text: `Step ${n}.` },
+        createdAt: time,
+      });
+      events.push({
+        seq: n * 2 + 2,
+        type: 'tool_result',
+        attemptId: `att_${n}`,
+        payload: { call_id: `call_${n}`, ok: true, result: { output: 'ok' } },
+        createdAt: time,
+      });
+      settledAttempts.add(`att_${n}`);
+    }
+    const now = new Date(Date.parse(at) + turns * 1000);
+    events.push({
+      seq: turns * 2 + 1,
+      type: 'notice',
+      payload: { kind: 'user_message', text: 'And now?' },
+      createdAt: now,
+    });
+    events.push({
+      seq: turns * 2 + 2,
+      type: 'tool_result',
+      attemptId: 'att_now',
+      payload: { call_id: 'call_now', ok: true, result: { output: 'half done' } },
+      createdAt: now,
+    });
+    // Before, every completed call counted as one the attempt had to keep: refused.
+    expect(() => assembleHistory(events, [], turns * 2 + 2)).toThrow(BundleContextLimitError);
+    const result = assembleHistory(events, [], turns * 2 + 2, { settledAttempts });
+    expect(result.transcript.length).toBeLessThanOrEqual(TRANSCRIPT_MAX_MESSAGES);
+    // The call the turn under way made is still there, so it is never made twice.
+    expect(result.transcript.some((message) => message.tool_call_id === 'call_now')).toBe(true);
+    // The newest of the earlier conversation is kept, the oldest is what gives way.
+    expect(result.transcript.some((message) => message.tool_call_id === `call_${turns - 1}`)).toBe(
+      true,
+    );
+    expect(result.transcript.some((message) => message.tool_call_id === 'call_0')).toBe(false);
+    expect(result.settled.size).toBe(turns);
+  });
+
+  test("a long request in a room is not refused for its earlier turns' tool calls either", () => {
+    // A model with a large window keeps hundreds of earlier calls in the
+    // request's history; the room's own bound holds a hundred messages.
+    const turns = 300;
+    const events: Parameters<typeof assembleHistory>[0][number][] = [];
+    const settledAttempts = new Set<string>();
+    for (let n = 0; n < turns; n++) {
+      const time = new Date(Date.parse(at) + n * 1000);
+      events.push({
+        seq: n * 2 + 1,
+        type: 'notice',
+        payload: { kind: 'user_message', text: `Step ${n}.` },
+        createdAt: time,
+      });
+      events.push({
+        seq: n * 2 + 2,
+        type: 'tool_result',
+        attemptId: `att_${n}`,
+        payload: { call_id: `call_${n}`, ok: true, result: { output: 'ok' } },
+        createdAt: time,
+      });
+      settledAttempts.add(`att_${n}`);
+    }
+    const now = new Date(Date.parse(at) + turns * 1000);
+    events.push({
+      seq: turns * 2 + 1,
+      type: 'tool_result',
+      attemptId: 'att_now',
+      payload: { call_id: 'call_now', ok: true, result: { output: 'half done' } },
+      createdAt: now,
+    });
+    // An earlier turn's call id that the turn under way used again is the turn's.
+    events.push({
+      seq: turns * 2 + 2,
+      type: 'tool_result',
+      attemptId: 'att_now',
+      payload: { call_id: 'call_7', ok: true, result: { output: 'again' } },
+      createdAt: now,
+    });
+    const history = assembleHistory(events, [], turns * 2 + 2, {
+      settledAttempts,
+      limits: transcriptLimits(contextBudget('accounts/fireworks/models/deepseek-v4p1-flash')),
+    });
+    expect(history.transcript.filter((message) => message.role === 'tool').length).toBeGreaterThan(
+      TRANSCRIPT_MAX_MESSAGES,
+    );
+    const thread: CanonicalMessage[] = [
+      { role: 'user', name: 'Ana', content: 'Over to you.', at: now.toISOString() },
+    ];
+    // Bounding the merged conversation as if every call were the turn's own refused it.
+    expect(() => boundTranscript(inTimeOrder(thread, history.transcript))).toThrow(
+      BundleContextLimitError,
+    );
+    const bounded = boundRoomTranscript(thread, history);
+    expect(bounded.length).toBeLessThanOrEqual(TRANSCRIPT_MAX_MESSAGES);
+    expect(bounded.some((message) => message.tool_call_id === 'call_now')).toBe(true);
+    expect(bounded.some((message) => message.tool_call_id === 'call_7')).toBe(true);
+    expect(bounded.some((message) => message.content === 'Over to you.')).toBe(true);
+    expect(bounded.some((message) => message.tool_call_id === 'call_0')).toBe(false);
+  });
+
   test('separates inputs after the cursor and ignores streamed text as canonical history', () => {
     const result = assembleHistory(
       [
