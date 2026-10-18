@@ -41,6 +41,7 @@ function render(features: Record<string, boolean>) {
       time_zone_confirmed: true,
       sending_address: null,
       role: 'owner',
+      voice: 'teammate',
     },
     onboarded: true,
     setOnboarded: () => {},
