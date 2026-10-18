@@ -18,6 +18,7 @@ export * from './browser-live.ts';
 export * from './capabilities.ts';
 export * from './common.ts';
 export * from './companies.ts';
+export * from './connection-pages.ts';
 export * from './connections.ts';
 export * from './connector.ts';
 export * from './context-budget.ts';

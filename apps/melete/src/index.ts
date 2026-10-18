@@ -126,6 +126,7 @@ import {
   spendAlertsFromEnv,
   statfsFree,
 } from './health/monitor.ts';
+import { IDENTITY_JWKS_PATH, IdentitySigner } from './identity/assertion.ts';
 import { mountIntents } from './intents/routes.ts';
 import { IntentService, undoThrough } from './intents/service.ts';
 import { ApprovalService } from './jobs/approvals.ts';
@@ -182,6 +183,8 @@ import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import { startRetention } from './ops/retention.ts';
+import { identityIssuer, pageSecret } from './pages/config.ts';
+import { mountPages } from './pages/routes.ts';
 import {
   ownsSpace,
   refusedForRemoval,
@@ -189,6 +192,7 @@ import {
   SPACE_BEING_CLEARED,
   spaceAuthority,
 } from './principals/authority.ts';
+import { mountEntitlements } from './principals/entitlements.ts';
 import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
@@ -253,7 +257,7 @@ import { storagePerPersonBytes } from './storage/per-person.ts';
 import { configuredTriageGateway, type TriageClassifier } from './triage/classifier.ts';
 import { mountNeedsYou } from './triage/routes.ts';
 import { TriageService } from './triage/service.ts';
-import { isolated, VIEW_PREFIX } from './viewer/headers.ts';
+import { isolated, isolatedPages, PAGE_VIEW_PREFIX, VIEW_PREFIX } from './viewer/headers.ts';
 import { ViewTokens } from './viewer/tokens.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
@@ -375,6 +379,8 @@ export function createApp(deps: AppDeps) {
   app.use(`${VIEW_PREFIX}*`, isolated);
   // The same for a preview of a server in an agent's computer.
   app.use(`${PREVIEW_PREFIX}*`, isolated);
+  // And for a connection's page, under the policy its server and connection allow.
+  app.use(`${PAGE_VIEW_PREFIX}*`, isolatedPages);
   // Rooms, shared spaces, guests and hand-offs answer 404 while switched off,
   // before sign-in, so an invite link and a guest's session meet the same answer.
   const multiplayer = multiplayerEnabled(deps.env);
@@ -530,6 +536,22 @@ export function createApp(deps: AppDeps) {
   if (questions) mountQuestions(app, questions);
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers, db);
+  // A connection's pages, and its server's reports on them.
+  if (db && deps.sql && deps.triggers) {
+    const triggers = deps.triggers;
+    mountPages(app, {
+      db,
+      sql: deps.sql,
+      secret: pageSecret(deps.env),
+      deliver: (input) => triggers.deliver(input),
+    });
+  }
+  // Entitlements an operator grants, and the keys connections check assertions with.
+  if (db && deps.sql) mountEntitlements(app, { db, sql: deps.sql });
+  {
+    const signer = new IdentitySigner(pageSecret(deps.env), identityIssuer(deps.env));
+    app.get(IDENTITY_JWKS_PATH, (c) => c.json(signer.jwks()));
+  }
   const noticing =
     deps.situations ??
     (deps.jobs && deps.triggers

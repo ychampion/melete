@@ -56,6 +56,8 @@ export const ID_PREFIXES = {
   triage_item: 'tri',
   /** Something the person wants done, kept until it is. */
   intent: 'int',
+  /** A page a connection showed the person in a conversation. */
+  connection_page: 'cpg',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

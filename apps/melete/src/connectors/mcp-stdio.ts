@@ -29,7 +29,7 @@ import {
   mcpToolDefinition,
   openMcpWorker,
 } from './mcp.ts';
-import { mcpConnector } from './mcp-connector.ts';
+import { type McpCallServices, mcpConnector } from './mcp-connector.ts';
 import { type McpTransport, openLineMcpTransport, type StdioChannel } from './mcp-transport.ts';
 import type { SealedSecretStore } from './secrets.ts';
 import type { Connector } from './types.ts';
@@ -351,7 +351,7 @@ export async function openStoredStdioConnector(
   sql: Sql,
   secrets: SealedSecretStore,
   launcher: StdioLauncher,
-  lifecycle: StdioLifecycleOptions = {},
+  lifecycle: StdioLifecycleOptions & { services?: McpCallServices } = {},
 ): Promise<Connector> {
   const stored = storedStdioConnection.parse(row.configuration);
   const binding = { connectionId: row.id, spaceId: row.spaceId };
@@ -429,7 +429,10 @@ export async function openStdioMcpConnector(
   sql: Sql,
   secrets: SealedSecretStore,
   launcher: StdioLauncher,
-  options: StdioLifecycleOptions & { pinned?: McpToolDefinition[] } = {},
+  options: StdioLifecycleOptions & {
+    pinned?: McpToolDefinition[];
+    services?: McpCallServices;
+  } = {},
 ): Promise<Connector> {
   const config = mcpServerConfig.parse(input);
   if (config.endpoint.transport !== 'container')
@@ -468,10 +471,17 @@ export async function openStdioMcpConnector(
     server.done();
   }
   const reopen = () => worker.reconnect();
-  const connector = mcpConnector(worker, binding, sql, undefined, {
-    ready: () => server.ready(reopen),
-    done: () => server.done(),
-  });
+  // With its policy, so a tool that requires an entitlement is refused here
+  // too: with no entitlement reader, it is refused to everyone.
+  const connector = mcpConnector(
+    worker,
+    binding,
+    sql,
+    undefined,
+    { ready: () => server.ready(reopen), done: () => server.done() },
+    config,
+    options.services,
+  );
   return {
     ...connector,
     manifest: {
