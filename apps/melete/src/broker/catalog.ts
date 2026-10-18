@@ -43,6 +43,7 @@ import { gist, relevance, terms, words } from './lexical.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
 import { hasResumableAction, RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
+import { toldToSend } from './told.ts';
 import { steerWebTools, webScores } from './web-steer.ts';
 
 export type CatalogSource = 'connector' | 'capability' | 'skill' | 'mcp';
@@ -562,6 +563,8 @@ export class ToolCatalog {
         .filter((row) => !(access.allowed && !access.allowed.includes(row.id)))
         .map((row) => ({ provider: String(row.provider), scopes: row.scopes })),
     );
+    // A send the person asked for in this turn is offered; otherwise it is drafted.
+    const told = access.chat && (await toldToSend(tx, claims.attempt_id));
     for (const row of connections) {
       // A conversation's persona bounds which connections and verbs are offered.
       if (!connectionOffered(access, row.id)) continue;
@@ -572,7 +575,7 @@ export class ToolCatalog {
       if (connector.capability?.available === false) continue;
       if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
-        if (!toolOffered(access, declared.name)) continue;
+        if (!toolOffered(access, declared.name, told)) continue;
         if (!toolAllowedHere(rules, String(row.provider), declared.name)) continue;
         // Made by commands in the computer through the egress relay, never offered as a tool.
         if (isEgressTool(declared.name)) continue;

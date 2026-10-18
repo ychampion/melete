@@ -268,8 +268,24 @@ export const permissionCard = z.strictObject({
    * shows a message or a file, which is read on its own.
    */
   group: id.optional(),
+  /**
+   * Present when this moves money. Allowing it needs the person to confirm it
+   * is them first (`POST /permissions/{id}/step-up`), and the Allow carries
+   * the token that returns. `available` is false when the signed-in account
+   * has no password to confirm with; `reason` says what to do then.
+   */
+  step_up: z
+    .strictObject({ method: z.literal('password'), available: z.boolean(), reason: text })
+    .optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
+/** The person's own password, to confirm a money move. Never stored or logged. */
+export const permissionStepUpRequest = z.strictObject({ password: z.string().min(1).max(1024) });
+export const permissionStepUpResponse = z.strictObject({
+  /** Spent by the one Allow of this permission, within two minutes. */
+  step_up_token: z.string(),
+  expires_at: date,
+});
 
 /**
  * The action classes a person can let auto-review decide. Anything that
@@ -337,6 +353,8 @@ export const permissionDecision = z.discriminatedUnion('option', [
     option: z.literal('allow_once'),
     version: id,
     together: permissionsTogether.optional(),
+    /** For a money move: the token its step-up returned. */
+    step_up_token: z.string().min(16).max(256).optional(),
   }),
   z.strictObject({ option: z.literal('always'), version: id, bounds: standingRuleBounds }),
   z.strictObject({
@@ -1436,6 +1454,10 @@ export const experienceOperations = {
     }),
   },
   'POST /permissions/{id}': { request: permissionDecision, response: permissionOutcome },
+  'POST /permissions/{id}/step-up': {
+    request: permissionStepUpRequest,
+    response: permissionStepUpResponse,
+  },
   'GET /approval-settings': { response: approvalSettingsResponse },
   'PUT /approval-settings': { request: approvalSettings, response: approvalSettingsResponse },
   'GET /rules': { response: z.strictObject({ rules: z.array(standingRule) }) },

@@ -5223,6 +5223,11 @@
                       },
                       "together": {
                         "$ref": "#/components/schemas/PermissionsSeen"
+                      },
+                      "step_up_token": {
+                        "type": "string",
+                        "minLength": 16,
+                        "maxLength": 256
                       }
                     },
                     "required": [
@@ -5342,6 +5347,78 @@
                         "status",
                         "option",
                         "rule"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema339"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/permissions/{id}/step-up": {
+      "post": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "POST /permissions/{id}/step-up",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  }
+                },
+                "required": [
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "step_up_token": {
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "$ref": "#/components/schemas/__schema337"
+                        }
+                      },
+                      "required": [
+                        "step_up_token",
+                        "expires_at"
                       ],
                       "additionalProperties": false
                     },
@@ -19283,6 +19360,11 @@
                   "note": {
                     "type": "string",
                     "maxLength": 2000
+                  },
+                  "step_up_token": {
+                    "type": "string",
+                    "minLength": 16,
+                    "maxLength": 256
                   }
                 },
                 "required": [
@@ -39454,6 +39536,27 @@
           },
           "group": {
             "$ref": "#/components/schemas/__schema333"
+          },
+          "step_up": {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "password"
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/__schema334"
+              }
+            },
+            "required": [
+              "method",
+              "available",
+              "reason"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

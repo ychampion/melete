@@ -1,11 +1,14 @@
 import {
   hashOriginWarnings,
+  type PermissionCard,
   permissionCard,
   permissionDecision,
+  permissionStepUpRequest,
   unavailable,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import { LoginThrottle } from '../api/login-throttle.ts';
 import {
   actionReviewView,
   loadApprovalSettings,
@@ -14,6 +17,7 @@ import {
 import { BrokerFault } from '../broker/errors.ts';
 import { appendEvent, loadAction, lockJob } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
+import { issueStepUp, STEP_UP_NEEDED } from '../broker/step-up.ts';
 import { ENDED_NOTE, ENDED_STATES } from '../jobs/withdraw.ts';
 import { actionBecause } from '../memory/basis.ts';
 import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
@@ -111,7 +115,15 @@ export async function withdrawEndedPermissions(sql: Sql, spaceId: string, jobId?
   }
 }
 
+/** The first reason on a money move's card. */
+const MONEY_REASON = 'This moves money, so you confirm it is you before it happens.';
+/** The general first reason, which a money move's card replaces. */
+const ASK_REASON = 'This change needs your permission before it happens.';
+
 export class ExperiencePermissions {
+  /** Wrong passwords at a money move's confirmation, counted per account. */
+  private readonly stepUps = new LoginThrottle(undefined, undefined, undefined, 'step_up');
+
   constructor(
     readonly sql: Sql,
     readonly broker: BrokerService,
@@ -212,7 +224,9 @@ export class ExperiencePermissions {
       },
       reasons,
       // A rule could never cover what an assistant asks for, so none is offered on its card.
+      // Nor a money move: each one is the person's to confirm.
       canAlways:
+        row.step_up_required !== true &&
         !room &&
         warnings.length === 0 &&
         ruleCovers(action) &&
@@ -221,13 +235,78 @@ export class ExperiencePermissions {
       review: await actionReviewView(this.sql, action.id),
       because: await actionBecause(this.sql, spaceId, action.id),
     });
-    if (!room) return card;
+    const shown = row.step_up_required === true ? await this.moneyCard(card) : card;
+    if (!room) return shown;
     return permissionCard.parse({
-      ...card,
+      ...shown,
       ...(room.requestedBy ? { requested_by: person(room.requestedBy) } : {}),
       eligible_approvers: eligible.map(person),
       payload_hash: String(row.payload_hash),
     });
+  }
+
+  /**
+   * A money move's card: it says so first, is answered on its own, never by a
+   * standing rule, and says how the reader confirms it is them.
+   */
+  private async moneyCard(card: PermissionCard): Promise<PermissionCard> {
+    const { group: _group, ...rest } = card;
+    const viewer = requestPrincipal();
+    const [account] = viewer
+      ? await this.sql`select password_hash from principal where id = ${viewer}`
+      : [];
+    const available = Boolean(account?.password_hash);
+    return permissionCard.parse({
+      ...rest,
+      why: [MONEY_REASON, ...rest.why.filter((line) => line !== ASK_REASON)],
+      options: rest.options.filter((option) => option !== 'always'),
+      step_up: {
+        method: 'password',
+        available,
+        reason: available
+          ? 'Enter your password to allow it.'
+          : 'Your account has no password to confirm with. Set one in Settings to allow it.',
+      },
+    });
+  }
+
+  /**
+   * The signed-in person proves it is them, with their own password, for one
+   * money move they may answer. Returns a token the Allow spends.
+   */
+  async stepUp(spaceId: string, id: string, raw: unknown) {
+    const input = permissionStepUpRequest.parse(raw);
+    const principal = requestPrincipal();
+    if (!principal) throw new ServiceError('scope_denied', 'Sign in to confirm this.', 403);
+    const wait = await this.stepUps.admit(principal);
+    if (wait > 0)
+      throw new ServiceError('step_up_rate_limited', 'Too many tries. Try again in a minute.', 429);
+    // The person's own permissions only. A room's money move cannot be
+    // confirmed yet, so it cannot be allowed: it stays waiting, nothing moves.
+    const row = await this.find(spaceId, id);
+    if (row.step_up_required !== true || row.decision !== null)
+      throw new ServiceError('invalid_request', 'This does not need confirming.', 400);
+    const [account] = await this
+      .sql`select password_hash from principal where id = ${principal} and disabled_at is null`;
+    const hash = account?.password_hash ? String(account.password_hash) : null;
+    const verified = hash ? await Bun.password.verify(input.password, hash) : false;
+    if (!verified)
+      throw new ServiceError(
+        hash ? 'wrong_password' : 'no_password',
+        hash
+          ? 'That password is not right.'
+          : 'Your account has no password to confirm with. Set one in Settings first.',
+        400,
+      );
+    await this.stepUps.succeeded(principal);
+    const issued = await issueStepUp(this.sql, {
+      principalId: principal,
+      approvalId: id,
+      actionId: String(row.action_id),
+      payloadHash: String(row.payload_hash),
+      method: 'password',
+    });
+    return { step_up_token: issued.token, expires_at: issued.expires_at };
   }
 
   async approvalSettings(spaceId: string) {
@@ -353,6 +432,9 @@ export class ExperiencePermissions {
       {
         decision: input.option === 'deny' ? 'denied' : 'approved',
         payload_hash: String(row.payload_hash),
+        ...('step_up_token' in input && input.step_up_token
+          ? { step_up_token: input.step_up_token }
+          : {}),
       },
       async (tx, job, action, approval) => {
         // Checked under the approval's lock, so a message that arrives meanwhile is seen.
@@ -418,6 +500,8 @@ export class ExperiencePermissions {
     // The request changed before this was answered: it is withdrawn, a Deny
     // agrees with that, and an Allow is told why it cannot.
     const outcome = await decided.catch((error: unknown) => {
+      if (error instanceof BrokerFault && error.message === STEP_UP_NEEDED)
+        throw new ServiceError('step_up_required', STEP_UP_NEEDED, 403);
       if (error instanceof BrokerFault && error.code === 'revision_mismatch')
         throw new ServiceError('permission_withdrawn', CHANGED_MESSAGE, 409);
       if (error instanceof BrokerFault && error.code === 'scope_denied')

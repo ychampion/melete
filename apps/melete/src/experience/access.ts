@@ -71,9 +71,13 @@ export const computerTool = (kind: string) =>
 export const connectionOffered = (access: AgentAccess, connectionId: string): boolean =>
   !(access.chat && !access.agentId) && !(access.allowed && !access.allowed.includes(connectionId));
 
-/** Whether the agent is offered one of a connection's tools, by its name. */
-export const toolOffered = (access: AgentAccess, name: string): boolean =>
-  !(access.chat && directSend(name)) && !(!access.usesComputer && computerTool(name));
+/**
+ * Whether the agent is offered one of a connection's tools, by its name. In a
+ * chat a message goes out from its draft card, unless the person said to send
+ * it in the turn being answered (`told`, from `broker/told.ts`).
+ */
+export const toolOffered = (access: AgentAccess, name: string, told = false): boolean =>
+  !(access.chat && directSend(name) && !told) && !(!access.usesComputer && computerTool(name));
 
 /**
  * The broker catalog's rule for one tool, for anything that must agree with it:
@@ -83,6 +87,7 @@ export const toolOffered = (access: AgentAccess, name: string): boolean =>
 export const offeredTo = (
   access: AgentAccess,
   tool: { name: string; connection_id: string | null },
+  told = false,
 ): boolean =>
   tool.connection_id === null ||
-  (connectionOffered(access, tool.connection_id) && toolOffered(access, tool.name));
+  (connectionOffered(access, tool.connection_id) && toolOffered(access, tool.name, told));

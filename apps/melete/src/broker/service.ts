@@ -126,6 +126,7 @@ import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
+import { type MoneyMove, moneyMove } from './money.ts';
 import {
   actionFromRow,
   appendEvent,
@@ -139,9 +140,15 @@ import {
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
 import { RESUME_ACTION_TOOL } from './resume.ts';
 import { eventBefore, heldKind, heldUntil, reversibleProposal } from './reversals.ts';
+import { toldToSend } from './told.ts';
+
+/** Why a message went without a card: the person's own words in this turn. */
+const TOLD_TO_SEND = 'You said to send it in your message.';
+
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import { OWN_COMPUTER_PICTURE_TOOLS, readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
+import { STEP_UP_NEEDED, spendStepUp, stepUpHolds } from './step-up.ts';
 import {
   collectOriginFields,
   createTableTrustResolver,
@@ -285,6 +292,11 @@ type Admissibility = {
    * the action asks nobody anyway.
    */
   auto: { tier: TierDecision; outcome: 'policy_approved' | 'review' | 'person' } | null;
+  /**
+   * Why the action moves money, or null. A money move always asks, nothing
+   * covers it, and its Allow counts only with the person's step-up.
+   */
+  money: MoneyMove | null;
 };
 
 /** A review to run once the proposal's transaction has committed. */
@@ -985,6 +997,10 @@ export class BrokerService implements BrokerOperations {
   ): Promise<Admissibility> {
     const access = await agentAccess(tx, job.id);
     const settings = this.options.autoReview ? await loadApprovalSettings(tx, job.space_id) : null;
+    const money = this.moneyOf(action, tool);
+    // A message the person said to send in this turn goes out on its own, held
+    // for undo and with a receipt. Anything else that sends stays with them.
+    const told = !money && directSend(tool.name) && (await toldToSend(tx, action.attempt_id));
     const changes =
       tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
     const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
@@ -1002,6 +1018,7 @@ export class BrokerService implements BrokerOperations {
     // space is everyone's in it, so a new file there goes by the room's rule.
     const inSpace =
       !connectorAsks &&
+      !money &&
       this.options.connectors.get(action.connection_id)?.staysInSpace?.(action, job.space_id) ===
         true &&
       (await personalSpace(tx, job.space_id));
@@ -1028,6 +1045,7 @@ export class BrokerService implements BrokerOperations {
     // A conversation that read responses to an app asks before changing a file an app shows.
     const afterResponses = changes && (await asksAfterResponses(tx, job.id, action));
     const requiresApproval =
+      money !== null ||
       toolAsks ||
       connectorAsks ||
       afterResponses ||
@@ -1073,13 +1091,19 @@ export class BrokerService implements BrokerOperations {
     // A room's work is answered by the people its rule names, each time: no
     // standing rule or scope, made by anyone for their own work, answers for it.
     const roomWork = requiresApproval && (await roomAuthorityOf(tx, job.id)) !== null;
+    // A money move is never covered by anything but the person's own step-up.
     const authorizedBy =
-      requiresApproval && !roomWork && warnings.length > 0 && this.options.resolveScopedGrant
+      requiresApproval &&
+      !money &&
+      !roomWork &&
+      warnings.length > 0 &&
+      this.options.resolveScopedGrant
         ? await this.options.resolveScopedGrant(tx, input)
         : null;
     const granted =
       authorizedBy !== null ||
       (requiresApproval &&
+        !money &&
         !roomWork &&
         warnings.length === 0 &&
         this.options.resolveStandingGrant !== undefined &&
@@ -1111,11 +1135,24 @@ export class BrokerService implements BrokerOperations {
           ? (guests.guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
           : null;
       const checked = changeKey(action.connection_id, action.canonical_payload);
-      const tier = tierOf(
-        [...doubts, ...warnings],
-        existingGuests,
-        guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
-      );
+      // Asked for in so many words, to people whose addresses Melete can vouch
+      // for: a recipient planted in something the agent read still asks.
+      const sendsAsTold =
+        told &&
+        !connectorAsks &&
+        !afterResponses &&
+        !roomWork &&
+        doubts.length === 0 &&
+        warnings.length === 0;
+      const tier: TierDecision = money
+        ? { tier: 'person', actionClass: null, reason: money.reason }
+        : sendsAsTold
+          ? { tier: 'person', actionClass: null, reason: TOLD_TO_SEND }
+          : tierOf(
+              [...doubts, ...warnings],
+              existingGuests,
+              guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
+            );
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
@@ -1125,33 +1162,35 @@ export class BrokerService implements BrokerOperations {
         // the reviewer or a publishing policy; work in the room's own workspace
         // stays under the sandbox rule, as it does for a person.
         outcome:
-          connectorAsks || afterResponses
+          money || connectorAsks || afterResponses
             ? 'person'
-            : tier.tier === 'sandbox' && allowed && !toolAsks
+            : sendsAsTold
               ? 'policy_approved'
-              : // Publishing an app that reaches nobody new. An agent set to ask before
-                // acting promises that publishes to other people wait; an app only the
-                // person can open reaches nobody, so it goes ahead. A conversation that
-                // read an app's responses asks before changing what an app shows.
-                tier.tier === 'apps' &&
-                  allowed &&
-                  (!agentAsks || reachesOnlyPublisher(tool.name, action.canonical_payload)) &&
-                  !afterResponses &&
-                  !roomWork
+              : tier.tier === 'sandbox' && allowed && !toolAsks
                 ? 'policy_approved'
-                : // An event on the person's own calendar that touches nothing important
-                  // and can be undone. An agent set to ask before acting still asks.
-                  tier.tier === 'own_calendar' && allowed && !agentAsks && !roomWork
+                : // Publishing an app that reaches nobody new. An agent set to ask before
+                  // acting promises that publishes to other people wait; an app only the
+                  // person can open reaches nobody, so it goes ahead. A conversation that
+                  // read an app's responses asks before changing what an app shows.
+                  tier.tier === 'apps' &&
+                    allowed &&
+                    (!agentAsks || reachesOnlyPublisher(tool.name, action.canonical_payload)) &&
+                    !afterResponses &&
+                    !roomWork
                   ? 'policy_approved'
-                  : // An agent set to ask before acting promises that sends, bookings and payments
-                    // wait for the person, so its calendar changes do. A reversible app change is
-                    // none of those, and the person switched that class on themselves.
-                    tier.tier === 'reviewable' &&
-                      allowed &&
-                      !roomWork &&
-                      (!agentAsks || tier.actionClass === 'app_changes')
-                    ? 'review'
-                    : 'person',
+                  : // An event on the person's own calendar that touches nothing important
+                    // and can be undone. An agent set to ask before acting still asks.
+                    tier.tier === 'own_calendar' && allowed && !agentAsks && !roomWork
+                    ? 'policy_approved'
+                    : // An agent set to ask before acting promises that sends, bookings and payments
+                      // wait for the person, so its calendar changes do. A reversible app change is
+                      // none of those, and the person switched that class on themselves.
+                      tier.tier === 'reviewable' &&
+                        allowed &&
+                        !roomWork &&
+                        (!agentAsks || tier.actionClass === 'app_changes')
+                      ? 'review'
+                      : 'person',
       };
     }
     const policyApproved = auto?.outcome === 'policy_approved';
@@ -1162,7 +1201,31 @@ export class BrokerService implements BrokerOperations {
       requires_approval: requiresApproval && !granted && !policyApproved,
       authorized_by: authorizedBy,
       auto,
+      money,
     };
+  }
+
+  /** Whether an action moves money, judged on its connector's tool as it stands now. */
+  async movesMoneyNow(action: Action): Promise<boolean> {
+    const connector = this.options.connectors.get(action.connection_id);
+    const tool = connector && findTool(connector.manifest, action.kind);
+    // A tool that cannot be found any more cannot be shown not to move money.
+    if (!tool) return true;
+    return this.moneyOf(action, tool) !== null;
+  }
+
+  /** Why this action moves money, or null (`money.ts`), judged on its own connector's declaration. */
+  private moneyOf(
+    action: Pick<Action, 'connection_id' | 'canonical_payload'>,
+    tool: ConnectorTool,
+  ) {
+    const connector = this.options.connectors.get(action.connection_id);
+    return moneyMove({
+      tool,
+      provider: connector?.manifest.provider ?? '',
+      payload: action.canonical_payload,
+      metered: connector?.capability?.kind === tool.name,
+    });
   }
 
   /**
@@ -1330,7 +1393,8 @@ export class BrokerService implements BrokerOperations {
         if (!job) return null;
         await checkAttempt(tx, job, claims);
         const access = await agentAccess(tx, job.id);
-        if (access.chat && directSend(request.kind)) return null;
+        if (access.chat && directSend(request.kind) && !(await toldToSend(tx, claims.attempt_id)))
+          return null;
         return { job, ...(await this.tool(tx, job, claims, request.connection_id, request.kind)) };
       });
     } catch {
@@ -1454,9 +1518,9 @@ export class BrokerService implements BrokerOperations {
       const expiresAt = (stored.tuple.expires_at ?? null) as string | null;
       const approvalId = recordId('apr');
       const [row] = await tx`insert into approval
-        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
+        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings, step_up_required)
         values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
-          ${expiresAt}, ${warnings}::jsonb) returning *`;
+          ${expiresAt}, ${warnings}::jsonb, ${classified.money !== null}) returning *`;
       if (!row) throw new Error('Approval insert returned no record');
       if (action.status !== 'needs_approval') await this.setStatus(tx, action, 'needs_approval');
       await this.askOwner(tx, job, action, approvalId, classified);
@@ -1628,11 +1692,11 @@ export class BrokerService implements BrokerOperations {
       const stored = await loadBinding(tx, action);
       const approvalId = recordId('apr');
       await tx`insert into approval
-        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings,
+        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings, step_up_required,
           decision, decided_at, decided_by)
         values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
           ${(stored.tuple.expires_at ?? null) as string | null},
-          ${JSON.stringify(classified.warnings)}::jsonb,
+          ${JSON.stringify(classified.warnings)}::jsonb, ${classified.money !== null},
           ${approved ? 'approved' : null}, ${approved ? new Date().toISOString() : null},
           ${approved ? 'auto_review' : null})`;
       await recordReview(tx, {
@@ -1753,7 +1817,7 @@ export class BrokerService implements BrokerOperations {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
         const access = await agentAccess(tx, job.id);
-        if (access.chat && directSend(request.kind))
+        if (access.chat && directSend(request.kind) && !(await toldToSend(tx, claims.attempt_id)))
           throw new BrokerFault(
             'scope_denied',
             'In a chat the person sends a draft from its draft card. Say the draft is ready.',
@@ -1960,9 +2024,9 @@ export class BrokerService implements BrokerOperations {
           if (pending) return { action: await loadAction(tx, id), key, repeated: false, pending };
           const approvalId = recordId('apr');
           await tx`insert into approval
-          (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
+          (id, action_id, job_revision, payload_hash, expires_at, origin_warnings, step_up_required)
           values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash}, ${expiresAt},
-            ${JSON.stringify(classified.warnings)}::jsonb)`;
+            ${JSON.stringify(classified.warnings)}::jsonb, ${classified.money !== null})`;
           await this.setStatus(tx, created, 'needs_approval');
           const escalated = await this.recordPolicyEscalation(tx, review, classified);
           await this.askOwner(tx, job, created, approvalId, classified, escalated);
@@ -2087,7 +2151,7 @@ export class BrokerService implements BrokerOperations {
       const stored = await loadAction(tx, id);
       if (stored.job_id !== job.id) throw new BrokerFault('action_not_found');
       const access = await agentAccess(tx, job.id);
-      if (access.chat && directSend(stored.kind))
+      if (access.chat && directSend(stored.kind) && !(await toldToSend(tx, claims.attempt_id)))
         throw new BrokerFault(
           'scope_denied',
           'In a chat the person sends a draft from its draft card. Say the draft is ready.',
@@ -2268,9 +2332,25 @@ export class BrokerService implements BrokerOperations {
         };
       }
       if (action.status !== 'needs_approval') throw new BrokerFault('action_not_admissible');
+      // A money move is allowed only with the person's own step-up, made for
+      // this approval and these bytes and spent here, once.
+      let stepUp: string | null = null;
+      if (
+        request.decision === 'approved' &&
+        (approval.step_up_required === true || (await this.movesMoneyNow(action)))
+      ) {
+        stepUp = await spendStepUp(tx, {
+          token: request.step_up_token,
+          principalId: decider,
+          approvalId: String(approval.id),
+          actionId: id,
+          payloadHash: action.payload_hash,
+        });
+        if (!stepUp) throw new BrokerFault('approval_required', STEP_UP_NEEDED);
+      }
       const decidedAt = new Date().toISOString();
       await tx`update approval set decision = ${request.decision}, decided_at = ${decidedAt},
-        decided_by = ${decider} where id = ${approval.id}`;
+        decided_by = ${decider}, step_up_id = ${stepUp} where id = ${approval.id}`;
       await this.setStatus(tx, action, request.decision);
       await appendEvent(tx, job.id, action.attempt_id, 'approval_decided', {
         action_id: id,
@@ -2444,6 +2524,10 @@ export class BrokerService implements BrokerOperations {
           if (approval.job_revision !== job.revision) throw new BrokerFault('revision_mismatch');
           if (approval.expires_at && new Date(approval.expires_at).getTime() <= Date.now())
             throw new BrokerFault('approval_required', 'Approval expired');
+          // Checked here as well as when the person answered: an Allow written
+          // any way but with their step-up moves no money.
+          if (classified.money && !(await stepUpHolds(tx, approval.id, action)))
+            throw new BrokerFault('approval_required', STEP_UP_NEEDED);
           authorization = approval.id;
           expiresAt = approval.expires_at ? new Date(approval.expires_at).toISOString() : null;
         } else {
@@ -2464,7 +2548,10 @@ export class BrokerService implements BrokerOperations {
         const binding = bindEffect(action, job, authority, expiresAt);
         requireMatchingBinding(await loadBinding(tx, action), binding);
         const requests: ReservationRequest[] = [{ kind: 'calls', amount: 1 }];
-        if (tool.effect_class === 'spend') {
+        // A metered capability reserves what it costs the installation. A money
+        // move is the person's own transaction, authorized by their step-up,
+        // and has no installation cost to reserve.
+        if (tool.effect_class === 'spend' && !classified.money) {
           const cost = this.options.estimateSpend?.(action);
           if (cost === undefined || !Number.isFinite(cost) || cost < 0)
             throw new BrokerFault('budget_exceeded', 'Trusted spend estimate required');
@@ -2638,13 +2725,16 @@ export class BrokerService implements BrokerOperations {
   ): Promise<string | null> {
     // The agent binding: a paused conversation, a persona
     // whose allowed connections exclude this one, a missing persona, or a chat
-    // turn without an agent sends nothing; a chat never sends directly.
+    // turn without an agent sends nothing; a chat sends directly only when the
+    // person said to send in the turn being answered.
     const access = await agentAccess(tx, job.id);
     if (
       access.paused ||
       (access.allowed && !access.allowed.includes(action.connection_id)) ||
       access.missingAgent ||
-      (access.chat && (!access.agentId || directSend(action.kind)))
+      (access.chat &&
+        (!access.agentId ||
+          (directSend(action.kind) && !(await toldToSend(tx, action.attempt_id)))))
     )
       throw new BrokerFault('scope_denied');
     const [connection] =
@@ -2693,6 +2783,9 @@ export class BrokerService implements BrokerOperations {
         'approval_required',
         'The standing permission no longer covers this action.',
       );
+    // Every send of a money move, a retry included, rests on the person's step-up.
+    if (classified.money && !(await stepUpHolds(tx, action.authorization_ref, action)))
+      throw new BrokerFault('approval_required', STEP_UP_NEEDED);
     const [authorizing] = action.authorization_ref
       ? await tx`select origin_warnings, action_id from approval where id = ${action.authorization_ref}`
       : [];

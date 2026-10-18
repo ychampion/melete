@@ -538,6 +538,11 @@ export class ExperienceEffects {
       return unavailable(
         'Undoing this would reach other people, so it waits for your approval on its card.',
       );
+    // Undo is not a confirmation: a reversal that moves money waits on its card.
+    if (await this.broker.movesMoneyNow(effect))
+      return unavailable(
+        'Undoing this moves money, so it waits on its card for you to confirm it is you.',
+      );
     await this.broker.decide(
       effect.id,
       { decision: 'approved', payload_hash: effect.payload_hash },

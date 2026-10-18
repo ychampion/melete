@@ -62,6 +62,7 @@ const ACCOUNT_RECORDS = [
   'session',
   'principal_identity',
   'password_reset',
+  'step_up',
   'mcp_authorization',
   'mcp_token',
   'push_subscription',

@@ -243,7 +243,20 @@ const RISK_REASON: Record<RiskClass, string> = {
  * let it through. Null for a form that does none of them. A field that only
  * guards the form against forgery (`csrf_token`) is not a credential.
  */
-export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: string } | null {
+/**
+ * Whether a form the agent submits pays: an amount among its fields, a field
+ * that is a way to pay, or a button that buys. Asked on its own, so a checkout
+ * form that also carries a card number counts as paying, not only as one that
+ * carries a payment detail.
+ */
+export function submitPays(payload: JsonObject): boolean {
+  return submitRisk(payload, true)?.risk === 'spend';
+}
+
+export function submitRisk(
+  payload: JsonObject,
+  paysOnly = false,
+): { risk: RiskClass; reason: string } | null {
   const intent =
     payload.intent && typeof payload.intent === 'object' && !Array.isArray(payload.intent)
       ? (payload.intent as JsonObject)
@@ -261,7 +274,7 @@ export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: stri
     );
   const found = (risk: RiskClass) => ({ risk, reason: RISK_REASON[risk] });
   const names = fields.map(([name]) => words(name).toLowerCase());
-  if (names.some((name) => CREDENTIAL_KEY.test(name) && !FORM_GUARD.test(name)))
+  if (!paysOnly && names.some((name) => CREDENTIAL_KEY.test(name) && !FORM_GUARD.test(name)))
     return found('credentials');
   if (
     named('amount') ||
@@ -269,6 +282,7 @@ export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: stri
     PAYING_CONTROL.test(control)
   )
     return found('spend');
+  if (paysOnly) return null;
   const action = `${control} ${typeof intent.url === 'string' ? intent.url : ''}`
     .toLowerCase()
     .replace(/[\s/?=&]+/g, '_');

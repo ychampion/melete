@@ -5,6 +5,7 @@
  * helpers' are matched by the job each belongs to.
  */
 import { useEffect } from 'react';
+import { useStepUp } from '../chat/step-up.tsx';
 import { Button } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useInFlight } from '../experience/decide.ts';
@@ -59,6 +60,7 @@ export function RunPermissions({
 }) {
   const { decisions, refreshConversations } = useApp();
   const flight = useInFlight();
+  const stepUp = useStepUp();
   const asked = permissionsFor(run, decisions.permissions);
   // Work that turned to waiting on the person is read again, so its ask shows.
   useEffect(() => {
@@ -67,7 +69,10 @@ export function RunPermissions({
   if (!asked.length) return null;
   const decide = (permission: Permission, option: 'allow_once' | 'deny') =>
     void flight.run(permission.id, async () => {
-      const result = await adapter.decide(permission.id, option, permission.version);
+      // A money move's Allow needs the person's password first; closing that asks nothing.
+      const token = option === 'allow_once' ? await stepUp.confirm(permission) : undefined;
+      if (token === null) return;
+      const result = await adapter.decide(permission.id, option, permission.version, [], token);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
         return;
@@ -81,50 +86,53 @@ export function RunPermissions({
       onDecided?.();
     });
   return (
-    <ul className="run-permissions">
-      {asked.map((permission) => {
-        const shown = (permission.preview?.facts ?? []).filter((fact) =>
-          (compact ? COMPACT_FACTS : FACTS).includes(fact.label),
-        );
-        const facts = compact ? shown.map(compactFact) : shown;
-        const busy = flight.has(permission.id);
-        return (
-          <li key={permission.id} className="run-permission">
-            <span className="run-permission-what">{permission.what}</span>
-            {!compact && permission.why[0] ? (
-              <span className="run-permission-why">{permission.why[0]}</span>
-            ) : null}
-            {facts.map((fact) => (
-              <span key={fact.label} className="run-permission-why">
-                {fact.label}: <code>{fact.value}</code>
+    <>
+      {stepUp.dialog}
+      <ul className="run-permissions">
+        {asked.map((permission) => {
+          const shown = (permission.preview?.facts ?? []).filter((fact) =>
+            (compact ? COMPACT_FACTS : FACTS).includes(fact.label),
+          );
+          const facts = compact ? shown.map(compactFact) : shown;
+          const busy = flight.has(permission.id);
+          return (
+            <li key={permission.id} className="run-permission">
+              <span className="run-permission-what">{permission.what}</span>
+              {!compact && permission.why[0] ? (
+                <span className="run-permission-why">{permission.why[0]}</span>
+              ) : null}
+              {facts.map((fact) => (
+                <span key={fact.label} className="run-permission-why">
+                  {fact.label}: <code>{fact.value}</code>
+                </span>
+              ))}
+              <span className="run-permission-actions">
+                {permission.options.includes('allow_once') ? (
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    aria-label={`Approve: ${permission.what}`}
+                    onClick={() => decide(permission, 'allow_once')}
+                  >
+                    Approve
+                  </Button>
+                ) : null}
+                {permission.options.includes('deny') ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    aria-label={`Decline: ${permission.what}`}
+                    onClick={() => decide(permission, 'deny')}
+                  >
+                    Decline
+                  </Button>
+                ) : null}
               </span>
-            ))}
-            <span className="run-permission-actions">
-              {permission.options.includes('allow_once') ? (
-                <Button
-                  size="sm"
-                  disabled={busy}
-                  aria-label={`Approve: ${permission.what}`}
-                  onClick={() => decide(permission, 'allow_once')}
-                >
-                  Approve
-                </Button>
-              ) : null}
-              {permission.options.includes('deny') ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  aria-label={`Decline: ${permission.what}`}
-                  onClick={() => decide(permission, 'deny')}
-                >
-                  Decline
-                </Button>
-              ) : null}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }

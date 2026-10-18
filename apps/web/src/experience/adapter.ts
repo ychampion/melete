@@ -471,13 +471,33 @@ export const adapter = {
 
   /* ---------- decisions ---------- */
   /** With `together`, the other asks shown on the same card get the same answer. */
-  decide: (id: string, option: 'allow_once' | 'deny', version: string, together: Seen[] = []) =>
+  /** With `stepUpToken`, the Allow carries the person's own confirmation that it is them. */
+  decide: (
+    id: string,
+    option: 'allow_once' | 'deny',
+    version: string,
+    together: Seen[] = [],
+    stepUpToken?: string,
+  ) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', {
         ...path(id),
-        body: { option, version, ...(together.length ? { together } : {}) },
+        body:
+          option === 'allow_once'
+            ? {
+                option,
+                version,
+                ...(together.length ? { together } : {}),
+                ...(stepUpToken ? { step_up_token: stepUpToken } : {}),
+              }
+            : { option, version, ...(together.length ? { together } : {}) },
       }),
     ).then(worthHearing),
+  /** The person confirms it is them for a money move, and gets a one-time token for its Allow. */
+  stepUp: (id: string, password: string) =>
+    guard<{ step_up_token: string; expires_at: string }>(() =>
+      api.POST('/permissions/{id}/step-up', { ...path(id), body: { password } }),
+    ),
   decideAlways: (id: string, version: string, bounds: RuleBounds) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option: 'always', version, bounds } }),
