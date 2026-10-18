@@ -254,7 +254,10 @@ export class ExperiencePermissions {
       review: await actionReviewView(this.sql, action.id),
       because: await actionBecause(this.sql, spaceId, action.id),
     });
-    const shown = row.step_up_required === true ? await this.moneyCard(card) : card;
+    const shown =
+      row.step_up_required === true
+        ? await this.moneyCard(card, await this.broker.payingAt(action))
+        : card;
     if (!room) return shown;
     return permissionCard.parse({
       ...shown,
@@ -268,8 +271,18 @@ export class ExperiencePermissions {
    * A money move's card: it says so first, is answered on its own, never by a
    * standing rule, and says how the reader confirms it is them.
    */
-  private async moneyCard(card: PermissionCard): Promise<PermissionCard> {
+  private async moneyCard(
+    card: PermissionCard,
+    paying: { site: string | null; amount: string | null } | null = null,
+  ): Promise<PermissionCard> {
     const { group: _group, ...rest } = card;
+    // The agent's own browser or computer paying on a page says where, and how
+    // much when the page shows it, before anything else.
+    const what = paying
+      ? `Your agent is about to pay${paying.site ? ` on ${paying.site}` : ''}${
+          paying.amount ? `: ${paying.amount}` : ''
+        }`
+      : rest.what;
     const viewer = requestPrincipal();
     const [account] = viewer
       ? await this.sql`select password_hash from principal where id = ${viewer}`
@@ -277,6 +290,7 @@ export class ExperiencePermissions {
     const available = Boolean(account?.password_hash);
     return permissionCard.parse({
       ...rest,
+      what,
       why: [MONEY_REASON, ...rest.why.filter((line) => line !== ASK_REASON)],
       options: rest.options.filter((option) => option !== 'always'),
       step_up: {

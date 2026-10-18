@@ -45,7 +45,8 @@ its server or the person declared it as something else:
   arguments carry an amount with a currency or a way to pay;
 - any tool whose schema or call carries a way to pay (a card number, a payment
   method, a bank account), whatever it is called;
-- a `browser.submit` whose form pays.
+- a `browser.submit` whose form pays;
+- the moment the agent's own browser or computer pays (below).
 
 A money move always waits on its card and can be allowed only once, never with
 "always". Allow needs the signed-in person's password at that moment:
@@ -57,8 +58,57 @@ that the Allow carries a spent confirmation by the person who gave it. A
 tool that can no longer be found is treated as one that moves money. An
 account with no password cannot allow money moves until it sets one.
 
-Purchases the agent makes by clicking through a site in its own computer's
-browser are outside this rule; only tools Melete executes are covered.
+#### Paying from the agent's own browser or computer
+
+The agent's own computer and browser do anything a person could do at them
+without asking, except pay. The broker holds a step of `computer.click`,
+`computer.type`, `computer.key` or `computer.batch` (and `browser.fill` or
+`browser.click`) on the money card when it:
+
+- types a card number: 13 to 19 digits from a card network that pass the Luhn
+  check, typed at once, a few digits or one key at a time into the same field,
+  or split across fields of 4 to 6 digits one after another;
+- types into a field whose accessible name says card number, CVC, CVV, CSC or
+  security code, or into a payment provider's card frame;
+- types a card's expiry and then its code (or the code and then the expiry);
+- presses Return, or clicks anything but a field, on a page where card details
+  were entered since it was opened;
+- clicks a button or link whose accessible name clearly pays or buys ("Pay
+  now", "Pay $24.99", "Place order", "Buy now", "Complete purchase") on a page
+  that shows a price. This is how a checkout with a saved card is caught.
+
+The card says "Your agent is about to pay on shop.example.com", followed by the
+amount when the button or the page states one plainly (otherwise no amount is
+shown). The step
+goes ahead only with a fresh step-up made for it. Typing the card and pressing
+Pay are two steps, so a checkout usually asks twice.
+
+The rule is fixed code in `apps/melete/src/broker/pay-moment.ts`. It reads the
+step's own arguments and the accessibility text that the earlier steps'
+receipts kept, from the last 40 steps in the same work. It never reads a
+screenshot, text recognised from one, or another model's opinion. Its limits:
+
+- **Desktop apps without accessibility text** are not covered. Field names,
+  buttons and prices come only from accessibility data. Text recognised from
+  the picture is ignored, so in such an app only a whole card number typed
+  through the computer's tools is caught.
+- **Saved cards are caught only by the button.** A pay control with no
+  accessible name, or a name that does not say it pays ("Continue",
+  "Next"), on a page with no visible price, goes through. So do one-click
+  flows that charge on an earlier step, and a page whose price falls outside
+  the 6,000 characters of screen text a receipt keeps.
+- **Card frames from another site** often hide their field names. Digits typed
+  there still count, and a frame titled as a card's counts.
+- **Pasting** from the clipboard is caught only in a field named as a card's.
+- **A number typed with extra digits** into an unnamed field that cuts it to
+  length is read whole and can be missed. A run longer than 19 digits is also
+  read from its start.
+- **False alarms** ask for a step-up and stop nothing for good. A non-card
+  number of 13 to 19 digits passes the Luhn check about one time in ten, and a
+  long number typed a few digits at a time can be a card's length part way.
+- **Not read:** commands run in the computer's terminal (for example a script
+  that types or posts a form), the browser worker's own card fields (the worker
+  already hands those to the person), and the person's own paired device.
 
 A `write_external` action waits for the owner unless a rule the owner made
 covers it. Choosing `always` on a permission card writes that rule with a count

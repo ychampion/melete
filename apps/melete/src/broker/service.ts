@@ -19,6 +19,7 @@ import {
   intentKey,
   isTrustGatedEffect,
   type JsonObject,
+  type JsonValue,
   jobConstraints,
   MEMORY_SEARCH_TOOL,
   type OriginWarning,
@@ -129,6 +130,7 @@ import { actionKinds, type DontMatch, dontRulesFor, matchDontRule } from './dont
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import { type MoneyMove, moneyMove } from './money.ts';
+import { browserPays, payMoment, screenOf, siteOf } from './pay-moment.ts';
 import {
   actionWords,
   type Confidence,
@@ -157,6 +159,14 @@ import { toldToSend } from './told.ts';
 
 /** Why a message went without a card: the person's own words in this turn. */
 const TOLD_TO_SEND = 'You said to send it in your message.';
+
+/** Steps of the agent's own computer that can enter a card or press the button that pays. */
+const COMPUTER_PAY_STEPS = new Set([
+  'computer.click',
+  'computer.type',
+  'computer.key',
+  'computer.batch',
+]);
 
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
@@ -1043,7 +1053,9 @@ export class BrokerService implements BrokerOperations {
   ): Promise<Admissibility> {
     const access = await agentAccess(tx, job.id);
     const settings = this.options.autoReview ? await loadApprovalSettings(tx, job.space_id) : null;
-    const money = this.moneyOf(action, tool);
+    // The agent's own computer and browser pay at the moment they enter a card
+    // or press the button that buys, read from the step and the screen before it.
+    const money = this.moneyOf(action, tool) ?? (await this.payMomentOf(tx, action, tool));
     // A message the person said to send in this turn goes out on its own, held
     // for undo and with a receipt. Anything else that sends stays with them.
     const told = !money && directSend(tool.name) && (await toldToSend(tx, action.attempt_id));
@@ -1329,7 +1341,74 @@ export class BrokerService implements BrokerOperations {
     const tool = connector && findTool(connector.manifest, action.kind);
     // A tool that cannot be found any more cannot be shown not to move money.
     if (!tool) return true;
-    return this.moneyOf(action, tool) !== null;
+    return (
+      this.moneyOf(action, tool) !== null ||
+      (await this.payMomentOf(this.sql, action, tool)) !== null
+    );
+  }
+
+  /**
+   * Where a money move pays and how much, for its card: the page the agent's
+   * own browser or computer is paying on, or the form it submits. Null for a
+   * money move that is not a page's checkout.
+   */
+  async payingAt(action: Action): Promise<{ site: string | null; amount: string | null } | null> {
+    const connector = this.options.connectors.get(action.connection_id);
+    const tool = connector && findTool(connector.manifest, action.kind);
+    if (!tool) return null;
+    if (tool.name === 'browser.submit') {
+      const intent = (action.canonical_payload as JsonObject).intent as JsonObject | undefined;
+      return this.moneyOf(action, tool)
+        ? { site: siteOf(typeof intent?.url === 'string' ? intent.url : null), amount: null }
+        : null;
+    }
+    const moment = await this.payMomentOf(this.sql, action, tool);
+    return moment ? { site: moment.site ?? null, amount: moment.amount ?? null } : null;
+  }
+
+  /**
+   * Whether a step of the agent's own computer or browser pays (`pay-moment.ts`),
+   * read from the steps before it in this work on the same connection and the
+   * screen each left. Only steps proposed before this one count, so the
+   * answer is the same at every phase.
+   */
+  private async payMomentOf(
+    tx: Query,
+    action: Pick<Action, 'id' | 'job_id' | 'connection_id' | 'kind' | 'canonical_payload'>,
+    tool: ConnectorTool,
+  ): Promise<MoneyMove | null> {
+    if (tool.name.startsWith('browser.')) {
+      const reason = browserPays(tool.name, action.canonical_payload as JsonObject);
+      if (!reason) return null;
+      const [page] = await tx`select receipt->'detail'->'observation'->>'url' as url from action
+        where job_id = ${action.job_id} and connection_id = ${action.connection_id}
+          and status = 'succeeded' and kind like 'browser.%' and id <> ${action.id}
+          and receipt->'detail'->'observation'->>'url' is not null
+        order by created_at desc, id desc limit 1`;
+      return {
+        reason,
+        by: 'screen',
+        site: siteOf(typeof page?.url === 'string' ? page.url : null),
+        amount: null,
+      };
+    }
+    if (!COMPUTER_PAY_STEPS.has(tool.name)) return null;
+    const rows = await tx`select kind, canonical_payload, receipt->'detail'->'screen_text' as screen
+      from action where job_id = ${action.job_id} and connection_id = ${action.connection_id}
+        and kind like 'computer.%' and status = 'succeeded' and id <> ${action.id}
+        and created_at <= coalesce((select created_at from action where id = ${action.id}), now())
+      order by created_at desc, id desc limit 40`;
+    const moment = payMoment(
+      rows.reverse().map((row) => ({
+        kind: String(row.kind),
+        payload: (row.canonical_payload ?? {}) as JsonObject,
+        after: screenOf(row.screen as JsonValue),
+      })),
+      { kind: tool.name, payload: action.canonical_payload as JsonObject },
+    );
+    return moment
+      ? { reason: moment.reason, by: 'screen', site: moment.site, amount: moment.amount }
+      : null;
   }
 
   /** Why this action moves money, or null (`money.ts`), judged on its own connector's declaration. */
