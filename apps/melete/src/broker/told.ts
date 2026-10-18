@@ -89,8 +89,10 @@ export function saysToSend(text: string, previous = ''): boolean {
 
 /**
  * Whether the person said to send in the turn this attempt answers. Only a
- * turn a person wrote counts: a routine's own run or a wake has no author,
- * and its sends are judged as proactive work instead.
+ * turn a person wrote, answered by an attempt they are waiting on, counts: a
+ * routine's own run has no author, and a later wake of the same conversation
+ * (a schedule, a timer, an event) carries the turn but was not asked for by
+ * it, so its sends are judged as proactive work instead.
  */
 export async function toldToSend(tx: Query, attemptId: string | null | undefined) {
   if (!attemptId) return false;
@@ -98,7 +100,7 @@ export async function toldToSend(tx: Query, attemptId: string | null | undefined
       (select p.answer from experience_turn p where p.job_id = t.job_id
         and p.created_at < t.created_at order by p.created_at desc, p.id desc limit 1) as previous
     from attempt a join experience_turn t on t.id = a.turn_id and t.job_id = a.job_id
-    where a.id = ${attemptId} and t.author_principal_id is not null`;
+    where a.id = ${attemptId} and a.class = 'interactive' and t.author_principal_id is not null`;
   return turn ? saysToSend(String(turn.text ?? ''), String(turn.previous ?? '')) : false;
 }
 
@@ -109,6 +111,6 @@ export async function toldToSendIn(tx: Transaction, attemptId: string | null | u
       (select p.answer from experience_turn p where p.job_id = t.job_id
         and p.created_at < t.created_at order by p.created_at desc, p.id desc limit 1) as previous
     from attempt a join experience_turn t on t.id = a.turn_id and t.job_id = a.job_id
-    where a.id = ${attemptId} and t.author_principal_id is not null`);
+    where a.id = ${attemptId} and a.class = 'interactive' and t.author_principal_id is not null`);
   return turn ? saysToSend(String(turn.text ?? ''), String(turn.previous ?? '')) : false;
 }

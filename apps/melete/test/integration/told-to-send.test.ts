@@ -80,7 +80,11 @@ async function setup(options: { chat?: boolean; trust?: TrustTable } = {}) {
   /**
    * The person says `text` (no one, when `author` is null) and an attempt answers it.
    */
-  const turn = async (text: string, author: string | null = personId) => {
+  const turn = async (
+    text: string,
+    author: string | null = personId,
+    usageClass: 'interactive' | 'background' = 'interactive',
+  ) => {
     const turnId = recordId('trn');
     await sql`insert into experience_turn (id, job_id, agent_id, submission_id, author_principal_id,
         text, answer, status)
@@ -89,8 +93,9 @@ async function setup(options: { chat?: boolean; trust?: TrustTable } = {}) {
     const attemptId = recordId('att');
     const [job] = await sql`update job set current_turn_id = ${turnId},
         lease_epoch = lease_epoch + 1 where id = ${seed.claims.job_id} returning lease_epoch`;
-    await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, turn_id)
-      values (${attemptId}, ${seed.claims.job_id}, ${job?.lease_epoch}, 'fake', 'fake', 'scripted', ${turnId})`;
+    await sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, turn_id, class)
+      values (${attemptId}, ${seed.claims.job_id}, ${job?.lease_epoch}, 'fake', 'fake', 'scripted',
+        ${turnId}, ${usageClass})`;
     const claims = { ...seed.claims, attempt_id: attemptId, epoch: Number(job?.lease_epoch) };
     return {
       claims,
@@ -152,6 +157,14 @@ describe('in a chat', () => {
   databaseTest('a turn no person wrote cannot say to send', async () => {
     const s = await setup();
     const woke = await s.turn('Send it', null);
+    await rejectionOf(woke.propose('email.send', reply));
+    expect(s.dispatched).toEqual([]);
+  });
+
+  databaseTest('a later wake of the same conversation was not told to send', async () => {
+    const s = await setup();
+    // A schedule or an event wakes the chat while its last message still reads "send it".
+    const woke = await s.turn('Send it', undefined, 'background');
     await rejectionOf(woke.propose('email.send', reply));
     expect(s.dispatched).toEqual([]);
   });
