@@ -805,7 +805,8 @@ export function decodeConversationCursor(cursor: string): ConversationCursor | n
  * the turns before those. `events=true` adds the events of those turns.
  */
 export const MESSAGE_PAGE_LIMIT = 200;
-export const conversationMessagesQuery = z.strictObject({
+/** Parameters it does not know are left out, as they were before the page parameters came. */
+export const conversationMessagesQuery = z.object({
   limit: z.coerce.number().int().positive().max(MESSAGE_PAGE_LIMIT).optional(),
   before: z.string().min(1).max(200).optional(),
   events: z.enum(['true', 'false']).optional(),

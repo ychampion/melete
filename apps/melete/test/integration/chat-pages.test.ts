@@ -230,6 +230,24 @@ withDb('a chat read a page at a time', () => {
       expect(
         (await request(`/conversations/${chat.id}/messages?limit=3&before=${bad}`)).status,
       ).toBe(400);
+    // A parameter it does not know, a client's cache-buster say, is left out, paged or not.
+    const busted = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages?_=1729250000000`)).json(),
+    );
+    expect(busted.turns.map((entry) => entry.id)).toEqual(whole.turns.map((entry) => entry.id));
+    expect(busted.next_cursor).toBeUndefined();
+    const bustedPage = await page(chat.id, 'limit=3&v=2&_=x');
+    expect(bustedPage.turns.map((entry) => entry.text)).toEqual(['Step 5', 'Step 6', 'Step 7']);
+    // The ones it knows are still held to their form.
+    for (const bad of [
+      'limit=0',
+      'limit=-1',
+      'limit=abc',
+      'limit=100000',
+      'before=',
+      'limit=3&before=',
+    ])
+      expect((await request(`/conversations/${chat.id}/messages?${bad}&_=1`)).status).toBe(400);
   }, 120_000);
 
   test('turns that arrive while reading back neither shift nor repeat the older pages', async () => {
