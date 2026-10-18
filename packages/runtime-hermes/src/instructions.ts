@@ -460,7 +460,7 @@ export function renderInput(bundle: AttemptBundle): string {
       '',
       '## A wait is set aside',
       '',
-      `The wait ${what} was set aside before it fired so this attempt could run. It comes back by itself when you finish without choosing another wait, and still fires when due; call job.wait only to wait for something different.`,
+      `The wait ${what} was set aside before it fired so this attempt could run. It comes back by itself when you finish without choosing another wait, and still fires when due; call job.wait only to wait for something different.${cancelled.kind === 'timer' ? ' If the person cancels this reminder, call run.stop with this conversation as its run (run.list shows it under reminders), and it will not fire. To move it, call job.wait with the new time.' : ''}`,
     );
   }
   for (const approval of bundle.inputs.approval_results)

@@ -100,6 +100,9 @@ export const transitionInput = z.discriminatedUnion('kind', [
   }),
   z.object({ kind: z.literal('event_fired') }),
   z.object({ kind: z.literal('timer_fired') }),
+  // The person cancelled the reminder a conversation rests on before it fired:
+  // nothing is left to wait for, and the conversation goes on at its next message.
+  z.object({ kind: z.literal('wait_dropped') }),
   z.object({ kind: z.literal('reconciled') }),
   z.object({ kind: z.literal('cancelled') }),
 ]);
@@ -242,9 +245,10 @@ export function transition(
 
     case 'waiting_for_event_or_time':
       if (input.kind === 'event_fired' || input.kind === 'timer_fired') return ok('queued');
+      if (input.kind === 'wait_dropped') return ok('completed');
       return fail(
         'illegal_transition',
-        `waiting_for_event_or_time accepts event_fired or timer_fired, not ${input.kind}`,
+        `waiting_for_event_or_time accepts event_fired, timer_fired or wait_dropped, not ${input.kind}`,
         state,
         input,
       );
@@ -285,6 +289,7 @@ export const LEGAL_EDGES: ReadonlyArray<{
   { from: 'waiting_for_approval', input: 'approval_decided', to: 'queued' },
   { from: 'waiting_for_event_or_time', input: 'event_fired', to: 'queued' },
   { from: 'waiting_for_event_or_time', input: 'timer_fired', to: 'queued' },
+  { from: 'waiting_for_event_or_time', input: 'wait_dropped', to: 'completed' },
   { from: 'needs_reconciliation', input: 'reconciled', to: 'queued' },
   { from: 'failed', input: 'conversation_continued', to: 'queued' },
   { from: 'completed', input: 'conversation_continued', to: 'queued' },

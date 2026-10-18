@@ -1021,6 +1021,14 @@ export class AttemptRunner {
       .limit(1);
     const parsed = waitSpec.safeParse((notice?.payload as JsonObject | undefined)?.wait);
     if (!parsed.success) return null;
+    // The person cancelled it during this attempt (run.stop): it stays gone,
+    // for a retry of this turn too.
+    const [dropped] = await tx
+      .select({ seq: event.seq })
+      .from(event)
+      .where(and(eq(event.dedupKey, `${attemptId}:wait-dropped`), eq(event.jobId, row.id)))
+      .limit(1);
+    if (dropped) return null;
     const wait = parsed.data;
     const [pending] = await tx
       .select({ id: action.id })
