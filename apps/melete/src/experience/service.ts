@@ -58,6 +58,8 @@ const UNDER_WAY = ['queued', 'working', 'streaming', 'stalled', 'needs_you', 'pa
 const STILL_WRITING = new Set(['queued', 'working', 'streaming', 'stalled']);
 /** How many turns a page of messages holds when `before` is given without `limit`. */
 const DEFAULT_MESSAGE_PAGE = 50;
+/** How many chats of a list page have their view read at once. */
+const LIST_VIEWS_AT_ONCE = 8;
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
   row: JobRow,
@@ -590,8 +592,14 @@ export class ExperienceService {
       .orderBy(desc(activity), desc(job.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
+    // Each chat's view is a few small reads; a page of them is read a few at a time.
     const result: Conversation[] = [];
-    for (const row of page) result.push(await this.view(row));
+    for (let start = 0; start < page.length; start += LIST_VIEWS_AT_ONCE)
+      result.push(
+        ...(await Promise.all(
+          page.slice(start, start + LIST_VIEWS_AT_ONCE).map((row) => this.view(row)),
+        )),
+      );
     const last = page.at(-1);
     return {
       conversations: result,
