@@ -15,6 +15,7 @@ import {
   saveApprovalSettings,
 } from '../broker/auto-review.ts';
 import { BrokerFault } from '../broker/errors.ts';
+import { cardDigits, replaceCardNumbers } from '../broker/pay-moment.ts';
 import { appendEvent, loadAction, lockJob } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import { issueStepUp, STEP_UP_NEEDED } from '../broker/step-up.ts';
@@ -29,6 +30,7 @@ import {
   roomAuthorityOf,
   waitingFor,
 } from '../rooms/approvals.ts';
+import { sensitiveName } from '../workers/browser/visible.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
 import {
@@ -55,6 +57,30 @@ import { experienceMissing } from './service.ts';
 /** The line naming the request a permission is for, with one stop at the end, never two. */
 export const forLine = (title: string): string =>
   /[.!?…]$/.test(title) ? `For ${title}` : `For ${title}.`;
+
+/** A money card's facts that are what the agent types or picks, where any digit may be a card's. */
+const TYPED_FACTS = new Set(['Text', 'Value', 'Keys']);
+
+/**
+ * A fact on a money card with the card in it hidden: a card number shows only
+ * its last four digits, and what is typed into a card's details (the text
+ * typed, a field named for a card, an expiry or a code) shows no digit at all.
+ * The person still sees which step it is; the number is not kept in what the
+ * card shows, or in the events that carry it.
+ */
+export function hideCardDetails(label: string, value: string): string {
+  const endings: string[] = [];
+  // Each card number is set aside, by a mark no text carries, while the rest is read.
+  const marked = replaceCardNumbers(value.replaceAll('', '�'), cardDigits, (digits) => {
+    endings.push(digits.slice(-4));
+    return '';
+  });
+  const typed = TYPED_FACTS.has(label) || sensitiveName.test(label);
+  return marked
+    .split('')
+    .map((part) => (typed ? part.replace(/\p{Nd}/gu, '•') : part))
+    .reduce((shown, part, index) => `${shown}[card ending ${endings[index - 1]}]${part}`);
+}
 
 const ENDED_MESSAGE = 'This was withdrawn because the work it was for has ended.';
 /** What the person is told when they allow a permission whose request has since changed. */
@@ -276,11 +302,12 @@ export class ExperiencePermissions {
     paying: { site: string | null; amount: string | null } | null = null,
   ): Promise<PermissionCard> {
     const { group: _group, ...rest } = card;
-    // The agent's own browser or computer paying on a page says where, and how
-    // much when the page shows it, before anything else.
+    // The agent's own browser or computer paying on a page says where, and the
+    // amount the page shows, as the page's own words: it is page text, which
+    // decides nothing.
     const what = paying
       ? `Your agent is about to pay${paying.site ? ` on ${paying.site}` : ''}${
-          paying.amount ? `: ${paying.amount}` : ''
+          paying.amount ? `. The page says ${paying.amount}` : ''
         }`
       : rest.what;
     const viewer = requestPrincipal();
@@ -291,6 +318,13 @@ export class ExperiencePermissions {
     return permissionCard.parse({
       ...rest,
       what,
+      preview: rest.preview && {
+        ...rest.preview,
+        facts: rest.preview.facts.map((fact) => ({
+          ...fact,
+          value: hideCardDetails(fact.label, fact.value),
+        })),
+      },
       why: [MONEY_REASON, ...rest.why.filter((line) => line !== ASK_REASON)],
       options: rest.options.filter((option) => option !== 'always'),
       step_up: {

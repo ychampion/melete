@@ -1,12 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import type { JsonObject } from '@melete/contracts';
 import {
+  asciiDigits,
   browserPays,
   type ComputerStep,
   cardDigits,
+  cardNumber,
   holdsCardNumber,
+  PAGE_STEPS,
   payMoment,
   screenOf,
+  shellPays,
+  stepsOnPage,
 } from './pay-moment.ts';
 
 const VISA = '4111111111111111';
@@ -164,7 +169,8 @@ describe('the agent’s own computer', () => {
         return sum + (d > 9 ? d - 9 : d);
       }, 0);
     for (let round = 0; round < 300; round++) {
-      let body = String(4 + random(2));
+      // Visa, or Mastercard's 51 to 55.
+      let body = random(2) ? '4' : `5${1 + random(5)}`;
       while (body.length < 15) body += String(random(10));
       const check = (10 - (luhnSum(`${body}0`) % 10)) % 10;
       const card = `${body}${check}`;
@@ -298,6 +304,147 @@ describe('the agent’s own computer', () => {
     expect(payMoment([click(10, 60, ocr)], type('41'))).toBeNull();
     // A whole card number typed is still caught.
     expect(payMoment([click(10, 60, ocr)], type(VISA))).not.toBeNull();
+  });
+});
+
+describe('ways around the rule', () => {
+  const ARABIC = '٤١١١ ١١١١ ١١١١ ١١١١';
+  const DEVANAGARI = '४१११११११११११११११';
+
+  test('any separator, any script’s digits', () => {
+    for (const text of [
+      '4111.1111.1111.1111',
+      '4111/1111/1111/1111',
+      '4111  1111  1111  1111',
+      '4111 - 1111 - 1111 - 1111',
+      ARABIC,
+      DEVANAGARI,
+      '۴۱۱۱۱۱۱۱۱۱۱۱۱۱۱۱',
+    ])
+      expect([text, holdsCardNumber(text)]).toEqual([text, true]);
+    expect(asciiDigits(ARABIC)).toBe('4111 1111 1111 1111');
+  });
+
+  test('a digit key in any script, and the keysyms for them', () => {
+    const arabic = [...asciiDigits(VISA)].map((digit) =>
+      String.fromCodePoint(0x660 + Number(digit)),
+    );
+    expect(payMoment([click(10, 110, bare('n2'))], keys(arabic))).not.toBeNull();
+    const named = [...VISA].map((digit) => `Arabic_${digit}`);
+    expect(payMoment([click(10, 110, bare('n2'))], keys(named))).not.toBeNull();
+  });
+
+  test('a number only a card network issues is held on its own; anything else needs a card’s context', () => {
+    // Luhn-valid, but no network issues it: an IMEI, a 13-digit barcode, a stray number.
+    for (const digits of ['5686060488008826', '356938035643809', '4006381333931'])
+      expect([digits, cardNumber(digits)]).toEqual([digits, false]);
+    expect(cardNumber('30569309025904')).toBe(true);
+    expect(cardNumber('6011111111111117')).toBe(true);
+    expect(cardNumber('2223000048400011')).toBe(true);
+    // A retired 13-digit Visa is a card only where something says so.
+    expect(cardNumber('4222222222222')).toBe(false);
+    expect(cardDigits('4222222222222')).toBe(true);
+    // A bank account's IBAN, with its check, is not a card.
+    expect(holdsCardNumber('DE89 3704 0044 0532 0130 00')).toBe(false);
+    // In a field with no name: held when a network's, or with an expiry right after.
+    const bareTyped = (digits: string) => [click(10, 110, bare('n2')), type(digits, bare('n2'))];
+    expect(payMoment([click(10, 110, bare('n2'))], type('5686060488008826'))).toBeNull();
+    expect(
+      payMoment([...bareTyped('5686060488008826'), keys(['Tab'], bare('n3'))], type('12/27')),
+    ).not.toBeNull();
+    expect(
+      payMoment([...bareTyped('4222222222222'), keys(['Tab'], bare('n3'))], type('123')),
+    ).not.toBeNull();
+    // Into a field named as a card's, anything is held.
+    expect(payMoment([click(10, 160, checkout('number'))], type('4222222222222'))).not.toBeNull();
+  });
+
+  test('a digit to a field, sixteen fields', () => {
+    const many = screen('https://pay.example.org/form', [
+      'n0 text "Amount due 120.00 USD" box=0,0,300,20',
+      ...Array.from({ length: 16 }, (_, i) => `n${i + 1} textbox box=${i * 40},100,30,30`),
+    ]);
+    const before = [...VISA.slice(0, -1)].flatMap((digit, i) => [
+      click(i * 40 + 5, 110, many),
+      type(digit, many),
+    ]);
+    expect(payMoment([...before, click(15 * 40 + 5, 110, many)], type('1'))).not.toBeNull();
+  });
+
+  test('pasting on a page with a card’s fields, into a field with no name', () => {
+    const unnamed = screen('https://shop.example.com/checkout', [
+      'n1 text "Order total $24.99" box=0,0,300,20',
+      'n2 textbox "Card number" box=0,50,300,30',
+      'n3 textbox [focused] box=0,100,300,30',
+    ]);
+    expect(payMoment([click(10, 110, unnamed)], keys(['ctrl+v']))?.reason).toBe(
+      'It pastes on a page with a card’s fields.',
+    );
+    // A page with no card's field: a paste is ordinary work.
+    expect(payMoment([click(10, 110, bare('n2'))], keys(['ctrl+v']))).toBeNull();
+  });
+
+  test('a saved card the browser offers: clicking into a card field, then picking', () => {
+    const into = [click(10, 160, checkout('number'))];
+    expect(payMoment(into, click(10, 190))?.reason).toBe(
+      'It clicks after going into a card’s field, which may pick a saved card or pay.',
+    );
+    expect(payMoment(into, keys(['Return']))).not.toBeNull();
+  });
+
+  test('which kind of step, and on which origin', () => {
+    const typed = payMoment([click(10, 160, checkout('number'))], type(VISA));
+    expect(typed).toMatchObject({ kind: 'entry', origin: 'https://shop.example.com' });
+    const entered = [click(10, 160, checkout('number')), type(VISA, checkout('number'))];
+    expect(payMoment(entered, keys(['Return']))?.kind).toBe('submit');
+    expect(payMoment(entered, click(350, 270))?.kind).toBe('submit');
+    expect(payMoment([click(10, 110, checkout())], click(10, 270))?.kind).toBe('submit');
+    // The amount is the page's own text, as the page writes it.
+    expect(payMoment([click(10, 110, checkout())], click(10, 270))?.amount).toBe('$24.99');
+  });
+
+  test('slow typing: every step on the page is read, back to where it opened', () => {
+    const steps: ComputerStep[] = [
+      step('computer.open', { url: 'https://pay.example.org/form' }, bare()),
+      click(10, 110, bare('n2')),
+    ];
+    // A digit at a time, with twenty other steps after each.
+    for (const digit of VISA.slice(0, -1)) {
+      steps.push(keys([digit], bare('n2')));
+      for (let i = 0; i < 20; i++) steps.push(step('computer.screenshot', {}, bare('n2')));
+    }
+    const read = stepsOnPage([...steps].reverse());
+    expect(read.length).toBe(steps.length);
+    expect(payMoment(read, keys(['1']))).not.toBeNull();
+    // The last 40 alone would miss it.
+    expect(payMoment(steps.slice(-40), keys(['1']))).toBeNull();
+    // Reading stops at the page that opened it, or at another page, and at the cap.
+    const elsewhere = screen('https://news.example.net/', []);
+    const older = [click(0, 0, elsewhere), ...steps];
+    expect(stepsOnPage([...older].reverse()).length).toBe(steps.length);
+    const noOpen = steps.slice(1);
+    expect(stepsOnPage([...[click(0, 0, elsewhere), ...noOpen]].reverse()).length).toBe(
+      noOpen.length,
+    );
+    const endless = Array.from({ length: 1000 }, () => click(0, 0, bare()));
+    expect(stepsOnPage(endless).length).toBe(PAGE_STEPS);
+  });
+
+  test('a command or code in the computer that carries a card number', () => {
+    expect(shellPays('terminal.run', { command: `xdotool type ${VISA}` })).toBe(
+      'It runs a command with a card number in it.',
+    );
+    expect(
+      shellPays('terminal.run', { command: "xdotool type '4111 1111 1111 1111'" }),
+    ).not.toBeNull();
+    expect(
+      shellPays('exec.run', { command: `echo -n ${VISA} | xclip -selection clipboard` }),
+    ).not.toBeNull();
+    expect(shellPays('exec.python', { code: `page.fill("#cc", "${AMEX}")` })).not.toBeNull();
+    expect(shellPays('process.write', { process_id: 'p', text: VISA })).not.toBeNull();
+    expect(shellPays('terminal.run', { command: 'echo 4111111111111112' })).toBeNull();
+    expect(shellPays('terminal.run', { command: 'date +%s%3N' })).toBeNull();
+    expect(shellPays('files.write', { content: VISA })).toBeNull();
   });
 });
 

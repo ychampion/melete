@@ -8,31 +8,40 @@
  * a fixed rule over what the step does and what the screen showed before it,
  * never by a model and never from a picture:
  *
- * - typing a card number: 13 to 19 digits from a card network (2 to 6 first)
- *   that pass the Luhn check, typed at once or in pieces, into one field or
- *   split across fields of 4 to 6 digits one after another;
+ * - typing a card number: 13 to 19 digits with a card network's prefix and
+ *   length that pass the Luhn check, typed at once or in pieces, in any
+ *   script's digits and any grouping, into one field or split across fields
+ *   one after another; a Luhn-valid number from no network counts only with an
+ *   expiry or a code typed right after it;
  * - typing into a field whose accessible name says card number, CVC, CVV,
  *   CSC or security code, or into a card frame a payment provider draws;
  * - typing a card's expiry (`MM/YY`) and its code (3 or 4 digits) one right
  *   after the other;
+ * - pasting into a card's field, or into an unnamed one on a page that shows a
+ *   card's field;
+ * - clicking or pressing Return after clicking into a card's field, which may
+ *   pick a saved card the browser offers;
  * - pressing Return, or clicking anything but a field, on a page where card
  *   details were entered since it was opened;
  * - clicking a button or link whose accessible name is a clear pay or buy
  *   phrase ("Pay now", "Place order", "Buy now") on a page that shows a price,
- *   which is how a checkout with a saved card is paid.
+ *   which is how a checkout with a saved card is paid;
+ * - a command or code run in the computer that carries a card's number
+ *   (`shellPays`).
  *
- * Typed text is buffered per field: what each field holds is followed across
- * steps and the steps of a batch, so a number typed a few digits at a time is
- * read whole. The screen is the accessibility text each step's receipt keeps
- * (`connectors/screen-text.ts`), the latest before the step.
+ * Typed text is buffered per field, in memory, for one reading: what each
+ * field holds is followed across steps and the steps of a batch, so a number
+ * typed a few digits at a time is read whole. The screen is the accessibility
+ * text each step's receipt keeps (`connectors/screen-text.ts`), the latest
+ * before the step; every step on the page is read back (`stepsOnPage`).
  *
  * What it cannot see is said plainly, not guessed: a desktop app with no
  * accessibility text (text read off the screen's picture is not used; only a
  * card number typed is still caught there), a field inside a frame from another site (most card
  * forms draw their fields so; the digits still count, the label does not), a
- * page whose text is cut off before the field, text pasted from the clipboard
- * into a field not named as a card's, and a button whose name says nothing
- * about paying. Commands run in the computer's terminal are not read here.
+ * page whose text is cut off before the field, text pasted into a named field
+ * that is not a card's, and a button whose name says nothing about paying on a
+ * page where no card was entered.
  */
 import type { JsonObject, JsonValue } from '@melete/contracts';
 
@@ -51,8 +60,26 @@ export type Screen = { url: string | null; elements: ScreenElement[] };
 /** One step on the computer: the tool and its arguments, and the screen after it when it ran. */
 export type ComputerStep = { kind: string; payload: JsonObject; after: Screen | null };
 
-/** Why a step pays, where, and for how much when the page says. */
-export type PayMoment = { reason: string; site: string | null; amount: string | null };
+/**
+ * Whether a step enters a card (typing, pasting or picking one) or sends what
+ * was entered (a click or Return after it, or a pay button on a priced page).
+ */
+export type PayKind = 'entry' | 'submit';
+type Found = { reason: string; kind: PayKind };
+
+/**
+ * Why a step pays, which kind of step it is, where, and the amount the page
+ * shows. The amount is page text, shown to the person as what the page says;
+ * it never decides anything.
+ */
+export type PayMoment = {
+  reason: string;
+  kind: PayKind;
+  site: string | null;
+  /** The page's origin (scheme, host and port), which a step-up for entering a card covers. */
+  origin: string | null;
+  amount: string | null;
+};
 
 const LINE =
   /^([nt]\d{1,15}) ([A-Za-z][\w-]{0,47})(?: ("(?:[^"\\]|\\.)*"))?(?: value=("(?:[^"\\]|\\.)*"))?(?: \[([^\]]*)\])? box=(-?\d+),(-?\d+),(-?\d+),(-?\d+)$/;
@@ -91,9 +118,33 @@ export function screenOf(value: JsonValue | undefined): Screen | null {
 
 /* ---------- what is typed ---------- */
 
-/** Whether digits are a card's number: 13 to 19, a network's first digit, and the Luhn check. */
-export function cardDigits(digits: string): boolean {
-  if (!/^[2-6]\d{12,18}$/.test(digits)) return false;
+/** Where each run of decimal digits outside ASCII starts, by any of its code points. */
+const digitZero = new Map<number, number>();
+const DECIMAL = /\p{Nd}/u;
+
+/**
+ * Text with every decimal digit written as an ASCII one: full-width digits,
+ * Arabic-Indic, Devanagari and every other script's. A card field that takes
+ * them reads them as the digits they are, so they count the same.
+ */
+export function asciiDigits(text: string): string {
+  return text.normalize('NFKC').replace(/\p{Nd}/gu, (char) => {
+    const point = char.codePointAt(0) ?? 0;
+    if (point < 0x80) return char;
+    let zero = digitZero.get(point);
+    if (zero === undefined) {
+      // Unicode keeps each script's digits 0 to 9 together, in runs of ten.
+      let start = point;
+      while (DECIMAL.test(String.fromCodePoint(start - 1))) start--;
+      zero = point - ((point - start) % 10);
+      digitZero.set(point, zero);
+    }
+    return String(point - zero);
+  });
+}
+
+/** The Luhn check. */
+function luhn(digits: string): boolean {
   let sum = 0;
   for (let i = 0; i < digits.length; i++) {
     let digit = Number(digits[digits.length - 1 - i]);
@@ -107,33 +158,133 @@ export function cardDigits(digits: string): boolean {
 }
 
 /**
- * Whether text holds a card's number: digits written as one run, or in groups
- * split by single spaces or dashes, where whole groups one after another make
- * a card's number. A run longer than a card's is read from its start too,
- * since a field that takes 16 digits keeps the first 16. A number is never
- * read from the middle of a longer run, so a long reference or tracking
- * number is not taken for a card.
+ * A card network's own number: its issuer prefix and one of its lengths.
+ * Visa, Mastercard (51-55 and 2221-2720), American Express, Diners Club,
+ * Discover, JCB, UnionPay, Maestro and Mir.
  */
-export function holdsCardNumber(text: string): boolean {
-  for (const run of text.normalize('NFKC').match(/\d+(?:[ -]\d+)*/g) ?? []) {
-    const groups = run.split(/[ -]/);
+const NETWORKS: Array<[RegExp, number, number]> = [
+  // Visa's 13-digit numbers are long retired, and a European barcode is 13
+  // digits from 40 to 44; a 13-digit Visa still counts where something else
+  // says it is a card (`cardDigits`).
+  [/^4/, 16, 19],
+  [/^5[1-5]/, 16, 16],
+  [/^2(?:22[1-9]|2[3-9]\d|[3-6]\d\d|7[01]\d|720)/, 16, 16],
+  [/^3[47]/, 15, 15],
+  // Diners Club: 14, or 16 to 19 on Discover's network; never 15, an IMEI's length.
+  [/^3(?:0[0-5]|[689])/, 14, 14],
+  [/^3(?:0[0-5]|[689])/, 16, 19],
+  [/^6(?:011|5|4[4-9]|22(?:12[6-9]|1[3-9]\d|[2-8]\d\d|9[01]\d|92[0-5]))/, 16, 19],
+  [/^35(?:2[89]|[3-8]\d)/, 16, 19],
+  [/^62/, 16, 19],
+  [/^(?:5018|5020|5038|5893|6304|6759|676[1-3])/, 13, 19],
+  [/^220[0-4]/, 16, 19],
+];
+const networkNumber = (digits: string) =>
+  NETWORKS.some(
+    ([prefix, shortest, longest]) =>
+      digits.length >= shortest && digits.length <= longest && prefix.test(digits),
+  ) &&
+  (!/^4/.test(digits) || [16, 19].includes(digits.length));
+
+/**
+ * Whether digits could be a card's number at all: 13 to 19, a network's first
+ * digit (2 to 6), and the Luhn check. A number with no more than this is a
+ * card only where something else says so (a card's field, or an expiry and
+ * code typed after it): about one in twenty long numbers passes.
+ */
+export function cardDigits(digits: string): boolean {
+  return /^[2-6]\d{12,18}$/.test(digits) && luhn(digits);
+}
+
+/**
+ * Whether digits are a card's number on their own: they pass `cardDigits` and
+ * carry a card network's prefix at one of its lengths. An IMEI, a European
+ * barcode or a 20-digit tracking number passes Luhn by design or by chance,
+ * but not this.
+ */
+export function cardNumber(digits: string): boolean {
+  return cardDigits(digits) && networkNumber(digits);
+}
+
+/** What may stand between the groups of a card's number: spaces, dashes, dots, slashes. */
+const GROUPED = /\d+(?:[\s\-./_,·•]{1,3}\d+)*/g;
+const BETWEEN = /[\s\-./_,·•]{1,3}/;
+
+/**
+ * Whether text holds a number `is` accepts: digits written as one run, or in
+ * groups split by up to three spaces, dashes, dots or slashes, where whole
+ * groups one after another make the number. A run longer than a card's is read
+ * from its start too, since a field that takes 16 digits keeps the first 16.
+ * A number is never read from the middle of a longer run, so a long reference
+ * or tracking number is not taken for a card.
+ */
+function holds(text: string, is: (digits: string) => boolean): boolean {
+  return found(text, is) !== null;
+}
+
+/** The first number in text that `is` accepts, read as `holds` reads it, or null. */
+function found(text: string, is: (digits: string) => boolean): string | null {
+  if (iban(text)) return null;
+  for (const run of asciiDigits(text).match(GROUPED) ?? []) {
+    const groups = run.split(BETWEEN);
     for (let start = 0; start < groups.length; start++) {
       let digits = '';
       for (let end = start; end < groups.length; end++) {
         digits += groups[end];
         if (digits.length > 19) break;
-        if (digits.length >= 13 && cardDigits(digits)) return true;
+        if (digits.length >= 13 && is(digits)) return digits;
       }
     }
     const only = groups[0] as string;
     if (groups.length === 1 && only.length > 19)
       for (let length = 13; length <= 19; length++)
-        if (cardDigits(only.slice(0, length))) return true;
+        if (is(only.slice(0, length))) return only.slice(0, length);
   }
-  return false;
+  return null;
 }
 
-const EXPIRY = /^(?:0[1-9]|1[0-2]) ?\/ ?(?:\d{2}|20\d{2})$/;
+/**
+ * Whether text is, whole, a bank account's IBAN with a valid check (mod 97):
+ * its digits are not a card's, and a card field would not take its letters.
+ */
+function iban(text: string): boolean {
+  const compact = asciiDigits(text).replace(/[\s-]/g, '').toUpperCase();
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/.test(compact)) return false;
+  const moved = compact.slice(4) + compact.slice(0, 4);
+  let rest = 0;
+  for (const char of moved) {
+    const value = /\d/.test(char) ? char : String(char.charCodeAt(0) - 55);
+    for (const digit of value) rest = (rest * 10 + Number(digit)) % 97;
+  }
+  return rest === 1;
+}
+
+/** A run of digits in any script, in groups split as `GROUPED` allows. */
+const ANY_GROUPED = /\p{Nd}+(?:[\s\-./_,·•]{1,3}\p{Nd}+)*/gu;
+
+/**
+ * Text with each run of digits that holds a card's number replaced, the run
+ * whole (with what was typed around the number in it, an expiry or a code):
+ * `is` says which numbers count (`cardDigits` hides more than `cardNumber`),
+ * and `by` is given the card's own number to write something in its place.
+ */
+export function replaceCardNumbers(
+  text: string,
+  is: (digits: string) => boolean,
+  by: (digits: string) => string,
+): string {
+  return text.replace(ANY_GROUPED, (run) => {
+    const card = found(run, is);
+    return card === null ? run : by(card);
+  });
+}
+
+/** Whether text holds a card's number on its own (`cardNumber`). */
+export const holdsCardNumber = (text: string) => holds(text, cardNumber);
+/** Whether text holds a number that is a card's where something else says so (`cardDigits`). */
+const holdsCardDigits = (text: string) => holds(text, cardDigits);
+
+const EXPIRY = /^(?:0[1-9]|1[0-2]) ?[/\-.] ?(?:\d{2}|20\d{2})$/;
 const CODE = /^\d{3,4}$/;
 
 /* ---------- what is on the screen ---------- */
@@ -204,6 +355,17 @@ function siteOf(url: string | null): string | null {
   }
 }
 
+/** A page's origin: its scheme, host and port. */
+export function originOf(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const origin = new URL(url).origin;
+    return origin === 'null' ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
 const pageOf = (url: string | null) => {
   try {
     const parsed = url ? new URL(url) : null;
@@ -253,8 +415,9 @@ const PASTES = /^(?:ctrl\+v|ctrl\+shift\+v|shift\+insert|super\+v)$/i;
 /** A key that types one character, by its name. */
 const TYPED_KEY: Record<string, string> = { space: ' ', minus: '-', slash: '/', kp_divide: '/' };
 const typedBy = (key: string): string | null => {
-  if (/^[0-9]$/.test(key)) return key;
-  const kp = /^kp_([0-9])$/i.exec(key);
+  // A digit key in any script: 7, ７, ٧ or ७ types the digit it is.
+  if (/^\p{Nd}$/u.test(key)) return asciiDigits(key);
+  const kp = /^(?:kp_|arabic_|farsi_)([0-9])$/i.exec(key);
   if (kp) return kp[1] as string;
   return TYPED_KEY[key.toLowerCase()] ?? null;
 };
@@ -270,6 +433,11 @@ type State = {
   typed: Array<{ text: string; key: string }>;
   /** Card details were entered on this page. */
   card: boolean;
+  /**
+   * The agent itself clicked into a card's field on this page: what it picks
+   * next (a saved card the browser offers) or presses may pay with no typing.
+   */
+  cardFocus: boolean;
 };
 
 const fresh = (screen: Screen | null): State => ({
@@ -281,26 +449,37 @@ const fresh = (screen: Screen | null): State => ({
   held: new Map(),
   typed: [],
   card: false,
+  cardFocus: false,
 });
 
-/** Whether the pieces typed on the page, read in order, carry a card's number or its expiry and code. */
+/** Whether a page shows a card's field or a payment provider's card frame anywhere. */
+const showsCardFields = (screen: Screen | null) =>
+  (screen?.elements ?? []).some((element) => cardField(element));
+
+/**
+ * Whether the pieces typed on the page, read in order, carry a card's number
+ * or its expiry and code. Each piece is what went into one field in a row.
+ */
 function piecesPay(typed: State['typed']): boolean {
-  const pieces = typed.map((piece) => piece.text.trim()).filter(Boolean);
-  // A number split across short fields one after another: 4111 · 1111 · 1111 · 1111.
+  const pieces = typed.map((piece) => asciiDigits(piece.text).trim()).filter(Boolean);
+  // A number split across fields one after another, however short each is:
+  // 4111 · 1111 · 1111 · 1111, or a digit to a field.
   for (let start = 0; start < pieces.length; start++) {
     let digits = '';
     for (let end = start; end < pieces.length; end++) {
-      const piece = (pieces[end] as string).replace(/[ -]/g, '');
-      if (!/^\d{4,6}$/.test(piece)) break;
+      const piece = (pieces[end] as string).replace(/[\s\-./]/g, '');
+      if (!/^\d{1,6}$/.test(piece)) break;
       digits += piece;
-      if (digits.length >= 13 && cardDigits(digits)) return true;
+      if (digits.length >= 13 && cardNumber(digits)) return true;
       if (digits.length > 19) break;
     }
   }
-  // A card's expiry and its code, one right after the other.
   for (let i = 1; i < pieces.length; i++) {
     const [a, b] = [pieces[i - 1] as string, pieces[i] as string];
+    // A card's expiry and its code, one right after the other.
     if ((EXPIRY.test(a) && CODE.test(b)) || (CODE.test(a) && EXPIRY.test(b))) return true;
+    // A number that could be a card's, with an expiry or a code right after it.
+    if (holdsCardDigits(a) && (EXPIRY.test(b) || CODE.test(b))) return true;
   }
   return false;
 }
@@ -310,10 +489,10 @@ function piecesPay(typed: State['typed']): boolean {
  * and leaves the state as it is after the step (but for the screen, which the
  * caller sets from the step's receipt).
  */
-function follow(state: State, step: Pick<ComputerStep, 'kind' | 'payload'>): string | null {
-  let pays: string | null = null;
-  const said = (reason: string) => {
-    pays ??= reason;
+function follow(state: State, step: Pick<ComputerStep, 'kind' | 'payload'>): Found | null {
+  let pays: Found | null = null;
+  const said = (reason: string, kind: PayKind = 'entry') => {
+    pays ??= { reason, kind };
   };
   let unnamed = 0;
   for (const command of commandsOf(step)) {
@@ -323,17 +502,23 @@ function follow(state: State, step: Pick<ComputerStep, 'kind' | 'payload'>): str
     }
     if (command.kind === 'click') {
       const target = elementAt(state.screen, command.x, command.y);
+      const intoField = Boolean(target && FIELD_ROLES.has(target.role));
       // Once card details are on the page, any click but one into a field may
       // send them: a form's button need not be named, or even be a button.
-      if (state.card && !(target && FIELD_ROLES.has(target.role)))
-        said('It clicks on a page where card details were entered.');
+      if (state.card && !intoField)
+        said('It clicks on a page where card details were entered.', 'submit');
+      // After clicking into a card's field, a click elsewhere may pick a saved
+      // card the browser offers, or pay with it.
+      else if (state.cardFocus && !intoField)
+        said('It clicks after going into a card’s field, which may pick a saved card or pay.');
       else if (
         target &&
         BUTTON_ROLES.has(target.role) &&
         PAYS.test(target.name.trim()) &&
         priced(state.screen)
       )
-        said(`It presses “${target.name.trim()}” on a page with a price.`);
+        said(`It presses “${target.name.trim()}” on a page with a price.`, 'submit');
+      if (target && cardField(target)) state.cardFocus = true;
       state.field = target ? { key: target.ref, element: target } : null;
       continue;
     }
@@ -353,9 +538,18 @@ function follow(state: State, step: Pick<ComputerStep, 'kind' | 'payload'>): str
           state.held.set(state.field.key, now.slice(0, -1));
           continue;
         }
-        if (PASTES.test(key) && cardField(state.field?.element ?? null))
-          said('It pastes into a card’s field.');
-        if (SENDS.test(key) && state.card) said('It sends a form where card details were entered.');
+        if (PASTES.test(key)) {
+          const into = state.field?.element ?? null;
+          if (cardField(into)) said('It pastes into a card’s field.');
+          // What is pasted is not known here: into a field with no name of its
+          // own, or one not yet read, on a page with a card's fields, it may be one.
+          else if (!into?.name.trim() && showsCardFields(state.screen))
+            said('It pastes on a page with a card’s fields.');
+        }
+        if (SENDS.test(key) && state.card)
+          said('It sends a form where card details were entered.', 'submit');
+        else if (SENDS.test(key) && state.cardFocus)
+          said('It presses Return after going into a card’s field.', 'submit');
         if (LEAVES.test(key) || SENDS.test(key))
           // The next field is not known until the screen is read again.
           state.field = { key: `next:${state.field?.key ?? 'none'}:${++unnamed}`, element: null };
@@ -366,6 +560,7 @@ function follow(state: State, step: Pick<ComputerStep, 'kind' | 'payload'>): str
 }
 
 function typeInto(state: State, text: string, said: (reason: string) => void): void {
+  text = asciiDigits(text);
   const field = state.field ?? { key: 'none', element: null };
   state.field = field;
   const holds = (state.held.get(field.key) ?? '') + text;
@@ -390,12 +585,20 @@ export function payMoment(
 ): PayMoment | null {
   let state = fresh(null);
   for (const earlier of before) {
+    const unseen = state.screen === null;
     if (follow(state, earlier)) state.card = true;
     const after = earlier.after;
     if (after) {
+      // A click that left a card's field focused went into it, though the
+      // screen before it was not known.
+      const clickedIn =
+        cardField(focusedOn(after)) && commandsOf(earlier).some((each) => each.kind === 'click');
       // Another page: what was typed on the one before stays there.
-      if (pageOf(after.url) !== state.page && after.url) state = fresh(after);
-      else {
+      if (pageOf(after.url) !== state.page && after.url) {
+        state = fresh(after);
+        if (clickedIn && unseen) state.cardFocus = true;
+      } else {
+        if (clickedIn) state.cardFocus = true;
         state.screen = after;
         // The screen says which field has focus now; what a key moved to takes its name.
         const focused = focusedOn(after);
@@ -415,15 +618,79 @@ export function payMoment(
     }
   }
   const screen = state.screen;
-  const reason = follow(state, step);
-  if (!reason) return null;
+  const found = follow(state, step);
+  if (!found) return null;
   const target =
     step.kind === 'computer.click' &&
     typeof step.payload.x === 'number' &&
     typeof step.payload.y === 'number'
       ? elementAt(screen, step.payload.x, step.payload.y)
       : null;
-  return { reason, site: siteOf(screen?.url ?? state.page), amount: amountOn(screen, target) };
+  const url = screen?.url ?? state.page;
+  return {
+    reason: found.reason,
+    kind: found.kind,
+    site: siteOf(url),
+    origin: originOf(url),
+    amount: amountOn(screen, target),
+  };
+}
+
+/** How far back on one page the steps are read, at most. */
+export const PAGE_STEPS = 400;
+
+/**
+ * The steps to read before a new one, oldest first, from the newest before it
+ * back: every step on the page the latest screen shows, back to the step that
+ * opened it or the last one on another page, up to `PAGE_STEPS`. A number
+ * typed slowly, or padded with other steps, is still read whole.
+ */
+export function stepsOnPage(newestFirst: readonly ComputerStep[]): ComputerStep[] {
+  const kept: ComputerStep[] = [];
+  let page: string | null | undefined;
+  for (const step of newestFirst) {
+    if (kept.length >= PAGE_STEPS) break;
+    const url = step.after?.url ?? null;
+    if (url) {
+      const here = pageOf(url);
+      if (page === undefined) page = here;
+      else if (here !== page) break;
+    }
+    kept.push(step);
+    if (step.kind === 'computer.open') break;
+  }
+  return kept.reverse();
+}
+
+/** The tools that run a command or code in the agent's own computer. */
+const SHELL_TOOLS = new Set([
+  'terminal.run',
+  'exec.run',
+  'exec.python',
+  'process.start',
+  'process.write',
+]);
+
+/**
+ * Whether a command or code run in the agent's computer carries a card's
+ * number (`cardNumber`, so a network's prefix, length and the Luhn check):
+ * typing it with xdotool, posting it with curl, or filling it from a script.
+ */
+export function shellPays(kind: string, payload: JsonObject): string | null {
+  if (!SHELL_TOOLS.has(kind)) return null;
+  const texts: string[] = [];
+  for (const key of ['command', 'code', 'text', 'script', 'input', 'stdin']) {
+    const value = payload[key];
+    if (typeof value === 'string') texts.push(value);
+  }
+  for (const key of ['argv', 'args']) {
+    const value = payload[key];
+    if (Array.isArray(value))
+      for (const each of value) if (typeof each === 'string') texts.push(each);
+  }
+  return texts.some((text) => holdsCardNumber(text))
+    ? 'It runs a command with a card number in it.'
+    : null;
 }
 
 /* ---------- the browser worker ---------- */

@@ -63,53 +63,92 @@ account with no password cannot allow money moves until it sets one.
 The agent's own computer and browser do anything a person could do at them
 without asking, except pay. The broker holds a step of `computer.click`,
 `computer.type`, `computer.key` or `computer.batch` (and `browser.fill` or
-`browser.click`) on the money card when it:
+`browser.click`, and a command or code run in the computer) on the money card
+when it:
 
-- types a card number: 13 to 19 digits from a card network that pass the Luhn
-  check, typed at once, a few digits or one key at a time into the same field,
-  or split across fields of 4 to 6 digits one after another;
+- types a card number: 13 to 19 digits from a card network (its issuer prefix
+  at one of its lengths) that pass the Luhn check, typed at once, a few digits
+  or one key at a time into the same field, or split across fields one after
+  another, however short each is. Groups may be split by spaces, dashes, dots
+  or slashes, and digits in any script count (full-width, Arabic-Indic,
+  Devanagari and the rest);
 - types into a field whose accessible name says card number, CVC, CVV, CSC or
   security code, or into a payment provider's card frame;
+- types a number that passes the Luhn check but carries no network's prefix,
+  only when card context follows it: an expiry or a code typed right after;
 - types a card's expiry and then its code (or the code and then the expiry);
+- pastes into a field named as a card's, or into a field with no name of its
+  own on a page that shows a card's field;
+- clicks into a card's field and then clicks something else or presses Return,
+  which is how a saved card the browser offers is picked;
 - presses Return, or clicks anything but a field, on a page where card details
   were entered since it was opened;
 - clicks a button or link whose accessible name clearly pays or buys ("Pay
   now", "Pay $24.99", "Place order", "Buy now", "Complete purchase") on a page
-  that shows a price. This is how a checkout with a saved card is caught.
+  that shows a price. This is how a checkout with a saved card is caught;
+- runs a command or code in the computer (`terminal.run`, `exec.run`,
+  `exec.python`, `process.start`, `process.write`) whose text carries a card
+  network's number, such as `xdotool type`, a clipboard tool or a script that
+  fills a form.
 
-The card says "Your agent is about to pay on shop.example.com", followed by the
-amount when the button or the page states one plainly (otherwise no amount is
-shown). The amount is the page's own figure, not a checked charge. The step
-goes ahead only with a fresh step-up made for it. Typing the card and pressing
-Pay are two steps, so a checkout usually asks twice.
+The card says "Your agent is about to pay on shop.example.com", followed by
+"The page says $24.99" when the button or the page states an amount plainly
+(otherwise no amount is shown). The amount is the page's own text, matched by a
+fixed price pattern, shown as what the page says and never used to decide
+anything. A card number on the card shows only its last four digits, and
+nothing typed into a card's details shows a digit.
+
+The step goes ahead only with a fresh step-up made for it. One step-up covers
+one checkout: once the person allows a step that enters a card with a step-up,
+the rest of that card's details typed on the same origin and the first step
+after it that sends them (a click or Return the rule holds) go ahead without
+asking again, if they come within five minutes of the step-up, on the same
+computer session and display, in the same work. The send is claimed once, as a
+notice in the work's events: a second purchase, another origin, another
+session, a step after five minutes, or a step-up that paid without entering a
+card (a saved card's Pay button) asks again. The browser worker's steps and
+commands in the terminal are never covered.
 
 The rule is fixed code in `apps/melete/src/broker/pay-moment.ts`. It reads the
 step's own arguments and the accessibility text that the earlier steps'
-receipts kept, from the last 40 steps in the same work. It never reads a
-screenshot, text recognised from one, or another model's opinion. Its limits:
+receipts kept, from every step on the page the screen shows now, back to the
+step that opened it, up to 400 steps. It never reads a screenshot, text
+recognised from one, or another model's opinion. Measured on a fixed set of 35
+ways to enter or pay with a card, it holds 33. Its limits:
 
 - **Desktop apps without accessibility text** are not covered. Field names,
   buttons and prices come only from accessibility data. Text recognised from
   the picture is ignored, so in such an app only a whole card number typed
   through the computer's tools is caught.
-- **Saved cards are caught only by the button.** A pay control with no
-  accessible name, or a name that does not say it pays ("Continue",
-  "Next"), on a page with no visible price, goes through. So do one-click
-  flows that charge on an earlier step, and a page whose price falls outside
-  the 6,000 characters of screen text a receipt keeps.
+- **Saved cards are caught by the button, or by a click after going into a
+  card's field.** A pay control whose name does not say it pays ("Continue",
+  "Next") on a page where no card was entered or focused goes through. So do
+  one-click flows that charge on an earlier step, and a page whose price falls
+  outside the 6,000 characters of screen text a receipt keeps.
 - **Card frames from another site** often hide their field names. Digits typed
   there still count, and a frame titled as a card's counts.
-- **Pasting** from the clipboard is caught only in a field named as a card's.
-- **A number typed with extra digits** into an unnamed field that cuts it to
-  length is read whole and can be missed. A run longer than 19 digits is also
-  read from its start.
-- **False alarms** ask for a step-up and stop nothing for good. A non-card
-  number of 13 to 19 digits passes the Luhn check about one time in ten, and a
-  long number typed a few digits at a time can be a card's length part way.
-- **Not read:** commands run in the computer's terminal (for example a script
-  that types or posts a form), the browser worker's own card fields (the worker
-  already hands those to the person), and the person's own paired device.
+- **Pasting** is caught by where it goes, not by what is pasted: a paste into
+  a named field that is not a card's, on a page with no card's field, goes
+  through.
+- **A number broken up by other text**, by letters in the same field, or by
+  more than 400 steps on one page is not read whole. A run longer than 19
+  digits is read from its start.
+- **A retired 13-digit Visa number**, and a Luhn-valid number from no network,
+  in a field with no card's name and with no expiry or code after it, goes
+  through.
+- **Commands** are read for a card number written in them, not for one built
+  at run time or read from a file.
+- **False alarms** ask for a step-up and stop nothing for good. Typed alone into
+  a field with no name, random 16-digit numbers are held about 3% of the time,
+  20-digit tracking numbers about 6%, a German IBAN with a valid check never,
+  an IMEI about 0.2%, and a 13-digit barcode never.
+- **Not read:** the browser worker's own card fields (the worker already hands
+  those to the person), and the person's own paired device.
 
+The card number the agent types is part of its step, so the step as proposed
+keeps it, as any step's arguments are kept. Screen text that receipts keep
+drops a card network's number however it is written, and the money card hides
+it as above.
 A `write_external` action waits for the owner unless a rule the owner made
 covers it. Choosing `always` on a permission card writes that rule with a count
 cap, an expiry and a re-consent interval, and the broker admits under it only

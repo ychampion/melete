@@ -130,7 +130,17 @@ import { actionKinds, type DontMatch, dontRulesFor, matchDontRule } from './dont
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import { type MoneyMove, moneyMove } from './money.ts';
-import { browserPays, payMoment, screenOf, siteOf } from './pay-moment.ts';
+import {
+  browserPays,
+  type ComputerStep,
+  PAGE_STEPS,
+  type PayKind,
+  payMoment,
+  screenOf,
+  shellPays,
+  siteOf,
+  stepsOnPage,
+} from './pay-moment.ts';
 import {
   actionWords,
   type Confidence,
@@ -167,6 +177,13 @@ const COMPUTER_PAY_STEPS = new Set([
   'computer.key',
   'computer.batch',
 ]);
+
+/** How many of the computer's steps are read back at once, looking for where the page began. */
+const PAGE_BATCH = 40;
+/** How long a step-up for entering a card covers the rest of that checkout (`checkoutCover`). */
+const CHECKOUT_COVER_MS = 5 * 60_000;
+/** A step that pays, and whether it enters a card or sends one, and on which origin. */
+type PaidStep = MoneyMove & { kind: PayKind; origin: string | null };
 
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
@@ -1055,7 +1072,12 @@ export class BrokerService implements BrokerOperations {
     const settings = this.options.autoReview ? await loadApprovalSettings(tx, job.space_id) : null;
     // The agent's own computer and browser pay at the moment they enter a card
     // or press the button that buys, read from the step and the screen before it.
-    const money = this.moneyOf(action, tool) ?? (await this.payMomentOf(tx, action, tool));
+    const declared = this.moneyOf(action, tool);
+    const paid = declared ? null : await this.payMomentOf(tx, action, tool);
+    // One step-up for one checkout: the person's step-up for entering a card
+    // here also covers the rest of that checkout on the same site.
+    const covered = paid ? await this.checkoutCover(tx, job, action, tool, paid, phase) : null;
+    const money = declared ?? (covered ? null : paid);
     // A message the person said to send in this turn goes out on its own, held
     // for undo and with a receipt. Anything else that sends stays with them.
     const told = !money && directSend(tool.name) && (await toldToSend(tx, action.attempt_id));
@@ -1376,7 +1398,7 @@ export class BrokerService implements BrokerOperations {
     tx: Query,
     action: Pick<Action, 'id' | 'job_id' | 'connection_id' | 'kind' | 'canonical_payload'>,
     tool: ConnectorTool,
-  ): Promise<MoneyMove | null> {
+  ): Promise<PaidStep | null> {
     if (tool.name.startsWith('browser.')) {
       const reason = browserPays(tool.name, action.canonical_payload as JsonObject);
       if (!reason) return null;
@@ -1390,25 +1412,155 @@ export class BrokerService implements BrokerOperations {
         by: 'screen',
         site: siteOf(typeof page?.url === 'string' ? page.url : null),
         amount: null,
+        kind: tool.name === 'browser.click' ? 'submit' : 'entry',
+        origin: null,
       };
     }
+    const shell = shellPays(tool.name, action.canonical_payload as JsonObject);
+    if (shell)
+      return {
+        reason: shell,
+        by: 'arguments',
+        site: null,
+        amount: null,
+        kind: 'entry',
+        origin: null,
+      };
     if (!COMPUTER_PAY_STEPS.has(tool.name)) return null;
-    const rows = await tx`select kind, canonical_payload, receipt->'detail'->'screen_text' as screen
-      from action where job_id = ${action.job_id} and connection_id = ${action.connection_id}
+    // Every step on the page the screen shows now, back to the one that opened
+    // it, read a batch at a time: a number typed slowly, or between other
+    // steps, is read whole.
+    const newestFirst: ComputerStep[] = [];
+    for (let offset = 0; offset < PAGE_STEPS; offset += PAGE_BATCH) {
+      const rows = await tx`select kind, canonical_payload,
+          receipt->'detail'->'screen_text' as screen
+        from action where job_id = ${action.job_id} and connection_id = ${action.connection_id}
+          and kind like 'computer.%' and status = 'succeeded' and id <> ${action.id}
+          and created_at <= coalesce((select created_at from action where id = ${action.id}), now())
+        order by created_at desc, id desc limit ${PAGE_BATCH} offset ${offset}`;
+      for (const row of rows)
+        newestFirst.push({
+          kind: String(row.kind),
+          payload: (row.canonical_payload ?? {}) as JsonObject,
+          after: screenOf(row.screen as JsonValue),
+        });
+      if (rows.length < PAGE_BATCH || stepsOnPage(newestFirst).length < newestFirst.length) break;
+    }
+    const moment = payMoment(stepsOnPage(newestFirst), {
+      kind: tool.name,
+      payload: action.canonical_payload as JsonObject,
+    });
+    return moment
+      ? {
+          reason: moment.reason,
+          by: 'screen',
+          site: moment.site,
+          amount: moment.amount,
+          kind: moment.kind,
+          origin: moment.origin,
+        }
+      : null;
+  }
+
+  /**
+   * Whether the person's step-up for entering a card on a page also covers
+   * this step of the same checkout. One step-up pays for one checkout: the
+   * latest step of the agent's computer in this work that the person allowed
+   * with a step-up entered a card on this origin, within `CHECKOUT_COVER_MS`,
+   * in the same computer session; this step enters more of that card on the
+   * same origin, or is the first step since that sends it. The cover is
+   * claimed once, as a notice keyed by the step-up, when the step is proposed:
+   * the send is claimed by one step only, so a second purchase, another site,
+   * a later step or a replay asks again. Returns the step-up's id, or null.
+   */
+  private async checkoutCover(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    tool: ConnectorTool,
+    moment: PaidStep,
+    phase: StandingGrantInput['phase'],
+  ): Promise<string | null> {
+    if (!moment.origin || !COMPUTER_PAY_STEPS.has(tool.name)) return null;
+    const [anchor] = await tx`select a.id, a.job_id, a.connection_id, a.kind, a.canonical_payload,
+        a.status, s.id as step_up_id,
+        s.used_at > clock_timestamp() - make_interval(secs => ${CHECKOUT_COVER_MS / 1000}) as fresh,
+        a.receipt->'detail'->>'session_id' as session_id,
+        a.receipt->'detail'->>'sandbox_id' as sandbox_id,
+        a.receipt->'detail'->>'display' as display
+      from action a
+        join approval p on p.action_id = a.id and p.decision = 'approved'
+          and p.payload_hash = a.payload_hash
+        join step_up s on s.id = p.step_up_id and s.approval_id = p.id and s.action_id = a.id
+          and s.payload_hash = a.payload_hash and s.principal_id = p.decided_by
+          and s.used_at is not null
+      where a.job_id = ${job.id} and a.connection_id = ${action.connection_id}
+        and a.kind like 'computer.%' and a.id <> ${action.id}
+        and a.created_at <= coalesce((select created_at from action where id = ${action.id}), now())
+      order by a.created_at desc, a.id desc limit 1`;
+    // The latest step the person allowed with a step-up, and it ran.
+    if (anchor?.status !== 'succeeded') return null;
+    const stepUp = String(anchor.step_up_id);
+    const sends = moment.kind === 'submit';
+    const key = sends
+      ? `checkout_cover:${stepUp}:submit`
+      : `checkout_cover:${stepUp}:entry:${action.id}`;
+    const claimed = async () => {
+      const [row] = await tx`select payload->>'action_id' as action_id from event
+        where dedup_key = ${key}`;
+      return row ? String(row.action_id) : null;
+    };
+    const holder = await claimed();
+    if (holder !== null) return holder === action.id ? stepUp : null;
+    // Claimed only when the step is proposed; later phases find that claim.
+    if (phase !== 'proposal' || anchor.fresh !== true) return null;
+    // Once the checkout is sent, it is over: more card entry is a new purchase.
+    const [sent] =
+      await tx`select 1 from event where dedup_key = ${`checkout_cover:${stepUp}:submit`}`;
+    if (sent) return null;
+    // The same computer session and display as the step that was allowed.
+    const [latest] = await tx`select receipt->'detail'->>'session_id' as session_id,
+        receipt->'detail'->>'sandbox_id' as sandbox_id, receipt->'detail'->>'display' as display
+      from action where job_id = ${job.id} and connection_id = ${action.connection_id}
         and kind like 'computer.%' and status = 'succeeded' and id <> ${action.id}
         and created_at <= coalesce((select created_at from action where id = ${action.id}), now())
-      order by created_at desc, id desc limit 40`;
-    const moment = payMoment(
-      rows.reverse().map((row) => ({
-        kind: String(row.kind),
-        payload: (row.canonical_payload ?? {}) as JsonObject,
-        after: screenOf(row.screen as JsonValue),
-      })),
-      { kind: tool.name, payload: action.canonical_payload as JsonObject },
+      order by created_at desc, id desc limit 1`;
+    if (
+      !latest ||
+      !anchor.session_id ||
+      latest.session_id !== anchor.session_id ||
+      latest.sandbox_id !== anchor.sandbox_id ||
+      latest.display !== anchor.display
+    )
+      return null;
+    // The allowed step itself entered a card, on this same origin.
+    const entered = await this.payMomentOf(
+      tx,
+      {
+        id: String(anchor.id),
+        job_id: String(anchor.job_id),
+        connection_id: String(anchor.connection_id),
+        kind: String(anchor.kind),
+        canonical_payload: anchor.canonical_payload as Action['canonical_payload'],
+      },
+      { ...tool, name: String(anchor.kind) },
     );
-    return moment
-      ? { reason: moment.reason, by: 'screen', site: moment.site, amount: moment.amount }
-      : null;
+    if (entered?.kind !== 'entry' || entered.origin !== moment.origin) return null;
+    await appendEvent(
+      tx,
+      job.id,
+      action.attempt_id,
+      'notice',
+      {
+        phase: 'checkout_cover',
+        action_id: action.id,
+        step_up_id: stepUp,
+        covers: sends ? 'submit' : 'entry',
+        site: moment.site ?? null,
+      },
+      key,
+    );
+    return (await claimed()) === action.id ? stepUp : null;
   }
 
   /** Why this action moves money, or null (`money.ts`), judged on its own connector's declaration. */
