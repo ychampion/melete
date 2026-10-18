@@ -8,6 +8,8 @@ import { describe, expect, test } from 'bun:test';
 import {
   allowedLink,
   connectPageBridge,
+  LINK_ARM_MS,
+  linkArmed,
   MAX_PAGE_HEIGHT,
   MCP_APPS_PROTOCOL,
   MIN_PAGE_HEIGHT,
@@ -157,6 +159,26 @@ describe('the bridge', () => {
     release(false);
     await settle();
     expect(sent.map((message) => message.id)).toEqual([2, 1]);
+  });
+
+  test('while the person is asked, the page cannot move the question under their pointer', async () => {
+    let release: (value: boolean) => void = () => undefined;
+    const { heights, send } = harness(() => new Promise((resolve) => (release = resolve)));
+    send(rpc('ui/notifications/size-changed', { height: 900 }));
+    send(rpc('ui/open-link', { url: 'https://forms.example.test/a' }, 1));
+    // Shrinking the frame now would pull the Open button up to where the person clicked.
+    send(rpc('ui/notifications/size-changed', { height: 120 }));
+    expect(heights).toEqual([900]);
+    release(false);
+    await settle();
+    send(rpc('ui/notifications/size-changed', { height: 300 }));
+    expect(heights).toEqual([900, 300]);
+  });
+
+  test('the answer to a link waits a moment after the question appears', () => {
+    expect(linkArmed(1_000, 1_000)).toBe(false);
+    expect(linkArmed(1_000, 1_000 + LINK_ARM_MS - 1)).toBe(false);
+    expect(linkArmed(1_000, 1_000 + LINK_ARM_MS)).toBe(true);
   });
 
   test('stops when asked', () => {

@@ -81,8 +81,8 @@ async function conversation() {
   return claim(
     await fixture().jobs.create({
       space_id: spaceId,
-      title: 'Buy the thing',
-      objective: 'Buy the thing for me.',
+      title: 'Send the form',
+      objective: 'Fill in the form for me.',
     }),
   );
 }
@@ -241,12 +241,12 @@ withDb('connection pages and entitlements', () => {
     const open = await broker.propose(claimed.claims, {
       kind: 'mcp_desk.search',
       connection_id: connectionId,
-      payload: { q: 'shoes' },
+      payload: { q: 'forms' },
     });
     expect(open.status).toBe('succeeded');
     expect(server.calls()).toHaveLength(1);
     const token = server.calls()[0]?.headers['melete-identity'] ?? '';
-    const claims = verifyAssertion(token, signer.jwk, { issuer: ISSUER, audience: server.origin });
+    const claims = verifyAssertion(token, signer.jwk, { issuer: ISSUER, audience: server.url });
     expect(claims?.ent).toEqual([]);
   }, 60_000);
 
@@ -301,25 +301,26 @@ withDb('connection pages and entitlements', () => {
     // The server was told who the call is for, signed, with what the person holds.
     const [call] = server.calls();
     const token = call?.headers['melete-identity'] ?? '';
+    // Addressed to this server's endpoint, not to every server on its host.
     const asserted = verifyAssertion(token, signer.jwk, {
       issuer: ISSUER,
-      audience: server.origin,
+      audience: server.url,
     });
     expect(asserted).toMatchObject({
+      aud: server.url,
       ent: ['verified'],
       jti: proposal.action_id,
       act: 'open_form',
     });
     expect(asserted?.sub).not.toContain(ownerId);
-    expect(asserted?.sub).toBe(signer.subjectFor(server.origin, ownerId));
+    expect(asserted?.sub).toBe(signer.subjectFor(server.url, ownerId));
     // Another installation's key, or another audience, does not verify.
     const stranger = new IdentitySigner('another-installation-secret-0123456789', ISSUER);
     expect(
-      verifyAssertion(token, stranger.jwk, { issuer: ISSUER, audience: server.origin }),
+      verifyAssertion(token, stranger.jwk, { issuer: ISSUER, audience: server.url }),
     ).toBeNull();
-    expect(
-      verifyAssertion(token, signer.jwk, { issuer: ISSUER, audience: 'https://elsewhere.test' }),
-    ).toBeNull();
+    for (const audience of ['https://elsewhere.test', server.origin, `${server.origin}/other`])
+      expect(verifyAssertion(token, signer.jwk, { issuer: ISSUER, audience })).toBeNull();
 
     // It was handed the page's report address and key with the call.
     if (!call) throw new Error('The server got no call');
@@ -426,8 +427,58 @@ withDb('connection pages and entitlements', () => {
     });
     const [page] = await handle.sql`select id from connection_page`;
     await handle.sql`update connection_page set expires_at = now() - interval '1 second'`;
-    const late = await report(String(page?.id), { status: 'completed', summary: 'Paid.' });
+    const late = await report(String(page?.id), { status: 'completed', summary: 'Received.' });
     expect(late.status).toBe(410);
+  }, 60_000);
+
+  test('two different reports sent together settle the page once, as the conversation was told', async () => {
+    const { handle } = fixture();
+    await grantEntitlement(handle.sql, ownerId, 'verified', 'operator');
+    const claimed = await conversation();
+    await broker.propose(claimed.claims, {
+      kind: 'mcp_desk.open_form',
+      connection_id: connectionId,
+      payload: { item: 'one' },
+    });
+    const [page] = await handle.sql`select id from connection_page`;
+    const pageId = String(page?.id);
+    // The first report's delivery is held a moment, so the second arrives
+    // while the first has delivered its event but not yet settled the page.
+    let delivered!: () => void;
+    const firstDelivered = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    let deliveries = 0;
+    app = new Hono();
+    mountPages(app, {
+      db: handle.db,
+      sql: handle.sql,
+      secret: SECRET,
+      deliver: async (input) => {
+        const result = await triggers.deliver(input);
+        if (deliveries++ === 0) {
+          delivered();
+          await Bun.sleep(400);
+        }
+        return result;
+      },
+    });
+    const done = { status: 'completed', summary: 'The form was received.' };
+    const turnedDown = { status: 'failed', summary: 'The form was turned down.' };
+    const first = report(pageId, done);
+    await firstDelivered;
+    const second = report(pageId, turnedDown);
+    const answers = await Promise.all([first, second]);
+    const [event] = await handle.sql`select payload from event
+      where payload->>'kind' = 'connector_event' and payload->>'event_name' = 'page.settled'`;
+    const told = (event?.payload as { payload: { status: string } } | undefined)?.payload.status;
+    expect(told).toBe('completed');
+    const [settled] = await handle.sql`select state from connection_page where id = ${pageId}`;
+    // The page says what the conversation was told, and only that report was accepted.
+    expect(settled?.state).toBe(told);
+    const accepted = answers.filter((answer) => answer.status === 200);
+    expect(accepted).toHaveLength(1);
+    expect(await accepted[0]?.json()).toMatchObject({ ok: true, state: told, repeated: false });
   }, 60_000);
 
   test('only the account that set Melete up grants an entitlement; a person cannot grant their own', async () => {
@@ -506,6 +557,7 @@ withDb('connection pages and entitlements', () => {
     });
     const keys = await whole.request('/.well-known/jwks.json');
     expect(keys.status).toBe(200);
+    expect(keys.headers.get('cache-control')).toBe('public, max-age=300');
     const set = (await keys.json()) as { keys: Array<Record<string, unknown>> };
     expect(set.keys[0]).toMatchObject({ kty: 'OKP', crv: 'Ed25519', alg: 'EdDSA' });
     const pageId = newId('cpg');

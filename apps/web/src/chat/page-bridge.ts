@@ -25,6 +25,14 @@ export const MCP_APPS_PROTOCOL = '2026-01-26';
 export const MIN_PAGE_HEIGHT = 120;
 export const MAX_PAGE_HEIGHT = 4_000;
 const MAX_URL_LENGTH = 2048;
+/**
+ * How long Melete's question about a link ignores the person's answer after it
+ * appears, so a click or key press meant for the page cannot land on Open.
+ */
+export const LINK_ARM_MS = 600;
+
+/** Whether the question shown at `shownAt` takes an answer at `now`. */
+export const linkArmed = (shownAt: number, now: number) => now - shownAt >= LINK_ARM_MS;
 
 type Id = string | number;
 
@@ -146,7 +154,9 @@ export function connectPageBridge(
         send({ method: 'ui/notifications/tool-result', params: host.toolResult });
         return;
       case 'size':
-        host.resize(request.height);
+        // While Melete asks the person about a link, the frame keeps its size,
+        // so the page cannot slide the question under the person's pointer.
+        if (!confirming) host.resize(request.height);
         return;
       case 'open-link': {
         const url = allowedLink(request.url, host.openOrigins);

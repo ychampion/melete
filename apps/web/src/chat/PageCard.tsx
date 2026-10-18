@@ -14,7 +14,7 @@ import { Button, Status, type StatusTone } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import type { ConnectionPage, ConnectionPageView } from '../experience/types.ts';
 import { usePoll } from '../runs/poll.ts';
-import { connectPageBridge } from './page-bridge.ts';
+import { connectPageBridge, LINK_ARM_MS, linkArmed } from './page-bridge.ts';
 import './pages.css';
 
 /** Never same-origin, popups or top navigation: a link goes through the person. */
@@ -122,7 +122,19 @@ function PageFrame({ page }: { page: ConnectionPage }) {
   const [view, setView] = useState<ConnectionPageView | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [height, setHeight] = useState<number | null>(null);
-  const [link, setLink] = useState<{ url: string; settle: (opened: boolean) => void } | null>(null);
+  const [link, setLink] = useState<{
+    url: string;
+    settle: (opened: boolean) => void;
+    shownAt: number;
+  } | null>(null);
+  const [armed, setArmed] = useState(false);
+  // Open takes no answer for a moment after it appears (see LINK_ARM_MS).
+  useEffect(() => {
+    setArmed(false);
+    if (!link) return;
+    const timer = setTimeout(() => setArmed(true), LINK_ARM_MS);
+    return () => clearTimeout(timer);
+  }, [link]);
 
   useEffect(() => {
     let live = true;
@@ -145,13 +157,15 @@ function PageFrame({ page }: { page: ConnectionPage }) {
       toolResult: view.tool_result,
       openOrigins: page.open_origins,
       resize: setHeight,
-      confirmLink: (url) => new Promise((settle) => setLink({ url, settle })),
+      confirmLink: (url) =>
+        new Promise((settle) => setLink({ url, settle, shownAt: performance.now() })),
     });
   }, [view, page.open_origins]);
 
   // The person's click opens the tab, so no browser takes it for a popup.
   const answer = (open: boolean) => {
     if (!link) return;
+    if (open && !linkArmed(link.shownAt, performance.now())) return;
     if (open) window.open(link.url, '_blank', 'noopener,noreferrer');
     link.settle(open);
     setLink(null);
@@ -180,7 +194,12 @@ function PageFrame({ page }: { page: ConnectionPage }) {
             <Button variant="ghost" size="sm" onClick={() => answer(false)}>
               Not now
             </Button>
-            <Button size="sm" iconRight="arrowUpRight" onClick={() => answer(true)}>
+            <Button
+              size="sm"
+              iconRight="arrowUpRight"
+              disabled={!armed}
+              onClick={() => answer(true)}
+            >
               Open
             </Button>
           </span>
