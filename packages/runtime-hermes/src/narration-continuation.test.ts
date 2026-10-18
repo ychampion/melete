@@ -67,3 +67,31 @@ test('a reply with its answer is not asked again', async () => {
   await adapter.start(bundle, { emit: async () => {} }, new AbortController().signal);
   expect(inputs).toHaveLength(1);
 });
+
+test('a turn whose answer the person already has is not asked to say it again', async () => {
+  const { adapter, inputs } = engine(['Let me check the forecast…', 'It will rain after 4 PM.']);
+  const answered = {
+    ...bundle,
+    inputs: { ...bundle.inputs, said_this_turn: 'It will rain after 4 PM.' },
+  };
+  await adapter.start(answered, { emit: async () => {} }, new AbortController().signal);
+  expect(inputs).toHaveLength(1);
+  // It is shown the words it already sent, once, after its instructions.
+  expect(inputs[0]).toContain('## Already said in this turn');
+  expect(inputs[0]).toContain('<already_said>\nIt will rain after 4 PM.\n</already_said>');
+});
+
+test('a turn that only said what it was about to do is still asked for the answer', async () => {
+  const { adapter, inputs } = engine(['Let me check the forecast…', 'It will rain after 4 PM.']);
+  const announced = {
+    ...bundle,
+    inputs: { ...bundle.inputs, said_this_turn: 'Let me look that up.' },
+  };
+  const outcome = await adapter.start(
+    announced,
+    { emit: async () => {} },
+    new AbortController().signal,
+  );
+  expect(inputs).toHaveLength(2);
+  expect(outcome).toMatchObject({ kind: 'completed', summary: 'It will rain after 4 PM.' });
+});

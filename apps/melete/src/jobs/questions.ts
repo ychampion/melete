@@ -214,6 +214,25 @@ export async function resolveQuestions(
   return { asked: first ?? null, deferred: rest };
 }
 
+/**
+ * The open question about steps that had not settled, withdrawn once every one
+ * of them has: there is nothing left to ask about them.
+ */
+export async function withdrawSettledQuestion(tx: Transaction, jobId: string): Promise<void> {
+  const [open] = await tx
+    .select({ options: question.options })
+    .from(question)
+    .where(and(eq(question.jobId, jobId), eq(question.state, 'open')))
+    .limit(1);
+  if (open && isUnsettledQuestion((open.options ?? []) as { id: string }[]))
+    await closeOpen(
+      tx,
+      jobId,
+      { state: 'withdrawn', answer: null, answerSubmissionId: null },
+      'steps_settled',
+    );
+}
+
 async function closeOpen(
   tx: Transaction,
   jobId: string,

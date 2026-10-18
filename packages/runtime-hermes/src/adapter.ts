@@ -260,7 +260,11 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     // speak to the person after it stopped without a word.
     const started = this.now();
     let stalled: RunResult['stalled'];
-    let delivered = false;
+    // An earlier attempt of this turn already gave the person more than a line
+    // about its next step: one that ends without words here has nothing new to
+    // say, and asking it to say something would send the answer again.
+    const said = bundle.inputs.said_this_turn?.trim() ?? '';
+    let delivered = said !== '' && !onlyNarration(said);
     // A reply that claims a step no tool took gets one hidden chance to take
     // it or say it again without the claim. Actions the person approved in
     // this wake were carried out for it, so they back a claim as well.

@@ -984,6 +984,52 @@ export async function readConversation(
   return { full: history.full, personWords: history.personWords, stored: history.stored };
 }
 
+/** The most of a turn's earlier words an attempt is shown: the start and the end, each half. */
+const SAID_SHOWN_CHARS = 6000;
+
+/**
+ * What the ended attempts of the job's current conversation turn said to the
+ * person, in order. Every word streamed reached them, whether its attempt then
+ * finished, failed and ran again, or was woken later by a step it started, so
+ * the next attempt of that turn carries on from these words rather than
+ * answering again. A failed attempt's words are in no transcript, so they are
+ * read here from its stream.
+ */
+async function saidThisTurn(
+  tx: Transaction,
+  row: JobRow,
+  attempts: readonly { id: string; turnId: string | null; outcome: string | null }[],
+): Promise<string> {
+  if (!row.currentTurnId) return '';
+  // A fenced attempt's words are taken back from view (`answerJoin`), so they
+  // are not carried on from either.
+  const earlier = attempts
+    .filter((entry) => entry.turnId === row.currentTurnId && entry.outcome !== 'fenced')
+    .map((entry) => entry.id);
+  if (!earlier.length) return '';
+  const rows = await tx
+    .select({ attemptId: event.attemptId, payload: event.payload })
+    .from(event)
+    .where(
+      and(eq(event.jobId, row.id), eq(event.type, 'text_delta'), inArray(event.attemptId, earlier)),
+    )
+    .orderBy(asc(event.seq));
+  const pieces: string[] = [];
+  let from: string | null = null;
+  for (const entry of rows) {
+    const text = (entry.payload as { text?: unknown } | null)?.text;
+    if (typeof text !== 'string' || !text) continue;
+    // Each attempt's words start a new paragraph.
+    if (from !== null && entry.attemptId !== from) pieces.push('\n\n');
+    from = entry.attemptId;
+    pieces.push(text);
+  }
+  const said = pieces.join('').trim();
+  if (said.length <= SAID_SHOWN_CHARS) return said;
+  const half = SAID_SHOWN_CHARS / 2;
+  return `${said.slice(0, half).trimEnd()}\n[…]\n${said.slice(-half).trimStart()}`;
+}
+
 export async function buildAttemptSkeleton(
   tx: Transaction,
   row: JobRow,
@@ -1034,6 +1080,8 @@ export async function buildAttemptSkeleton(
         }
       : entry;
   });
+  const said = await saidThisTurn(tx, row, attempts.filter(contextMatches));
+  if (said) history.inputs.said_this_turn = said;
   // What a wait can name. The attempt reads the id, the event and one plain
   // sentence; the spec itself stays on the row.
   const registered = await tx
