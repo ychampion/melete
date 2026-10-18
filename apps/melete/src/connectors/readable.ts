@@ -113,15 +113,93 @@ export function decodeEntities(text: string): string {
   });
 }
 
-/** Where a tag that starts at `start` ends: the `>` outside any quoted attribute value. */
-function tagEnd(html: string, start: number): number {
+/**
+ * Where a tag that starts at `start` ends: the `>` outside any quoted attribute
+ * value. As in a browser, a quote opens a value only where a value starts,
+ * after `=`. A stray quote elsewhere, as in `<div class="row" ">`, is part of an
+ * attribute's name, so it never hides the `>` and the text after it: read as a
+ * value, it once swallowed every other row of a page's table.
+ */
+export function tagEnd(html: string, start: number): number {
+  // The tokenizer's states from the tag's name to its `>`, as the HTML standard
+  // names them; only where the tag ends is kept.
+  let state:
+    | 'name'
+    | 'beforeName'
+    | 'attribute'
+    | 'afterName'
+    | 'beforeValue'
+    | 'quoted'
+    | 'unquoted'
+    | 'afterValue'
+    | 'selfClosing' = 'name';
   let quote = '';
-  for (let index = start + 1; index < html.length; index += 1) {
-    const character = html[index];
-    if (quote) {
-      if (character === quote) quote = '';
-    } else if (character === '"' || character === "'") quote = character;
-    else if (character === '>') return index;
+  let index = html[start + 1] === '/' ? start + 2 : start + 1;
+  while (index < html.length) {
+    const character = html[index] as string;
+    const space =
+      character === ' ' ||
+      character === '\t' ||
+      character === '\n' ||
+      character === '\f' ||
+      character === '\r';
+    // Each case moves on to the next character, or changes state and reads this one again.
+    switch (state) {
+      case 'name':
+      case 'unquoted':
+        if (character === '>') return index;
+        if (space) state = 'beforeName';
+        else if (character === '/' && state === 'name') state = 'selfClosing';
+        break;
+      case 'beforeName':
+        if (space) break;
+        state = character === '/' || character === '>' ? 'afterName' : 'attribute';
+        // A `=` here starts an attribute named "=", so it is read as a name.
+        if (character !== '=') continue;
+        break;
+      case 'attribute':
+        if (space || character === '/' || character === '>') {
+          state = 'afterName';
+          continue;
+        }
+        if (character === '=') state = 'beforeValue';
+        break;
+      case 'afterName':
+        if (space) break;
+        if (character === '>') return index;
+        if (character === '/') state = 'selfClosing';
+        else if (character === '=') state = 'beforeValue';
+        else {
+          state = 'attribute';
+          continue;
+        }
+        break;
+      case 'beforeValue':
+        if (space) break;
+        if (character === '>') return index;
+        if (character === '"' || character === "'") {
+          quote = character;
+          state = 'quoted';
+        } else {
+          state = 'unquoted';
+          continue;
+        }
+        break;
+      case 'quoted':
+        if (character === quote) state = 'afterValue';
+        break;
+      case 'afterValue':
+      case 'selfClosing':
+        if (character === '>') return index;
+        if (space && state === 'afterValue') state = 'beforeName';
+        else if (character === '/' && state === 'afterValue') state = 'selfClosing';
+        else {
+          state = 'beforeName';
+          continue;
+        }
+        break;
+    }
+    index += 1;
   }
   return -1;
 }

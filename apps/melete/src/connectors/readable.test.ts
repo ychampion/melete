@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { decodeEntities, readableText } from './readable.ts';
+import { decodeEntities, readableText, tagEnd } from './readable.ts';
 
 const PAGE = `<!doctype html>
 <html><head>
@@ -76,6 +76,79 @@ test('markup tricks do not bring script contents back', () => {
   }
   expect(readableText('<p>a < b and c > d</p>').text).toBe('a < b and c > d');
   expect(readableText('<script src="a.js"/>SELF_CLOSED').text).toBe('SELF_CLOSED');
+});
+
+test('a stray quote in a tag does not hide the rows after it', () => {
+  // A meetings calendar whose rows each carry a stray quote before `>`, as a
+  // real one does. Read as an open value, the quote swallowed every other row,
+  // and an agent said the next meeting was the one after the one it never saw.
+  const row = (month: string, days: string, shaded: boolean) =>
+    `<div class="${shaded ? 'meeting--shaded ' : ''}row meeting" "><div class="meeting__month"><strong>${month}</strong></div><div class="meeting__date">${days}</div><div class="col"><strong>Statement:</strong><br><a href="/statements/${month.toLowerCase()}.htm">HTML</a></div></div>`;
+  const html = `<h4>2026 meetings</h4>${row('January', '27-28', false)}${row('March', '17-18*', true)}${row('April', '28-29', false)}${row('June', '16-17*', true)}${row('October', '27-28', false)}${row('December', '8-9*', true)}<p>* With projections.</p>`;
+  const text = readableText(html, 'https://example.org/calendar').text;
+  for (const [month, days] of [
+    ['January', '27-28'] as const,
+    ['March', '17-18*'],
+    ['April', '28-29'],
+    ['June', '16-17*'],
+    ['October', '27-28'],
+    ['December', '8-9*'],
+  ])
+    expect(text).toMatch(new RegExp(`${month}\\s+${days.replace('*', '\\*')}`));
+  expect(text).toContain('[HTML](https://example.org/statements/october.htm)');
+  expect(text).toContain('* With projections.');
+  expect(text).not.toContain('class=');
+});
+
+test('a tag ends where a browser ends it, whatever stray quotes it holds', () => {
+  const cases: Array<[string, number]> = [
+    ['<div class="a" ">after', 16],
+    ['<div class="a"">after', 15],
+    ["<div class='a' '>after", 16],
+    ['<div "class=a>after', 13],
+    ['<div data-x=">">after', 15],
+    ["<div data-x='>'>after", 15],
+    ['<div data-x = " > ">after', 19],
+    ['<div x=a"b>after', 10],
+    ['<div ="x">after', 9],
+    ['<br/>after', 4],
+    ['<img src="a" / alt=">">after', 22],
+    ['</div ">after', 7],
+    ['<div class="never closed>', -1],
+  ];
+  for (const [html, end] of cases) expect([html, tagEnd(html, 0)]).toEqual([html, end]);
+  // Built from the grammar a browser reads, so where each tag ends is known:
+  // names may hold stray quotes, values in quotes may hold `>` and the other quote.
+  let seed = 11;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2 ** 31;
+    return seed / 2 ** 31;
+  };
+  const pick = (from: string, length: number) =>
+    Array.from({ length }, () => from[Math.floor(random() * from.length)]).join('');
+  for (let round = 0; round < 5_000; round += 1) {
+    let tag = `<${random() < 0.2 ? '/' : ''}${pick('abcdiv', 1 + Math.floor(random() * 5))}`;
+    const count = Math.floor(random() * 5);
+    for (let at = 0; at < count; at += 1) {
+      const space = pick(' \t\n', 1 + Math.floor(random() * 2));
+      const name = pick(`abc-"'<`, 1 + Math.floor(random() * 4));
+      const kind = random();
+      const around = random() < 0.5 ? '' : ' ';
+      if (kind < 0.25) tag += `${space}${name}`;
+      // An unquoted value may hold quotes, but not start with one.
+      else if (kind < 0.5)
+        tag += `${space}${name}${around}=${around}${pick('abc<=`', 1)}${pick(`abc"'<=\``, Math.floor(random() * 4))}`;
+      else if (kind < 0.75)
+        tag += `${space}${name}${around}=${around}"${pick(`ab >'=/\n`, Math.floor(random() * 5))}"`;
+      else
+        tag += `${space}${name}${around}=${around}'${pick(`ab >"=/\n`, Math.floor(random() * 5))}'`;
+      // A quoted value may be followed straight away by another quote or a slash.
+      if (kind >= 0.5 && random() < 0.2) tag += pick(`"'/`, 1);
+    }
+    tag += random() < 0.3 ? ' /' : '';
+    const html = `${tag}>TAIL" > '`;
+    expect([html, tagEnd(html, 0)]).toEqual([html, tag.length]);
+  }
 });
 
 test('entities decode once, and out-of-range references are dropped', () => {
