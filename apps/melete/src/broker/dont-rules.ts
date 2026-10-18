@@ -26,6 +26,7 @@ import type { JsonValue } from '@melete/contracts';
 import { directSend } from '../experience/access.ts';
 import { memoryScopeForSpace, saysVerbatim } from '../memory/broker-trust.ts';
 import type { Query } from './records.ts';
+import { ownWords } from './told.ts';
 
 export type DontKind = 'contact' | 'money' | 'delete' | 'calendar' | 'publish';
 export type DontSource = 'memory' | 'instruction' | 'conversation';
@@ -202,21 +203,51 @@ function covers(parsed: ParsedRule, kinds: readonly DontKind[], values: readonly
   return parsed.targets.some((target) => names(values, target));
 }
 
+/** Words a request opens with that are not part of the ask. */
+const OPENERS =
+  /^(?:(?:hey|hi|ok|okay|yes|yeah|yep|great|perfect|thanks|thank you|cool|alright|all right|good|so|and|then|now|also|just|please|pls|actually|go ahead and)[,.!]?\s+)+/i;
+/** A request put as a question: "can you email Bob". */
+const REQUEST_QUESTION = /^(?:can|could|would|will) you\s+(?:please\s+)?/i;
+/** Joined to the request: "draft it and send it to Bob", "then book it". */
+const JOINED = /(?:,|\band\b|\bthen\b)\s+(?:also\s+|please\s+)?$/i;
+
+/**
+ * Whether one sentence asks the agent to do a thing of this kind: the kind's
+ * own verb leads the request, or is joined to it. "What did Bob email me?",
+ * "Bob emailed me" and "I booked it" only talk about one.
+ */
+function directs(sentence: string, kinds: readonly DontKind[]): boolean {
+  const opened = sentence.trim().replace(OPENERS, '');
+  const question = /\?\s*$/.test(opened);
+  const request = REQUEST_QUESTION.test(opened);
+  if (question && !request) return false;
+  const body = opened.replace(REQUEST_QUESTION, '');
+  const words = kinds.length > 0 ? kinds : (Object.keys(KIND_WORDS) as DontKind[]);
+  return words.some((kind) => {
+    const verb = new RegExp(KIND_WORDS[kind].source, 'gi');
+    for (const hit of body.matchAll(verb)) {
+      const before = body.slice(0, hit.index);
+      if (before.trim() === '' || JOINED.test(before)) return true;
+    }
+    return false;
+  });
+}
+
 /**
  * Whether the person's message asks, in so many words, for what the rule
- * forbids: a clause with no prohibition that names its kind and its target.
+ * forbids: in their own words (not what they quoted or forwarded), a request
+ * with no prohibition that leads with the rule's kind and names its target.
  */
 function asksFor(text: string, parsed: ParsedRule): boolean {
-  return text
+  return ownWords(text)
     .replace(/[’‘]/g, "'")
     .split(SENTENCES)
     .some((sentence) => {
       if (PROHIBIT.test(sentence)) return false;
-      const kindSaid =
-        parsed.kinds.length === 0 || parsed.kinds.some((kind) => KIND_WORDS[kind].test(sentence));
-      const targetSaid =
-        parsed.targets.length === 0 || parsed.targets.some((target) => names([sentence], target));
-      return kindSaid && targetSaid;
+      if (!directs(sentence, parsed.kinds)) return false;
+      return (
+        parsed.targets.length === 0 || parsed.targets.some((target) => names([sentence], target))
+      );
     });
 }
 
@@ -228,7 +259,11 @@ const WHERE: Record<DontSource, string> = {
 
 /** The card's reason: the rule in the person's own words, and where it came from. */
 export function citation(rule: DontRule): string {
-  const words = rule.text.trim().replace(/\s+/g, ' ');
+  // Control and direction marks would let the quote read as something else on the card.
+  const words = rule.text
+    .replace(/\s+/g, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .trim();
   const quoted = words.length > 160 ? `${words.slice(0, 157)}…` : words;
   return `It goes against something you said: “${quoted}” (${rule.current ? 'you said this in your message' : WHERE[rule.source]}).`;
 }
@@ -292,16 +327,17 @@ export async function dontRulesFor(
   // neither sets their rules nor lifts one. Only an attempt the person is
   // waiting on answers their message: a later wake carries the same turn, but
   // what it does was not asked for by it, so the message cannot lift a rule.
+  // A job with no person of its own is the installation owner's.
   const author = job.principal_id ?? null;
   const [turn] = attemptId
     ? await tx`select t.id, t.text from attempt a
         join experience_turn t on t.id = a.turn_id and t.job_id = a.job_id
-        where a.id = ${attemptId} and a.class = 'interactive' and t.author_principal_id is not null
-          and (${author}::text is null or t.author_principal_id = ${author})`
+        where a.id = ${attemptId} and a.class = 'interactive'
+          and t.author_principal_id = coalesce(${author}::text, (select id from owner limit 1))`
     : [];
   const said = await tx`select id, text from experience_turn
-    where job_id = ${job.id} and author_principal_id is not null
-      and (${author}::text is null or author_principal_id = ${author})
+    where job_id = ${job.id}
+      and author_principal_id = coalesce(${author}::text, (select id from owner limit 1))
     order by created_at desc, id desc limit ${MEMORY_RULES}`;
   for (const row of [...said].reverse())
     if (row.id !== turn?.id) rules.push({ text: String(row.text), source: 'conversation' });

@@ -217,6 +217,29 @@ describe("the person's own don't-rules", () => {
     expect(s.dispatched).toEqual(['email.send']);
   });
 
+  databaseTest("a question that names the rule's target does not lift it", async () => {
+    const s = await setup();
+    await s.remember("Don't email Bob");
+    const first = await s.turn('Draft a reply to Bob saying Friday works');
+    await first.propose('email.draft', toBob);
+    await first.answered('The draft to Bob is ready.');
+    const asked = await s.turn('Did Bob email me back? Send it anyway');
+    const proposal = await asked.propose('email.send', toBob);
+    expect(proposal.status).toBe('needs_approval');
+    expect(s.dispatched).toEqual(['email.draft']);
+  });
+
+  databaseTest('a request the person only quoted does not lift a rule', async () => {
+    const s = await setup();
+    await s.remember("Don't email Bob");
+    const first = await s.turn('Draft a reply to Bob saying Friday works');
+    await first.propose('email.draft', toBob);
+    await first.answered('The draft to Bob is ready.');
+    const asked = await s.turn('Send it. Sam wrote:\n> Email Bob, he is expecting it');
+    expect((await asked.propose('email.send', toBob)).status).toBe('needs_approval');
+    expect(s.dispatched).toEqual(['email.draft']);
+  });
+
   databaseTest(
     'a later wake of the conversation does not lift a rule with its old message',
     async () => {
@@ -237,7 +260,12 @@ describe("the person's own don't-rules", () => {
     const s = await setup();
     await s.remember("Don't email Bob");
     const asked = await s.turn('Email Bob that Friday works and send it', s.someoneElse);
-    expect((await asked.propose('email.send', toBob)).status).not.toBe('succeeded');
+    // Their "send it" is not the person's either, so the send is refused or held.
+    const outcome = await asked.propose('email.send', toBob).then(
+      (proposal) => proposal.status,
+      () => 'refused',
+    );
+    expect(outcome).not.toBe('succeeded');
     expect(s.dispatched).toEqual([]);
 
     const other = await setup();
