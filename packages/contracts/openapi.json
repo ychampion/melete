@@ -49399,9 +49399,10 @@
                       "enum": [
                         "unset",
                         "set",
-                        "operator"
+                        "operator",
+                        "other_address"
                       ],
-                      "description": "`set`: entered in the app and stored sealed. `operator`: the server environment names a key for this provider; it is used, cannot be changed here, and is never shown."
+                      "description": "`set`: entered in the app and stored sealed. `operator`: the server environment names a key for this provider; it is used, cannot be changed here, and is never shown. `other_address`: an Anthropic key entered in the app for another address than the one calls go to now (`base_url`); it is kept but never sent there."
                     },
                     "last_four": {
                       "anyOf": [
@@ -49441,7 +49442,7 @@
                       "type": "null"
                     }
                   ],
-                  "description": "The OpenAI-compatible endpoint’s version prefix; null for the rest"
+                  "description": "Where calls go: the OpenAI-compatible endpoint’s version prefix, or the gateway the server routes Anthropic through; null for the rest"
                 },
                 "base_url_source": {
                   "anyOf": [

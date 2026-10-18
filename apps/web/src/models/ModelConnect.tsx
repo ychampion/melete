@@ -105,6 +105,8 @@ export function statusLine(
     return { text: 'Set by the operator', tone: 'ok' };
   if (!status.connected && serverDefault)
     return { text: 'Server default · needs a key', tone: 'attention' };
+  if (status.key.state === 'other_address')
+    return { text: 'Saved key is for another address', tone: 'attention' };
   if (status.key.state === 'set')
     return { text: `Key ••••${status.key.last_four ?? ''}`, tone: 'ok' };
   return { text: 'Not connected', tone: 'muted' };
@@ -443,6 +445,7 @@ function KeyPanel({
   const operator = status.key.state === 'operator';
   const compatible = status.provider === 'openai-compatible';
   const operatorAddress = status.base_url_source === 'operator';
+  const savedElsewhere = status.key.state === 'other_address';
   const current = targetModel(settings, target);
   const inUse = current?.provider === status.provider;
   const [key, setKey] = useState('');
@@ -534,6 +537,10 @@ function KeyPanel({
             />
           </Field>
         )
+      ) : operatorAddress ? (
+        <ReadOnly label="Address">
+          <span className="models-id">{status.base_url}</span> · set by the operator
+        </ReadOnly>
       ) : null}
       {operator ? (
         <ReadOnly label="API key">
@@ -551,7 +558,9 @@ function KeyPanel({
           hint={
             status.key.state === 'set'
               ? `A key ending in ${status.key.last_four} is saved. Paste a new one to replace it.`
-              : 'Stored encrypted on this server. It is never shown again, only its last four characters.'
+              : savedElsewhere
+                ? `The saved key${status.key.last_four ? ` ending in ${status.key.last_four}` : ''} is for another address, so it isn’t sent to ${status.base_url ?? 'the address in use'}. Paste a key for this address.`
+                : 'Stored encrypted on this server. It is never shown again, only its last four characters.'
           }
         >
           <Input
@@ -580,7 +589,7 @@ function KeyPanel({
         >
           Test connection
         </Button>
-        {status.key.state === 'set' ? (
+        {status.key.state === 'set' || savedElsewhere ? (
           <Button
             variant="ghost"
             icon="trash"
