@@ -45,9 +45,12 @@ export const PROHIBIT =
 /**
  * "Don't forget to email Bob" asks for it, and "don't ask me before sending
  * Slack replies" lets it go on its own; these openers are not prohibitions.
+ * Not asking is waived only of the person themselves ("me", "us") or before
+ * acting ("ask first"): "don't bother Bob", "don't ask Sam to pay" and "don't
+ * confirm the booking" still forbid.
  */
 const NOT_PROHIBIT =
-  /^(?:forget|hesitate|miss|worry|mind|wait|be shy|let me forget|skip|(?:need to |have to )?(?:ask|asking|check(?:ing)? with|bother(?:ing)?|confirm(?:ing)?)\b)/i;
+  /^(?:forget|hesitate|miss|worry|mind|wait|be shy|let me forget|skip|(?:need to |have to )?(?:(?:ask(?:ing)?|check(?:ing)? (?:in )?with|bother(?:ing)?|confirm(?:ing)? with|wait(?:ing)? (?:for|on))\s+(?:me|us)\b|ask(?:ing)?\s+(?:first|before)\b))/i;
 
 export const KIND_WORDS: Record<DontKind, RegExp> = {
   contact:

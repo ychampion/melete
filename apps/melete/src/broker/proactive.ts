@@ -233,6 +233,7 @@ export async function gatherEvidence(
       principal_id?: string | null;
       objective?: string;
       objective_origin?: string | null;
+      kind?: string;
     };
     action: { id: string; kind: string; canonical_payload: JsonObject };
     words: ActionWords;
@@ -243,10 +244,12 @@ export async function gatherEvidence(
   const evidence: Evidence[] = [];
 
   // A standing instruction: the person's own routine, or the agent's instructions.
+  // A conversation's objective is its title, made from its first message
+  // (pasted text included), never a standing instruction of the person's.
   const [agent] = await tx`select a.standing_instruction from job j
     join agent a on a.id = j.agent_id and a.space_id = j.space_id where j.id = ${job.id}`;
   const routine =
-    job.objective_origin === 'owner_request' && job.objective
+    job.objective_origin === 'owner_request' && job.kind !== 'chat' && job.objective
       ? asksForIt(job.objective, words, recipients)
       : null;
   const instructed = agent?.standing_instruction

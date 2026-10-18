@@ -1997,7 +1997,8 @@ Each kind of send (email, chat-app messages, calendar invites, public posts,
 anything else outside) has a level the person picks once, on a card in the
 conversation or in Settings: `draft`, `when_confident` or `always`. Chat-app
 messages start at `MELETE_MESSAGES_TO_OTHERS` (`when_confident` by default,
-also written `confidence`; `draft` or `draft_only`; `always`), the rest at
+also written `confidence`; `draft`; `draft_only`, which also keeps them out of
+proactive work until the person picks a level; `always`), the rest at
 `draft`. A level the person chose wins over the setting. Money moves, the
 person's own don't-rules, and sends that also delete or carry a password still
 go to the person at every level.

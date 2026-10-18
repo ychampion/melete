@@ -113,17 +113,29 @@ threshold (`apps/melete/src/broker/proactive.ts`).
 Each kind of send has a level the person picks once: email to other people,
 messages on chat apps, calendar invites to other people, public posts, and
 anything else sent outside. `draft` drafts it unless the person said to send
-it; `when_confident` sends it when the score above clears the threshold (a
-level the person chose counts as their instruction, +0.6); `always` sends it
-whenever the agent does it. Email, invites, public posts and anything else start
+it, or a routine or instructions the person wrote ask for it; `when_confident`
+sends it when the score above clears the threshold, chosen or not (choosing it
+adds nothing to the score); `always` sends it whenever the agent does it. Email, invites, public posts and anything else start
 at `draft`; chat-app messages start at `when_confident`, or at the level
 `MELETE_MESSAGES_TO_OTHERS` names. The first time a kind comes up, a card in
 the conversation asks once, with the default chosen, and the work goes on at
 the default. The choice is kept per person and kind, changed in Settings, or by
 the person saying so in their own message (`just send Slack replies from now
 on`), read under the same rule as being told to send: never from quoted,
-forwarded or pasted text, nor from a tool's output. Money moves, don't-rules,
-and sends that also delete or carry a password still ask at every level
+forwarded or code text, nor from a tool's output. A level that lets the agent
+do more than the person chose (or more than a draft, where they chose nothing)
+is kept only from a short message (400 characters at most) that is wholly
+their own typing: nothing the composer saw pasted, and nothing shaped like a
+pasted letter, thread or passage. Holding the agent back is kept from any of
+their own sentences, and where a sentence could be read either way (`never
+send emails without asking`) it holds back. A level set in a message is shown
+in the conversation as the card, with the choice drawn in. Text pasted with no
+marker and no letter shape, in a short message from a client that does not mark
+pastes, still reads as the person's own. Money moves, don't-rules, sends that
+also delete or carry a password, recipients Melete cannot vouch for, a
+connector's own question and an agent set to ask still ask at every level. With
+the older `MELETE_MESSAGES_TO_OTHERS=draft_only`, chat-app messages stay out of
+proactive work, as before, until the person picks a level
 (`apps/melete/src/broker/autonomy.ts`).
 
 Evidence for the default effect gate is conformance 4, `An approval cannot be

@@ -39,6 +39,7 @@ import {
 } from '@melete/contracts';
 import { sql as drizzleSql } from 'drizzle-orm';
 import type { Transaction } from '../db/transaction.ts';
+import { pastedSpans, ownWords as personLines, type Span } from '../intents/said.ts';
 import { actionKinds, type DontKind } from './dont-rules.ts';
 import { sendsMail } from './proactive.ts';
 import type { Query } from './records.ts';
@@ -282,10 +283,15 @@ export async function setLevel(
     source: LevelSource;
     /** For a level said in a message: that message, and when it was sent. */
     turn?: { id: string; at: Date | string };
+    /**
+     * The conversation the choice was made in, which shows it as the card
+     * that asks about this kind from now on.
+     */
+    shownIn?: { jobId: string; attemptId: string | null };
   },
 ): Promise<boolean> {
   const at = input.turn ? new Date(input.turn.at).toISOString() : null;
-  const [row] =
+  let [row] =
     await tx`insert into task_autonomy (principal_id, kind, level, set_by, turn_id, updated_at)
     values (${input.personId}, ${input.kind}, ${input.level}, ${input.source},
       ${input.turn?.id ?? null}, coalesce(${at}::timestamptz, now()))
@@ -296,11 +302,23 @@ export async function setLevel(
         and (task_autonomy.level is null or task_autonomy.updated_at < excluded.updated_at))
     returning ask_id, asked_job_id`;
   if (!row) return false;
-  if (row.ask_id && row.asked_job_id)
+  if (input.shownIn)
+    [row] = await tx`update task_autonomy set ask_id = ${recordId('ask')},
+        asked_job_id = ${input.shownIn.jobId}, asked_at = coalesce(asked_at, now())
+      where principal_id = ${input.personId} and kind = ${input.kind}
+      returning ask_id, asked_job_id`;
+  if (!row) return false;
+  // The conversation that asked may have been deleted since: the choice is
+  // kept all the same, with no card left to show it in.
+  const [shown] =
+    row.ask_id && row.asked_job_id
+      ? await tx`select 1 from job where id = ${String(row.asked_job_id)}`
+      : [];
+  if (shown)
     await appendEvent(
       tx,
       String(row.asked_job_id),
-      null,
+      input.shownIn?.attemptId ?? null,
       'notice',
       {
         kind: AUTONOMY_ASK_NOTICE,
@@ -315,6 +333,45 @@ export async function setLevel(
 }
 
 /* ---------- a level said in the person's own words ---------- */
+
+/** How far each level lets the agent go on its own, least first. */
+const REACH: Record<AutonomyLevel, number> = { draft: 0, when_confident: 1, always: 2 };
+
+/**
+ * The longest message that may let the agent do more on its own. A standing
+ * choice is a sentence or two; a long message is where someone else's words
+ * hide among the person's.
+ */
+export const LOOSENS_WITHIN_CHARS = 400;
+
+/** Text in quotation marks, as `told.ts` leaves it out. */
+const IN_QUOTES = /"[^"\n]*"|“[^”\n]*”|„[^“”\n]*[“”]|«[^»\n]*»/g;
+
+/**
+ * The person's own words in a message: what the composer saw pasted, quoted
+ * and forwarded text, code, text in quotation marks, and anything shaped like
+ * a pasted letter or passage (`intents/said.ts`) are left out.
+ */
+function ownSaid(text: string, pasted: readonly Span[] = []): string {
+  return ownWords(personLines(text, pasted));
+}
+
+/**
+ * Whether a whole message is the person's own typing: short, with nothing the
+ * composer saw pasted, and nothing left out as quoted, forwarded, code or a
+ * pasted letter or passage. Only such a message may let the agent do more on
+ * its own; anything may hold it back.
+ */
+export function typedWhole(text: string, pasted: readonly Span[] = []): boolean {
+  if (pasted.some((span) => span.end > span.start)) return false;
+  if (text.length > LOOSENS_WITHIN_CHARS) return false;
+  if (/^\s*(?:```|~~~)/m.test(text)) return false;
+  const flat = (value: string) => value.replace(/\s+/g, ' ').trim();
+  return (
+    flat(personLines(text)) === flat(text) &&
+    flat(ownWords(text)) === flat(text.replace(IN_QUOTES, ' '))
+  );
+}
 
 /** Words that make what is said a standing choice, not one send. */
 const STANDING =
@@ -341,11 +398,42 @@ const SAYS_CONFIDENT =
 /** Letting the agent send on its own. */
 const SAYS_ALWAYS =
   /\b(?:just send|go ahead and send|you can (?:just |always )?send|feel free to send|always send|send (?:them |those |these |it |replies |messages |emails? )?(?:yourself|on your own|directly|without asking)|no need to ask|(?:don'?t|do not) (?:need to )?ask(?: me)?(?: first| before)?|stop asking|without asking)\b/;
-/** Telling the agent not to send. */
-const HOLD_SEND = /\b(?:don'?t|do not|never|stop) send(?:ing)?\b/;
-/** Telling the agent not to wait on the person. */
+/**
+ * Telling the agent not to send, a few words ahead of the send: "don't send",
+ * "never email anyone", "stop posting".
+ */
+const HOLD_SEND =
+  /\b(?:don'?t|dont|do not|never|stop|no more)\b(?:[\s,]+(?:ever|you|to|any|anyone|anybody|them|those|these|it|my|our)\b)*[\s,]+(?:send(?:ing)?|e-?mail(?:ing)?|message|messaging|text(?:ing)?|dm(?:ing)?|reply(?:ing)?|respond(?:ing)?|post(?:ing)?|tweet(?:ing)?|invite|inviting|let)\b/;
+/** Telling the agent not to wait on the person: "don't ask me", "no need to check with me". */
 const NOT_ASKING =
-  /\b(?:don'?t|do not|never|no need to|stop|without) (?:need to |have to )?(?:ask(?:ing)?|check(?:ing)? with|wait(?:ing)? for)\b/;
+  /\b(?:don'?t|dont|do not|never|no need to|stop) (?:need to |have to )?(?:ask(?:ing)?|check(?:ing)? (?:in )?with|wait(?:ing)? (?:for|on))\b/;
+/** Going ahead without the person's say: "without asking", "without checking with me". */
+const WITHOUT_ASKING =
+  /\bwithout (?:first )?(?:asking|checking(?: in)? with|my (?:ok|okay|approval|say-?so|go-?ahead))/;
+/** Anything that says no: before "without asking" it holds the send back. */
+const NEGATION =
+  /\b(?:don'?t|dont|do not|never|not|no|stop|shouldn'?t|should not|must not|mustn'?t|can'?t|cannot|won'?t)\b/;
+
+/**
+ * The level one sentence asks for, or null. Where it could be read either way,
+ * the reading that keeps the person in the loop wins: "don't ever send emails
+ * without asking me" drafts, however its words are ordered.
+ */
+function levelSaid(sentence: string): AutonomyLevel | null {
+  if (SAYS_CONFIDENT.test(sentence)) return 'when_confident';
+  // "Never send them without asking", "I don't want emails going out without
+  // asking me": a no before "without asking" asks to be asked.
+  const without = WITHOUT_ASKING.exec(sentence);
+  if (without && NEGATION.test(sentence.slice(0, without.index).replace(NOT_ASKING, ' ')))
+    return 'draft';
+  // "Don't ask me before sending" lets it go; "don't send" holds it.
+  if (NOT_ASKING.test(sentence)) return 'always';
+  if (HOLD_SEND.test(sentence)) return 'draft';
+  if (without) return 'always';
+  if (SAYS_DRAFT.test(sentence)) return 'draft';
+  if (SAYS_ALWAYS.test(sentence)) return 'always';
+  return null;
+}
 /** A question about it rather than a request. */
 const QUESTION =
   /^(?:should|shall|did|does|do|is|was|has|have|how|why|what|which|who|am|are|can i|could i|may i)\b/;
@@ -353,10 +441,16 @@ const REQUEST = /^(?:can|could|would|will) you\b/;
 const OPENERS =
   /^(?:(?:ok|okay|yes|yeah|great|thanks|cool|alright|so|and|then|now|also|please|right|hey)[,.!]?\s+)+/;
 
-/** Each kind's level the person sets in a message, in their own words only. */
-export function saidLevels(text: string): Array<{ kind: TaskKind; level: AutonomyLevel }> {
+/**
+ * Each kind's level the person sets in a message, in their own words only
+ * (`ownSaid`). `pasted` is what the composer saw pasted into it.
+ */
+export function saidLevels(
+  text: string,
+  pasted: readonly Span[] = [],
+): Array<{ kind: TaskKind; level: AutonomyLevel }> {
   const found = new Map<TaskKind, AutonomyLevel>();
-  const sentences = ownWords(text)
+  const sentences = ownSaid(text, pasted)
     .toLowerCase()
     .replace(/[’‘]/g, "'")
     .split(/(?<=[.!?;\n])\s*/)
@@ -367,29 +461,50 @@ export function saidLevels(text: string): Array<{ kind: TaskKind; level: Autonom
     if (!STANDING.test(sentence)) continue;
     const kind = KIND_SAID.find(([, words]) => words.test(sentence))?.[0];
     if (!kind) continue;
-    const level = SAYS_CONFIDENT.test(sentence)
-      ? 'when_confident'
-      : // "Never send them without asking" drafts; "don't ask me before
-        // sending" lets it go; "ask me before sending" drafts.
-        HOLD_SEND.test(sentence)
-        ? 'draft'
-        : NOT_ASKING.test(sentence)
-          ? 'always'
-          : SAYS_DRAFT.test(sentence)
-            ? 'draft'
-            : SAYS_ALWAYS.test(sentence)
-              ? 'always'
-              : null;
+    const level = levelSaid(sentence);
     if (level) found.set(kind, level);
   }
   return [...found].map(([kind, level]) => ({ kind, level }));
 }
 
 /**
+ * The levels a message sets that may be kept, given what the person chose
+ * before (`chosen`, by kind). Holding the agent back is kept from any of the
+ * person's own sentences. Letting it do more than they chose (or than a
+ * draft, where they chose nothing) is kept only from a message that is wholly
+ * their own typing (`typedWhole`), so a sentence inside something pasted,
+ * however it was pasted, never widens what the agent does.
+ */
+export function levelsToKeep(
+  text: string,
+  pasted: readonly Span[],
+  chosen: ReadonlyMap<TaskKind, AutonomyLevel | null>,
+): Array<{ kind: TaskKind; level: AutonomyLevel }> {
+  const typed = typedWhole(text, pasted);
+  return saidLevels(text, pasted).filter(
+    ({ kind, level }) => typed || REACH[level] <= REACH[chosen.get(kind) ?? 'draft'],
+  );
+}
+
+/** The turn an attempt answers, when the job's own person wrote it and is waiting on it. */
+const ANSWERED_TURN = (attemptId: string) => drizzleSql`select t.id, t.text, t.created_at,
+      t.author_principal_id,
+      (select e.payload->'pasted' from event e where e.job_id = t.job_id and e.type = 'notice'
+        and e.payload->>'kind' = 'user_message' and e.payload->>'text' = t.text
+        and e.created_at <= t.created_at
+        order by e.seq desc limit 1) as pasted
+    from attempt a join experience_turn t on t.id = a.turn_id and t.job_id = a.job_id
+      join job j on j.id = a.job_id
+    where a.id = ${attemptId} and a.class = 'interactive'
+      and t.author_principal_id = coalesce(j.principal_id, (select id from owner limit 1))`;
+
+/**
  * Keep the levels the person set in the turn this attempt answers. Only a
  * turn the job's own person wrote, answered by an attempt they are waiting on,
- * counts: the same rule as being told to send (`toldToSend`). Returns what it
- * kept, so a caller can say so.
+ * counts: the same rule as being told to send (`toldToSend`), and only what
+ * `levelsToKeep` allows. Each level kept is shown in the conversation as the
+ * card that asks about it, with the choice drawn in, so a change made in a
+ * message is never silent and is undone in one click. Returns what it kept.
  */
 export async function keepSaidLevels(
   tx: Query,
@@ -398,26 +513,37 @@ export async function keepSaidLevels(
   if (!attemptId) return [];
   const [attempt] = await tx`select job_id from attempt where id = ${attemptId}`;
   if (!attempt || (await roomWork(tx, String(attempt.job_id)))) return [];
-  const [turn] = await tx`select t.id, t.text, t.created_at, t.author_principal_id
+  const [turn] = await tx`select t.id, t.text, t.created_at, t.author_principal_id,
+      (select e.payload->'pasted' from event e where e.job_id = t.job_id and e.type = 'notice'
+        and e.payload->>'kind' = 'user_message' and e.payload->>'text' = t.text
+        and e.created_at <= t.created_at
+        order by e.seq desc limit 1) as pasted
     from attempt a join experience_turn t on t.id = a.turn_id and t.job_id = a.job_id
       join job j on j.id = a.job_id
     where a.id = ${attemptId} and a.class = 'interactive'
       and t.author_principal_id = coalesce(j.principal_id, (select id from owner limit 1))`;
   if (!turn?.text) return [];
+  const personId = String(turn.author_principal_id);
+  const before = await levelsFor(tx, personId);
   const kept: Array<{ kind: TaskKind; level: AutonomyLevel }> = [];
-  for (const said of saidLevels(String(turn.text)))
+  for (const said of levelsToKeep(String(turn.text), pastedSpans(turn.pasted), chosenOf(before)))
     if (
       await setLevel(tx, {
-        personId: String(turn.author_principal_id),
+        personId,
         kind: said.kind,
         level: said.level,
         source: 'chat',
         turn: { id: String(turn.id), at: turn.created_at as Date },
+        shownIn: { jobId: String(attempt.job_id), attemptId },
       })
     )
       kept.push(said);
   return kept;
 }
+
+/** What the person chose for each kind, or null where they chose nothing. */
+const chosenOf = (levels: ReadonlyMap<TaskKind, TaskLevel>) =>
+  new Map([...levels].map(([kind, level]) => [kind, level.chosen ? level.level : null]));
 
 /**
  * The levels an attempt starts with, read only: what the job's person chose,
@@ -448,13 +574,9 @@ export async function attemptLevelsIn(
     : [];
   const levels = levelsFrom([...rows], defaults);
   if (!attemptId) return levels;
-  const [turn] = await tx.execute<Record<string, unknown>>(drizzleSql`select t.text
-    from attempt a join experience_turn t on t.id = a.turn_id and t.job_id = a.job_id
-      join job j on j.id = a.job_id
-    where a.id = ${attemptId} and a.class = 'interactive'
-      and t.author_principal_id = coalesce(j.principal_id, (select id from owner limit 1))`);
+  const [turn] = await tx.execute<Record<string, unknown>>(ANSWERED_TURN(attemptId));
   if (turn?.text)
-    for (const said of saidLevels(String(turn.text)))
+    for (const said of levelsToKeep(String(turn.text), pastedSpans(turn.pasted), chosenOf(levels)))
       levels.set(said.kind, {
         kind: said.kind,
         level: said.level,

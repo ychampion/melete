@@ -661,8 +661,9 @@ const variables = z.object({
   MELETE_PROACTIVE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
   /**
    * The level a chat app's message to others starts at, until the person
-   * chooses one: `when_confident` (also `confidence`, the default), `draft`
-   * (also `draft_only`) or `always`. A level the person chose wins.
+   * chooses one: `when_confident` (also `confidence`, the default), `draft`,
+   * `draft_only` (a draft that proactive work never sends, as before) or
+   * `always`. A level the person chose wins.
    */
   MELETE_MESSAGES_TO_OTHERS: z
     .enum(['confidence', 'draft_only', 'draft', 'when_confident', 'always'])

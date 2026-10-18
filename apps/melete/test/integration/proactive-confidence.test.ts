@@ -392,7 +392,7 @@ describe('work nobody is waiting on', () => {
   });
 
   databaseTest(
-    'with messages to others kept as drafts, only the routine asking for it lets one go',
+    'with messages to others kept as drafts, a message is left as a suggestion, even when asked for',
     async () => {
       // What would be enough on confidence alone is not, once messages start as drafts.
       const s = await setup({ messagesToOthers: 'draft_only' });
@@ -403,23 +403,22 @@ describe('work nobody is waiting on', () => {
       const hold = await rejectionOf(woke.propose('test.send_message', messageBob()));
       expect(hold).toBeInstanceOf(ProactiveHold);
       expect((hold as ProactiveHold).confidence.missing.join(' ')).toContain(
-        'a message to someone goes out on its own only when your routine',
+        'messages to others are kept as drafts here',
       );
       expect(s.dispatched).toEqual(['test.send_message', 'test.send_message']);
 
-      // The person's own routine asking for it is them saying to send it.
+      // The operator's older draft_only keeps them out of proactive work, as it did:
+      // only the person choosing a level for messages changes that.
       const asked = await setup({
         routine: 'When I am running late, message Bob.',
         messagesToOthers: 'draft_only',
       });
-      const sent = await (await asked.attempt('background')).propose(
-        'test.send_message',
-        messageBob(),
-      );
-      expect(sent.status).toBe('succeeded');
-      expect((await actionReviewView(asked.sql, sent.action_id))?.reason).toEndWith(
-        'The default for messages to other people: “Draft”.',
-      );
+      expect(
+        await rejectionOf(
+          (await asked.attempt('background')).propose('test.send_message', messageBob()),
+        ),
+      ).toBeInstanceOf(ProactiveHold);
+      expect(asked.dispatched).toEqual([]);
     },
   );
 

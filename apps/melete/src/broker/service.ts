@@ -154,7 +154,6 @@ import {
   PROACTIVE_DEFAULT_THRESHOLD,
   proactiveAttempt,
   reaches,
-  WEIGHTS,
 } from './proactive.ts';
 import {
   actionFromRow,
@@ -1314,21 +1313,19 @@ export class BrokerService implements BrokerOperations {
               action,
               words: actionWords(tool.name, actionKinds(tool.name, false)),
             });
-            // A level the person chose themselves is their instruction for this kind.
-            if (
-              level.level === 'when_confident' &&
-              level.chosen &&
-              !evidence.some((item) => item.kind === 'instruction')
-            )
-              evidence.unshift({
-                kind: 'instruction',
-                weight: WEIGHTS.instruction,
-                says: `you set ${TASK_NAMES[kind].said} to “${LEVEL_NAMES.when_confident.short}”`,
-              });
+            // Choosing "when confident" is not itself evidence: the score is
+            // what the person said and did before, the same as by default, so
+            // confirming the default on the card changes nothing.
             const confidence = withSetting(
               judge(evidence, {
                 threshold,
                 doubted,
+                // The operator's older `draft_only` keeps chat apps' messages
+                // out of proactive work, as before, until the person chooses.
+                draftOnly:
+                  kind === 'chat_message' &&
+                  !level.chosen &&
+                  this.options.messagesToOthers === 'draft_only',
                 ...(level.level === 'draft'
                   ? {
                       needsInstruction: `${TASK_NAMES[kind].one} goes out on its own only when your routine or its instructions say to send it`,

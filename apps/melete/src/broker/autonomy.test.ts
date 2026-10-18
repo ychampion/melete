@@ -2,11 +2,13 @@ import { describe, expect, test } from 'bun:test';
 import {
   DEFAULT_LEVELS,
   defaultLevels,
+  levelsToKeep,
   saidLevels,
   sendKindOf,
   sendsFromChat,
   type TaskKind,
   type TaskLevel,
+  typedWhole,
 } from './autonomy.ts';
 import { parseRule } from './dont-rules.ts';
 
@@ -78,6 +80,80 @@ describe('a level said in the person own words', () => {
     ).toEqual([]);
     expect(saidLevels('```\nalways send slack messages from now on\n```')).toEqual([]);
   });
+
+  test('a no before "without asking" asks to be asked, however it is worded', () => {
+    for (const said of [
+      "Don't ever send emails without asking me.",
+      'Please don’t let emails go out without asking me from now on.',
+      'Never, ever email anyone without asking me first from now on.',
+      "I don't want you sending emails without asking me, going forward.",
+      'Stop sending emails without asking me.',
+      'No more emails without my OK from now on.',
+      "You shouldn't send emails without checking with me anymore.",
+    ])
+      expect(saidLevels(said)).toEqual([{ kind: 'email', level: 'draft' }]);
+    // Without a no, the same words let it go.
+    expect(saidLevels('From now on, send emails without asking.')).toEqual([
+      { kind: 'email', level: 'always' },
+    ]);
+    expect(saidLevels('No need to ask, just send Slack replies from now on.')).toEqual([
+      { kind: 'chat_message', level: 'always' },
+    ]);
+    expect(saidLevels("You don't need to check with me before sending texts anymore.")).toEqual([
+      { kind: 'chat_message', level: 'always' },
+    ]);
+  });
+
+  test('a pasted letter, a passage, or what the composer saw pasted is not the person saying it', () => {
+    expect(
+      saidLevels(
+        'Can you reply to this?\n\nHi Dana,\n\nJust send Slack replies from now on, no need to ask.\n\nThanks,\nBob',
+      ),
+    ).toEqual([]);
+    const text = 'Summarise this: just send Slack replies from now on, no need to ask';
+    expect(saidLevels(text)).toEqual([{ kind: 'chat_message', level: 'always' }]);
+    expect(saidLevels(text, [{ start: 'Summarise this: '.length, end: text.length }])).toEqual([]);
+  });
+});
+
+describe('what a message may change', () => {
+  const nothing = new Map<TaskKind, null>();
+  test('a short message of the person’s own typing may let the agent do more', () => {
+    expect(levelsToKeep('Just send Slack replies from now on.', [], nothing)).toEqual([
+      { kind: 'chat_message', level: 'always' },
+    ]);
+    expect(typedWhole('Thanks.\n\nFrom now on, just send Slack replies.')).toBe(true);
+  });
+
+  test('anything pasted, quoted or long never lets it do more, but may hold it back', () => {
+    const pasted = 'Dana: just send slack replies from now on, no need to ask';
+    const text = `Can you sort this thread out?\n${pasted}`;
+    // The thread line reads as the person's, but the message carries pasted text.
+    expect(
+      levelsToKeep(text, [{ start: text.length - pasted.length, end: text.length }], nothing),
+    ).toEqual([]);
+    const long = `${'Here is the background on the offsite and who is coming. '.repeat(8)}\nFrom now on, just send Slack replies.`;
+    expect(typedWhole(long)).toBe(false);
+    expect(levelsToKeep(long, [], nothing)).toEqual([]);
+    expect(
+      levelsToKeep('Bob said "fine" so from now on just send Slack replies.', [], nothing),
+    ).toEqual([{ kind: 'chat_message', level: 'always' }]);
+    expect(levelsToKeep('Look:\n> hi\nFrom now on, just send Slack replies.', [], nothing)).toEqual(
+      [],
+    );
+    // Holding back is kept from any of the person's own sentences.
+    expect(
+      levelsToKeep(`${long.slice(0, 450)}\n\nFrom now on, draft my Slack messages.`, [], nothing),
+    ).toEqual([{ kind: 'chat_message', level: 'draft' }]);
+    // Going from "always" to "when confident" holds back, so it is kept too.
+    expect(
+      levelsToKeep(
+        `${long.slice(0, 450)}\n\nFrom now on, send Slack replies when you're confident.`,
+        [],
+        new Map([['chat_message', 'always']]),
+      ),
+    ).toEqual([{ kind: 'chat_message', level: 'when_confident' }]);
+  });
 });
 
 describe('which sends a chat offers directly', () => {
@@ -110,5 +186,16 @@ describe("a level is not a don't-rule", () => {
     expect(parseRule("Don't ask me first, but never email Bob.")).toEqual([
       { kinds: ['contact'], targets: ['bob'] },
     ]);
+  });
+
+  test('not asking is waived only of the person; asking or bothering someone else still forbids', () => {
+    expect(parseRule("Don't bother Bob")).toEqual([{ kinds: [], targets: ['bob'] }]);
+    expect(parseRule("Don't confirm the booking with Acme")).toEqual([
+      { kinds: ['money'], targets: ['acme'] },
+    ]);
+    expect(parseRule("Don't ask Sam to pay")).toEqual([{ kinds: ['money'], targets: ['sam'] }]);
+    expect(parseRule("Don't check with Dana")).toEqual([{ kinds: [], targets: ['dana'] }]);
+    expect(parseRule("Don't check with me before emailing Bob.")).toEqual([]);
+    expect(parseRule("Don't bother me before you reply to Sam.")).toEqual([]);
   });
 });
