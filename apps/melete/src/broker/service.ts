@@ -58,7 +58,7 @@ import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
-import { appendToolTrace, heldSearchCall } from '../experience/tools.ts';
+import { appendToolTrace, heldSearchCall, suggestedStepCall } from '../experience/tools.ts';
 import { turnSpoke } from '../gateway/turn-notes.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
@@ -125,10 +125,21 @@ import {
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
-import { type DontMatch, dontRulesFor, matchDontRule } from './dont-rules.ts';
+import { actionKinds, type DontMatch, dontRulesFor, matchDontRule } from './dont-rules.ts';
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import { type MoneyMove, moneyMove } from './money.ts';
+import {
+  actionWords,
+  type Confidence,
+  gatherEvidence,
+  judge,
+  type MessagesToOthers,
+  PROACTIVE_DEFAULT_THRESHOLD,
+  proactiveAttempt,
+  reaches,
+  sendsMail,
+} from './proactive.ts';
 import {
   actionFromRow,
   appendEvent,
@@ -261,6 +272,17 @@ export type BrokerOptions = {
    * `MELETE_SEND_HOLD_SECONDS`.
    */
   sendHoldMs?: number;
+  /**
+   * Work nobody is waiting on that would reach someone outside Melete goes
+   * ahead on its own from this confidence (0 to 1) and is otherwise left as a
+   * suggestion (`proactive.ts`). `MELETE_PROACTIVE_CONFIDENCE`, 0.6 by default.
+   */
+  proactiveThreshold?: number;
+  /**
+   * Whether such work may send a chat app's message to others on that
+   * confidence, or keeps it a suggestion always. `MELETE_MESSAGES_TO_OTHERS`.
+   */
+  messagesToOthers?: MessagesToOthers;
 };
 
 export type StandingGrantInput = {
@@ -301,7 +323,27 @@ type Admissibility = {
   money: MoneyMove | null;
   /** The person's own don't-rule this action goes against, which its card quotes. */
   dont: DontMatch | null;
+  /**
+   * For work nobody is waiting on that reaches someone outside Melete: how
+   * likely the person wants it, from what they said before, and whether that
+   * lets it go. Null for anything else.
+   */
+  proactive: Confidence | null;
 };
+
+/**
+ * Proactive work that is not likely enough to be wanted: nothing is sent, no
+ * card is put in front of the person, and the conversation keeps it as a
+ * quiet suggestion.
+ */
+export class ProactiveHold extends BrokerFault {
+  constructor(readonly confidence: Confidence) {
+    super(
+      'scope_denied',
+      `Not done: nobody asked for this now, and what the person said before does not make it likely they want it (confidence ${confidence.score.toFixed(2)}; it goes ahead on its own from ${confidence.threshold.toFixed(2)}). It is left for them as a suggestion. Do not try it another way.`,
+    );
+  }
+}
 
 /** A review to run once the proposal's transaction has committed. */
 type PendingReview = {
@@ -1128,6 +1170,7 @@ export class BrokerService implements BrokerOperations {
         this.options.resolveStandingGrant !== undefined &&
         (await this.options.resolveStandingGrant(tx, input)));
     let auto: Admissibility['auto'] = null;
+    let proactive: Confidence | null = null;
     if (settings?.mode === 'auto_review' && requiresApproval && !granted) {
       // Silence about an origin is `unknown`, which keeps the action with the person.
       const doubts = await resolveOriginWarnings(
@@ -1172,13 +1215,58 @@ export class BrokerService implements BrokerOperations {
         doubts.length === 0 &&
         warnings.length === 0 &&
         (base.tier !== 'person' || base.reason === OUTSIDE_SEND_REASON);
+      // Work nobody is waiting on that reaches someone outside Melete is never
+      // asked about by default: it goes on its own when what the person said
+      // before makes it likely they want it, and is left as a suggestion when not.
+      // Only what would otherwise wait as a plain send or post is judged so:
+      // one that also deletes or carries a password, a calendar change, and
+      // anything another rule already lets go, stay as they were.
+      const sendKinds = actionKinds(tool.name, false);
+      // Doubts are weighed by the judgement itself, so the send is read without them here.
+      const plain =
+        doubts.length + warnings.length > 0
+          ? tierOf(
+              [],
+              existingGuests,
+              guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
+            )
+          : base;
+      if (
+        tool.effect_class === 'write_external' &&
+        !money &&
+        !dont &&
+        !sendsAsTold &&
+        !connectorAsks &&
+        !afterResponses &&
+        !roomWork &&
+        !agentAsks &&
+        plain.tier === 'person' &&
+        plain.reason === OUTSIDE_SEND_REASON &&
+        !sendKinds.includes('calendar') &&
+        (await proactiveAttempt(tx, action.attempt_id))
+      ) {
+        const kinds = sendKinds;
+        const mail = kinds.includes('contact') && sendsMail(tool.name);
+        proactive = judge(
+          await gatherEvidence(tx, { job, action, words: actionWords(tool.name, kinds) }),
+          {
+            threshold: this.options.proactiveThreshold ?? PROACTIVE_DEFAULT_THRESHOLD,
+            doubted: doubts.length > 0 || warnings.length > 0,
+            mail,
+            draftOnly:
+              kinds.includes('contact') && !mail && this.options.messagesToOthers === 'draft_only',
+          },
+        );
+      }
       const tier: TierDecision = dont
         ? { tier: 'person', actionClass: null, reason: dont.reason }
         : money
           ? { tier: 'person', actionClass: null, reason: money.reason }
           : sendsAsTold
             ? { tier: 'person', actionClass: null, reason: TOLD_TO_SEND }
-            : base;
+            : proactive
+              ? { tier: 'person', actionClass: null, reason: proactive.reason }
+              : base;
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
@@ -1190,33 +1278,35 @@ export class BrokerService implements BrokerOperations {
         outcome:
           money || dont || connectorAsks || afterResponses
             ? 'person'
-            : sendsAsTold
+            : sendsAsTold || proactive?.act
               ? 'policy_approved'
-              : tier.tier === 'sandbox' && allowed && !toolAsks
-                ? 'policy_approved'
-                : // Publishing an app that reaches nobody new. An agent set to ask before
-                  // acting promises that publishes to other people wait; an app only the
-                  // person can open reaches nobody, so it goes ahead. A conversation that
-                  // read an app's responses asks before changing what an app shows.
-                  tier.tier === 'apps' &&
-                    allowed &&
-                    (!agentAsks || reachesOnlyPublisher(tool.name, action.canonical_payload)) &&
-                    !afterResponses &&
-                    !roomWork
+              : proactive
+                ? 'person'
+                : tier.tier === 'sandbox' && allowed && !toolAsks
                   ? 'policy_approved'
-                  : // An event on the person's own calendar that touches nothing important
-                    // and can be undone. An agent set to ask before acting still asks.
-                    tier.tier === 'own_calendar' && allowed && !agentAsks && !roomWork
+                  : // Publishing an app that reaches nobody new. An agent set to ask before
+                    // acting promises that publishes to other people wait; an app only the
+                    // person can open reaches nobody, so it goes ahead. A conversation that
+                    // read an app's responses asks before changing what an app shows.
+                    tier.tier === 'apps' &&
+                      allowed &&
+                      (!agentAsks || reachesOnlyPublisher(tool.name, action.canonical_payload)) &&
+                      !afterResponses &&
+                      !roomWork
                     ? 'policy_approved'
-                    : // An agent set to ask before acting promises that sends, bookings and payments
-                      // wait for the person, so its calendar changes do. A reversible app change is
-                      // none of those, and the person switched that class on themselves.
-                      tier.tier === 'reviewable' &&
-                        allowed &&
-                        !roomWork &&
-                        (!agentAsks || tier.actionClass === 'app_changes')
-                      ? 'review'
-                      : 'person',
+                    : // An event on the person's own calendar that touches nothing important
+                      // and can be undone. An agent set to ask before acting still asks.
+                      tier.tier === 'own_calendar' && allowed && !agentAsks && !roomWork
+                      ? 'policy_approved'
+                      : // An agent set to ask before acting promises that sends, bookings and payments
+                        // wait for the person, so its calendar changes do. A reversible app change is
+                        // none of those, and the person switched that class on themselves.
+                        tier.tier === 'reviewable' &&
+                          allowed &&
+                          !roomWork &&
+                          (!agentAsks || tier.actionClass === 'app_changes')
+                        ? 'review'
+                        : 'person',
       };
     }
     const policyApproved = auto?.outcome === 'policy_approved';
@@ -1229,6 +1319,7 @@ export class BrokerService implements BrokerOperations {
       auto,
       money,
       dont,
+      proactive,
     };
   }
 
@@ -2039,6 +2130,10 @@ export class BrokerService implements BrokerOperations {
         if (!row) throw new Error('Action insert returned no record');
         const created = actionFromRow(row);
         const classified = await this.classify(tx, job, created, tool, 'proposal', guests);
+        // Proactive work not likely enough to be wanted: nothing is recorded or
+        // sent, no card is raised, and it is left as a suggestion (below).
+        if (classified.proactive && !classified.proactive.act)
+          throw new ProactiveHold(classified.proactive);
         // What the person approves is shown to them whole: a command too long
         // for its card is refused here, and nothing of it is recorded.
         const hidden = classified.requires_approval
@@ -2108,6 +2203,7 @@ export class BrokerService implements BrokerOperations {
           request.kind === 'web.search'
         )
           await this.traceHeldSearch(claims, request.payload, error.message);
+        if (error instanceof ProactiveHold) await this.leaveSuggestion(claims, request, error);
         if (error instanceof BrokerFault) await this.traceRefusal(claims, request.kind, error);
         throw error;
       });
@@ -2157,6 +2253,53 @@ export class BrokerService implements BrokerOperations {
    * worth more than the refusal: if it cannot be written, the model still hears
    * why the search did not run.
    */
+  /**
+   * Proactive work left as a suggestion: a quiet entry in the conversation
+   * saying what was not done and why, and the evidence behind the score. Never
+   * a card and never a notification. Like the other traces, writing it is
+   * never worth more than the refusal itself.
+   */
+  private async leaveSuggestion(
+    claims: CapabilityClaims,
+    request: Pick<ProposeActionRequest, 'kind' | 'payload'>,
+    hold: ProactiveHold,
+  ) {
+    const { confidence } = hold;
+    try {
+      await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, claims.job_id);
+        await checkAttempt(tx, job, claims);
+        const payload = canonicalizePayload(request.payload);
+        await appendToolTrace(
+          tx,
+          job.id,
+          claims.attempt_id,
+          suggestedStepCall({
+            attemptId: claims.attempt_id,
+            kind: request.kind,
+            payloadHash: payload.hash,
+            to: reaches(payload.canonical, request.kind),
+            why: confidence.reason,
+            at: new Date(),
+          }),
+        );
+        await appendEvent(tx, job.id, claims.attempt_id, 'notice', {
+          phase: 'proactive_suggestion',
+          kind: request.kind,
+          payload_hash: payload.hash,
+          confidence: confidence.score,
+          threshold: confidence.threshold,
+          evidence: confidence.evidence,
+          missing: confidence.missing,
+        });
+      });
+    } catch (error) {
+      process.stderr.write(
+        `broker: could not leave a suggestion: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
   private async traceHeldSearch(claims: CapabilityClaims, payload: unknown, reason: string) {
     const query = (payload as { query?: unknown } | null)?.query;
     try {

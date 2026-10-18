@@ -200,6 +200,8 @@ export async function startEffectBoundary(
         hourlyLimit: env.MELETE_REVIEW_HOURLY_LIMIT,
       },
       sendHoldMs: env.MELETE_SEND_HOLD_SECONDS * 1000,
+      proactiveThreshold: env.MELETE_PROACTIVE_CONFIDENCE,
+      messagesToOthers: env.MELETE_MESSAGES_TO_OTHERS,
       storagePerPerson: storagePerPersonBytes(env),
       broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,

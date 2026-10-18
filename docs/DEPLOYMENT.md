@@ -1981,6 +1981,21 @@ to `120`) after it is cleared to go. Its receipt shows Undo for that time, and
 cancelling sends nothing. The wait is kept in the database, so a restart during
 it still sends the message once.
 
+Work nobody is waiting on (a schedule, a timer or an event woke it) is never
+asked about by default when it would reach someone outside Melete. It goes ahead
+on its own when what the person said before makes it likely they want it, and is
+otherwise left as a quiet suggestion in the conversation. The confidence is a
+fixed sum, never the model's opinion: the person's routine or the agent's
+instructions asking for it +0.6, something they told Melete about that recipient
++0.3, each similar action to that recipient they asked for or allowed in the last
+90 days +0.15 (two at most), each one they said no to or took back -0.5, and 0
+when Melete cannot vouch for where the recipient came from.
+`MELETE_PROACTIVE_CONFIDENCE` (default `0.6`) is where it goes ahead. An email
+also needs the routine or the instructions to ask for it. With
+`MELETE_MESSAGES_TO_OTHERS=draft_only` (default `confidence`), messages to
+others on chat apps are always left as suggestions. Money moves and the
+person's own don't-rules still go to the person.
+
 ## Sandboxes
 
 Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
