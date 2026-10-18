@@ -11,6 +11,7 @@ import type { Action, CapabilityClaims, DispatchResult, JsonObject } from '@mele
 import { PgBoss } from 'pg-boss';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService, type StandingGrantResolver } from '../../src/broker/service.ts';
+import { issueStepUp } from '../../src/broker/step-up.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import { browserManifest, createBrowserConnector } from '../../src/connectors/browser.ts';
 import { createTestConnector, initializeTestLedger } from '../../src/connectors/test.ts';
@@ -199,10 +200,25 @@ export async function createPathFixture() {
         control_epoch: session.control_epoch,
         intent: intentFor(host, form, fields, path),
       });
+    /** The person's yes on the card; a money move's yes comes with them confirming it is them. */
     const approve = async (proposal: { action_id: string; payload_hash: string }) => {
+      const [card] = await sql`select id, step_up_required from approval
+        where action_id = ${proposal.action_id} and decision is null`;
+      const stepUp = card?.step_up_required
+        ? await sql.begin((tx) =>
+            issueStepUp(tx, {
+              principalId: OWNER,
+              approvalId: String(card.id),
+              actionId: proposal.action_id,
+              payloadHash: proposal.payload_hash,
+              method: 'password',
+            }),
+          )
+        : null;
       await broker.decide(proposal.action_id, {
         decision: 'approved',
         payload_hash: proposal.payload_hash,
+        ...(stepUp ? { step_up_token: stepUp.token } : {}),
       });
       await broker.admit(claims, proposal.action_id, proposal.payload_hash);
       return broker.dispatch(proposal.action_id);

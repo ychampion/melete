@@ -113,6 +113,7 @@ describe('which tools move money', () => {
   test.each([
     ['list_payments', schema('customer')],
     ['getInvoice', schema('invoice_id')],
+
     ['git_checkout', schema('branch')],
     ['checkout_branch', schema('repo', 'branch')],
     ['subscribe_to_channel', schema('channel')],
@@ -126,6 +127,12 @@ describe('which tools move money', () => {
     ['create_issue', schema('title', 'body')],
   ])('%s does not', (name, input) => {
     expect(app(name, input)).toBeNull();
+  });
+
+  test('an invoice is a document as often as an act: a read named for one looks it up', () => {
+    expect(app('invoice', schema('vendor'), 'read')).toBeNull();
+    expect(app('invoice', schema('vendor'))).not.toBeNull();
+    expect(app('pay', schema('vendor'), 'read')).not.toBeNull();
   });
 
   test('a lookup that filters by a way to pay is a read; the same as a change is not', () => {

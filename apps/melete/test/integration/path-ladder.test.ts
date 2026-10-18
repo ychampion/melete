@@ -305,12 +305,14 @@ describe('the path ladder', () => {
   );
 
   databaseTest(
-    'a submit that pays, let through by a standing permission, on a page that does not say, stays unknown and asks',
+    'a submit that pays waits for the person even under a standing permission, and on a page that does not say, stays unknown and asks',
     async () => {
       const s = await setup({ api: false, resolveStandingGrant: async () => true });
       s.pages.submit = { tree: '- heading "Reserva recibida"' };
-      // A booking that takes a deposit: a payment, whoever let it through.
-      const sent = await s.submit();
+      // A booking that takes a deposit: a payment, which no standing permission lets through.
+      const asked = await s.submit();
+      expect(asked.status).toBe('needs_approval');
+      const sent = { ...(await s.approve(asked)), action_id: asked.action_id };
       expect(sent.status).toBe('unknown');
       const [row] = await s.sql`select reconciliation from action where id = ${sent.action_id}`;
       expect(row?.reconciliation.evidence).toMatchObject({

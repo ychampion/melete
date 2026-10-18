@@ -73,6 +73,8 @@ const MOVES = new Set([
   'invoice',
   'invoices',
 ]);
+/** Words in MOVES that are as often a document as an act: a tool declared a read that names one only looks it up. */
+const DOCUMENTS = new Set(['invoice', 'invoices']);
 /** Words beside `checkout` that make it a branch, not a purchase. */
 const SOURCE_CONTROL = new Set([
   'git',
@@ -227,16 +229,23 @@ export function moneyMove(input: {
   );
   const priced = shape.paying || (shape.amount && shape.currency);
   const branch = [...words].some((word) => SOURCE_CONTROL.has(word));
-  if (!looks && [...words].some((word) => MOVES.has(word) && !(word === 'checkout' && branch)))
+  const read = tool.effect_class === 'read';
+  if (
+    !looks &&
+    [...words].some(
+      (word) =>
+        MOVES.has(word) && !(word === 'checkout' && branch) && !(read && DOCUMENTS.has(word)),
+    )
+  )
     return { reason: MOVES_MONEY, by: 'name' };
   if (!looks && priced && [...words].some((word) => MAY_MOVE.has(word)))
     return { reason: 'It orders, books or transfers something that is paid for.', by: 'name' };
   // A way to pay among the arguments decides it, whatever the tool is called
   // or declared to be: an unknown tool that takes a card is a payment.
   // A lookup declared as a read may filter by one (`list_charges` by card).
-  if (shape.paying && !(looks && tool.effect_class === 'read'))
+  if (shape.paying && !(looks && read))
     return { reason: 'It takes a card, account or other way to pay.', by: 'arguments' };
-  if (!looks && shape.amount && shape.currency && tool.effect_class !== 'read')
+  if (!looks && shape.amount && shape.currency && !read)
     return { reason: 'It takes an amount of money.', by: 'arguments' };
   return null;
 }
