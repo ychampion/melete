@@ -126,8 +126,7 @@ const ENGINE_IMAGE_WHY = `Its engine could not start: the engine image ${instanc
 /** The reason an attempt lost that way is recorded with. */
 export const ENGINE_IMAGE_REASON = 'engine_image_unavailable';
 /** What a conversation's turn ends with when its work was cut off and could not be resumed. */
-export const LOST_NOTE =
-  'This was interrupted before it could finish, for example because ${instanceName()} restarted while it was working. Nothing more will happen here until you send another message.';
+export const LOST_NOTE = `This was interrupted before it could finish, for example because ${instanceName()} restarted while it was working. Nothing more will happen here until you send another message.`;
 /** The same, when the work stopped because an app it was using was disconnected. */
 export const DISCONNECTED_NOTE =
   'This stopped because an app it was using was disconnected. Nothing more will happen here until you send another message.';

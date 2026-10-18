@@ -24,9 +24,15 @@ const listeners = new Set<() => void>();
 const named = (value: unknown) =>
   typeof value === 'string' && value.trim() ? value.trim() : DEFAULT_NAME;
 
-/** Takes the names the setup status gave; a missing or blank one is the default. */
+/**
+ * Takes the names the setup status gave; a missing or blank one is the
+ * default, except that the assistant takes the installation's name when only
+ * that is given, as the service does.
+ */
 export function setInstance(names: { instance_name?: unknown; assistant_name?: unknown }): void {
-  const next = { name: named(names.instance_name), assistant: named(names.assistant_name) };
+  const name = named(names.instance_name);
+  const given = typeof names.assistant_name === 'string' ? names.assistant_name.trim() : '';
+  const next = { name, assistant: given || name };
   if (next.name === current.name && next.assistant === current.assistant) return;
   current = next;
   for (const listener of listeners) listener();

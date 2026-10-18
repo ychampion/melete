@@ -354,7 +354,8 @@ export function createMockApp(deps: AppDeps) {
       code_required: false,
       email_sign_in: false,
       instance_name: deps.instanceName ?? 'Melete',
-      assistant_name: deps.assistantName ?? 'Melete',
+      // As the service does: the assistant takes the installation's name when only that is set.
+      assistant_name: deps.assistantName ?? deps.instanceName ?? 'Melete',
     }),
   );
 

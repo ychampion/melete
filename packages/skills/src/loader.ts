@@ -14,8 +14,8 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  assistantDisplayName,
   BUILT_IN_SKILLS,
-  displayName,
   type Skill,
   type SkillFrontmatter,
   type SkillMatch,
@@ -47,7 +47,7 @@ export type LoadedSkills = {
 export const builtInDirectory = (): string =>
   fileURLToPath(new URL('../builtin/', import.meta.url));
 
-/** The settings the identity reads: MELETE_IDENTITY_FILE and MELETE_ASSISTANT_NAME. */
+/** The settings the identity reads: MELETE_IDENTITY_FILE, MELETE_ASSISTANT_NAME and MELETE_INSTANCE_NAME. */
 type IdentityEnv = Readonly<Record<string, string | undefined>>;
 
 /**
@@ -194,9 +194,12 @@ export function loadSkills(options: LoadOptions = {}): LoadedSkills {
  */
 const IDENTITY_MAX_BYTES = 64 * 1024;
 
-/** The name the assistant goes by: `MELETE_ASSISTANT_NAME`, or Melete. */
+/**
+ * The name the assistant goes by: `MELETE_ASSISTANT_NAME`, or the
+ * installation's `MELETE_INSTANCE_NAME` when only that is set, or Melete.
+ */
 export const assistantName = (env: IdentityEnv = process.env): string =>
-  displayName(env.MELETE_ASSISTANT_NAME, 'MELETE_ASSISTANT_NAME');
+  assistantDisplayName(env.MELETE_ASSISTANT_NAME, env.MELETE_INSTANCE_NAME);
 
 /**
  * Who the assistant is. Short by contract, because it loads on every attempt,
@@ -217,8 +220,10 @@ export function loadIdentity(env: IdentityEnv = process.env): string {
         `the identity file ${path} is ${file.size} bytes; the cap is about ${IDENTITY_MAX_TOKENS} tokens`,
       );
   }
-  let text = readFileSync(path, 'utf8').trim();
-  if (!own) text = text.replace(/^You are Melete\b/, () => `You are ${assistantName(env)}`);
+  const text = readFileSync(path, 'utf8').trim();
+  // The cap holds the file as written. The built-in file sits close to it, and
+  // the assistant's name, at most DISPLAY_NAME_MAX characters, is placed after
+  // the check, so a name of any allowed length never stops the service.
   const tokens = estimateTokens(text);
   if (tokens > IDENTITY_MAX_TOKENS) {
     throw new Error(
@@ -226,7 +231,7 @@ export function loadIdentity(env: IdentityEnv = process.env): string {
     );
   }
   if (!text) throw new Error(`the identity file ${path} is empty`);
-  return text;
+  return own ? text : text.replace(/^You are Melete\b/, () => `You are ${assistantName(env)}`);
 }
 
 /**

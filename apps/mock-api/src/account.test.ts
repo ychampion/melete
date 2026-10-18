@@ -41,6 +41,13 @@ test('a fresh install asks for its first account, then signs in with it', async 
     assistant_name: 'Melete',
   });
 
+  // As the service does, the assistant takes the installation's name when only that is set.
+  const named = createMock({ speed: 0, instanceName: 'Riverside' }).app;
+  expect(await (await named.request('/setup')).json()).toMatchObject({
+    instance_name: 'Riverside',
+    assistant_name: 'Riverside',
+  });
+
   const again = await post(app, '/setup', {
     email: 'sam@example.com',
     password: 'a long password',

@@ -108,6 +108,16 @@ describe('useInstance', () => {
     setInstance({ instance_name: '  ', assistant_name: undefined });
     expect(currentInstance()).toEqual({ name: 'Melete', assistant: 'Melete' });
   });
+
+  test('with only the installation named, the assistant takes its name', () => {
+    setInstance({ instance_name: 'Riverside Assistant', assistant_name: ' ' });
+    expect(currentInstance()).toEqual({
+      name: 'Riverside Assistant',
+      assistant: 'Riverside Assistant',
+    });
+    setInstance({ instance_name: 'Riverside Assistant' });
+    expect(assistantName()).toBe('Riverside Assistant');
+  });
 });
 
 describe('the main views with a name set', () => {
