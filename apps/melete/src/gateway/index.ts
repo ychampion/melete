@@ -13,6 +13,7 @@ import {
 import { type Resolve, reachTransport } from '../connectors/public-fetch.ts';
 import { localEndpoint, PrivacyRouter } from '../privacy/index.ts';
 import type { PreparedRequest } from '../privacy/router.ts';
+import { withAsks } from './asks.ts';
 import {
   carriesAttachedPicture,
   type GatewayAttachments,
@@ -511,6 +512,8 @@ export function createModelGateway(options: GatewayOptions): Server {
         body = withLongTurnNote(body, protocol);
         // What the person was already told, and a line asked for after a quiet stretch.
         body = withTurnNotes(body, protocol, principal.attemptId);
+        // What the person asked for, again where the answer is worked out.
+        body = withAsks(body, protocol);
       }
       const router = options.privacy === false ? null : options.privacy;
       let firstFailure: unknown;

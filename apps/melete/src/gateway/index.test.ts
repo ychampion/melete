@@ -453,6 +453,56 @@ describe('model gateway effect boundary', () => {
     expect(budget.reservations).toHaveLength(0);
   });
 
+  test("a conversation's request after a step repeats the person's words to the provider; a service call's does not", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const upstream = async (request: Request) => {
+      seen.push((await request.json()) as Record<string, unknown>);
+      return Response.json({
+        model: 'fixture-messages',
+        content: [],
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    };
+    const body = {
+      model: 'fixture-messages',
+      tools: [{ name: 'files_read', input_schema: { type: 'object' } }],
+      messages: [
+        {
+          role: 'user',
+          content: '# Chat\n\n## From the person\n\nSummarise the file in under 50 words.',
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu1', name: 'files_read', input: {} }],
+        },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'the file' }],
+        },
+      ],
+    };
+    const job = await start({ fetch: upstream });
+    expect((await job.post('/v1/messages', body)).status).toBe(200);
+    const service = await start({
+      fetch: upstream,
+      authenticate: async () => ({
+        ...principal,
+        privacy: { kind: 'service', purpose: 'memory', spaceId: 'space-test', sourceJobId: null },
+      }),
+    });
+    expect((await service.post('/v1/messages', body)).status).toBe(200);
+    type Sent = { messages: { content: { type: string; text?: string }[] }[] };
+    const results = (sent: Record<string, unknown> | undefined) =>
+      ((sent as Sent | undefined)?.messages.at(-1)?.content ?? []).map(
+        (block) => block.text ?? block.type,
+      );
+    expect(results(seen[0])).toEqual([
+      'tool_result',
+      expect.stringContaining('"Summarise the file in under 50 words."'),
+    ]);
+    expect(results(seen[1])).toEqual(['tool_result']);
+  });
+
   test('gpt-6-astra requires Responses and Anthropic drops sampling controls without rewriting history', async () => {
     const seen: Record<string, unknown>[] = [];
     const { post } = await start({
