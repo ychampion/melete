@@ -64,6 +64,7 @@ import {
   withoutRepeatedLinks,
   withVisitedLinks,
 } from '../experience/visited-links.ts';
+import { skillsDone, skillsGiven } from '../gateway/given-skills.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
 import type { LimitReached } from '../gateway/spending.ts';
 import { turnAcknowledged, turnEnded, turnSpoke, turnStarted } from '../gateway/turn-notes.ts';
@@ -2066,6 +2067,8 @@ export class AttemptRunner {
     }, this.options.heartbeatMs ?? HEARTBEAT_MS);
     // The gateway keeps the turn's notes while it runs (gateway/turn-notes.ts).
     if (claim.turn) turnStarted(claims.attempt_id);
+    // A read of a skill given in full is a pointer while the agent still holds it.
+    skillsGiven(claims.attempt_id, bundle.skills);
     // The turn's first line is said once: by the acknowledgement or by the
     // agent, never both (first-line.ts).
     const firstLine = new FirstLine(
@@ -2191,6 +2194,7 @@ export class AttemptRunner {
       if (timeout) clearTimeout(timeout);
       acknowledgement?.cancel();
       if (claim.turn) turnEnded(claims.attempt_id);
+      skillsDone(claims.attempt_id);
       controller.signal.removeEventListener('abort', abortListener);
       if (this.active.get(claims.attempt_id)?.controller === controller)
         this.active.delete(claims.attempt_id);

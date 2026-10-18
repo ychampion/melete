@@ -11,6 +11,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { REACT_TOOL } from '../../src/connectors/catalog.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
+import { skillsDone, skillsGiven, skillsSent } from '../../src/gateway/given-skills.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -522,6 +523,17 @@ dbTest('a skill given in full is not offered again as its own tool', async () =>
   expect(
     await rejectionOf(s.broker.discovery.callSkill(s.claims, 'skills.receipts', {})),
   ).toMatchObject({ code: 'unknown_tool' });
+  // The agent's latest request still carries it in full.
+  const attemptId = s.claims.attempt_id;
+  const request = (content: string) => ({
+    tools: [{ type: 'function', function: { name: 'skills.read' } }],
+    messages: [{ role: 'user', content }],
+  });
+  skillsGiven(attemptId, [{ name: 'receipts', body: 'The receipts procedure.' }]);
+  skillsSent(
+    attemptId,
+    request('## How to do this kind of work\n\n### receipts\n\nThe receipts procedure.'),
+  );
   // Read by name anyway, it answers with a pointer, not the same words again,
   // and adds no second "Used the skill" entry; a skill not given still reads.
   const again = await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts' });
@@ -537,6 +549,26 @@ dbTest('a skill given in full is not offered again as its own tool', async () =>
   expect(traced.map((row) => row.payload.call.id)).toEqual([
     `skill-read:${s.claims.attempt_id}:refunds`,
   ]);
+  const read = () => s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts' });
+  try {
+    // The engine compacted the turn and its summary left the skill out: the
+    // agent no longer has it, so it is read in full.
+    skillsSent(attemptId, request('Summary of the work so far.'));
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+    // Only part of it in the request is not having it.
+    skillsSent(attemptId, request('### receipts\n\nThe receipts'));
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+    // The skill changed since the attempt was given it: the agent holds an
+    // older version, so the current one is read in full.
+    skillsGiven(attemptId, [{ name: 'receipts', body: 'The older receipts procedure.' }]);
+    skillsSent(attemptId, request('### receipts\n\nThe older receipts procedure.'));
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+    // An attempt this service is not following gets the skill in full.
+    skillsDone(attemptId);
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+  } finally {
+    skillsDone(attemptId);
+  }
 });
 
 dbTest('a private space skill is read only by the space’s own owner', async () => {

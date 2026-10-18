@@ -29,6 +29,7 @@ import {
   toolOffered,
 } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
+import { stillGiven } from '../gateway/given-skills.ts';
 import { attemptContextBudget } from '../jobs/context-budget.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
@@ -1013,10 +1014,12 @@ export class ToolCatalog {
           : `skills.${item.frontmatter.name.replaceAll('-', '_')}` === name,
       );
       if (!skill) throw new BrokerFault('unknown_tool');
-      // A skill the attempt was given in full is in its instructions already:
-      // its words again would cost a long tool result and say nothing new,
-      // and a second "Used the skill" entry would tell the person nothing.
-      if (reading && (await givenInFull(tx, claims.attempt_id)).has(skill.frontmatter.name))
+      // A skill the agent still holds in full, at this version, is in its
+      // instructions already: its words again would cost a long tool result and
+      // say nothing new, and a second "Used the skill" entry would tell the
+      // person nothing. One a compaction left out, or that changed since, is
+      // read in full (gateway/given-skills.ts).
+      if (reading && stillGiven(claims.attempt_id, skill.frontmatter.name, skill.body))
         return {
           name: skill.frontmatter.name,
           body: 'This skill is already in your instructions, in full, under "How to do this kind of work". Follow it from there; there is nothing more to read.',
