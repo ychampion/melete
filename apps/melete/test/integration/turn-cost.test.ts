@@ -16,6 +16,7 @@ import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { onEventOrderHeld } from '../../src/db/lock-guard.ts';
 import { attempt, connection, event, experienceTurn, job, space } from '../../src/db/schema.ts';
 import { appendEvent } from '../../src/events/store.ts';
+import { ExperienceEvents } from '../../src/experience/events.ts';
 import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
 import { assembleHistory, transcriptLimits, usableHistory } from '../../src/jobs/bundle.ts';
@@ -316,5 +317,29 @@ withDb("a long chat's turns", () => {
     expect(
       await handle.db.select({ id: attempt.id }).from(attempt).where(eq(attempt.jobId, row.id)),
     ).toHaveLength(1);
+    // A page following the turn live reads the sentence its saved copy ends on.
+    const page = await new ExperienceEvents(handle.db).page(broken.spaceId, 0, row.id);
+    expect(
+      page.events.filter((entry) => entry.item.type === 'note').map((entry) => entry.item),
+    ).toContainEqual(expect.objectContaining({ text: BUNDLE_FAILED_NOTE }));
+    // What the person sent is still theirs to read, and to send again: once
+    // what broke the build is gone, the next message starts a turn that reads it.
+    const [first] = await handle.db
+      .select({ text: experienceTurn.text })
+      .from(experienceTurn)
+      .where(eq(experienceTurn.jobId, row.id));
+    expect(first?.text).toBe('Step 1: run the check and tell me what changed.');
+    await handle.db
+      .delete(event)
+      .where(and(eq(event.jobId, row.id), eq(event.dedupKey, `${row.id}:broken-result`)));
+    const again = await send(broken, 2);
+    const { claimed } = await claim(runner, again);
+    if (!claimed) throw new Error('the message sent again was not claimed');
+    const read = [...claimed.bundle.transcript, ...claimed.bundle.inputs.new_user_messages].map(
+      (message) => message.content,
+    );
+    expect(read).toContain('Step 1: run the check and tell me what changed.');
+    expect(read).toContain('Step 2: run the check and tell me what changed.');
+    await answer(runner, claimed, 2);
   }, 60_000);
 });

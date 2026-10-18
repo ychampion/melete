@@ -863,6 +863,14 @@ export class ExperienceEvents {
                       ? payload.limit_note
                       : LIMIT_REACHED_NOTE,
                 });
+              // So does a turn a failure ended with a sentence of its own.
+              if (
+                source.jobId === id &&
+                outcome.kind === 'failed' &&
+                typeof payload.failed_note === 'string' &&
+                payload.failed_note.trim()
+              )
+                await emit(source, { type: 'note', text: payload.failed_note });
               if (!settled)
                 await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
             } else if (outcome.kind === 'failed')

@@ -579,7 +579,8 @@ export class AttemptRunner {
         );
       } catch (error) {
         if (fromDatabase(error)) throw error;
-        if (error instanceof Error && error.name) unbuilt = error.name;
+        // The class's name, never a message; a name that is not one is not logged.
+        if (error instanceof Error && /^\w{1,64}$/.test(error.name)) unbuilt = error.name;
       }
       if (bundle && this.options.loadCatalog)
         Object.assign(bundle, await this.options.loadCatalog(tx, claims, bundle));
@@ -742,6 +743,8 @@ export class AttemptRunner {
           attemptId,
           { kind: 'failed', reason: BUNDLE_FAILED_CODE, retryable: false },
           limits,
+          [],
+          BUNDLE_FAILED_NOTE,
         );
         if (row.currentTurnId)
           await tx
@@ -1179,7 +1182,8 @@ export class AttemptRunner {
     raised: readonly QuestionSpec[] = [],
     /**
      * The sentence a conversation turn stopped short ends on, in place of the
-     * general one, when the reason is one the person can act on.
+     * general one, when the reason is one the person can act on: a limit it
+     * reached, or a failure that ends it.
      */
     limitNote?: string,
   ): Promise<JobRow> {
@@ -1479,6 +1483,7 @@ export class AttemptRunner {
         ...(outcome.kind === 'budget_exhausted' && (capped ?? limitNote)
           ? { limit_note: capped ?? limitNote }
           : {}),
+        ...(outcome.kind === 'failed' && !retrying && limitNote ? { failed_note: limitNote } : {}),
         ...(retrying && updated.nextWakeAt ? { retry_at: updated.nextWakeAt.toISOString() } : {}),
       },
       dedupKey: `${attemptId}:ended`,
