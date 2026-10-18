@@ -10,7 +10,8 @@ does the steps below for you: it fetches the tag if this clone lacks it, takes
 the release's own `upgrade.ts` out of the tag with `git archive`, and runs that
 copy with every overlay file and profile named in `deploy/melete.deploy.json`
 (the browser and tailnet files, the sandbox profile, an external database and
-an S3 blob store), under the deployment lock. It records the run in
+an S3 blob store, then the installation's own `compose_files`), under the
+deployment lock. It records the run in
 `deploy/.melete/history.jsonl` and removes the copy afterwards. An installation that runs the published images
 updates with `bun run melete deploy` ([DEPLOYMENT.md](DEPLOYMENT.md#update)).
 

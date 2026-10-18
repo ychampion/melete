@@ -43,11 +43,21 @@ import {
 
 const ADOPT = 'Run bun run melete init --adopt to write it from the running stack.';
 
-/** The contract's own rule: whether the file is there and readable. */
+/**
+ * The contract's own rule: whether the file is there and readable. `status`,
+ * `doctor` and `check` all report it, so it names the installation's own
+ * Compose files, which change what the stack runs.
+ */
 export function judgeContract(installation: Installation): Result {
   const { loaded } = installation;
-  if (loaded.kind === 'found')
-    return { id: 'deploy.contract', level: 'ok', detail: `${DEPLOY_FILE}, contract 1` };
+  if (loaded.kind === 'found') {
+    const own = loaded.config.compose_files;
+    return {
+      id: 'deploy.contract',
+      level: 'ok',
+      detail: `${DEPLOY_FILE}, contract 1${own.length ? `; also reads ${own.map((file) => `deploy/${file}`).join(', ')}` : ''}`,
+    };
+  }
   if (loaded.kind === 'missing')
     return {
       id: 'deploy.contract',

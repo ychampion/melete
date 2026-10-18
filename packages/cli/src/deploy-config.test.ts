@@ -1,5 +1,20 @@
-import { describe, expect, test } from 'bun:test';
-import { composeCommand, defaultDeployConfig, parseDeployConfig } from './deploy-config.ts';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative, sep } from 'node:path';
+import { composeArguments, parseArguments } from '../../../deploy/scripts/upgrade.ts';
+import { judgeContract } from './commands/check.ts';
+import { upgradeOverlayArguments } from './commands/upgrade.ts';
+import {
+  composeCommand,
+  composeFiles,
+  DEPLOY_FILE,
+  defaultDeployConfig,
+  loadDeployConfig,
+  ownComposeFiles,
+  parseDeployConfig,
+} from './deploy-config.ts';
+import { readInstallation } from './installation.ts';
 
 const valid = (text: string) => {
   const loaded = parseDeployConfig(text);
@@ -81,5 +96,118 @@ describe('the deploy contract', () => {
 
   test('text that is not JSON is named as such', () => {
     expect(issues('{contract:1}')).toContain('is not JSON');
+  });
+});
+
+describe("the installation's own compose files", () => {
+  let dir = '';
+  let deployDir = '';
+  const write = (config: unknown) =>
+    writeFileSync(join(deployDir, DEPLOY_FILE), JSON.stringify(config), 'utf8');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'melete-compose-files-'));
+    deployDir = join(dir, 'deploy');
+    mkdirSync(deployDir);
+    mkdirSync(join(dir, 'private'));
+    writeFileSync(join(dir, 'private', 'compose.control.yml'), 'services: {}\n');
+    writeFileSync(join(deployDir, 'docker-compose.brand.yml'), 'services: {}\n');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('they default to none, so an existing contract reads the same files as before', () => {
+    expect(defaultDeployConfig().compose_files).toEqual([]);
+    expect(composeFiles('/srv/melete/deploy', defaultDeployConfig())).toHaveLength(1);
+  });
+
+  test('each is read after every built-in file, in the order listed', () => {
+    write({
+      contract: 1,
+      overlays: ['browser'],
+      database: { external: true },
+      blobs: { store: 's3', bucket: 'b' },
+      compose_files: ['../private/compose.control.yml', 'docker-compose.brand.yml'],
+    });
+    const loaded = loadDeployConfig(deployDir);
+    if (loaded.kind !== 'found') throw new Error(JSON.stringify(loaded));
+    const names = composeFiles(deployDir, loaded.config).map((file) =>
+      relative(dir, file).split(sep).join('/'),
+    );
+    expect(names).toEqual([
+      'deploy/docker-compose.yml',
+      'deploy/docker-compose.browser.yml',
+      'deploy/docker-compose.external-db.yml',
+      'deploy/docker-compose.blobs-s3.yml',
+      'private/compose.control.yml',
+      'deploy/docker-compose.brand.yml',
+    ]);
+    const command = composeCommand(deployDir, { ...loaded.config, profiles: ['sandbox'] });
+    expect(command.slice(-4)).toEqual([
+      '-f',
+      join(deployDir, 'docker-compose.brand.yml'),
+      '--profile',
+      'sandbox',
+    ]);
+    expect(ownComposeFiles(deployDir, loaded.config)).toEqual(
+      names.slice(-2).map((name) => join(dir, name)),
+    );
+  });
+
+  test('a file that is not there makes the contract invalid, naming it', () => {
+    write({ contract: 1, compose_files: ['docker-compose.brand.yml', '../private/missing.yml'] });
+    const loaded = loadDeployConfig(deployDir);
+    expect(loaded.kind).toBe('invalid');
+    expect(loaded.kind === 'invalid' ? loaded.issues : []).toEqual([
+      'compose_files.1: deploy/../private/missing.yml does not exist',
+    ]);
+    // A folder is not a Compose file either.
+    mkdirSync(join(dir, 'private', 'folder.yml'));
+    write({ contract: 1, compose_files: ['../private/folder.yml'] });
+    expect(loadDeployConfig(deployDir).kind).toBe('invalid');
+  });
+
+  test('a path must be relative to deploy/, a YAML file, listed once and not a built-in', () => {
+    for (const file of [
+      '/etc/compose.yml',
+      'C:/compose.yml',
+      '..\\private\\compose.yml',
+      'compose.json',
+      'docker-compose.yml',
+      'docker-compose.browser.yml',
+      'docker-compose.blobs-s3.yml',
+      '',
+    ])
+      expect(issues(JSON.stringify({ contract: 1, compose_files: [file] })), file).toContain(
+        'compose_files',
+      );
+    expect(
+      issues(
+        '{"contract":1,"compose_files":["docker-compose.brand.yml","docker-compose.brand.yml"]}',
+      ),
+    ).toContain('each file once');
+  });
+
+  test('status, doctor and check name them in the contract line', () => {
+    write({ contract: 1, compose_files: ['../private/compose.control.yml'] });
+    const result = judgeContract(readInstallation(deployDir));
+    expect(result.level).toBe('ok');
+    expect(result.detail).toBe(
+      'melete.deploy.json, contract 1; also reads deploy/../private/compose.control.yml',
+    );
+    write({ contract: 1, compose_files: ['../private/gone.yml'] });
+    const missing = judgeContract(readInstallation(deployDir));
+    expect(missing.level).toBe('fail');
+    expect(missing.detail).toContain('deploy/../private/gone.yml does not exist');
+  });
+
+  test('an upgrade names them to the upgrade script, which reads them in the same place', () => {
+    const config = valid('{"contract":1,"compose_files":["../private/compose.control.yml"]}');
+    const args = upgradeOverlayArguments(config);
+    expect(args).toEqual(['--compose-file', '../private/compose.control.yml']);
+    const parsed = parseArguments(['v1.2.3', ...args], new Date(0), '/home/op', '/srv/melete');
+    expect(composeArguments(parsed).slice(-2)).toEqual(['-f', 'private/compose.control.yml']);
+    expect(() =>
+      parseArguments(['v1.2.3', '--compose-file', '/etc/x.yml'], new Date(0), '/h', '/r'),
+    ).toThrow();
   });
 });

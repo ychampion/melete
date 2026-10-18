@@ -33,6 +33,7 @@ const FROM_CONTRACT = [
   '--tailscale-kernel',
   '--external-db',
   '--blobs-s3',
+  '--compose-file',
   '--profile',
 ];
 
@@ -48,6 +49,7 @@ export function upgradeOverlayArguments(config: DeployConfig): string[] {
     ...(config.overlays.includes('tailscale-kernel') ? ['--tailscale-kernel'] : []),
     ...(config.database.external ? ['--external-db'] : []),
     ...(config.blobs.store === 's3' ? ['--blobs-s3'] : []),
+    ...config.compose_files.flatMap((file) => ['--compose-file', file]),
     ...config.profiles.flatMap((profile) => ['--profile', profile]),
   ];
 }

@@ -43,7 +43,13 @@ import {
 } from '../../../../deploy/scripts/tailscale-origin.ts';
 import type { Context } from '../context.ts';
 import { psqlLine } from '../database.ts';
-import { composeCommand, composeFiles, DEPLOY_FILE, type DeployConfig } from '../deploy-config.ts';
+import {
+  composeCommand,
+  composeFiles,
+  DEPLOY_FILE,
+  type DeployConfig,
+  ownComposeFiles,
+} from '../deploy-config.ts';
 import { fileSettings, measureFiles } from '../files.ts';
 import { appendHistory, type HistoryEntry, readHistory } from '../history.ts';
 import {
@@ -319,10 +325,12 @@ export function gatherDeploy(
 
   // The images come from the Compose files the target commit carries, when it is here.
   const files = composeFiles(context.deployDir, config);
+  // The installation's own files are its own, not the release's: read as they are.
+  const own = new Set(ownComposeFiles(context.deployDir, config));
   const fromTarget =
     revision !== null && revisionAvailable && revision !== head && mode === 'checkout';
   const texts = files.map((file) => {
-    if (fromTarget) {
+    if (fromTarget && !own.has(file)) {
       const shown = git(context, ['show', `${revision}:deploy/${file.split(/[\\/]/).at(-1)}`]);
       if (shown.code === 0) return shown.stdout;
     }

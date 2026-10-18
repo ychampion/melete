@@ -12,6 +12,7 @@
  *
  *   bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale]
  *     [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile sandbox]
+ *     [--compose-file path/under/deploy.yml]
  *     [--backup-dir /absolute/parent] [--wait-timeout seconds]
  *     [--repository /absolute/installation]
  *
@@ -31,7 +32,7 @@
 import { closeSync, openSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import {
   type CommandOutput,
   HOST_DOCKER_COMMANDS,
@@ -68,12 +69,14 @@ const CLIENT_TLS = UPGRADE_CLIENT_TLS;
 export const UPGRADE_EXTERNAL_LOAD = `${CLIENT_TLS}n=$(psql --dbname="$DATABASE_URL" -X -At -c "select count(*) from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema')") || exit 1; if [ "$n" != 0 ]; then s=$(psql --dbname="$DATABASE_URL" -X -At -c "select string_agg(schemaname, ', ' order by schemaname) || case when max(total) > 5 then ' and ' || (max(total) - 5) || ' more' else '' end from (select schemaname, count(*) over () as total from pg_catalog.pg_tables where schemaname not in ('pg_catalog', 'information_schema') group by schemaname order by schemaname limit 5) as held" 2>/dev/null); echo "The database DATABASE_URL names already holds $n table(s), and a restore loads only into an empty one. Nothing was loaded." >&2; [ -z "$s" ] || echo "The schemas that hold them: $s. A provider's default database can hold tables of its own; load into a new, empty database." >&2; cat >/dev/null; exit 1; fi; err=$(pg_restore --dbname="$DATABASE_URL" --single-transaction --no-owner --no-privileges --exit-on-error 2>&1); rc=$?; if [ "$rc" = 0 ]; then [ -z "$err" ] || printf '%s\\n' "$err" >&2; exit 0; fi; printf '%s\\n%s\\n%s\\n' "$err" "$(printf '%s\\n' "$err" | grep -E '(error|ERROR|FATAL|HINT): ' | tail -n 2)" "The load was undone: the database DATABASE_URL names holds nothing of it, and the same load can run again." >&2; cat >/dev/null; exit "$rc"`;
 
 export const USAGE =
-  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile name] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
+  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--tailscale-kernel] [--external-db] [--blobs-s3] [--profile name] [--compose-file path] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
 
 const GIB = 1024 ** 3;
 /** docs/UPGRADING.md's floor for the filesystem that holds Docker's data. */
 const MIN_DOCKER_FREE_BYTES = 8 * GIB;
 const MIN_BACKUP_FREE_BYTES = 1 * GIB;
+/** A Compose file relative to deploy/, as melete.deploy.json's `compose_files` holds it. */
+export const COMPOSE_FILE = /^[A-Za-z0-9._-][A-Za-z0-9._/-]*\.ya?ml$/;
 const TAG = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/;
 const IMAGES = ['melete-service', 'melete-web', 'melete-runtime'] as const;
 const OPERATOR_CONFIGURATION = 'deploy/config/';
@@ -109,13 +112,24 @@ export type UpgradeOptions = {
   blobsS3?: boolean;
   /** Compose profiles the installation runs with, such as `sandbox` for the agents' computer image. */
   profiles?: string[];
+  /**
+   * The installation's own Compose files, relative to deploy/, read after all
+   * the others (melete.deploy.json, `compose_files`).
+   */
+  composeFiles?: string[];
   waitTimeoutSeconds: number;
 };
 
 /** The overlay files and profiles an installation runs with, which the upgrade must repeat. */
 export type Overlays = Pick<
   UpgradeOptions,
-  'browser' | 'tailscale' | 'tailscaleKernel' | 'externalDatabase' | 'blobsS3' | 'profiles'
+  | 'browser'
+  | 'tailscale'
+  | 'tailscaleKernel'
+  | 'externalDatabase'
+  | 'blobsS3'
+  | 'profiles'
+  | 'composeFiles'
 >;
 
 export type UpgradeContext = UpgradeOptions & {
@@ -159,6 +173,7 @@ export function parseArguments(
   let externalDatabase = false;
   let blobsS3 = false;
   const profiles: string[] = [];
+  const composeFiles: string[] = [];
   let waitTimeoutSeconds = 300;
   let repository = repositoryRoot;
   for (let index = 0; index < argv.length; index += 1) {
@@ -174,6 +189,12 @@ export function parseArguments(
       const value = argv[index] ?? '';
       if (!/^[a-z0-9][a-z0-9_-]*$/.test(value)) fail();
       if (!profiles.includes(value)) profiles.push(value);
+    } else if (argument === '--compose-file') {
+      index += 1;
+      const value = argv[index] ?? '';
+      // The rule melete.deploy.json holds `compose_files` to (packages/cli, deploy-config.ts).
+      if (!COMPOSE_FILE.test(value)) fail();
+      if (!composeFiles.includes(value)) composeFiles.push(value);
     } else if (argument === '--backup-dir') {
       index += 1;
       const value = argv[index];
@@ -208,6 +229,7 @@ export function parseArguments(
     externalDatabase,
     blobsS3,
     profiles,
+    ...(composeFiles.length ? { composeFiles } : {}),
     waitTimeoutSeconds,
     repositoryRoot: repository,
     backupDir: join(parent ?? join(home, 'melete-backups'), `upgrade-${tag}-${stamp}`).replaceAll(
@@ -251,6 +273,7 @@ export const composeArguments = (overlays: Overlays) => [
   ...(overlays.tailscaleKernel ? ['-f', 'deploy/docker-compose.tailscale-kernel.yml'] : []),
   ...(overlays.externalDatabase ? ['-f', 'deploy/docker-compose.external-db.yml'] : []),
   ...(overlays.blobsS3 ? ['-f', 'deploy/docker-compose.blobs-s3.yml'] : []),
+  ...(overlays.composeFiles ?? []).flatMap((file) => ['-f', posix.normalize(`deploy/${file}`)]),
   ...(overlays.profiles ?? []).flatMap((profile) => ['--profile', profile]),
 ];
 

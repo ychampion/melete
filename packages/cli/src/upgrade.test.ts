@@ -37,6 +37,13 @@ describe('the upgrade reads the same Compose files and profiles as a deploy', ()
     ['an external database', { database: { external: true } }],
     ['an S3 blob store', { blobs: { store: 's3', bucket: 'melete-blobs' } }],
     ['the tailnet with the kernel file', { overlays: ['tailscale', 'tailscale-kernel'] }],
+    [
+      "the installation's own files, after everything else",
+      {
+        ...EVERYTHING,
+        compose_files: ['../private/compose.control.yml', 'docker-compose.brand.yml'],
+      },
+    ],
     ['everything at once', EVERYTHING],
   ])('%s', (_name, value) => {
     const installation = config(value);

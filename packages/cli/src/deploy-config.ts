@@ -1,7 +1,8 @@
 /**
  * deploy/melete.deploy.json, contract 1: what an installation is, beyond what
  * deploy/.env says. It names the Compose project, the images and where they come
- * from, the profiles and overlay files the stack runs with, the disk floors
+ * from, the profiles and overlay files the stack runs with (its own Compose
+ * files among them), the disk floors
  * updates keep, where backups go, and which ports may leave this machine. It
  * holds no secret, so it can be committed to a repository that keeps the
  * deployment. Secrets and service settings stay in deploy/.env.
@@ -10,7 +11,7 @@
  * at, and so is any key it does not know: a misspelt floor must not silently
  * fall back to its default.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -123,6 +124,31 @@ const remote = z.strictObject({
   cli: z.array(remoteWord).min(1).default(['bun', 'run', 'melete']),
 });
 
+/** The files the contract's own keys choose, which `compose_files` may not name again. */
+const BUILT_IN_FILES = new Set<string>([
+  'docker-compose.yml',
+  ...Object.values(OVERLAY_FILES),
+  EXTERNAL_DB_FILE,
+  BLOBS_S3_FILE,
+]);
+
+/**
+ * A Compose file of the installation's own, relative to deploy/, such as
+ * `../private/compose.control.yml` or `docker-compose.brand.yml`. Letters,
+ * digits and `. _ - /` only, with `/` as the separator, so the same contract
+ * reads the same on every machine.
+ */
+const composeFile = z
+  .string()
+  .max(512)
+  .regex(
+    /^[A-Za-z0-9._-][A-Za-z0-9._/-]*\.ya?ml$/,
+    'a path relative to deploy/ that ends in .yml or .yaml, with / between folders',
+  )
+  .refine((value) => !BUILT_IN_FILES.has(value), {
+    message: 'a file melete.deploy.json already chooses with its own keys',
+  });
+
 /** A contract with no backup folder gets its project's own (defaultBackupDir). */
 function withProjectBackupDir(raw: unknown): unknown {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
@@ -146,6 +172,12 @@ const contractObject = z
     images: images.default({ registry: DEFAULT_REGISTRY, tag: 'main', channel: 'main' }),
     profiles: z.array(z.enum(PROFILES)).refine(unique, 'each profile once').default([]),
     overlays: z.array(z.enum(OVERLAYS)).refine(unique, 'each overlay once').default([]),
+    /**
+     * The installation's own Compose files, relative to deploy/, read after
+     * every file the other keys add, in the order listed: services that run
+     * beside the stack, a reverse proxy, a brand folder. Each must exist.
+     */
+    compose_files: z.array(composeFile).max(32).refine(unique, 'each file once').default([]),
     disk: disk.default({ min_free_mb: 4096, pull_margin_mb: 512 }),
     backup: backup.default({
       dir: '~/melete-backups',
@@ -225,11 +257,32 @@ export function parseDeployConfig(text: string): LoadedConfig {
   };
 }
 
+/**
+ * The contract's own Compose files that are not there, one line each. A file
+ * left out would start the stack without what it adds, so a missing one makes
+ * the contract invalid rather than skipped.
+ */
+export function missingComposeFiles(deployDir: string, config: DeployConfig): string[] {
+  return config.compose_files.flatMap((file, index) => {
+    const path = join(deployDir, file);
+    let present = false;
+    try {
+      present = statSync(path).isFile();
+    } catch {
+      // Missing, or a folder on the way is: not there either way.
+    }
+    return present ? [] : [`compose_files.${index}: deploy/${file} does not exist`];
+  });
+}
+
 /** The installation's file, or the defaults when there is none yet. */
 export function loadDeployConfig(deployDir: string): LoadedConfig {
   const path = join(deployDir, DEPLOY_FILE);
   if (!existsSync(path)) return { kind: 'missing', config: defaultDeployConfig() };
-  return parseDeployConfig(readFileSync(path, 'utf8'));
+  const loaded = parseDeployConfig(readFileSync(path, 'utf8'));
+  if (loaded.kind !== 'found') return loaded;
+  const missing = missingComposeFiles(deployDir, loaded.config);
+  return missing.length ? { kind: 'invalid', issues: missing } : loaded;
 }
 
 /** The file's text: every key written out, so an operator sees each setting it can change. */
@@ -248,9 +301,15 @@ export async function createDeployConfig(deployDir: string, config: DeployConfig
 export const channelOf = (tag: string): DeployConfig['images']['channel'] =>
   tag === 'local' ? 'local' : /^v\d/.test(tag) ? 'release' : 'main';
 
+/** The installation's own Compose files (`compose_files`), as paths, in their order. */
+export const ownComposeFiles = (deployDir: string, config: DeployConfig): string[] =>
+  config.compose_files.map((file) => join(deployDir, file));
+
 /**
- * The base file, each overlay, then the external database and the S3 blob store
- * files when the contract asks for them, in Compose's reading order.
+ * The base file, each overlay, the external database and the S3 blob store
+ * files when the contract asks for them, then the installation's own files, in
+ * Compose's reading order: a later file overrides an earlier one, so the
+ * installation's own come last.
  */
 export function composeFiles(deployDir: string, config: DeployConfig): string[] {
   const overlays = OVERLAYS.filter((overlay) => config.overlays.includes(overlay));
@@ -259,6 +318,7 @@ export function composeFiles(deployDir: string, config: DeployConfig): string[] 
     ...overlays.map((overlay) => join(deployDir, OVERLAY_FILES[overlay])),
     ...(config.database.external ? [join(deployDir, EXTERNAL_DB_FILE)] : []),
     ...(config.blobs.store === 's3' ? [join(deployDir, BLOBS_S3_FILE)] : []),
+    ...ownComposeFiles(deployDir, config),
   ];
 }
 
