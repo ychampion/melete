@@ -23,10 +23,10 @@ function looped(copies: number): string {
 }
 
 describe('a reply that repeats one long block', () => {
-  test('three copies of the letter are a loop, and the first copy is kept', () => {
-    const text = looped(3);
+  test('four copies of the letter are a loop, and the first copy is kept', () => {
+    const text = looped(RUNAWAY_COPIES);
     const found = repeatedBlock(text, true);
-    expect(found?.copies).toBe(3);
+    expect(found?.copies).toBe(RUNAWAY_COPIES);
     // The line introducing the second copy goes with it.
     expect(found?.kept).toBe(
       `Here's your cover letter:\n\n${LETTER}\n\nIt's 217 words, counted on my computer.`,
@@ -34,8 +34,9 @@ describe('a reply that repeats one long block', () => {
     expect(found?.kept.split('Dear Hiring Manager').length).toBe(2);
   });
 
-  test('two copies are not yet a loop', () => {
-    expect(repeatedBlock(looped(2), true)).toBeNull();
+  test('three copies are not yet a loop', () => {
+    expect(RUNAWAY_COPIES).toBe(4);
+    expect(repeatedBlock(looped(RUNAWAY_COPIES - 1), true)).toBeNull();
   });
 
   test('many copies are counted, and the cut is still after the first', () => {
@@ -102,11 +103,50 @@ describe('repetition that belongs in a reply', () => {
   test('short lines said many times', () => {
     expect(repeatedBlock(Array(20).fill('Thank you!').join('\n\n'), true)).toBeNull();
   });
+
+  // The body is the same long run of paragraphs each time: only the greeting
+  // differs. Three people asked for is three copies, and that is the request.
+  const BODY = LETTER.split('\n\n').slice(1).join('\n\n');
+
+  test('the same letter to three people, each greeted by name', () => {
+    const text = ['Alice', 'Bob', 'Carol']
+      .map((name) => `Letter for ${name}:\n\nDear ${name},\n\n${BODY}`)
+      .join('\n\n');
+    expect(repeatedBlock(text, true)).toBeNull();
+  });
+
+  test('three versions that differ only in how they open', () => {
+    const openings = [
+      'I am writing to apply for the Operations Coordinator role, which I saw on your careers page.',
+      'A friend at Greenleaf told me about the Operations Coordinator opening, and I would love to be considered.',
+      'Every grocery shelf is the end of a long chain of deliveries, and keeping that chain on time is what I do.',
+    ];
+    const text = openings
+      .map((opening, n) => `Version ${n + 1}:\n\n${opening}\n\n${BODY}`)
+      .join('\n\n');
+    expect(repeatedBlock(text, true)).toBeNull();
+  });
+});
+
+describe('copies that differ only in spacing, punctuation or case', () => {
+  test('rewrapped lines, doubled spaces, curly quotes and dashes are still the same copy', () => {
+    const drift = (n: number) =>
+      n % 2
+        ? LETTER.replace(/I'm/g, 'I’m')
+            .replace(/, /g, ',  ')
+            .replace('scheduling and', 'scheduling\nand')
+            .replace(/a third\./, 'a third —')
+        : LETTER.replace(/Grocery/g, 'GROCERY');
+    const text = Array.from({ length: RUNAWAY_COPIES + 1 }, (_, n) => drift(n)).join('\n\n');
+    const found = repeatedBlock(text, true);
+    expect(found?.copies).toBe(RUNAWAY_COPIES + 1);
+    expect(found?.kept).toBe(drift(0));
+  });
 });
 
 describe('while the reply streams', () => {
-  test('it fires once the third copy has ended, not before', () => {
-    const text = looped(3);
+  test('it fires once the last copy has ended, not before', () => {
+    const text = looped(RUNAWAY_COPIES);
     const watch = runawayWatch();
     let firedAt = -1;
     // Small uneven pieces, as a stream sends them.
@@ -116,15 +156,43 @@ describe('while the reply streams', () => {
       at += size;
       if (watch.see(piece) && firedAt < 0) firedAt = at;
     }
-    // The third copy's last paragraph ends at its closing note.
-    const thirdStart = text.lastIndexOf('Dear Hiring Manager');
-    expect(firedAt).toBeGreaterThan(thirdStart + LETTER.length);
+    // The last copy's last paragraph ends at its closing note.
+    const lastStart = text.lastIndexOf('Dear Hiring Manager');
+    expect(firedAt).toBeGreaterThan(lastStart + LETTER.length);
   });
 
-  test('a reply still on its third copy, mid-paragraph, has not tripped it', () => {
-    const text = looped(3);
+  test('a reply still on its last copy, mid-paragraph, has not tripped it', () => {
+    const text = looped(RUNAWAY_COPIES);
     const partial = text.slice(0, text.lastIndexOf('Sincerely,') + 5);
     expect(repeatedBlock(partial)).toBeNull();
+    // A line that has ended is not yet a paragraph that has.
+    expect(repeatedBlock(text.slice(0, text.lastIndexOf('Riya Sharma')))).toBeNull();
+  });
+
+  test('a long reply costs time in proportion to its length', () => {
+    // Lines with no blank line between them, as code or a long list streams,
+    // and plain paragraphs: each piece is read once, never the whole reply again.
+    const line = (n: number) =>
+      `- the river letter vendor road morning list table code plan ${n}\n`;
+    const paragraph = (n: number) =>
+      `Day ${n}: ${'the morning plan for the week, the vendor and the store. '.repeat(6)}\n\n`;
+    const time = (unit: (n: number) => string, chars: number) => {
+      let text = '';
+      for (let n = 0; text.length < chars; n++) text += unit(n);
+      const watch = runawayWatch();
+      const started = performance.now();
+      for (let at = 0; at < text.length; at += 7) watch.see(text.slice(at, at + 7));
+      return performance.now() - started;
+    };
+    for (const unit of [line, paragraph]) {
+      time(unit, 20_000);
+      const small = time(unit, 50_000);
+      const large = time(unit, 400_000);
+      // Eight times the text: linear work is about eight times the time; the
+      // whole-reply rescan this replaced took about sixty times as long.
+      expect(large).toBeLessThan(Math.max(small, 5) * 24);
+      expect(large).toBeLessThan(1_500);
+    }
   });
 });
 
@@ -176,7 +244,7 @@ describe('against a brute-force count', () => {
         parts.push(pool[Math.floor(random() * pool.length)] as string);
       if (random() < 0.3) {
         const block = pool.slice(0, 1 + Math.floor(random() * pool.length));
-        for (let copy = 0; copy < 3; copy++) parts.push(...block);
+        for (let copy = 0; copy < RUNAWAY_COPIES; copy++) parts.push(...block);
       }
       const expected = brute(parts);
       const found = repeatedBlock(parts.join('\n\n'), true);
@@ -188,7 +256,7 @@ describe('against a brute-force count', () => {
     expect(loops).toBeGreaterThan(50);
   });
 
-  test('a long block said three times side by side is always found', () => {
+  test('a long block said again and again side by side is always found', () => {
     const random = seeded(7);
     for (let round = 0; round < 200; round++) {
       const block = Array.from({ length: 1 + Math.floor(random() * 5) }, () =>
@@ -196,10 +264,53 @@ describe('against a brute-force count', () => {
       );
       if (block.join('').length < MIN_BLOCK_CHARS + 10) continue;
       const before = paragraph(random, 15);
-      const text = [before, ...block, ...block, ...block].join('\n\n');
+      const copies = Array.from({ length: RUNAWAY_COPIES }, () => block).flat();
+      const text = [before, ...copies].join('\n\n');
       const found = repeatedBlock(text, true);
       expect(found).not.toBeNull();
       expect(found?.kept).toBe([before, ...block].join('\n\n'));
     }
+  });
+
+  test('streamed in random pieces, it finds what reading the whole text finds', () => {
+    const random = seeded(1018);
+    let fired = 0;
+    for (let round = 0; round < 300; round++) {
+      // Single line breaks inside some paragraphs, and some list items, as replies have.
+      const pool = Array.from({ length: 2 + Math.floor(random() * 4) }, () => {
+        const part = paragraph(random, 40 + Math.floor(random() * 60));
+        return random() < 0.2 ? part.replace(' ', '\n') : random() < 0.1 ? `- ${part}` : part;
+      });
+      const parts: string[] = [];
+      for (let i = 0, length = 4 + Math.floor(random() * 16); i < length; i++)
+        parts.push(pool[Math.floor(random() * pool.length)] as string);
+      if (random() < 0.4) {
+        const block = pool.slice(0, 1 + Math.floor(random() * pool.length));
+        for (let copy = 0; copy < RUNAWAY_COPIES; copy++) parts.push(...block);
+      }
+      const text = parts.join('\n\n');
+      const watch = runawayWatch();
+      let firedAt = -1;
+      let before = 0;
+      let found: ReturnType<typeof repeatedBlock> = null;
+      for (let at = 0; at < text.length; ) {
+        const size = 1 + Math.floor(random() * 30);
+        found = watch.see(text.slice(at, at + size));
+        if (found && firedAt < 0) {
+          before = at;
+          firedAt = Math.min(at + size, text.length);
+        }
+        at += size;
+      }
+      if (firedAt < 0) {
+        expect(repeatedBlock(text)).toBeNull();
+        continue;
+      }
+      fired++;
+      expect(found).toEqual(repeatedBlock(text.slice(0, firedAt)));
+      // Not a piece earlier: the loop was not there yet.
+      expect(repeatedBlock(text.slice(0, before))).toBeNull();
+    }
+    expect(fired).toBeGreaterThan(20);
   });
 });

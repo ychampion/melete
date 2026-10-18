@@ -25,6 +25,7 @@ import type { Connector } from '../../src/connectors/types.ts';
 import { action, connection, experienceTurn, job, question, space } from '../../src/db/schema.ts';
 import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { QuestionService } from '../../src/jobs/questions.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, STILL_RUNNING_NOTE } from '../../src/jobs/runner.ts';
@@ -91,8 +92,10 @@ const computer: Connector = {
  *   question about it waits and a later turn asks it;
  * - `retried`: still out, and the engine running that turn was lost, so a
  *   retry of the same turn finishes it and asks.
+ * - `invalidated`: still out when a policy change fenced the attempt, which
+ *   calls the step unknown; a retry of the same turn finishes it and asks.
  */
-type Shape = 'unknown' | 'dispatched' | 'deferred' | 'retried';
+type Shape = 'unknown' | 'dispatched' | 'deferred' | 'retried' | 'invalidated';
 
 withDb('a conversation over a step that never reported back', () => {
   beforeEach(async () => {
@@ -115,6 +118,7 @@ withDb('a conversation over a step that never reported back', () => {
     ['dispatched', 2],
     ['deferred', 3],
     ['retried', 2],
+    ['invalidated', 2],
   ] as const)(
     'answered in your own words, a lost step (%s) is asked about once and the conversation rests',
     async (shape: Shape, turnsExpected) => {
@@ -198,6 +202,21 @@ withDb('a conversation over a step that never reported back', () => {
               });
             if (shape === 'retried')
               return { kind: 'failed', reason: 'The engine went away.', retryable: true };
+            if (shape === 'invalidated') {
+              // The attempt is fenced while the step is out, as a context
+              // invalidation does; what this engine says after that is refused.
+              await jobs.transaction((tx) =>
+                new PolicyService(jobs).invalidateInTransaction(
+                  tx,
+                  spaceId,
+                  1,
+                  null,
+                  'policy_changed',
+                  [bundle.attempt.job_id],
+                ),
+              );
+              return { kind: 'completed', summary: LETTER, evidence: [] };
+            }
           }
           await sink.emit({
             type: 'text_delta',

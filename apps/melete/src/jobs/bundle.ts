@@ -1458,14 +1458,17 @@ export async function completionFacts(
   // after every turn, each turn held at its end waiting for it.
   //
   // That question's answers settle every step of the job still open, so any
-  // one raised after the step began covers it, whichever attempt raised it. A
+  // one raised once the step was out covers it, whichever attempt raised it. A
   // question that waited behind another and was asked by a later turn carries
   // that turn's attempt, as does one asked by a retry of the step's own turn.
   // Matching on the step's attempt alone missed both, and each later turn
-  // then asked again, with every answer starting the next turn.
+  // then asked again, with every answer starting the next turn. A step sent
+  // after the question, first or again, was not out when it was asked. Both
+  // times come from the database's clock (`resolveQuestions`).
   const askedAbout = sql`exists (select 1 from ${question} q
     where q.job_id = ${action.jobId}
-      and (q.attempt_id = ${action.attemptId} or q.created_at >= ${action.createdAt})
+      and (q.attempt_id = ${action.attemptId}
+        or q.created_at >= coalesce(${action.dispatchedAt}, ${action.createdAt}))
       and q.options @> ${JSON.stringify([{ id: UNSETTLED_WAIT }])}::jsonb)`;
   const actions = await tx
     .select({

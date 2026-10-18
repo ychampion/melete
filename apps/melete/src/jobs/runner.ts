@@ -2070,7 +2070,7 @@ export class AttemptRunner {
       ? this.acknowledgeLater(claims, claim.turn, bundle)
       : null;
     // A conversation's reply that starts saying the same thing over and over
-    // is stopped after its first copy (`runaway.ts`).
+    // is stopped and cut back to its first copy (`runaway.ts`).
     const runaway = claim.turn ? runawayWatch() : null;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let completed: Extract<AttemptOutcome, { kind: 'completed' }> | null = null;

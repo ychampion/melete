@@ -21,6 +21,7 @@ import {
 import { and, desc, eq, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
+import { databaseNow } from '../db/clock.ts';
 import { agent, attempt, event, experienceTurn, job, owner, question } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -179,7 +180,9 @@ export async function resolveQuestions(
   row: JobRow,
   options: ResolveOptions,
 ): Promise<QuestionResolution> {
-  const at = options.now ?? new Date();
+  // The database's clock, as a step's own times are: whether a question was
+  // raised once a step was out compares the two (`completionFacts`).
+  const at = options.now ?? (await databaseNow(tx));
   const carried = options.carried.map((spec) => questionCandidate(spec, at));
   const derived =
     options.askable && options.fallback?.trim()

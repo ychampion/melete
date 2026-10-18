@@ -4,18 +4,24 @@
  * A model can fall into writing the same block again and again in one reply:
  * a whole letter, then the same letter, until the output limit stops it. This
  * finds that from the text alone, cheaply enough to run as the reply streams,
- * so the turn can be stopped after the first copy instead of the tenth.
+ * so the turn can be stopped after a few copies instead of the tenth.
  *
  * It is a safety bound on a reply going round in a loop, not a limit on use.
- * What counts is the same long run of paragraphs, word for word, three times:
- * at least `MIN_BLOCK_CHARS` of prose that repeats as a whole. Repetition a
- * person asks for or that belongs in a reply is left alone: code (inside a
- * fence), tables, list items and short paragraphs never count, so a refrain
- * between different verses or a list with repeated items does not trip it.
+ * What counts is the same long run of paragraphs `RUNAWAY_COPIES` times: at
+ * least `MIN_BLOCK_CHARS` of prose that repeats as a whole. Copies are
+ * compared by their words, so spacing, line wrapping, punctuation and case do
+ * not make two copies different. Repetition a person asks for or that belongs
+ * in a reply is left alone: code (inside a fence), tables, list items and short
+ * paragraphs never count, so a refrain between different verses or a list
+ * with repeated items does not trip it, and the same letter written out for
+ * three people is three copies, one short of a loop.
+ *
+ * Each piece of the reply is read once as it arrives, and paragraphs are only
+ * compared when one has ended, so the work grows with the reply's length.
  */
 
-/** How many copies of the same block make a loop: the first and two more. */
-export const RUNAWAY_COPIES = 3;
+/** How many copies of the same block make a loop: the first and three more. */
+export const RUNAWAY_COPIES = 4;
 /** How long the repeating block must be, in characters of prose. */
 export const MIN_BLOCK_CHARS = 600;
 /** The shortest paragraph that can anchor a block. */
@@ -25,64 +31,103 @@ const MIN_ANCHOR_CHARS = 120;
 export const RUNAWAY_NOTE =
   'I stopped writing here because I had started repeating the same text. Everything is in the first copy above.';
 
-type Paragraph = { start: number; key: string; counted: boolean };
+type Loop = { kept: string; copies: number };
+type Paragraph = { start: number; text: string; counted: boolean };
 
 const FENCE = /^\s*(?:```|~~~)/;
 const LIST_OR_TABLE = /^\s*(?:[-*+•]\s|\d+[.)]\s|\|)/;
 
-/** The complete paragraphs of `text`, each with where it starts and a comparison key. */
-function paragraphs(text: string, complete: boolean): Paragraph[] {
-  const found: Paragraph[] = [];
-  let fenced = false;
-  let current: { start: number; lines: string[]; exempt: boolean } | null = null;
-  let offset = 0;
-  const close = () => {
-    if (!current) return;
-    const key = current.lines.join(' ').replace(/\s+/g, ' ').trim();
-    found.push({ start: current.start, key, counted: !current.exempt });
-    current = null;
-  };
-  const lines = text.split('\n');
-  for (const [index, line] of lines.entries()) {
-    const fence = FENCE.test(line);
-    if (fence) fenced = !fenced;
-    if (!line.trim() && !fenced && !fence) close();
-    else {
-      current ??= { start: offset, lines: [], exempt: false };
-      current.lines.push(line);
-      if (fence || fenced || LIST_OR_TABLE.test(line)) current.exempt = true;
-    }
-    offset += line.length + (index < lines.length - 1 ? 1 : 0);
-  }
-  // The paragraph still being written is not compared until it ends.
-  if (complete) close();
-  return found;
+/** A paragraph's words, for comparing copies: no spacing, punctuation or case. */
+function words(text: string): string {
+  return text
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-/**
- * Whether the text repeats one long block `RUNAWAY_COPIES` times. When it
- * does, `kept` is the text up to where the second copy begins: everything
- * before the loop and its first copy. `complete` says the reply has ended, so
- * its last paragraph is whole.
- */
-export function repeatedBlock(
-  text: string,
-  complete = false,
-): { kept: string; copies: number } | null {
-  const all = paragraphs(text, complete);
-  const keys = all.map((paragraph, index) =>
-    // A paragraph that never counts never matches another, so no block runs through it.
-    paragraph.counted ? paragraph.key : `\u0000${index}`,
-  );
-  const seen = new Map<string, number[]>();
-  for (const [index, key] of keys.entries()) {
-    if (!all[index]?.counted || key.length < MIN_ANCHOR_CHARS) continue;
-    const at = seen.get(key) ?? [];
-    at.push(index);
-    seen.set(key, at);
+/** A reply's paragraphs, read one ended line at a time as the reply grows. */
+class Paragraphs {
+  text = '';
+  readonly all: Paragraph[] = [];
+  /** Each paragraph's comparison key; one that never counts has a key no other has. */
+  readonly keys: string[] = [];
+  /** The anchors seen `RUNAWAY_COPIES` times or more: the only places a loop can be. */
+  readonly candidates: number[][] = [];
+  /** Where each paragraph long enough to anchor a block appears, by key. */
+  private readonly anchors = new Map<string, number[]>();
+  /** The line still being written, and where in the reply it starts. */
+  private tail = '';
+  private tailStart = 0;
+  private fenced = false;
+  private current: { start: number; lines: string[]; exempt: boolean } | null = null;
+
+  /**
+   * Takes more of the reply; true when a paragraph ended in it. Only the new
+   * piece is searched: the reply so far is never read again here.
+   */
+  add(piece: string): boolean {
+    const before = this.all.length;
+    this.text += piece;
+    let from = 0;
+    for (let end = piece.indexOf('\n'); end >= 0; end = piece.indexOf('\n', from)) {
+      const line = this.tail + piece.slice(from, end);
+      this.line(line, this.tailStart);
+      this.tailStart += line.length + 1;
+      this.tail = '';
+      from = end + 1;
+    }
+    this.tail += piece.slice(from);
+    return this.all.length > before;
   }
-  for (const positions of seen.values()) {
-    if (positions.length < RUNAWAY_COPIES) continue;
+
+  /** The reply has ended: its last line and paragraph are whole. */
+  finish(): void {
+    if (this.tail) this.line(this.tail, this.tailStart);
+    this.tailStart += this.tail.length;
+    this.tail = '';
+    this.close();
+  }
+
+  private line(line: string, start: number): void {
+    const fence = FENCE.test(line);
+    if (fence) this.fenced = !this.fenced;
+    if (!line.trim() && !this.fenced && !fence) {
+      this.close();
+      return;
+    }
+    this.current ??= { start, lines: [], exempt: false };
+    this.current.lines.push(line);
+    if (fence || this.fenced || LIST_OR_TABLE.test(line)) this.current.exempt = true;
+  }
+
+  private close(): void {
+    const current = this.current;
+    if (!current) return;
+    this.current = null;
+    const text = current.lines.join(' ').replace(/\s+/g, ' ').trim();
+    const index = this.all.length;
+    const counted = !current.exempt;
+    this.all.push({ start: current.start, text, counted });
+    // A paragraph that never counts never matches another, so no block runs through it.
+    const key = counted ? words(text) : `\u0000${index}`;
+    this.keys.push(key);
+    if (!counted || text.length < MIN_ANCHOR_CHARS) return;
+    const at = this.anchors.get(key);
+    if (!at) {
+      this.anchors.set(key, [index]);
+      return;
+    }
+    at.push(index);
+    if (at.length === RUNAWAY_COPIES) this.candidates.push(at);
+  }
+}
+
+/** The loop in what has been read so far, if there is one. */
+function loopIn(read: Paragraphs): Loop | null {
+  const { all, keys, text } = read;
+  for (const positions of read.candidates) {
     const [first, second] = positions as [number, number];
     const period = second - first;
     // The whole repeating block around the anchor: back while the paragraphs
@@ -98,7 +143,9 @@ export function repeatedBlock(
     let ahead = 1;
     while (back + ahead < period && keys[first + ahead] === keys[second + ahead]) ahead++;
     const block = keys.slice(first - back, first + ahead);
-    const chars = block.reduce((sum, key) => sum + (key.startsWith('\u0000') ? 0 : key.length), 0);
+    let chars = 0;
+    for (let at = first - back; at < first + ahead; at++)
+      if (all[at]?.counted) chars += all[at]?.text.length ?? 0;
     if (chars < MIN_BLOCK_CHARS) continue;
     // Count the copies of the whole block, at each place the anchor recurs,
     // never letting two copies share a paragraph.
@@ -117,7 +164,7 @@ export function repeatedBlock(
     // letter again:") goes with what was cut.
     let end = second - back;
     const firstEnds = first - back + block.length;
-    while (end - 1 >= firstEnds && all[end - 1]?.key.endsWith(':')) end--;
+    while (end - 1 >= firstEnds && all[end - 1]?.text.endsWith(':')) end--;
     const cut = all[end]?.start ?? text.length;
     return { kept: text.slice(0, cut).trimEnd(), copies };
   }
@@ -125,16 +172,29 @@ export function repeatedBlock(
 }
 
 /**
+ * Whether the text repeats one long block `RUNAWAY_COPIES` times. When it
+ * does, `kept` is the text up to where the second copy begins: everything
+ * before the loop and its first copy. `complete` says the reply has ended, so
+ * its last line and paragraph are whole; before that, only paragraphs a blank
+ * line has ended are compared.
+ */
+export function repeatedBlock(text: string, complete = false): Loop | null {
+  const read = new Paragraphs();
+  read.add(text);
+  if (complete) read.finish();
+  return loopIn(read);
+}
+
+/**
  * Follows one reply as it streams. `see` takes each piece of text and returns
  * the loop once one shows; it only looks again when a paragraph has ended.
  */
 export function runawayWatch() {
-  let text = '';
-  let found: { kept: string; copies: number } | null = null;
+  const read = new Paragraphs();
+  let found: Loop | null = null;
   return {
-    see(piece: string): { kept: string; copies: number } | null {
-      text += piece;
-      if (!found && piece.includes('\n')) found = repeatedBlock(text);
+    see(piece: string): Loop | null {
+      if (!found && read.add(piece)) found = loopIn(read);
       return found;
     },
   };
