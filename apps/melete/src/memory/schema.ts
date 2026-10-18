@@ -139,19 +139,28 @@ export const memoryWorkTable = pgTable(
   },
   (t) => [index('memory_work_pending').on(t.spaceId, t.status, t.leaseUntil)],
 );
-export const memoryOutbox = pgTable('memory_outbox', {
-  id: text('id').primaryKey(),
-  spaceId: text('space_id')
-    .notNull()
-    .references(() => memorySpaces.spaceId),
-  kind: text('kind').notNull(),
-  targetId: text('target_id').notNull(),
-  deliveredAt: instant('delivered_at'),
-  completedAt: instant('completed_at'),
-  failures: integer('failures').notNull().default(0),
-  errorCode: text('error_code'),
-  createdAt: created(),
-});
+export const memoryOutbox = pgTable(
+  'memory_outbox',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => memorySpaces.spaceId),
+    kind: text('kind').notNull(),
+    targetId: text('target_id').notNull(),
+    deliveredAt: instant('delivered_at'),
+    completedAt: instant('completed_at'),
+    failures: integer('failures').notNull().default(0),
+    errorCode: text('error_code'),
+    createdAt: created(),
+  },
+  (t) => [
+    // Work still to do, oldest first, without reading the finished rows.
+    index('memory_outbox_open_idx')
+      .on(t.kind, t.createdAt, t.id)
+      .where(sql`${t.completedAt} is null`),
+  ],
+);
 export const memoryClaims = pgTable(
   'memory_claims',
   {
