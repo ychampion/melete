@@ -148,6 +148,35 @@ describe(`a start with leftovers it cannot put back (${real ? 'real permissions'
     expect((await fs.readdir(root)).sort()).toEqual([job(3)]);
   });
 
+  test('what the job made meanwhile under the same name is never replaced by what was set aside', async () => {
+    const workspace = new LocalWorkspaceFs(root);
+    const aside = join(root, `.adopt-local.${job(7)}`);
+    await fs.mkdir(join(root, job(7)));
+    await unmovableFolder(join(aside, 'out'));
+    await workspace.reconcileCellDirectories(async () => true, 'local');
+    // The service started without the old folder, and the conversation went on
+    // and wrote a newer one.
+    await fs.mkdir(join(root, job(7), 'out'));
+    await fs.writeFile(join(root, job(7), 'out', 'letter.md'), 'Dear Ms Rivera');
+    const [claimed] = (await fs.readdir(root)).filter((entry) => entry.startsWith('.adopt-'));
+    if (real) await fs.chmod(join(root, claimed as string, 'out'), 0o775);
+    stuck.clear();
+    captureLog();
+    await workspace.reconcileCellDirectories(async () => true, 'local');
+    write?.mockRestore();
+    // The newer folder stays; the older one stays set aside, whole, and is reported.
+    expect(await fs.readFile(join(root, job(7), 'out', 'letter.md'), 'utf8')).toBe(
+      'Dear Ms Rivera',
+    );
+    // Each start claims it afresh, under a name of its own.
+    const [still] = (await fs.readdir(root)).filter((entry) => entry.startsWith('.adopt-'));
+    expect(await fs.readFile(join(root, still as string, 'out', 'letter.md'), 'utf8')).toBe(
+      'Dear Hiring Manager',
+    );
+    expect(logged.join('')).toContain(`workspace_restore_failed job=${job(7)}`);
+    expect(logged.join('')).toContain('error=EEXIST left=1');
+  });
+
   test("a spare's directory it cannot empty is reported and left, and the start goes on", async () => {
     const workspace = new LocalWorkspaceFs(root);
     await unmovableFolder(join(root, '.spare-local.aaaaaaaaaaaaaaaaaaaaaaaa', 'out'));

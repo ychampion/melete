@@ -153,7 +153,8 @@ function leftover(code: string, job: string | undefined, directory: string, erro
   process.stderr.write(
     `${code}${job ? ` job=${job}` : ''} directory=${directory} error=${errorCode(error)}${left}: ` +
       'left in place under the workspace root; the service starts without it. ' +
-      'Give the service user write access to it (or move it back by hand), then restart.\n',
+      'Give the service user write access to it (EACCES), or move what it holds back by hand ' +
+      '(EEXIST: the workspace has a newer entry of the same name), then restart.\n',
   );
 }
 
@@ -436,16 +437,23 @@ export class LocalWorkspaceFs implements WorkspaceFs {
       await rename(spare, job);
     } finally {
       // Whichever directory is the job's now, it ends with everything it had.
-      await this.restoreSetAside(asidePath, job);
+      // Only the spare has written into it, while it loaded: its copies give way.
+      await this.restoreSetAside(asidePath, job, true);
     }
   }
 
   /**
-   * Moves a set-aside workspace's entries back into the job's; the job's own
-   * win. Every entry that can move does. When one cannot, the set-aside stays
-   * with what is left in it and `WorkspaceRestoreError` says why.
+   * Moves a set-aside workspace's entries back into the job's. Every entry
+   * that can move does. When one cannot, the set-aside stays with what is left
+   * in it and `WorkspaceRestoreError` says why.
+   *
+   * `replace` is for a takeover in progress, when what is under the same name
+   * in the job's directory is only what the spare wrote while it loaded. A set
+   * aside found at a later start may have waited while the conversation went
+   * on and wrote newer work under the same name: that is never removed, and
+   * the older entry stays set aside (EEXIST) for the operator.
    */
-  private async restoreSetAside(aside: string, job: string) {
+  private async restoreSetAside(aside: string, job: string, replace: boolean) {
     const exists = await lstat(job).catch(() => undefined);
     if (!exists) {
       await rename(aside, job);
@@ -460,8 +468,9 @@ export class LocalWorkspaceFs implements WorkspaceFs {
         // Checked before the spare's copy goes, which then stays in its place.
         const stuck = await unmovable(join(aside, entry));
         if (stuck) throw Object.assign(new Error(stuck), { code: stuck });
-        // Anything the spare wrote under the same name while it loaded gives way.
-        await rm(join(job, entry), { recursive: true, force: true });
+        if (replace) await rm(join(job, entry), { recursive: true, force: true });
+        else if (await lstat(join(job, entry)).catch(() => undefined))
+          throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
         await rename(join(aside, entry), join(job, entry));
       } catch (error) {
         first ??= errorCode(error);
@@ -515,7 +524,7 @@ export class LocalWorkspaceFs implements WorkspaceFs {
             throw error;
           }
           try {
-            await this.restoreSetAside(join(root, claimed), join(root, jobId));
+            await this.restoreSetAside(join(root, claimed), join(root, jobId), false);
           } catch (error) {
             leftover('workspace_restore_failed', jobId, claimed, error);
           }
