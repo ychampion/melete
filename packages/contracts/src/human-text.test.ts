@@ -214,12 +214,24 @@ describe('what the pass never touches', () => {
 
 describe('machine tells in a reply', () => {
   test('a stock opener before the real words goes', () => {
-    expect(humanText('Certainly! The engineer is booked for Thursday.')).toBe(
-      'The engineer is booked for Thursday.',
+    expect(humanText("Certainly! Here's the engineer's slot for Thursday.")).toBe(
+      "Here's the engineer's slot for Thursday.",
     );
     expect(humanText('Great question! It depends on the plan.')).toBe('It depends on the plan.');
     expect(humanText('Absolutely, here is the draft.')).toBe('Here is the draft.');
-    expect(humanText('Sure! Sure thing! it is done.')).toBe('It is done.');
+    expect(humanText("Sure! Sure thing! I'll do it.")).toBe("I'll do it.");
+  });
+
+  test('a yes that answers the question stays', () => {
+    // The person asked "Can I cancel?": the yes is the answer, not a tell.
+    for (const text of [
+      'Absolutely. Fees apply after Friday.',
+      'Certainly. Not today, though.',
+      'Of course! Dogs are welcome on the patio.',
+      'No problem! The later slot is free.',
+      'Certainly not, the meeting is off.',
+    ])
+      expect(humanText(text)).toBe(text);
   });
 
   test('an ordinary word with a comma is not an opener', () => {
@@ -366,5 +378,76 @@ describe('every reply-mode output', () => {
       const once = humanText(text);
       expect(humanText(once)).toBe(once);
     }
+  });
+});
+
+describe('the meaning stays', () => {
+  test('a spaced range of days, times, prices or a subtraction takes a hyphen, not a comma', () => {
+    expect(humanText(`Open Mon ${EN} Fri, closed weekends.`)).toBe(
+      'Open Mon-Fri, closed weekends.',
+    );
+    expect(humanText(`Hours are 9am ${EN} 5pm.`)).toBe('Hours are 9am-5pm.');
+    expect(humanText(`It costs $10 ${EN} $20.`)).toBe('It costs $10-$20.');
+    expect(humanText(`Use n ${EN} 1 rows, so x ${EN} y is the gap.`)).toBe(
+      'Use n-1 rows, so x-y is the gap.',
+    );
+    // A date and then an amount are two things.
+    expect(humanText(`Due Oct 20 ${EM} $1,860.`)).toBe('Due Oct 20, $1,860.');
+  });
+
+  test('a warning in bold keeps its weight in a short reply', () => {
+    for (const text of [
+      '**Warning:** do not take this with alcohol.',
+      'Please **do not** share the code.',
+    ])
+      expect(humanText(text)).toBe(text);
+    expect(humanText('Your **plan** is ready.')).toBe('Your plan is ready.');
+  });
+
+  test('a mixed run of dashes is one mark, so no hyphens are left behind', () => {
+    expect(humanText(`It works ${EN}-- mostly.`)).toBe('It works, mostly.');
+  });
+});
+
+describe('a second pass changes nothing', () => {
+  const sentences = [
+    `il est parti ${EM} sans un mot`,
+    `the plan is fine ${EM} we leave at noon`,
+    `Gödel, Escher, Bach ${EN} three things`,
+    `он сказал ${EM} нет`,
+    `1990 ${EM}Gödel`,
+    `**Warning** ${EM} it works`,
+    `Mon ${EN} Fri`,
+    `$10 ${EN} $20`,
+    'see https://example.com/a—b',
+    `"I ${EM} I can't"`,
+  ];
+  test('on mixed languages, marks and openers, and as it streams', () => {
+    const random = seeded(507);
+    const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)] as T;
+    for (let round = 0; round < 400; round++) {
+      let text = pick(['', 'Certainly! ', 'Great question! ', '## Plan\n', '- ']);
+      for (let k = 0; k < 1 + Math.floor(random() * 8); k++)
+        text += pick(sentences) + pick([' ', `. `, '\n', ` ${EM} `, '\n\n- ', '! ']);
+      text += pick(['', '\n\nHope this helps!']);
+      for (const mode of ['reply', 'draft'] as const) {
+        const once = humanText(text, mode);
+        expect([text, humanText(once, mode)]).toEqual([text, once]);
+        expect([text, streamed(randomSplit(text, random), mode)]).toEqual([text, once]);
+      }
+    }
+  });
+});
+
+describe('streaming keeps every character', () => {
+  test('a rule line or a heading split before its end', () => {
+    for (const text of ['- ---\nworks', '-  ---', `##   ${EN} noon`, '# ## Plan', '1.   item'])
+      for (const mode of ['reply', 'draft'] as const)
+        for (let cut = 1; cut < text.length; cut++)
+          expect([text, cut, streamed([text.slice(0, cut), text.slice(cut)], mode)]).toEqual([
+            text,
+            cut,
+            humanText(text, mode),
+          ]);
   });
 });

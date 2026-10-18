@@ -37,6 +37,15 @@ export type HumanTextMode = 'reply' | 'draft';
 /** A reply this long or longer keeps its bold and headings; a shorter one reads as prose. */
 export const SHORT_REPLY_CHARACTERS = 600;
 
+/**
+ * The same length in letters and digits, which is what is counted: the pass
+ * adds and removes punctuation, spaces and marks but never a letter, so a
+ * second pass measures the reply the same way and decides the same.
+ */
+const SHORT_REPLY_LETTERS = SHORT_REPLY_CHARACTERS * 0.8;
+
+const lettersIn = (text: string): number => text.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
+
 /** How far a dash looks ahead for the end of its aside before it decides alone. */
 const DASH_WINDOW = 600;
 
@@ -111,10 +120,46 @@ const OPENER_STRONG = [
 /** Openers that are ordinary words with a comma, and so go only before an exclamation mark. */
 const OPENER_WEAK = ['sure', 'sure thing', 'great', 'perfect', 'of course', 'no problem'];
 
+/** Bold words that warn: their marks stay in a short reply, since the weight is the point. */
+const WARNING =
+  /\b(?:warning|caution|danger|dangerous|important|urgent|critical|never|do not|don't|must not|mustn't|stop)\b/i;
+
+/** Openers that can be a yes on their own: before anything but service words, they stay. */
+const YES = new Set(['certainly', 'absolutely', 'sure', 'sure thing', 'of course', 'no problem']);
+/** How a reply goes on after a stock "Certainly!": the words of service, not an answer. */
+const SERVICE_STARTS = [
+  'here',
+  "here's",
+  "i'll",
+  'i will',
+  "i'd",
+  'i would',
+  'i can',
+  "i've",
+  "i'm happy",
+  "i'm glad",
+  'let me',
+  "let's",
+  'below',
+  'the following',
+  'happy to',
+  'glad to',
+];
+
+/** Whether lowercase words still arriving could yet be an opener and its mark. */
+function couldOpen(lower: string): boolean {
+  const head = lower.slice(0, 48);
+  return [...OPENER_STRONG, ...OPENER_WEAK].some((phrase) => {
+    if (phrase.startsWith(head)) return true;
+    if (!head.startsWith(phrase)) return false;
+    return /^[ \t!.,]*$/.test(head.slice(phrase.length));
+  });
+}
+
 const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const OPENER = new RegExp(
-  `^(?:(?:${OPENER_STRONG.map(literal).join('|')})[ \\t]*(?:[!.]+|,)|(?:${OPENER_WEAK.map(literal).join('|')})[ \\t]*!+)[ \\t]+(?=\\S)`,
+  `^(?:(?:${OPENER_STRONG.map(literal).join('|')})[ \\t]*(?:[!.]+|,)|(?:${OPENER_WEAK.map(literal).join('|')})[ \\t]*!+)[ \\t]+(?=\\S)(?!#|>|\\||[-*+][ \\t]|\\d{1,3}[.)][ \\t])`,
   'i',
 );
 
@@ -162,16 +207,82 @@ const CLOSERS: readonly RegExp[] = [
 /** Curly apostrophes read the same as straight ones to every rule here. */
 const straight = (text: string): string => text.replace(/[‘’]/g, "'");
 
-/** Whether a sentence reads as English, so its dashes are English punctuation. */
-function readsAsEnglish(context: string): boolean {
-  if (NON_LATIN.test(context)) return false;
+/** What some words say about their language. */
+type Signals = { nonLatin: boolean; english: boolean; other: boolean };
+
+function signals(context: string): Signals {
   const text = straight(context);
-  if (ENGLISH.test(text)) return true;
-  // A short fragment ("Status — done"), with no letter outside plain Latin and
-  // no small word of another language in it. Symbols (a minus sign, a currency)
-  // say nothing about the language.
-  return !/[^\p{ASCII}](?<=\p{L})/u.test(text) && !FOREIGN.test(text);
+  return {
+    nonLatin: NON_LATIN.test(context),
+    english: ENGLISH.test(text),
+    // A letter outside plain Latin, or a small word of another language.
+    // Symbols (a minus sign, a currency) say nothing about the language.
+    other: /[^\p{ASCII}](?<=\p{L})/u.test(text) || FOREIGN.test(text),
+  };
 }
+
+/**
+ * Whether a sentence reads as English, so its dashes are English punctuation.
+ * Every dash of a sentence is judged on the whole sentence, from its start to
+ * its end, read once as the words go by. A dash that is changed changes no
+ * letter, so a second pass reads the same sentence and decides the same way.
+ */
+class Language {
+  private seen: Signals = { nonLatin: false, english: false, other: false };
+  /** Words not yet read into `seen`; it is read up to a space, so no word is cut. */
+  private tail = '';
+
+  /** The sentence's verdict and where the sentence ends, once read: every dash in it shares it. */
+  private verdict: { end: number; english: boolean } | null = null;
+
+  reset(): void {
+    this.seen = { nonLatin: false, english: false, other: false };
+    this.tail = '';
+    this.verdict = null;
+  }
+
+  /** The verdict for a dash whose words start at `at`, when the sentence was already read. */
+  known(at: number): boolean | undefined {
+    return this.verdict && at <= this.verdict.end ? this.verdict.english : undefined;
+  }
+
+  remember(end: number, english: boolean): void {
+    this.verdict = { end, english };
+  }
+
+  add(text: string): void {
+    this.tail += text;
+    if (this.tail.length < 256) return;
+    const cut = this.tail.search(/\s(?=\S*$)/);
+    if (cut <= 0) return;
+    this.fold(signals(this.tail.slice(0, cut)));
+    this.tail = this.tail.slice(cut);
+  }
+
+  private fold(more: Signals): void {
+    this.seen = {
+      nonLatin: this.seen.nonLatin || more.nonLatin,
+      english: this.seen.english || more.english,
+      other: this.seen.other || more.other,
+    };
+  }
+
+  /** With the rest of the sentence after the dash, `after`. */
+  english(after: string): boolean {
+    const all = [this.seen, signals(this.tail), signals(after)];
+    if (all.some((s) => s.nonLatin)) return false;
+    // A short fragment ("Status — done") counts when nothing in it is foreign.
+    return all.some((s) => s.english) || !all.some((s) => s.other);
+  }
+}
+
+/** Days and months, capitalised: "Mon – Fri" and "Jan – Mar" are ranges. */
+const DAY_OR_MONTH =
+  /^(?:Mon|Monday|Tue|Tues|Tuesday|Wed|Wednesday|Thu|Thur|Thurs|Thursday|Fri|Friday|Sat|Saturday|Sun|Sunday|Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\.?$/;
+/** A number that can end a range: "9", "$10", "20%", "9am", "4.5k". */
+const RANGE_NUMBER = /^[$€£¥~]?\d[\d,.:]*(?:am|pm|%|k|m|bn|h|°[CF]?)?$/i;
+/** An operand of a subtraction: one letter (not "a" or "I", which are words) or a number. */
+const OPERAND = /^(?:[b-zB-HJ-Z]|\d[\d,.]*)$/;
 
 const WAIT = Symbol('wait');
 type Wait = typeof WAIT;
@@ -214,6 +325,8 @@ export class HumanText {
   private verbatimLine = false;
   /** The line opened with a list mark or a heading: its sentence is not a closing line. */
   private markedLine = false;
+  /** The line's heading marks were taken off, so a second pass reads it as plain. */
+  private plainLine = false;
   private messageStart = true;
   private sentenceStart = true;
   private afterTerminal = false;
@@ -229,6 +342,14 @@ export class HumanText {
   private sentenceAtLineStart = true;
   /** The last character read, for the rules that read what came just before. */
   private previous = '\n';
+  /** How many characters have been read: where `pending` starts in the whole text. */
+  private read = 0;
+  /** The last characters read, for the rules that read the word before a dash. */
+  private history = '\n';
+  /** The language of the current sentence, as far as it has been read. */
+  private language = new Language();
+  /** A short reply's bold that carries a warning keeps its marks, and so does its close. */
+  private boldKept = false;
 
   constructor(private readonly mode: HumanTextMode = 'reply') {
     this.markup = mode === 'reply' ? 'unknown' : 'keep';
@@ -237,7 +358,7 @@ export class HumanText {
   push(piece: string): string {
     if (!piece) return '';
     this.pending += piece;
-    this.seen += piece.length;
+    this.seen += lettersIn(piece);
     return this.run(false);
   }
 
@@ -263,7 +384,9 @@ export class HumanText {
 
   private consume(count: number): void {
     if (count <= 0) return;
+    this.read += count;
     this.previous = this.pending[count - 1] as string;
+    this.history = (this.history + this.pending.slice(Math.max(0, count - 40), count)).slice(-40);
     this.pending = this.pending.slice(count);
   }
 
@@ -301,6 +424,7 @@ export class HumanText {
       this.capitalizeNext = false;
     }
     this.sentence = (this.sentence + shown).slice(-300);
+    this.language.add(shown);
     this.emit(shown);
   }
 
@@ -310,11 +434,14 @@ export class HumanText {
     this.afterTerminal = false;
     this.closeWith = null;
     this.boldOpen = false;
+    this.boldKept = false;
     this.sentence = '';
+    this.language.reset();
     this.sentenceAtLineStart = true;
     this.inUrl = false;
     this.verbatimLine = false;
     this.markedLine = false;
+    this.plainLine = false;
   }
 
   /** The rest of this line, as it came. */
@@ -374,18 +501,25 @@ export class HumanText {
         return this.verbatim();
       }
     }
-    const heading = /^#{1,6}[ \t]+/.exec(rest);
+    // One or two marks so far may still become a rule line.
+    if (!known && /^([-*_])[ \t]*(?:\1[ \t]*)?$/.test(rest)) return WAIT;
+    // Marks repeated ("# ## Plan") go together, so none is left for a second pass.
+    const heading = /^(?:#{1,6}[ \t]+)+/.exec(rest);
     if (heading || (/^#{1,6}$/.test(rest) && !known)) {
-      if (!heading) return WAIT;
+      // The space after the mark is part of it, all of it, whatever the split.
+      if (!heading || (!known && /^#{0,6}$/.test(rest.slice(heading[0].length)))) return WAIT;
       if (this.markupDecision(final) === WAIT) return WAIT;
       this.emit(this.markup === 'strip' ? indent : indent + heading[0]);
       this.consume(indent.length + heading[0].length);
       this.lineStart = false;
       this.markedLine = true;
+      // A heading whose marks go reads as a plain line, to the closing lines too.
+      this.plainLine = this.markup === 'strip';
       return true;
     }
     // A list mark, or a dash that opens the line (dialogue, or a list drawn with dashes).
     const mark = /^(?:[-*+]|\d{1,3}[.)]|[—–―])[ \t]+/.exec(rest);
+    if (mark && mark[0].length === rest.length && !known) return WAIT;
     if (mark) {
       this.emit(indent + mark[0]);
       this.consume(indent.length + mark[0].length);
@@ -409,7 +543,7 @@ export class HumanText {
   /** Bold and headings stay in a long reply and go from a short one, decided once. */
   private markupDecision(final: boolean): Step {
     if (this.markup !== 'unknown') return true;
-    if (this.seen >= SHORT_REPLY_CHARACTERS) this.markup = 'keep';
+    if (this.seen >= SHORT_REPLY_LETTERS) this.markup = 'keep';
     else if (final) this.markup = 'strip';
     else return WAIT;
     return true;
@@ -441,6 +575,7 @@ export class HumanText {
     if (ws && this.afterTerminal) {
       this.sentenceStart = true;
       this.sentence = '';
+      this.language.reset();
       this.sentenceAtLineStart = false;
       this.closeWith = null;
       this.afterTerminal = false;
@@ -450,7 +585,7 @@ export class HumanText {
         const opened = this.opener(i, final);
         if (opened !== null) return opened;
       }
-      if (!this.markedLine) {
+      if (!this.markedLine || this.plainLine) {
         const closed = this.closer(ws, i, final);
         if (closed !== null) return closed;
       }
@@ -483,18 +618,16 @@ export class HumanText {
     const c = p[i] as string;
     let end = i + 1;
     const spaceBefore = i === 0 ? isSpace(this.previous) : isSpace(p[i - 1]);
-    if (c === '-') {
-      if (!spaceBefore) return null;
-      while (p[end] === '-') end++;
-      if (end === p.length && !final) return WAIT;
+    if (c !== '-' && !DASH_CHARACTERS.has(c)) return null;
+    if (c === '-' && !spaceBefore) return null;
+    // One run of dashes is one mark, however it mixes them ("–--"), so none of
+    // it is left for a second pass to find.
+    while (p[end] === '-' || DASH_CHARACTERS.has(p[end] as string)) end++;
+    if (end === p.length && !final) return WAIT;
+    if (!/[—–―]/.test(p.slice(i, end))) {
       const length = end - i;
       if (length < 2 || length > 3) return null;
       if (p[end] !== undefined && !isSpace(p[end]) && p[end] !== '\n') return null;
-    } else if (DASH_CHARACTERS.has(c)) {
-      while (p[end] === c) end++;
-      if (end === p.length && !final) return WAIT;
-    } else {
-      return null;
     }
     let after = end;
     while (after < p.length && isSpace(p[after])) after++;
@@ -504,14 +637,29 @@ export class HumanText {
     while (before > 0 && isSpace(p[before - 1])) before--;
     const spaceLeft = i - before + (before === 0 && i === 0 && isSpace(this.previous) ? 1 : 0);
     const spaceRight = after - end;
-    const range =
-      (isDigit(this.prevBefore(i)) && isDigit(next) && spaceLeft <= 1 && spaceRight <= 1) ||
-      (c === EN_DASH &&
-        end - i === 1 &&
-        !spaceBefore &&
-        spaceRight === 0 &&
-        next !== undefined &&
-        next !== '\n');
+    const near = spaceLeft <= 1 && spaceRight <= 1 && next !== undefined && next !== '\n';
+    let range =
+      (near && isDigit(this.prevBefore(i)) && isDigit(next)) ||
+      (c === EN_DASH && end - i === 1 && !spaceBefore && spaceRight === 0 && near);
+    if (!range && near && /[\p{L}\p{N}$€£¥~]/u.test(next as string)) {
+      // A range or a subtraction written with words on either side:
+      // "9am – 5pm", "$10 – $20", "Mon – Fri", "x – y", "n – 1".
+      const word = /^\S*/.exec(p.slice(after))?.[0] ?? '';
+      if (after + word.length === p.length && !final) return WAIT;
+      const right = word.replace(/[.,;:!?)\]"'”’]+$/, '');
+      const left = (/\S+$/.exec((this.history + p.slice(0, i)).trimEnd())?.[0] ?? '').replace(
+        /^[("'“‘[]+/,
+        '',
+      );
+      // Numbers make a range only in the same currency: "due Oct 20 — $1,860" is two things.
+      const currency = (word: string) => /^[$€£¥]?/.exec(word)?.[0];
+      range =
+        (RANGE_NUMBER.test(left) &&
+          RANGE_NUMBER.test(right) &&
+          currency(left) === currency(right)) ||
+        (DAY_OR_MONTH.test(left) && DAY_OR_MONTH.test(right)) ||
+        (OPERAND.test(left) && OPERAND.test(right) && /\p{L}/u.test(left + right));
+    }
     return { length: end - i, after, spaceAfter: p.slice(end, after), next, range };
   }
 
@@ -597,7 +745,7 @@ export class HumanText {
    * characters. It reads the text the way the reader does, piece by piece, so
    * it finds the same ends.
    */
-  private window(from: number, final: boolean): WindowEnd | Wait {
+  private window(from: number, final: boolean, through = false): WindowEnd | Wait {
     const p = this.pending;
     let i = from;
     let terminal = false;
@@ -617,7 +765,7 @@ export class HumanText {
       const dash = this.dashAt(i, final);
       if (dash === WAIT) return WAIT;
       if (dash) {
-        if (!dash.range) return { at: i, end: 'dash', crossed };
+        if (!dash.range && !through) return { at: i, end: 'dash', crossed };
         terminal = false;
         i = dash.after;
         continue;
@@ -652,7 +800,7 @@ export class HumanText {
       }
       if (run.end === p.length && !final) return WAIT;
       const text = p.slice(i, run.end);
-      if (!run.url) {
+      if (!run.url && !through) {
         // Parentheses: one closing a parenthesis opened before the dash ends its words.
         const plain = text.replace(/\]\([^)]*\)/g, ']');
         for (let k = 0; k < plain.length; k++) {
@@ -696,7 +844,19 @@ export class HumanText {
     const window = this.window(found.after, final);
     if (window === WAIT) return WAIT;
     const after = p.slice(found.after, window.at);
-    if (!readsAsEnglish(`${this.sentence} ${after}`)) {
+    // The language is read on the whole sentence, past any dash or parenthesis,
+    // once: the words before a later dash and after it are the same sentence.
+    let english = this.language.known(this.read + found.after);
+    if (english === undefined) {
+      const sentenceEnd = ['sentence', 'line', 'final'].includes(window.end)
+        ? window
+        : this.window(found.after, final, true);
+      if (sentenceEnd === WAIT) return WAIT;
+      english = this.language.english(p.slice(found.after, sentenceEnd.at));
+      // Past the window's cap the sentence is read as far as the cap, once.
+      this.language.remember(this.read + sentenceEnd.at, english);
+    }
+    if (!english) {
       // Not English, or not sure: another language may need its dash.
       this.emitProse(ws + token + found.spaceAfter);
       consumeAll();
@@ -725,6 +885,7 @@ export class HumanText {
         this.emitProse(' ');
         this.capitalizeNext = true;
         this.sentence = '';
+        this.language.reset();
         this.sentenceAtLineStart = false;
       }
     }
@@ -795,9 +956,24 @@ export class HumanText {
       this.consume(i + 2);
       return true;
     }
+    if (this.boldKept) {
+      this.boldKept = false;
+      this.emitProse(`${ws}**`);
+      this.consume(i + 2);
+      return true;
+    }
     const lineEnd = p.indexOf('\n', i);
     const line = p.slice(i + 2, lineEnd < 0 ? p.length : lineEnd);
-    if (line.indexOf('**') > 0 && !isSpace(line[0])) {
+    const close = line.indexOf('**');
+    if (close > 0 && !isSpace(line[0]) && WARNING.test(straight(line.slice(0, close)))) {
+      // A warning keeps its weight, even in a short reply.
+      this.boldKept = true;
+      this.emitProse(`${ws}**`);
+      this.consume(i + 2);
+      this.sentenceStart = false;
+      return true;
+    }
+    if (close > 0 && !isSpace(line[0])) {
       this.boldOpen = true;
       this.emitProse(ws);
       this.consume(i + 2);
@@ -813,20 +989,41 @@ export class HumanText {
   private opener(i: number, final: boolean): Step | null {
     const p = this.pending.slice(i);
     const match = OPENER.exec(straight(p));
+    // An opener goes only before words: "Sure! - a list" may yet be a list mark.
+    if (match && !final && /^(?:[-*+]|\d{1,3}[.)]?)$/.test(p.slice(match[0].length))) return WAIT;
+    const said = match?.[0]
+      .toLowerCase()
+      .replace(/[\s!.,]+/g, ' ')
+      .trim();
+    if (match && said && YES.has(said) && !match[0].includes(',')) {
+      // "Absolutely." can be the answer itself ("Can I cancel? Absolutely. Fees
+      // apply after Friday."): it goes only before the stock words of service.
+      let rest = straight(p.slice(match[0].length)).toLowerCase();
+      // Look past more openers: "Sure! Sure thing! I'll do it."
+      for (let more = OPENER.exec(rest); more; more = OPENER.exec(rest))
+        rest = rest.slice(more[0].length);
+      const known = final || rest.includes('\n');
+      if (!known && couldOpen(rest)) return WAIT;
+      let goes = false;
+      for (const start of SERVICE_STARTS) {
+        if (rest.startsWith(start)) {
+          const next = rest[start.length];
+          if (next === undefined && !known) return WAIT;
+          if (next === undefined || !isWordCharacter(next)) goes = true;
+        } else if (start.startsWith(rest) && !known) return WAIT;
+      }
+      if (!goes) return null;
+    }
     if (match) {
+      // Dropped words do not count toward the reply's length.
+      this.seen -= lettersIn(match[0]);
       this.consume(i + match[0].length);
       this.capitalizeNext = true;
       return true;
     }
     if (final || p.includes('\n')) return null;
     // Still arriving: wait while the words so far could be an opener and its mark.
-    const lower = straight(p.slice(0, 48)).toLowerCase();
-    const could = [...OPENER_STRONG, ...OPENER_WEAK].some((phrase) => {
-      if (phrase.startsWith(lower)) return true;
-      if (!lower.startsWith(phrase)) return false;
-      return /^[ \t!.,]*$/.test(lower.slice(phrase.length));
-    });
-    return could ? WAIT : null;
+    return couldOpen(straight(p).toLowerCase()) ? WAIT : null;
   }
 
   /**
