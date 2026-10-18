@@ -45,8 +45,15 @@ import {
 import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 
 export const ACK_LIMITS = {
-  /** The line is at most this many words. */
+  /** The line is asked for in at most this many words. */
   words: 12,
+  /**
+   * And shown up to this many: a model asked for twelve often writes a line a
+   * few words longer ("Drafting a short reply to Sam declining Thursday's
+   * meeting and offering two other times."), and a good line dropped for that
+   * leaves the person with nothing to read.
+   */
+  shown_words: 16,
   output_tokens: 80,
   total_tokens: 4_000,
   /** How much of the person's message the model is shown. */
@@ -116,7 +123,7 @@ export function readAck(text: string, message: string): string | null {
   }
   const say = parsed?.say.replace(/\s+/g, ' ').trim() ?? '';
   if (!say) return null;
-  if (say.split(' ').length > ACK_LIMITS.words) return null;
+  if (say.split(' ').length > ACK_LIMITS.shown_words) return null;
   if (say.includes('?') || CLAIM.test(say) || FILLER.test(say)) return null;
   if (/[`*#[\]{}<>]/.test(say)) return null;
   for (const number of say.match(/\d[\d.,:]*/g) ?? [])

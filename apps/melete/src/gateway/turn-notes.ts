@@ -132,6 +132,30 @@ function toolResults(body: Record<string, unknown>, protocol: GatewayProtocol): 
   return found;
 }
 
+/**
+ * The person's message a request ends on, when no step has come back yet: its
+ * index, and its words, so a later request finds the same message again.
+ */
+function endingMessage(
+  body: Record<string, unknown>,
+  protocol: GatewayProtocol,
+): { index: number; words: string } | null {
+  const list = protocol === 'responses' ? body.input : body.messages;
+  if (!Array.isArray(list) || !list.length) return null;
+  const index = list.length - 1;
+  const last = record(list[index]);
+  if (last?.role !== 'user') return null;
+  if (
+    Array.isArray(last.content) &&
+    last.content.some((part) => record(part)?.type === 'tool_result')
+  )
+    return null;
+  return { index, words: JSON.stringify(last.content ?? '').slice(0, 400) };
+}
+
+/** A note pinned to the person's message, keyed by where it is and what it says. */
+const userKey = (index: number, words: string) => `user:${index}:${words}`;
+
 /** The request ends on a step that has just come back. */
 function endsOnResult(body: Record<string, unknown>, protocol: GatewayProtocol): boolean {
   const list = protocol === 'responses' ? body.input : body.messages;
@@ -172,10 +196,29 @@ export function withTurnNotes(
     const before = turn.pinned.get(latest.id);
     turn.pinned.set(latest.id, [before, ...turn.pending.splice(0)].filter(Boolean).join('\n\n'));
   }
+  // An acknowledgement shown before the first step: the note goes beside the
+  // person's message, so the first request already knows what was said.
+  const ending = latest ? null : endingMessage(body, protocol);
+  if (ending && turn.pending.length)
+    turn.pinned.set(userKey(ending.index, ending.words), turn.pending.splice(0).join('\n\n'));
   if (!turn.pinned.size) return body;
+  const sent = protocol === 'responses' ? body.input : body.messages;
+  const beside: Located[] = [];
+  if (Array.isArray(sent))
+    for (const key of turn.pinned.keys()) {
+      const [kind, at, ...words] = key.split(':');
+      const index = Number(at);
+      if (kind !== 'user' || !Number.isInteger(index)) continue;
+      const message = record(sent[index]);
+      // The same message, where it was: a request that no longer holds it gets no note.
+      if (
+        message?.role === 'user' &&
+        JSON.stringify(message.content ?? '').slice(0, 400) === words.join(':')
+      )
+        beside.push({ id: key, index: protocol === 'messages' ? index : index + 1 });
+    }
   // Where each note goes, latest position first, so earlier indexes hold.
-  const placed = results
-    .filter((result) => turn.pinned.has(result.id))
+  const placed = [...results.filter((result) => turn.pinned.has(result.id)), ...beside]
     .map((result) => ({ ...result, note: turn.pinned.get(result.id) as string }))
     .sort((a, b) => b.index - a.index);
   if (!placed.length) return body;
@@ -183,10 +226,11 @@ export function withTurnNotes(
     const messages = [...(body.messages as unknown[])];
     for (const { index, note } of placed) {
       const message = record(messages[index]) as Record<string, unknown>;
-      messages[index] = {
-        ...message,
-        content: [...(message.content as unknown[]), { type: 'text', text: note }],
-      };
+      const content =
+        typeof message.content === 'string'
+          ? [{ type: 'text', text: message.content }]
+          : (message.content as unknown[]);
+      messages[index] = { ...message, content: [...content, { type: 'text', text: note }] };
     }
     return { ...body, messages };
   }

@@ -39,11 +39,58 @@ describe('turn notes', () => {
     expect(withTurnNotes(body, 'chat/completions', 'att_unknown', T0)).toBe(body);
   });
 
-  test('the acknowledgement note waits for a tool result, then stays pinned there', () => {
+  test('an acknowledgement shown before the first step reaches the first request, beside the message', () => {
     turnStarted(ATTEMPT, T0);
     turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0 + 1_000);
-    // No step yet: the request is the model's first, and is left alone.
-    expect(notes(withTurnNotes(chat(0), 'chat/completions', ATTEMPT, T0 + 1_100))).toEqual([]);
+    // No step yet: the model's first request already knows what was said.
+    const first = withTurnNotes(chat(0), 'chat/completions', ATTEMPT, T0 + 1_100);
+    const messages = first.messages as { role: string; content: string }[];
+    expect(messages).toHaveLength(3);
+    expect(messages[2]).toMatchObject({ role: 'system' });
+    expect(messages[2]?.content).toContain('"Looking at monitors now."');
+    // Later requests carry it in the same place, once.
+    const later = withTurnNotes(chat(2), 'chat/completions', ATTEMPT, T0 + 3_000);
+    const after = later.messages as { role: string; content: string }[];
+    expect(after[2]?.content).toBe(messages[2]?.content);
+    expect(notes(later)).toHaveLength(1);
+  });
+
+  test('on the messages protocol the note joins the person message as a text block', () => {
+    turnStarted(ATTEMPT, T0);
+    turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0 + 1_000);
+    const body = {
+      system: 'You are Melete.',
+      messages: [{ role: 'user', content: 'Compare three monitors' }],
+    };
+    const first = withTurnNotes(body, 'messages', ATTEMPT, T0 + 1_100);
+    const [message] = first.messages as {
+      role: string;
+      content: { type: string; text: string }[];
+    }[];
+    expect(message?.content[0]).toEqual({ type: 'text', text: 'Compare three monitors' });
+    expect(message?.content[1]?.text).toContain('"Looking at monitors now."');
+    const later = withTurnNotes(
+      {
+        ...body,
+        messages: [
+          ...body.messages,
+          { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1' }] },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'x' }] },
+        ],
+      },
+      'messages',
+      ATTEMPT,
+      T0 + 2_000,
+    );
+    const kept = later.messages as { content: unknown }[];
+    expect(kept[0]?.content).toEqual(message?.content);
+    // Said once: the tool result gets no second copy.
+    expect(JSON.stringify(kept[2]?.content)).not.toContain('Looking at monitors');
+  });
+
+  test('the acknowledgement note follows a tool result when it came after the first step', () => {
+    turnStarted(ATTEMPT, T0);
+    turnAcknowledged(ATTEMPT, 'Looking at monitors now.', T0 + 1_000);
     const first = withTurnNotes(chat(1), 'chat/completions', ATTEMPT, T0 + 2_000);
     const messages = first.messages as { role: string; content: string }[];
     expect(messages[4]).toMatchObject({ role: 'system' });

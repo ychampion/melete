@@ -80,6 +80,7 @@ import { buildAttemptSkeleton, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
+import { FirstLine } from './first-line.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { personWords } from './history-summary.ts';
 import { LIMIT_REACHED_NOTE } from './limits.ts';
@@ -2065,9 +2066,16 @@ export class AttemptRunner {
     }, this.options.heartbeatMs ?? HEARTBEAT_MS);
     // The gateway keeps the turn's notes while it runs (gateway/turn-notes.ts).
     if (claim.turn) turnStarted(claims.attempt_id);
-    const acknowledgement = claim.turn?.interactive
-      ? this.acknowledgeLater(claims, claim.turn, bundle)
-      : null;
+    // The turn's first line is said once: by the acknowledgement or by the
+    // agent, never both (first-line.ts).
+    const firstLine = new FirstLine(
+      (event) => this.emit(claims, event),
+      Boolean(claim.turn?.interactive && this.acknowledges(bundle)),
+    );
+    const acknowledgement =
+      claim.turn?.interactive && this.acknowledges(bundle)
+        ? this.acknowledgeLater(claims, claim.turn, bundle, firstLine)
+        : null;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let completed: Extract<AttemptOutcome, { kind: 'completed' }> | null = null;
     let abortListener = () => {};
@@ -2094,7 +2102,7 @@ export class AttemptRunner {
               acknowledgement?.cancel();
               turnSpoke(claims.attempt_id);
             }
-            return this.emit(claims, event);
+            return firstLine.emit(event);
           },
         },
         controller.signal,
@@ -2114,6 +2122,10 @@ export class AttemptRunner {
       // wait for what that work started, which must not be cut short into a
       // lost attempt and a rerun. Only Stop or a fence ends the wait early.
       clearTimeout(timeout);
+      // Words still held behind an acknowledgement reach the record before the
+      // outcome does. A failure to record one was the runtime's to report.
+      acknowledgement?.cancel();
+      await firstLine.drain().catch(() => undefined);
       const outcome = isOutcomeEnvelope(result) ? result.outcome : result;
       if (outcome.kind === 'completed') {
         completed = outcome;
@@ -2190,23 +2202,33 @@ export class AttemptRunner {
     }
   }
 
+  /** Whether this attempt's turn may get an acknowledgement: it is on, and the person wrote something new. */
+  private acknowledges(bundle: ResponsibilityAttemptBundle): boolean {
+    const options = this.options.acknowledge;
+    const message = [...bundle.inputs.new_user_messages]
+      .reverse()
+      .find((entry) => entry.role === 'user');
+    return Boolean(options && options.afterMs > 0 && message?.content.trim());
+  }
+
   /**
    * Shows the person a one-line acknowledgement if the agent is still silent
    * `acknowledge.afterMs` after the attempt started. The line is written from
-   * the person's new message alone; it is dropped if the agent spoke while it
-   * was being written, and a turn gets at most one. The agent is told what was
-   * said, so it does not say it again. `cancel` stops it, the call included.
+   * the person's new message alone, starting as the attempt does, so it is
+   * ready by the deadline; it is shown then, or as soon as it is ready after,
+   * and only while the agent has said nothing. A turn gets at most one. Once it
+   * is shown, the agent's own opening line gives way to it (`firstLine`), and
+   * the agent is told what was said, so it does not say it again. `cancel`
+   * stops it, the call included.
    */
   private acknowledgeLater(
     claims: CapabilityClaims,
     turn: ConversationTurn,
     bundle: ResponsibilityAttemptBundle,
+    firstLine: FirstLine,
   ): { cancel(): void } | null {
     const options = this.options.acknowledge;
-    const message = [...bundle.inputs.new_user_messages]
-      .reverse()
-      .find((entry) => entry.role === 'user');
-    if (!options || options.afterMs <= 0 || !message?.content.trim()) return null;
+    if (!options || !this.acknowledges(bundle)) return null;
     const stop = new AbortController();
     // Anything the person already heard in this turn, from any of its attempts:
     // the agent's words, a line it said, or an earlier acknowledgement.
@@ -2226,40 +2248,50 @@ export class AttemptRunner {
         .limit(1);
       return Boolean(spoken);
     };
-    const timer = setTimeout(() => {
-      void (async () => {
-        // Only what the person wrote themselves: an attached file's text or a
-        // pasted email is someone else's words, and a line written from them
-        // would put those words in the agent's voice.
-        const own = await this.jobs.transaction(async (tx) => {
-          if (await spokeInTurn(tx)) return '';
-          const [sent] = await tx
-            .select({ payload: event.payload })
-            .from(event)
-            .where(
-              and(
-                eq(event.jobId, claims.job_id),
-                eq(event.type, 'notice'),
-                sql`${event.payload}->>'kind' = 'user_message'`,
-              ),
-            )
-            .orderBy(desc(event.seq))
-            .limit(1);
-          const payload = (sent?.payload ?? {}) as JsonObject;
-          return typeof payload.text === 'string'
-            ? personWords({ text: payload.text, pasted: payload.pasted, chosen: payload.chosen })
-            : '';
-        });
-        if (!own.trim() || stop.signal.aborted) return;
-        const said = await options.writer.write({
-          spaceId: turn.spaceId,
-          conversationId: claims.job_id,
-          ...(turn.principalId ? { principalId: turn.principalId } : {}),
-          message: own.trim(),
-          signal: stop.signal,
-        });
-        if (!said || stop.signal.aborted) return;
-        const shown = await this.jobs.transaction(async (tx) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, options.afterMs);
+      stop.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+    const writing = (async () => {
+      // Only what the person wrote themselves: an attached file's text or a
+      // pasted email is someone else's words, and a line written from them
+      // would put those words in the agent's voice.
+      const own = await this.jobs.transaction(async (tx) => {
+        if (await spokeInTurn(tx)) return '';
+        const [sent] = await tx
+          .select({ payload: event.payload })
+          .from(event)
+          .where(
+            and(
+              eq(event.jobId, claims.job_id),
+              eq(event.type, 'notice'),
+              sql`${event.payload}->>'kind' = 'user_message'`,
+            ),
+          )
+          .orderBy(desc(event.seq))
+          .limit(1);
+        const payload = (sent?.payload ?? {}) as JsonObject;
+        return typeof payload.text === 'string'
+          ? personWords({ text: payload.text, pasted: payload.pasted, chosen: payload.chosen })
+          : '';
+      });
+      if (!own.trim() || stop.signal.aborted || !firstLine.silent) return null;
+      return options.writer.write({
+        spaceId: turn.spaceId,
+        conversationId: claims.job_id,
+        ...(turn.principalId ? { principalId: turn.principalId } : {}),
+        message: own.trim(),
+        signal: stop.signal,
+      });
+    })();
+    void (async () => {
+      const [said] = await Promise.all([writing, deadline]);
+      // The agent's words that came first win, even over a line already written.
+      if (!said || stop.signal.aborted || !firstLine.beginShow()) return;
+      let shown = false;
+      try {
+        shown = await this.jobs.transaction(async (tx) => {
           const row = await this.jobs.lock(tx, claims.job_id);
           if (!row || row.currentTurnId !== turn.turnId) return false;
           // Only while the attempt is working: once it waits on an approval or
@@ -2276,20 +2308,25 @@ export class AttemptRunner {
           });
           return Boolean(added);
         });
+      } finally {
         if (shown) turnAcknowledged(claims.attempt_id, said);
-      })().catch((error: unknown) => {
-        // An acknowledgement that could not be shown is no loss: the agent's
-        // own words follow, and the attempt goes on regardless. An attempt
-        // that has already ended is the expected case and is not reported.
-        if (error instanceof ServiceError) return;
-        process.stderr.write(
-          `acknowledgement not shown for ${claims.attempt_id}: ${error instanceof Error ? error.message : 'unknown error'}\n`,
-        );
-      });
-    }, options.afterMs);
+        // What the agent said meanwhile goes out now: held behind the line
+        // when it was shown, as it came when it was not.
+        void firstLine.endShow(shown).catch(() => undefined);
+      }
+    })().catch((error: unknown) => {
+      // An acknowledgement that could not be shown is no loss: the agent's
+      // own words follow, and the attempt goes on regardless. An attempt
+      // that has already ended is the expected case and is not reported.
+      if (error instanceof ServiceError) return;
+      process.stderr.write(
+        `acknowledgement not shown for ${claims.attempt_id}: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+      );
+    });
     return {
       cancel() {
         clearTimeout(timer);
+        firstLine.cancel();
         stop.abort();
       },
     };
