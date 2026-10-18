@@ -230,6 +230,29 @@
   flex-direction: column;
   gap: 12px;
 }
+/* A turn's bubble and answer sit as they did straight in the transcript. */
+.turn-slot {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+}
+/* A turn far from the view keeps its height and its words, laid out only when near. */
+.turn-slot[data-drawn="false"] {
+  overflow: hidden;
+  content-visibility: auto;
+}
+.turn-words {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.turn-words p {
+  margin: 0;
+}
 .turn-text {
   display: flex;
   flex-direction: row;

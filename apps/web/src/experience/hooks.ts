@@ -7,6 +7,15 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { FaceState } from '../design/face.tsx';
 import { adapter, type Result, subscribeConversation } from './adapter.ts';
 import {
+  FIRST_PAGE,
+  keepConversation,
+  keptConversation,
+  keptFrom,
+  openConversation,
+  prependOlder,
+  readOlder,
+} from './history.ts';
+import {
   acceptLocalSteer,
   acceptLocalTurn,
   addLocalSteer,
@@ -14,23 +23,19 @@ import {
   adoptSaved,
   applyEvent,
   applyGap,
-  applyHistory,
   applyMessageEvent,
   dropLocalSteer,
   emptyTranscript,
   fillAnswers,
   fillTurns,
-  fromTurns,
   replayedStatus,
   setDelivery,
-  setDrafts,
   type Transcript,
 } from './reduce.ts';
 import type {
   Agent,
   Capabilities,
   Conversation,
-  ExperienceEvent,
   Permission,
   Profile,
   Question,
@@ -235,7 +240,27 @@ export type ConversationState = {
   steered: (localId: string, steerId: string | null) => void;
   /** Show the conversation as the service now has it, after a rename. */
   renamed: (conversation: Conversation) => void;
+  /** Whether turns older than those read are there, and reading them. */
+  older: OlderState & { load: () => Promise<void> };
 };
+
+export type OlderState = {
+  /** Turns older than the ones read are on the service. */
+  more: boolean;
+  loading: boolean;
+  /** Why the last read of them failed; reading again may work. */
+  error: string | null;
+  /** How many turns the chat has in all, when the service says. */
+  total: number | null;
+};
+const NO_OLDER: OlderState = { more: false, loading: false, error: null, total: null };
+
+/** Turns drawn here before the service has them, carried onto a fresh read. */
+function withLocalTurns(fresh: Transcript, shown: Transcript): Transcript {
+  const known = new Set(fresh.turns.map((turn) => turn.id));
+  const local = shown.turns.filter((turn) => turn.id.startsWith('local_') && !known.has(turn.id));
+  return local.length ? { ...fresh, turns: [...fresh.turns, ...local] } : fresh;
+}
 
 /** The statuses a turn ends at, after which its saved answer is read. */
 const FINISHED_STATUSES: TurnStatus[] = ['done', 'failed', 'stopped'];
@@ -254,10 +279,29 @@ export function useConversation(id: string | null): ConversationState {
   const [loading, setLoading] = useState(Boolean(id));
   /** Counts each "try again", so the whole conversation is read again. */
   const [attempt, setAttempt] = useState(0);
+  const [older, setOlder] = useState<OlderState>(NO_OLDER);
+  /** Where older turns continue, read synchronously by `loadOlder`. */
+  const olderRef = useRef<{ cursor: string | null; total: number | null }>({
+    cursor: null,
+    total: null,
+  });
+  const olderLoading = useRef(false);
+  /** The oldest turn the chat opened on, and where the turns before it continue (`keptFrom`). */
+  const openedOn = useRef<{ oldest: string | null; older: string | null }>({
+    oldest: null,
+    older: null,
+  });
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
+  const currentId = useRef(id);
+  currentId.current = id;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new attempt is the reason to read again
   useEffect(() => {
     setLastEventAt(null);
+    olderRef.current = { cursor: null, total: null };
+    olderLoading.current = false;
+    setOlder(NO_OLDER);
     if (!id) {
       setConversation(null);
       setTranscriptState(emptyTranscript());
@@ -266,82 +310,61 @@ export function useConversation(id: string | null): ConversationState {
       return;
     }
     const controller = new AbortController();
-    setLoading(true);
     setError(null);
-    setTranscriptState(emptyTranscript());
+    // A chat read before is drawn at once from what was read, and read again behind it.
+    const copy = keptConversation(id);
+    openedOn.current = {
+      oldest: copy?.transcript.turns[0]?.id ?? null,
+      older: copy?.older ?? null,
+    };
+    if (copy) {
+      setConversation(copy.conversation);
+      setTranscriptState(copy.transcript);
+      olderRef.current = { cursor: copy.older, total: copy.total };
+      setOlder({ more: copy.older !== null, loading: false, error: null, total: copy.total });
+      setLoading(false);
+    } else {
+      setConversation(null);
+      setLoading(true);
+      setTranscriptState(emptyTranscript());
+    }
+    // The newest turns the service has, without their events: to read answers and turns by.
+    const newest = () => adapter.turnsPage(id, { limit: FIRST_PAGE });
 
     void (async () => {
-      const [head, turns, drafts, page] = await Promise.all([
-        adapter.conversation(id),
-        adapter.turns(id),
-        adapter.drafts(id),
-        adapter.eventsSince(id, 0),
-      ]);
-      if (controller.signal.aborted) return;
-      if (head.error !== null) {
-        setError(head.error);
+      const opened = await openConversation(id, controller.signal);
+      if (controller.signal.aborted || opened === null) return;
+      if (opened.data === null) {
+        // Messages that could not be read are not an empty chat: say so, and offer to read
+        // again. A copy kept from before stays on screen under the error, unless the chat
+        // is not there any more: then nothing of it is shown.
+        if (opened.gone) {
+          setConversation(null);
+          setTranscriptState(emptyTranscript());
+        }
+        setError(opened.error);
         setLoading(false);
         return;
       }
-      if (head.unavailable !== null) {
-        setError(head.unavailable);
-        setLoading(false);
-        return;
-      }
-      // Messages that could not be read are not an empty chat: say so, and offer to read again.
-      if (turns.data === null) {
-        setError(turns.error ?? turns.unavailable ?? 'Couldn’t read the messages.');
-        setLoading(false);
-        return;
-      }
-      setConversation(head.data.conversation);
-      let initial = fromTurns(
-        turns.data.turns,
-        head.data.conversation.composer,
-        head.data.conversation.status,
-      );
-      initial = setDrafts(initial, drafts.data?.drafts ?? []);
-      // The saved turns and the conversation say where things stand; the
-      // history only fills in what happened. A status it passes through is
-      // not shown, so an old turn never reads as working while it replays.
-      initial = applyHistory(initial, page.data?.events ?? []);
-      // Where the history last left each turn. Read beside the saved turns, it
-      // may be newer than them; where the two differ, they are read again.
-      const ended = new Map<string, TurnStatus>();
-      const note = (events: readonly ExperienceEvent[]) => {
-        for (const event of events)
-          if (event.item.type === 'status' && event.turn_id)
-            ended.set(event.turn_id, event.item.status);
-      };
-      note(page.data?.events ?? []);
-      // Saved answers already contain what the replayed deltas said.
-      const quiet = (transcript: Transcript): Transcript => ({
-        ...transcript,
-        turns: transcript.turns.map((turn) => ({ ...turn, streamed: '', streaming: false })),
+      const { conversation, transcript: initial, turns: savedTurns, ended, cursor } = opened.data;
+      openedOn.current = { oldest: opened.data.turns[0]?.id ?? null, older: opened.data.older };
+      setConversation(conversation);
+      // A message sent while this was read, from the copy kept before, stays drawn.
+      setTranscriptState((previous) => withLocalTurns(initial, previous));
+      olderRef.current = { cursor: opened.data.older, total: opened.data.total };
+      setOlder({
+        more: opened.data.older !== null,
+        loading: false,
+        error: null,
+        total: opened.data.total,
       });
-      initial = quiet(initial);
-      setTranscriptState(initial);
       setLoading(false);
 
-      // The rest of a long history is read the same way before the stream
-      // opens, and the saved state read again after it: anything that changed
-      // while the history was read is in that copy, and the stream carries on
-      // from the last event read.
-      let cursor = Math.max(initial.lastSeq, page.data?.next_cursor ?? 0);
-      let more = page.data?.has_more === true;
-      while (more) {
-        const next = await adapter.eventsSince(id, cursor);
-        if (controller.signal.aborted) return;
-        if (!next.data || next.data.next_cursor <= cursor) break;
-        const events = next.data.events;
-        note(events);
-        setTranscriptState((previous) => quiet(applyHistory(previous, events)));
-        cursor = next.data.next_cursor;
-        more = next.data.has_more;
-      }
-      const savedTurns = turns.data?.turns ?? [];
+      // Where the history last left each turn, read beside the saved turns, may
+      // be newer than them; where the two differ, they are read again, and the
+      // stream carries on from the last event read.
       if (savedTurns.some((turn) => (ended.get(turn.id) ?? turn.status) !== turn.status)) {
-        const [fresh, saved] = await Promise.all([adapter.conversation(id), adapter.turns(id)]);
+        const [fresh, saved] = await Promise.all([adapter.conversation(id), newest()]);
         if (controller.signal.aborted) return;
         if (fresh.data && saved.data) {
           const { composer, status } = fresh.data.conversation;
@@ -353,7 +376,11 @@ export function useConversation(id: string | null): ConversationState {
 
       // Start after the saved turns are installed so their state cannot overwrite message identities.
       void (async () => {
-        for await (const item of adapter.messageEvents(id, controller.signal)) {
+        for await (const item of adapter.messageEvents(
+          id,
+          controller.signal,
+          opened.data.messagesAfter,
+        )) {
           if (controller.signal.aborted) return;
           if (item.type === 'event')
             setTranscriptState((previous) => applyMessageEvent(previous, item.event));
@@ -362,7 +389,7 @@ export function useConversation(id: string | null): ConversationState {
 
       // A finished turn's saved answer is its final message alone: read it once it ends.
       const readAnswers = () =>
-        void adapter.turns(id).then((saved) => {
+        void newest().then((saved) => {
           if (controller.signal.aborted || !saved.data) return;
           const turns = saved.data.turns;
           setTranscriptState((previous) => fillAnswers(previous, turns));
@@ -372,7 +399,7 @@ export function useConversation(id: string | null): ConversationState {
       const readTurn = (turnId: string | null) => {
         if (!turnId || reading.has(turnId) || turnId.startsWith('local_')) return;
         reading.add(turnId);
-        void adapter.turns(id).then((saved) => {
+        void newest().then((saved) => {
           if (controller.signal.aborted || !saved.data) return;
           const turns = saved.data.turns;
           // Not saved yet: the next event for this turn reads it again.
@@ -421,6 +448,43 @@ export function useConversation(id: string | null): ConversationState {
     };
   }, [id, attempt]);
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
+
+  // What is shown is kept, so going back to this chat draws it at once.
+  useEffect(() => {
+    if (!id || !conversation || conversation.id !== id || loading) return;
+    keepConversation(id, {
+      conversation,
+      ...keptFrom(transcript, openedOn.current, olderRef.current.cursor),
+      total: olderRef.current.total,
+      at: Date.now(),
+    });
+  }, [id, conversation, transcript, loading]);
+
+  /** Read the turns before the oldest one shown, once at a time. */
+  const loadOlder = useCallback(async () => {
+    const before = olderRef.current.cursor;
+    if (!id || !before || olderLoading.current) return;
+    olderLoading.current = true;
+    setOlder((current) => ({ ...current, loading: true, error: null }));
+    const read = await readOlder(id, before, transcriptRef.current);
+    olderLoading.current = false;
+    // Moved to another chat, or read again from the top, while this was read.
+    if (olderRef.current.cursor !== before || currentId.current !== id) return;
+    if (read.data === null) {
+      const failure = read.error;
+      setOlder((current) => ({ ...current, loading: false, error: failure }));
+      return;
+    }
+    const page = read.data;
+    olderRef.current = { cursor: page.older, total: page.total ?? olderRef.current.total };
+    setTranscriptState((previous) => prependOlder(previous, page));
+    setOlder({
+      more: page.older !== null,
+      loading: false,
+      error: null,
+      total: olderRef.current.total,
+    });
+  }, [id]);
 
   const setTranscript = useCallback(
     (update: (previous: Transcript) => Transcript) => setTranscriptState(update),
@@ -487,6 +551,7 @@ export function useConversation(id: string | null): ConversationState {
     steer,
     steered,
     renamed: setConversation,
+    older: { ...older, load: loadOlder },
   };
 }
 

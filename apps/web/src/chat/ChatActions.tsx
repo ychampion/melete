@@ -19,6 +19,7 @@ import {
   Popover,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { forgetConversation } from '../experience/history.ts';
 import { assistantName } from '../experience/instance.ts';
 import type { Conversation } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -150,6 +151,8 @@ export function DeleteChatsDialog({
         continue;
       }
       gone.push(chat.id);
+      // A deleted chat is never drawn again from what was read of it.
+      forgetConversation(chat.id);
       forgotten += result.data.forgotten;
     }
     setWorking(false);

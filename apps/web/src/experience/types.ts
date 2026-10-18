@@ -45,6 +45,8 @@ export type SpaceMember = SpaceMembers['members'][number];
 export type SpaceRulesView = Ok<paths['/spaces/{id}/policy'], 'get'>;
 export type SpaceRulesChange = Body<paths['/spaces/{id}/policy'], 'put'>;
 export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
+/** A page of a chat's turns: `next_cursor` is absent when the service sent every turn. */
+export type TurnPage = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>;
 export type DeliveryState = NonNullable<Turn['delivery']>;
 export type MessageAcceptance = Success<Ok<paths['/conversations/{id}/messages'], 'post'>>;
 export type ExperienceEvent = Success<
