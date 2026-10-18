@@ -96,6 +96,21 @@ quotes the rule and says where it came from. Asking for that very thing in the
 message being answered lifts an older rule, and only the person the job works
 for can set or lift one (`apps/melete/src/broker/dont-rules.ts`).
 
+Work nobody is waiting on (a schedule, a timer or an event woke it) that would
+reach someone outside Melete is never asked about by default. It goes ahead on
+its own when what the person said before makes it likely they want it, with a
+receipt that gives the confidence and the reasons, and is otherwise left as a
+quiet suggestion in the conversation: nothing is sent and no card is raised.
+The confidence is a fixed sum over the person's own records: their routine or
+the agent's instructions asking for this kind of thing (to this recipient, when
+they name one) +0.6, something they told Melete about this recipient +0.3, each
+similar action to the same recipient they asked for or allowed in the last 90
+days +0.15 (two at most), each one they said no to or took back -0.5, and 0 for
+a recipient whose origin Melete cannot vouch for. An email also needs the
+routine or the instructions to ask for it. `MELETE_PROACTIVE_CONFIDENCE` and
+`MELETE_MESSAGES_TO_OTHERS` set the threshold and whether chat-app messages
+follow the score or always stay suggestions (`apps/melete/src/broker/proactive.ts`).
+
 Evidence for the default effect gate is conformance 4, `An approval cannot be
 spent on different content`; a manifest's schema declares what a tool takes,
 and admission is what decides whether it runs.

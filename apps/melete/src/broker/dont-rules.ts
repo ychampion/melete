@@ -40,12 +40,12 @@ export type DontRule = {
 export type DontMatch = { rule: DontRule; reason: string };
 
 /** Words that open a prohibition. */
-const PROHIBIT =
+export const PROHIBIT =
   /\b(?:don'?t|dont|do not|never|stop|no more|avoid|without asking|not allowed to|shouldn'?t|should not|must not|mustn'?t)\b/i;
 /** "Don't forget to email Bob" asks for it; these openers are not prohibitions. */
 const NOT_PROHIBIT = /^(?:forget|hesitate|miss|worry|mind|wait|be shy|let me forget|skip)\b/i;
 
-const KIND_WORDS: Record<DontKind, RegExp> = {
+export const KIND_WORDS: Record<DontKind, RegExp> = {
   contact:
     /\b(?:e-?mail(?:s|ing|ed)?|mail(?:s|ing)?|message(?:s|d|ing)?|text(?:s|ing|ed)?|sms|send(?:s|ing)?|repl(?:y|ies|ying)|respond(?:ing)?|write to|writing to|contact(?:ing)?|reach(?:ing)? out|call(?:s|ing)?|ping(?:ing)?|dm(?:s|ing)?|cc(?:ing)?|forward(?:s|ing)?)\b/i,
   money:
@@ -90,7 +90,7 @@ const NOT_A_NAME = new Set([
 const PROHIBIT_SQL =
   "(don'?t|dont|do not|never|stop|no more|avoid|without asking|not allowed to|shouldn'?t|should not|must not|mustn'?t)";
 /** Sentences end at a stop followed by space, or a line break: "acme.com" stays whole. */
-const SENTENCES = /(?<=[.!?;])\s+|\n+/;
+export const SENTENCES = /(?<=[.!?;])\s+|\n+/;
 const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
 const DOMAIN_SOURCE = String.raw`\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|co|ai|app|dev|uk|us|de|fr|edu|gov)\b`;
 const DOMAIN = new RegExp(DOMAIN_SOURCE, 'gi');
@@ -104,28 +104,50 @@ export type ParsedRule = { kinds: DontKind[]; targets: string[] };
 /** What one prohibition forbids: the kinds of action and whom or what it names. */
 function parseClause(rest: string): ParsedRule | null {
   if (NOT_PROHIBIT.test(rest.trim())) return null;
-  const kinds = (Object.keys(KIND_WORDS) as DontKind[]).filter((kind) =>
-    KIND_WORDS[kind].test(rest),
-  );
+  const kinds = kindsIn(rest);
+  const targets = targetsIn(rest);
+  if (kinds.length === 0 && targets.length === 0) return null;
+  return { kinds, targets };
+}
+
+/** The kinds of action a text speaks of. */
+export function kindsIn(text: string): DontKind[] {
+  return (Object.keys(KIND_WORDS) as DontKind[]).filter((kind) => KIND_WORDS[kind].test(text));
+}
+
+/**
+ * Whom or what a text names, lower case: addresses, domains, handles, names
+ * and, unless `roles` is false, "my landlord"-style roles. `skipFirst` passes
+ * over a capitalised first word, which starts a sentence as often as it names.
+ */
+export function targetsIn(text: string, options: { roles?: boolean; skipFirst?: boolean } = {}) {
   const targets = new Set<string>();
-  const emails = rest.match(EMAIL) ?? [];
+  const emails = text.match(EMAIL) ?? [];
   for (const email of emails) targets.add(email.toLowerCase());
-  const bare = rest.replace(EMAIL, ' ');
+  const bare = text.replace(EMAIL, ' ');
   for (const domain of bare.match(DOMAIN) ?? []) targets.add(domain.toLowerCase());
   for (const match of bare.matchAll(HANDLE)) if (match[1]) targets.add(match[1].toLowerCase());
-  for (const match of bare.matchAll(ROLE)) {
-    const role = match[1]?.toLowerCase();
-    if (role && !KIND_WORDS.contact.test(role)) targets.add(role);
-  }
-  for (const name of bare.match(NAME) ?? []) {
+  if (options.roles !== false)
+    for (const match of bare.matchAll(ROLE)) {
+      const role = match[1]?.toLowerCase();
+      if (role && !KIND_WORDS.contact.test(role)) targets.add(role);
+    }
+  const opening = options.skipFirst ? /^\s*([A-Z][\p{L}'’-]+)/u.exec(bare) : null;
+  const openingAt = opening ? opening[0].length - (opening[1]?.length ?? 0) : -1;
+  for (const match of bare.matchAll(NAME)) {
+    // "Every morning" or "Reply Sam": the opening word goes, the rest of the name stays.
+    const name =
+      match.index === openingAt
+        ? match[0].slice(opening?.[1]?.length ?? 0).trim()
+        : match[0].trim();
+    if (!name) continue;
     const lower = name.toLowerCase();
     const isKindWord = (Object.values(KIND_WORDS) as RegExp[]).some((words) =>
       new RegExp(`^(?:${words.source})$`, 'i').test(lower),
     );
     if (!NOT_A_NAME.has(lower) && !IS_DOMAIN.test(name) && !isKindWord) targets.add(lower);
   }
-  if (kinds.length === 0 && targets.size === 0) return null;
-  return { kinds, targets: [...targets] };
+  return [...targets];
 }
 
 /** Each prohibition a text states, or none. */
@@ -170,7 +192,7 @@ export function actionKinds(kind: string, movesMoney: boolean): DontKind[] {
 const WRITTEN = /^(?:body|text|content|message|html|description|notes?|summary|markdown|prompt)$/i;
 
 /** Every string an action's arguments carry, but for the text it writes. */
-function strings(value: JsonValue, found: string[] = [], depth = 0): string[] {
+export function strings(value: JsonValue, found: string[] = [], depth = 0): string[] {
   if (depth > 12) return found;
   if (typeof value === 'string') found.push(value);
   else if (Array.isArray(value)) for (const item of value) strings(item, found, depth + 1);
@@ -190,7 +212,7 @@ function addressNames(value: string, target: string): boolean {
 }
 
 /** Whether the action's arguments name a target the rule names. */
-function names(values: readonly string[], target: string): boolean {
+export function names(values: readonly string[], target: string): boolean {
   if (target.includes('@') && !target.startsWith('@'))
     return values.some((value) => value.toLowerCase().includes(target));
   return values.some((value) => saysVerbatim(value, target) || addressNames(value, target));

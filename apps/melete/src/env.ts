@@ -788,6 +788,17 @@ const variables = z.object({
    * while the person can still cancel it. 0 sends at once.
    */
   MELETE_SEND_HOLD_SECONDS: z.coerce.number().int().min(0).max(120).default(20),
+  /**
+   * Work nobody is waiting on (a schedule, a timer, an event) that would reach
+   * someone outside Melete goes ahead on its own from this confidence, built
+   * from what the person said before, and is otherwise left as a suggestion.
+   */
+  MELETE_PROACTIVE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
+  /**
+   * Whether that work may send a chat app's message to others on the same
+   * confidence (`confidence`), or always leaves it as a suggestion (`draft_only`).
+   */
+  MELETE_MESSAGES_TO_OTHERS: z.enum(['confidence', 'draft_only']).default('confidence'),
 
   /**
    * Spending caps on model calls, in US dollars (estimated from the price
