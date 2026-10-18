@@ -17338,6 +17338,8 @@ export interface paths {
                         onboarded?: boolean;
                         time_zone: string;
                         time_zone_confirmed?: boolean;
+                        /** @enum {string} */
+                        voice?: "teammate" | "professional";
                     };
                 };
             };
@@ -25751,6 +25753,8 @@ export interface components {
                 sending_address: string | null;
                 time_zone: string;
                 time_zone_confirmed: boolean;
+                /** @enum {string} */
+                voice: "teammate" | "professional";
             };
         };
         __schema412: {

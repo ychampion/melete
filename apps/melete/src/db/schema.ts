@@ -1093,6 +1093,8 @@ export const experienceProfile = pgTable('experience_profile', {
   onboardedAt: timestamp('onboarded_at', { withTimezone: true }),
   /** When the person chose or confirmed their time zone; until then it is only a default. */
   timeZoneConfirmedAt: timestamp('time_zone_confirmed_at', { withTimezone: true }),
+  /** How the agent sounds in replies and drafts: `teammate` or `professional`. */
+  voice: text('voice').notNull().default('teammate'),
 });
 
 export const task = pgTable('task', {

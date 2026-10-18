@@ -82,6 +82,7 @@ import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { personWords } from './history-summary.ts';
+import { HumanStream, humanOutcome } from './human-stream.ts';
 import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { PROVIDER_FAILURE_NOTES } from './provider-notes.ts';
 import { persistQuestions, resolveQuestions } from './questions.ts';
@@ -1137,13 +1138,17 @@ export class AttemptRunner {
     const capped = endsOnLimit(given)
       ? (limits[await usageClassOf(tx, attemptId)]?.message ?? null)
       : null;
+    // The saved answer reads as the person saw it stream: the same plain-text
+    // pass, last, after the answer's links and notes are settled.
     const original: AttemptOutcome = capped
       ? { kind: 'budget_exhausted', summary: capped }
-      : await this.citedOnlyWhatWasRead(
-          tx,
-          row,
-          attemptId,
-          await namedFailure(tx, attemptId, given),
+      : humanOutcome(
+          await this.citedOnlyWhatWasRead(
+            tx,
+            row,
+            attemptId,
+            await namedFailure(tx, attemptId, given),
+          ),
         );
     let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
@@ -2068,6 +2073,9 @@ export class AttemptRunner {
     const acknowledgement = claim.turn?.interactive
       ? this.acknowledgeLater(claims, claim.turn, bundle)
       : null;
+    // The agent's words reach the record as a person would write them, the
+    // same live as saved (`human-stream.ts`).
+    const human = new HumanStream((event) => this.emit(claims, event));
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let completed: Extract<AttemptOutcome, { kind: 'completed' }> | null = null;
     let abortListener = () => {};
@@ -2094,7 +2102,7 @@ export class AttemptRunner {
               acknowledgement?.cancel();
               turnSpoke(claims.attempt_id);
             }
-            return this.emit(claims, event);
+            return human.emit(event);
           },
         },
         controller.signal,
@@ -2114,6 +2122,8 @@ export class AttemptRunner {
       // wait for what that work started, which must not be cut short into a
       // lost attempt and a rerun. Only Stop or a fence ends the wait early.
       clearTimeout(timeout);
+      // Words the pass still held reach the record before the outcome does.
+      await human.drain();
       const outcome = isOutcomeEnvelope(result) ? result.outcome : result;
       if (outcome.kind === 'completed') {
         completed = outcome;
@@ -2121,6 +2131,8 @@ export class AttemptRunner {
       }
       await this.commitOutcome(claims, result);
     } catch (error) {
+      // Whatever ends the attempt, the words already said are kept as shown.
+      await human.drain().catch(() => undefined);
       if (
         completed &&
         error instanceof ServiceError &&

@@ -8134,6 +8134,13 @@
                   },
                   "time_zone_confirmed": {
                     "type": "boolean"
+                  },
+                  "voice": {
+                    "type": "string",
+                    "enum": [
+                      "teammate",
+                      "professional"
+                    ]
                   }
                 },
                 "required": [
@@ -40762,6 +40769,13 @@
               "time_zone_confirmed": {
                 "type": "boolean"
               },
+              "voice": {
+                "type": "string",
+                "enum": [
+                  "teammate",
+                  "professional"
+                ]
+              },
               "sending_address": {
                 "anyOf": [
                   {
@@ -40787,6 +40801,7 @@
               "day_hours",
               "onboarded",
               "time_zone_confirmed",
+              "voice",
               "sending_address",
               "role"
             ],

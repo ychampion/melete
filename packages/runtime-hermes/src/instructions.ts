@@ -28,7 +28,9 @@ import {
   APPROVAL_OUTDATED_NOTE,
   type AttemptBundle,
   CONTEXT_LIMITS,
+  DEFAULT_REPLY_VOICE,
   MEMORY_SEARCH_TOOL_NAME,
+  type ReplyVoice,
   renderSinceLast,
   SKILL_READ_TOOL_NAME,
 } from '@melete/contracts';
@@ -84,9 +86,35 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
     );
   }
 
+  parts.push(renderVoice(bundle.voice ?? DEFAULT_REPLY_VOICE));
   parts.push(...renderStanding(bundle.earlier));
   parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
   return parts.join('\n\n');
+}
+
+/** How each voice sounds, in one line. */
+export const VOICE_LINES: Record<ReplyVoice, string> = {
+  teammate:
+    'Your voice is teammate: a capable colleague in chat. Plain, warm and direct, contractions welcome.',
+  professional:
+    'Your voice is professional: courteous, precise and composed. Full sentences, no slang or jokes, few contractions.',
+};
+
+/**
+ * How the agent sounds: the voice the person picked, the shape of a reply, and
+ * how a draft follows its reader. It changes only when the person picks another
+ * voice, so it stays in the cached prefix. Its rules on punctuation and format
+ * are also kept by the service itself (`humanText` in the contracts package):
+ * this block saves the model writing what would be rewritten.
+ */
+export function renderVoice(voice: ReplyVoice): string {
+  return [
+    '# How you sound',
+    '',
+    VOICE_LINES[voice],
+    'Prose first; a list only for a real list; no headings or bold in a short reply. Use commas, colons, periods or parentheses, never em dashes.',
+    'When you write for someone else (an email, a message), write for that reader: to a client, customer, landlord, employer, office or anyone the person doesn\'t know well, sound professional whatever your voice; to friends and family, warm and plain. A tone the person asks for ("more casual", "more formal") wins for that piece.',
+  ].join('\n');
 }
 
 /**

@@ -126,6 +126,7 @@ import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
+import { humanPayload } from './human-payload.ts';
 import {
   actionFromRow,
   appendEvent,
@@ -1773,6 +1774,9 @@ export class BrokerService implements BrokerOperations {
         // A presentation alias binds one granted account; the durable intent and
         // connector dispatch keep the original verb, including after a restart.
         request = { ...request, kind: tool.name };
+        // A draft or message reads as the person would write it, before it is
+        // hashed, so what is approved is what is sent (`human-payload.ts`).
+        request = { ...request, payload: humanPayload(tool.name, request.payload) };
         let canonical = canonicalizePayload(request.payload);
         this.validatePayload(tool, canonical.canonical);
         const proposing: ConnectorContext = {

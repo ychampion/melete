@@ -26,6 +26,7 @@ import { roomHandoff } from './handoffs.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { MESSAGE_SPAN_LIMIT, messageId, messageSpan } from './reactions.ts';
+import { replyVoice } from './reply-voice.ts';
 import {
   runCreateRequest,
   runExportResponse,
@@ -1136,10 +1137,13 @@ export const profileInput = z.strictObject({
   onboarded: z.boolean().optional(),
   /** True when the person chose this time zone, or confirmed it. It is never unset. */
   time_zone_confirmed: z.boolean().optional(),
+  /** How the agent sounds in replies and drafts. Absent, it stays as it was. */
+  voice: replyVoice.optional(),
 });
 export const profileView = profileInput.extend({
   onboarded: z.boolean(),
   time_zone_confirmed: z.boolean(),
+  voice: replyVoice,
   /**
    * The address messages leave from: the connected mailbox that can send, when
    * there is one. It is read from the connection, not set here.
