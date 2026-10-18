@@ -1094,7 +1094,12 @@ const unreadResult = (seq: number) => ({ call_id: `unread:${seq}`, ok: true, res
  * The notices a history is made of (`collectHistory`, `usableHistory`); a
  * chat's other notices (an accepted submission, a reply owed) are none of it.
  */
-const HISTORY_NOTICES = ['user_message', 'trigger_event', HISTORY_SUMMARY_KIND, PRIVACY_DECISION];
+export const HISTORY_NOTICES = [
+  'user_message',
+  'trigger_event',
+  HISTORY_SUMMARY_KIND,
+  PRIVACY_DECISION,
+];
 
 /** How many tool result bodies one statement asks for. */
 const BODIES_PER_READ = 500;
@@ -1161,6 +1166,65 @@ async function historyRows(
   const currentAttempts = new Set(provenance.filter(contextMatches).map((entry) => entry.id));
   // A room's request reads its thread, with each person's name on what they said.
   const room = row.audience === 'room' ? await roomTranscript(tx, row) : null;
+  const read = outlineHistory(
+    outline,
+    attempts.filter(contextMatches),
+    { generations, currentAttempts, settledAttempts },
+    reach,
+    {
+      ...(room?.names ? { names: room.names } : {}),
+      ...(principal !== undefined ? { principal } : {}),
+    },
+  );
+  const bodies = new Map<number, unknown>();
+  for (let start = 0; start < read.results.length; start += BODIES_PER_READ) {
+    const rows = await tx
+      .select({ seq: event.seq, payload: event.payload })
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, row.id),
+          inArray(event.seq, read.results.slice(start, start + BODIES_PER_READ)),
+        ),
+      );
+    for (const entry of rows) bodies.set(entry.seq, entry.payload);
+  }
+  // A job running under a conversation reads that conversation's files too.
+  const files = await attachmentTexts(
+    tx,
+    row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
+    read.files,
+  );
+  read.fill(bodies, new Map([...files].map(([id, file]) => [id, file.text])));
+  return { history: read.history, attempts, contextMatches, currentAttempts, room };
+}
+
+/**
+ * `historyRows` between its reads: the conversation collected from the events
+ * read without tool result bodies (`outline`, whose tool results' payloads are
+ * not looked at), the tool results (`results`, by seq) and files (`files`, by
+ * id) an attempt can be shown, and `fill`, which puts the bodies and texts read
+ * for those into the messages they belong to. `attempts` are the ended
+ * attempts made under the current context, newest first.
+ */
+export function outlineHistory(
+  outline: readonly HistoryEvent[],
+  attempts: readonly HistoryAttempt[],
+  context: {
+    generations: ContextGenerations;
+    /** The attempts made under the current context. */
+    currentAttempts: ReadonlySet<string>;
+    settledAttempts: ReadonlySet<string>;
+  },
+  reach: HistoryReach,
+  speakers: Pick<HistoryContext, 'names' | 'principal'> = {},
+): {
+  history: CollectedHistory;
+  results: number[];
+  files: string[];
+  fill(bodies: ReadonlyMap<number, unknown>, fileTexts: ReadonlyMap<string, string | null>): void;
+} {
+  const { generations, currentAttempts, settledAttempts } = context;
   const usable = usableHistory(
     outline.map((entry) =>
       entry.type === 'tool_result' ? { ...entry, payload: unreadResult(entry.seq) } : entry,
@@ -1168,41 +1232,13 @@ async function historyRows(
     generations,
     currentAttempts,
   );
-  const history = collectHistory(usable, attempts.filter(contextMatches), reach.afterSeq, {
-    ...(room?.names ? { names: room.names } : {}),
-    ...(principal !== undefined ? { principal } : {}),
+  const history = collectHistory(usable, attempts, reach.afterSeq, {
+    ...speakers,
     settledAttempts,
   });
   const inReach = resultsInReach(history, reach.maxMessages);
-  const wanted = [...inReach.results];
-  const bodies = new Map<number, unknown>();
-  for (let start = 0; start < wanted.length; start += BODIES_PER_READ) {
-    const rows = await tx
-      .select({ seq: event.seq, payload: event.payload })
-      .from(event)
-      .where(
-        and(
-          eq(event.jobId, row.id),
-          inArray(event.seq, wanted.slice(start, start + BODIES_PER_READ)),
-        ),
-      );
-    for (const entry of rows) bodies.set(entry.seq, entry.payload);
-  }
   const bySeq = new Map(outline.map((entry) => [entry.seq, entry]));
-  // The bodies an attempt can see, each as `usableHistory` would have left it.
-  for (const [message, seq] of history.sources) {
-    const entry = bySeq.get(seq);
-    if (message.role !== 'tool' || !entry || !inReach.results.has(seq)) continue;
-    if (!bodies.has(seq)) throw new Error('a tool result disappeared while it was read');
-    const [usable] = usableHistory(
-      [{ ...entry, payload: bodies.get(seq) }],
-      generations,
-      currentAttempts,
-    );
-    Object.assign(message, resultContent(usable?.payload));
-  }
-  // A job running under a conversation reads that conversation's files too: those
-  // of the messages an attempt can be shown, or the extension summarises.
+  // The files of the messages an attempt can be shown, or the extension summarises.
   const through = history.stored ? Date.parse(history.stored.through) : Number.NEGATIVE_INFINITY;
   const fresh = new Set(history.inputs.new_user_messages);
   type Sent = { text?: unknown; chosen?: unknown; attachments?: unknown };
@@ -1221,15 +1257,27 @@ async function historyRows(
       (reach.summarising !== undefined && (at > through || at >= reach.summarising.freshFrom));
     if (shown) for (const file of attached) fileIds.add(file.id);
   }
-  const files = await attachmentTexts(
-    tx,
-    row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
-    [...fileIds],
-  );
-  const fileTexts = new Map([...files].map(([id, file]) => [id, file.text]));
-  for (const { message, text, payload } of carrying)
-    message.content = userContent(text, payload, fileTexts);
-  return { history, attempts, contextMatches, currentAttempts, room };
+  return {
+    history,
+    results: [...inReach.results],
+    files: [...fileIds],
+    fill(bodies, fileTexts) {
+      // The bodies an attempt can see, each as `usableHistory` would have left it.
+      for (const [message, seq] of history.sources) {
+        const entry = bySeq.get(seq);
+        if (message.role !== 'tool' || !entry || !inReach.results.has(seq)) continue;
+        if (!bodies.has(seq)) throw new Error('a tool result disappeared while it was read');
+        const [usable] = usableHistory(
+          [{ ...entry, payload: bodies.get(seq) }],
+          generations,
+          currentAttempts,
+        );
+        Object.assign(message, resultContent(usable?.payload));
+      }
+      for (const { message, text, payload } of carrying)
+        message.content = userContent(text, payload, fileTexts);
+    },
+  };
 }
 
 /**
