@@ -95,6 +95,16 @@ const computer: Connector = {
         requires_approval: false,
         record_schema: null,
       },
+      {
+        name: 'test.count',
+        description: 'Count the words in a file.',
+        input_schema: { type: 'object', properties: { path: { type: 'string' } } },
+        effect_class: 'read',
+        required_scopes: ['test.exec'],
+        verify: false,
+        requires_approval: false,
+        record_schema: null,
+      },
     ],
   },
   ownComputer: true,
@@ -124,6 +134,10 @@ const computer: Connector = {
  *   the second failing after the first went through.
  * - `answered`: the step never reports back, and the person types an answer to
  *   the question the turn rests on, which opens a new turn.
+ * - `answered_lost`: `answered`, and the new turn's first attempt is lost
+ *   before it says a word, so a retry that has read the message runs it.
+ * - `read_only` / `read_and_effect`: the step left out is a read-only check,
+ *   alone or beside a step with effects.
  */
 type Shape =
   | 'went_through'
@@ -134,9 +148,15 @@ type Shape =
   | 'looping'
   | 'two_through'
   | 'two_one_failed'
-  | 'answered';
+  | 'answered'
+  | 'answered_lost'
+  | 'spoofed'
+  | 'read_only'
+  | 'read_and_effect';
 const FAILS = new Set<Shape>(['failed', 'refenced', 'two_one_failed']);
 const RETRIED = new Set<Shape>(['lost', 'looping']);
+/** A read-only check left out when the turn ended, alone or beside a step with effects. */
+const READS = new Set<Shape>(['read_only', 'read_and_effect']);
 
 withDb('a turn answered while a step it started was still out', () => {
   beforeEach(async () => {
@@ -212,7 +232,11 @@ withDb('a turn answered while a step it started was still out', () => {
           // The person answered the question the letter's turn rested on: told
           // they have the letter, the agent says first what it changed; not
           // told, it reads the answer as a go-ahead and sends the letter again.
-          if (shape === 'answered') {
+          // The answer's first attempt is lost before it says a word, and the
+          // turn runs again with the message already read.
+          if (shape === 'answered_lost' && bundles.length === 2)
+            throw new Error('The engine went away.');
+          if (shape === 'answered' || shape === 'answered_lost' || shape === 'spoofed') {
             const reply = bundle.inputs.answered_question?.said.includes('Dear Hiring Manager')
               ? UPDATE
               : FILLED;
@@ -244,16 +268,21 @@ withDb('a turn answered while a step it started was still out', () => {
         await say(bundle, sink, LETTER);
         // The word count, sent and still out when the letter is written.
         const sessionId = `session_${bundle.attempt.id}`;
-        for (let count = shape.startsWith('two_') ? 2 : 1; count > 0; count--) {
+        for (
+          let count = shape.startsWith('two_') || shape === 'read_and_effect' ? 2 : 1;
+          count > 0;
+          count--
+        ) {
           const stepId = newId('act');
           steps.push(stepId);
+          const read = shape === 'read_only' || (shape === 'read_and_effect' && count === 2);
           await handle.db.insert(action).values({
             id: stepId,
             jobId: bundle.attempt.job_id,
             attemptId: bundle.attempt.id,
             connectionId,
-            kind: 'test.exec',
-            effectClass: 'write_reversible',
+            kind: read ? 'test.count' : 'test.exec',
+            effectClass: read ? 'read' : 'write_reversible',
             canonicalPayload: { command: `python3 count.py ${count}` },
             payloadHash: String(count).repeat(64),
             idempotencyKey: newId('act'),
@@ -310,7 +339,7 @@ withDb('a turn answered while a step it started was still out', () => {
     });
     if (!sent.job) throw new Error(`message refused: ${JSON.stringify(sent.error)}`);
     await run(sent.job);
-    if (shape === 'answered') {
+    if (shape === 'answered' || shape === 'answered_lost') {
       // The step never reports back; the person types an answer to the
       // question the turn rests on, as a reply box under it lets them.
       const [asked] = await handle.db
@@ -323,7 +352,21 @@ withDb('a turn answered while a step it started was still out', () => {
       });
       if (!answered.job) throw new Error(`answer refused: ${JSON.stringify(answered.error)}`);
       await run(answered.job);
-    } else if (!RETRIED.has(shape)) {
+    } else if (shape === 'spoofed') {
+      // The person writes something else, which withdraws the question; then a
+      // message arrives under the key an answer to it would have carried.
+      const [asked] = await handle.db
+        .select({ id: question.id })
+        .from(question)
+        .where(and(eq(question.jobId, chat.id), eq(question.state, 'open')));
+      if (!asked) throw new Error('the turn did not rest on a question');
+      const other = await submissions.input(chat.id, { text: 'Thanks, that is all for now.' });
+      if (!other.job) throw new Error(`message refused: ${JSON.stringify(other.error)}`);
+      await run(other.job);
+      const crafted = await submissions.input(chat.id, { text: ANSWER }, `q:${asked.id}`);
+      if (!crafted.job) throw new Error(`message refused: ${JSON.stringify(crafted.error)}`);
+      await run(crafted.job);
+    } else if (!RETRIED.has(shape) && !READS.has(shape)) {
       // The word count reports back after the turn ended; of two, the last one fails.
       for (const [index, stepId] of steps.entries()) {
         const fails = FAILS.has(shape) && index === steps.length - 1;
@@ -372,7 +415,12 @@ withDb('a turn answered while a step it started was still out', () => {
       .select({ text: question.text })
       .from(question)
       .where(and(eq(question.jobId, chat.id), eq(question.state, 'open')));
+    const stepRows = await handle.db
+      .select({ id: action.id, kind: action.kind, status: action.status })
+      .from(action)
+      .where(eq(action.jobId, chat.id));
     return {
+      steps: stepRows,
       bundles,
       letters: streamed.filter((row) =>
         String((row.payload as { text?: unknown }).text).includes('Dear Hiring Manager'),
@@ -402,6 +450,45 @@ withDb('a turn answered while a step it started was still out', () => {
     expect(turns[0]?.answer.split('Dear Hiring Manager')).toHaveLength(2);
     expect(turns[1]?.answer.startsWith('Here is the letter with the gap filled in.')).toBe(true);
     expect(turns[1]?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+  });
+
+  test('an answer whose first attempt was lost is still told what the person has', async () => {
+    const { bundles, turns } = await converse('answered_lost');
+    expect(bundles).toHaveLength(3);
+    // The retry has read the message already; it is still the turn that answers.
+    expect(bundles[2]?.inputs.new_user_messages).toEqual([]);
+    expect(bundles[2]?.inputs.answered_question?.said).toContain('Dear Hiring Manager');
+    expect(turns).toHaveLength(2);
+    expect(turns[1]?.answer.startsWith('Here is the letter with the gap filled in.')).toBe(true);
+  });
+
+  test('a message carrying an answer key is not taken for the answer it was not', async () => {
+    const { bundles } = await converse('spoofed');
+    expect(bundles).toHaveLength(3);
+    const [message] = bundles[2]?.inputs.new_user_messages ?? [];
+    expect(message?.content).toContain(ANSWER);
+    // The question was withdrawn by the message before; it answered nothing.
+    expect(bundles[1]?.inputs.answered_question).toBeUndefined();
+    expect(bundles[2]?.inputs.answered_question).toBeUndefined();
+  });
+
+  test('a read-only check that never reported back is not asked about', async () => {
+    const { bundles, letters, turn, open, state, steps } = await converse('read_only');
+    expect(bundles).toHaveLength(1);
+    expect(letters).toBe(1);
+    expect(open).toEqual([]);
+    expect(turn?.status).toBe('done');
+    expect(state).toBe('waiting_for_input');
+    expect(steps.map((step) => step.status)).toEqual(['failed']);
+  });
+
+  test('beside a step with effects, the question names only that step', async () => {
+    const { open, steps } = await converse('read_and_effect');
+    expect(open).toHaveLength(1);
+    expect(steps.find((step) => step.kind === 'test.count')?.status).toBe('failed');
+    expect(steps.find((step) => step.kind === 'test.exec')?.status).toBe('unknown');
+    // One step named, the one that may have changed something.
+    expect(open[0]?.text.startsWith('Step: ')).toBe(true);
   });
 
   test('a step that went through after the answer runs nothing again', async () => {

@@ -404,7 +404,7 @@ export const SAID_THEN_WROTE =
 
 /** What an attempt is told when the person's message answers the question the last turn ended on. */
 export const ANSWERED_QUESTION =
-  'Your last reply ended on a question to the person. They have that reply, the words below, and their message under "From the person" answers the question. Reply to that answer. Do not send the words below again unchanged. If your reply changes something in them, open it with one line that names the change, such as "Here is the letter with the closing filled in.", and then give the changed text.';
+  'Your last reply ended on a question to the person. They have that reply, the words below, and their latest message answers the question. Reply to that answer. Do not send the words below again unchanged. If your reply changes something in them, open it with one line that names the change, such as "Here is the letter with the closing filled in.", and then give the changed text.';
 
 /**
  * The volatile half: the job, the prior conversation, and then what this turn

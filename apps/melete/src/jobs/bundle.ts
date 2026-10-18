@@ -1066,11 +1066,20 @@ async function answeredQuestion(
 ): Promise<{ question: string; said: string } | null> {
   const questionId = submissionId.slice(answerKey('').length);
   if (answerKey(questionId) !== submissionId || !questionId) return null;
+  // Only the answer the question recorded as its own: a message that merely
+  // carries a key of that shape does not stand for one.
   const [asked] = await tx
     .select({ text: question.text, turnId: attempt.turnId })
     .from(question)
     .innerJoin(attempt, eq(attempt.id, question.attemptId))
-    .where(and(eq(question.id, questionId), eq(question.jobId, row.id)));
+    .where(
+      and(
+        eq(question.id, questionId),
+        eq(question.jobId, row.id),
+        eq(question.state, 'answered'),
+        eq(question.answerSubmissionId, submissionId),
+      ),
+    );
   if (!asked?.turnId) return null;
   const [turn] = await tx
     .select({ answer: experienceTurn.answer })
@@ -1156,10 +1165,13 @@ export async function buildAttemptSkeleton(
   const [activeTurn] = row.currentTurnId
     ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
     : [];
-  // The person's message answers the question the last turn ended on: this
-  // attempt is told so, with the words they already have from that turn.
+  // The person's message answers the question the last turn ended on: every
+  // attempt of this turn is told so, with the words they already have from
+  // that turn, until one of them has replied (then it carries on from its own
+  // words instead). A retry of an attempt that was lost or fenced has read the
+  // message already, so whether the message is new to it does not decide this.
   const answered =
-    activeTurn && history.inputs.new_user_messages.length
+    activeTurn && !history.inputs.said_this_turn
       ? await answeredQuestion(tx, row, activeTurn.submissionId)
       : null;
   if (answered) history.inputs.answered_question = answered;
