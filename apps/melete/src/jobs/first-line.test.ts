@@ -104,6 +104,35 @@ describe('the first line of a turn', () => {
     expect(said(recorded)).toBe('<tool_call_proposed>It is 1.08.');
   });
 
+  test('the model call starting is not a step: its plan line is still not said', async () => {
+    const { gate, recorded } = shownGate();
+    await gate.endShow(true);
+    // The engine reports each model call before the model writes anything.
+    await gate.emit({ ...base(), type: 'turn_started', turn: 0 } as RuntimeEvent);
+    expect(said(recorded)).toBe('<turn_started>');
+    await gate.emit(text('Checking the ECB rate.'));
+    await gate.emit(tool());
+    expect(said(recorded)).toBe('<turn_started><tool_call_proposed>');
+  });
+
+  test('after silent steps, a plan line is not said, and anything else is', async () => {
+    const planned = shownGate();
+    await planned.gate.endShow(true);
+    await planned.gate.emit(tool());
+    await planned.gate.emit(text('Drafting your cover letter.'));
+    await planned.gate.emit(tool());
+    await planned.gate.emit(text('Here it is.'));
+    expect(said(planned.recorded)).toBe('<tool_call_proposed><tool_call_proposed>Here it is.');
+    const found = shownGate();
+    await found.gate.endShow(true);
+    await found.gate.emit(tool());
+    await found.gate.emit(text('The table shows a change on the 17th.'));
+    await found.gate.emit(tool());
+    expect(said(found.recorded)).toBe(
+      '<tool_call_proposed>The table shows a change on the 17th.<tool_call_proposed>',
+    );
+  });
+
   test('a plan line before a draft is not said; the draft goes out whole', async () => {
     const { gate, recorded } = shownGate();
     await gate.endShow(true);

@@ -269,6 +269,8 @@ withDb('first words', () => {
     // it could not be told; its plan line would say the same thing again.
     const chatId = await runTurn('What is the euro to dollar rate today?', async (say) => {
       await pause(300);
+      // The engine reports the model call before the model writes anything.
+      await say({ type: 'turn_started', turn: 0 });
       await say({ type: 'text_delta', text: 'Looking up ' });
       await say({ type: 'text_delta', text: 'the ECB rate.' });
       await say({

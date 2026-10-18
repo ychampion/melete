@@ -13,8 +13,9 @@
  *   when the line was shown, so it could not be told, and a line saying what
  *   it is about to do would say the same thing twice. Such a line is dropped:
  *   what the agent wrote before its first step, or a one-sentence plan line
- *   ("Drafting the reply to Sam.") before the rest of its answer. Anything else
- *   is the answer, and goes out as it came, a moment later.
+ *   ("Drafting the reply to Sam.") before the rest of its answer or as the
+ *   first words after steps it took in silence. Anything else is the answer,
+ *   and goes out as it came, a moment later.
  *
  * The runtime's events keep their order and their sequence numbers: a dropped
  * line goes out as empty text, so the record has no gap.
@@ -62,6 +63,8 @@ const textOf = (event: RuntimeEvent): string => (event.type === 'text_delta' ? e
 export class FirstLine {
   private state: State;
   private held: RuntimeEvent[] = [];
+  /** A step went by before the agent wrote anything. */
+  private stepped = false;
   private chain: Promise<void> = Promise.resolve();
 
   /**
@@ -133,35 +136,50 @@ export class FirstLine {
 
   /** Looks at what is held, in order, and lets it go once the opening is known. */
   private decide(): Promise<void> {
+    const released: Promise<void>[] = [];
     let text = '';
-    for (const [index, event] of this.held.entries()) {
+    let index = 0;
+    const done = (count: number) => {
+      this.state = 'open';
+      released.push(this.release(count));
+      return Promise.all(released).then(() => undefined);
+    };
+    while (index < this.held.length) {
+      const event = this.held[index] as RuntimeEvent;
       if (event.type === 'attempt_outcome') {
         // The whole reply was this text: it is the answer, never dropped.
-        this.state = 'open';
-        return this.release(this.held.length);
+        return done(this.held.length);
       }
       if (WORK.has(event.type)) {
-        this.state = 'open';
-        // What the agent wrote before its first step said what the line said.
         const opening = text.trim();
-        if (opening && opening.length <= OPENING_MAX_CHARACTERS) this.blank(index, '');
-        return this.release(this.held.length);
+        if (!opening) {
+          // A model call or a step before any words: those go out now, and the
+          // agent's first line after them is still judged, so a plan line in a
+          // response already on its way is not said twice. After a real step,
+          // only a line that reads as a plan is dropped.
+          if (event.type !== 'turn_started') this.stepped = true;
+          released.push(this.release(index + 1));
+          index = 0;
+          text = '';
+          continue;
+        }
+        // What the agent wrote before its first step said what the line said.
+        if (opening.length <= OPENING_MAX_CHARACTERS && (!this.stepped || isPlanLine(opening)))
+          this.blank(index, '');
+        return done(this.held.length);
       }
       text += textOf(event);
       const opening = text.trimStart();
       const lineEnd = opening.search(/\n\s*\S/);
       if (lineEnd >= 0) {
-        this.state = 'open';
         if (isPlanLine(opening.slice(0, lineEnd)))
           this.blank(index + 1, opening.slice(lineEnd).trimStart());
-        return this.release(this.held.length);
+        return done(this.held.length);
       }
-      if (opening.length > OPENING_MAX_CHARACTERS) {
-        this.state = 'open';
-        return this.release(this.held.length);
-      }
+      if (opening.length > OPENING_MAX_CHARACTERS) return done(this.held.length);
+      index++;
     }
-    return Promise.resolve();
+    return Promise.all(released).then(() => undefined);
   }
 
   /** Replaces the text of the first `count` held events with `rest`, put in the first one. */
