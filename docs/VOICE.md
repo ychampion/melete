@@ -56,6 +56,7 @@ All optional. An empty value uses the default.
 | `MELETE_VOICE_DAILY_SECONDS` | `1800` | Seconds of push-to-talk recording one person may have transcribed in a day. |
 | `MELETE_VOICE_DAILY_CHARACTERS` | `20000` | Characters of replies one person may have read aloud in a day. |
 | `MELETE_VOICE_DAILY_SESSIONS` | `30` | Voice mode conversations one person may start in a day. |
+| `MELETE_VOICE_DAILY_ASIDES` | no limit | Asides (short words with the agent while it works in voice mode) one person may have in a day. They are counted either way, so a limit set later holds from the first day. |
 
 A day is the last 24 hours, counted per person across all their spaces. A
 request the speech service refuses does not count; one that was sent and never

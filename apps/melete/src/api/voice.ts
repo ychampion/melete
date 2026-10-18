@@ -112,9 +112,6 @@ export type VoiceLimits = {
   asides: number;
 };
 
-/** Asides one person may have in a day: a long working day of calls, never an open tap. */
-export const DAILY_ASIDES = 600;
-
 /** Why voice may not be used here, or null when it may. */
 export type VoicePrivacyReason = 'private' | 'sensitive' | null;
 
@@ -168,7 +165,8 @@ export const voiceLimitsFromEnv = (env: Env): VoiceLimits => ({
   seconds: env.MELETE_VOICE_DAILY_SECONDS,
   characters: env.MELETE_VOICE_DAILY_CHARACTERS,
   sessions: env.MELETE_VOICE_DAILY_SESSIONS,
-  asides: DAILY_ASIDES,
+  // Unset is no daily limit; each aside is still counted, so a limit set later holds.
+  asides: env.MELETE_VOICE_DAILY_ASIDES ?? Number.POSITIVE_INFINITY,
 });
 
 /** The recording types push-to-talk reads, and the file name the provider is given. */
