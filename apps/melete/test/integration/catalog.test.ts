@@ -558,6 +558,11 @@ dbTest('the skills a turn is given in full leave the load_tool index as it was',
     code: 'unknown_tool',
     message: expect.stringContaining('given in full'),
   });
+  // A long turn's compaction can drop it from the instructions; the reader the
+  // refusal points to still has it then.
+  expect(
+    await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'refunds' }),
+  ).toMatchObject({ name: 'refunds', body: 'The refunds procedure.' });
 });
 
 dbTest('a private space skill is read only by the space’s own owner', async () => {
@@ -834,6 +839,21 @@ dbTest(
       'job.wait',
     ]);
     expect(later.map((entry) => entry.name)).toContain('test.send');
+    // A new message that names neither verb leaves the catalog as the last
+    // attempts had it, rather than handing beta's room to the first by name:
+    // the tools lead the cached prompt.
+    const third = recordId('att');
+    await db.sql`update attempt set outcome = 'completed', ended_at = now(),
+      input_cursor = (select max(seq) from event) where id = ${next}`;
+    await db.sql`insert into event (job_id, type, payload, dedup_key)
+      values (${seed.claims.job_id}, 'notice',
+        ${JSON.stringify({ kind: 'user_message', text: 'Thanks!' })}::jsonb,
+        ${`${seed.claims.job_id}:thanks`})`;
+    await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${third}, ${seed.claims.job_id}, 3, 'fake', 'fake', 'scripted')`;
+    await db.sql`update job set lease_epoch = 3 where id = ${seed.claims.job_id}`;
+    const thanked = await broker.catalog({ ...seed.claims, attempt_id: third, epoch: 3 });
+    expect(thanked.map((entry) => entry.name)).toEqual(core.map((entry) => entry.name));
   },
 );
 

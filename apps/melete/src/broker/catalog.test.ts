@@ -440,6 +440,31 @@ test('an index too long to name every unloaded tool names the same ones whatever
     expect(index(text)).toBe(first);
 });
 
+test('a turn the message gives no reason to change keeps the tools the last attempt had', () => {
+  // A first catalog that differs from the last attempt's rewrites the whole
+  // cached prompt, so the room relevance leaves goes to what was there before.
+  const archive = effect('archive.find', 'read', 'Find archive records');
+  const backup = effect('backup.list', 'read', 'List backup records');
+  const garden = effect('garden.plan', 'read', 'Plan garden records');
+  const piano = effect('piano.log', 'read', 'Log piano records');
+  const tools = [archive, backup, garden, piano];
+  const room = (...picked: CatalogItem[]) =>
+    toolTokens([...META_TOOLS, ...picked.map((entry) => entry.tool)]);
+  const budget = Math.max(room(archive, backup), room(garden, piano));
+  expect(room(archive, garden, piano)).toBeGreaterThan(budget);
+  const offered = (text: string, kept?: ToolSpec[]) =>
+    names(selectCore(tools, budget, { text, kept: kept && new Set(names(kept)) })).slice(
+      META_TOOLS.length,
+    );
+  const last = selectCore(tools, budget, { text: 'Plan the garden and log my piano practice' });
+  expect(names(last).slice(META_TOOLS.length)).toEqual(['garden.plan', 'piano.log']);
+  // Without the last attempt's tools, a word-less turn changes the catalog.
+  expect(offered('thanks!')).toEqual(['archive.find', 'backup.list']);
+  expect(offered('thanks!', last)).toEqual(['garden.plan', 'piano.log']);
+  // A tool the message points at still takes its place.
+  expect(offered('Find the archived invoice', last)).toContain('archive.find');
+});
+
 test('relevance still decides which tools make the cut', () => {
   const near = effect('calendar.create', 'write_external', 'Create a calendar event');
   const far = effect('server.restart', 'write_external', 'Restart a managed service');

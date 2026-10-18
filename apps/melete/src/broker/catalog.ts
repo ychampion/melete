@@ -224,6 +224,8 @@ export type CoreSelectionContext = {
   followable?: boolean;
   /** The attempt may read skills it was not given in full, so the reader must be on offer. */
   readable?: boolean;
+  /** The tools the job's previous attempt was offered, kept where the message gives no reason to swap them. */
+  kept?: ReadonlySet<string>;
 };
 
 const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
@@ -300,6 +302,11 @@ export function selectCore(
     .map((item) => ({ item, score: relevance(query, item.entry) }));
   // A browser tool ranks at least as high as the computer's best, and ahead of it.
   const lifted = webScores(healthy.map(({ item, score }) => ({ name: item.tool.name, score })));
+  // The tools lead a Claude request's cached prefix, so a first catalog that
+  // differs from the last attempt's writes the whole prompt to the cache
+  // again. A tool the message points at still takes its place; the room it
+  // leaves goes to what the last attempt had before anything else.
+  const kept = (item: CatalogItem) => Number(context.kept?.has(item.tool.name) === true);
   const scored = healthy
     .map(({ item, score }) => ({
       item,
@@ -312,6 +319,7 @@ export function selectCore(
         granted(b.item) - granted(a.item) ||
         b.score - a.score ||
         Number(lifted.has(b.item.tool.name)) - Number(lifted.has(a.item.tool.name)) ||
+        kept(b.item) - kept(a.item) ||
         Number(b.item.core) - Number(a.item.core) ||
         b.item.uses - a.item.uses ||
         compare(a.item.entry.name, b.item.entry.name),
@@ -779,10 +787,17 @@ export class ToolCatalog {
           .filter((skill) => given.has(skill.frontmatter.name))
           .map((skill) => ({ ...skillItem(skill), core: false, uses: 0 }))
       : [];
+    const [last] = await tx`select c.core from attempt a
+      join attempt_tool_context c on c.attempt_id = a.id
+      where a.job_id = ${claims.job_id} and a.id <> ${claims.attempt_id}
+      order by a.epoch desc limit 1`;
+    const kept = Array.isArray(last?.core)
+      ? new Set((last.core as ToolSpec[]).map((tool) => tool.name))
+      : undefined;
     const core = selectCore(
       items,
       this.options.coreTokenBudget ?? budget.core_catalog_tokens,
-      await this.turn(tx, job, claims, access),
+      { ...(await this.turn(tx, job, claims, access)), kept },
       budget.catalog_index_tokens,
       indexedOnly,
     );
@@ -969,12 +984,14 @@ export class ToolCatalog {
     return this.within(claims, async (tx, _job, items, context) => {
       const item = items.find((entry) => entry.entry.name === name);
       if (!item) {
-        // The index names the skills given in full too; there is nothing to load for one.
+        // The index names the skills given in full too; there is nothing to load
+        // for one. A long turn's compaction can drop it from the instructions,
+        // and the reader still has it then.
         const given = await givenInFull(tx, claims.attempt_id);
         if ([...given].some((skill) => `skills.${skill.replaceAll('-', '_')}` === name))
           throw new BrokerFault(
             'unknown_tool',
-            "This skill is given in full in this turn's instructions: follow it there.",
+            `This skill was given in full in this turn's instructions, under "How to do this kind of work": follow it there. If it is no longer there, read it with ${SKILL_READ_TOOL_NAME}.`,
           );
         throw new BrokerFault('unknown_tool');
       }
