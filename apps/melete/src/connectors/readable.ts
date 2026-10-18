@@ -17,7 +17,6 @@ const SKIPPED = new Set([
   'math',
   'iframe',
   'object',
-  'embed',
   'canvas',
   'select',
   'textarea',
@@ -204,13 +203,76 @@ export function tagEnd(html: string, start: number): number {
   return -1;
 }
 
+/**
+ * Just past the end of the comment that opens at `open` (`<!--`), as a browser
+ * ends one: at `-->` or `--!>`, where `<!-->` and `<!--->` are empty comments.
+ * One forward scan, so a page of unclosed comments stays linear.
+ */
+function commentEnd(html: string, open: number): number {
+  let at = html.indexOf('--', open + 2);
+  while (at !== -1) {
+    if (html[at + 2] === '>') return at + 3;
+    // `<!--!>` is not a close: the dashes of `<!--` end a comment only before `>`.
+    if (at > open + 2 && html[at + 2] === '!' && html[at + 3] === '>') return at + 4;
+    at = html.indexOf('--', at + 1);
+  }
+  return html.length;
+}
+
+/** Whether a tag name ends before `character`: at a space, `/`, `>` or the end of the page. */
+function endsName(character: string | undefined): boolean {
+  return (
+    character === undefined ||
+    character === '>' ||
+    character === '/' ||
+    character === ' ' ||
+    character === '\t' ||
+    character === '\n' ||
+    character === '\f' ||
+    character === '\r'
+  );
+}
+
 /** Where the end tag of `name` starts, as a browser finds it: `</name` then a space, `/` or `>`. */
 function closingTag(lower: string, name: string, from: number): number {
   let at = lower.indexOf(`</${name}`, from);
   while (at !== -1) {
-    const next = lower[at + name.length + 2];
-    if (next === undefined || next === '>' || next === '/' || /\s/.test(next)) return at;
+    if (endsName(lower[at + name.length + 2])) return at;
     at = lower.indexOf(`</${name}`, at + 1);
+  }
+  return -1;
+}
+
+/**
+ * Where a script's end tag starts, as a browser finds it. After `<!--` a
+ * `<script` opens a nested one whose `</script>` does not end the outer script,
+ * the way old pages wrote `<!-- document.write('<script …></script>') -->`; a
+ * `-->` undoes both.
+ */
+function scriptEnd(lower: string, from: number): number {
+  let mode: 'data' | 'escaped' | 'nested' = 'data';
+  let dashesFrom = 0;
+  for (let at = from; at < lower.length; at += 1) {
+    const character = lower[at];
+    if (character === '>') {
+      if (mode !== 'data' && at - 2 >= dashesFrom && lower[at - 1] === '-' && lower[at - 2] === '-')
+        mode = 'data';
+    } else if (character === '<') {
+      const endTag = lower.startsWith('</script', at) && endsName(lower[at + 8]);
+      if (mode === 'data' && lower.startsWith('<!--', at)) {
+        mode = 'escaped';
+        // The dashes of `<!--` count towards a `-->`, so `<!-->` closes at once.
+        dashesFrom = at + 2;
+        at += 3;
+      } else if (endTag && mode !== 'nested') return at;
+      else if (endTag) {
+        mode = 'escaped';
+        at += 7;
+      } else if (mode === 'escaped' && lower.startsWith('<script', at) && endsName(lower[at + 7])) {
+        mode = 'nested';
+        at += 6;
+      }
+    }
   }
   return -1;
 }
@@ -247,7 +309,9 @@ export function readableText(html: string, base?: string): ReadablePage {
       return undefined;
     }
   })();
-  const lower = html.toLowerCase();
+  // Only ASCII letters fold, as tag names do: a full lower-casing turns `İ` into
+  // two characters, and every position after it would point at the wrong place.
+  const lower = html.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
   const out: string[] = [];
   let title: string | null = null;
   let link: { href: string; start: number } | null = null;
@@ -262,15 +326,16 @@ export function readableText(html: string, base?: string): ReadablePage {
       break;
     }
     text(html.slice(index, open));
-    if (lower.startsWith('<!--', open)) {
-      const close = html.indexOf('-->', open + 4);
-      index = close === -1 ? html.length : close + 3;
+    if (html.startsWith('<!--', open)) {
+      index = commentEnd(html, open);
       continue;
     }
     const nameMatch = /^<\/?([a-zA-Z][a-zA-Z0-9-]{0,30})/.exec(html.slice(open, open + 34));
     if (!nameMatch) {
-      // A `<` that opens no tag is text, or a declaration such as `<!doctype>`.
-      if (html[open + 1] === '!' || html[open + 1] === '?') {
+      // A `<` that opens no tag is text, or a declaration such as `<!doctype>`, or
+      // a bogus comment such as `<?xml …>` or `</ …>`, which ends at the next `>`.
+      const next = html[open + 1];
+      if (next === '!' || next === '?' || (next === '/' && open + 2 < html.length)) {
         const close = html.indexOf('>', open);
         index = close === -1 ? html.length : close + 1;
       } else {
@@ -285,17 +350,20 @@ export function readableText(html: string, base?: string): ReadablePage {
     const closing = html[open + 1] === '/';
     const tag = html.slice(open, end + 1);
     index = end + 1;
-    if (!closing && name === 'title' && title === null) {
+    if (!closing && name === 'title') {
+      // Every title holds plain text up to its end tag; the first names the page.
       const close = closingTag(lower, 'title', index);
-      const raw = html.slice(index, close === -1 ? html.length : close);
-      title = decodeEntities(raw).replace(/\s+/g, ' ').trim().slice(0, 300) || null;
+      if (title === null) {
+        const raw = html.slice(index, close === -1 ? html.length : close);
+        title = decodeEntities(raw).replace(/\s+/g, ' ').trim().slice(0, 300) || null;
+      }
       const after = close === -1 ? -1 : tagEnd(html, close);
       index = after === -1 ? html.length : after + 1;
       continue;
     }
     if (!closing && SKIPPED.has(name) && !tag.endsWith('/>')) {
       // Everything up to the matching close is dropped, nested or not.
-      const close = closingTag(lower, name, index);
+      const close = name === 'script' ? scriptEnd(lower, index) : closingTag(lower, name, index);
       if (close === -1) {
         index = html.length;
         break;

@@ -1,6 +1,21 @@
 import { expect, test } from 'bun:test';
 import { decodeEntities, readableText, tagEnd } from './readable.ts';
 
+/**
+ * Numbers in [0, 1) from a 32-bit generator (mulberry32) that does not repeat
+ * for 2^32 draws. A product past 2^53 loses its low bits, so the usual
+ * `seed * 1103515245 % 2 ** 31` falls into a cycle of about 10,000 draws.
+ */
+function generator(seed: number): () => number {
+  let state = seed | 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 const PAGE = `<!doctype html>
 <html><head>
   <title>Example &amp; Co &mdash; News</title>
@@ -119,11 +134,7 @@ test('a tag ends where a browser ends it, whatever stray quotes it holds', () =>
   for (const [html, end] of cases) expect([html, tagEnd(html, 0)]).toEqual([html, end]);
   // Built from the grammar a browser reads, so where each tag ends is known:
   // names may hold stray quotes, values in quotes may hold `>` and the other quote.
-  let seed = 11;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2 ** 31;
-    return seed / 2 ** 31;
-  };
+  const random = generator(11);
   const pick = (from: string, length: number) =>
     Array.from({ length }, () => from[Math.floor(random() * from.length)]).join('');
   for (let round = 0; round < 5_000; round += 1) {
@@ -151,6 +162,62 @@ test('a tag ends where a browser ends it, whatever stray quotes it holds', () =>
   }
 });
 
+test('comments and declarations end where a browser ends them', () => {
+  const cases: Array<[string, string]> = [
+    // `<!-->` and `<!--->` are whole, empty comments.
+    ['<p>one</p><!--><p>two</p>', 'one\n\ntwo'],
+    ['<p>one</p><!---><p>two</p>', 'one\n\ntwo'],
+    ['<p>one</p><!-- note --!><p>two</p>', 'one\n\ntwo'],
+    ['<p>one</p><!-- a -- b ----><p>two</p>', 'one\n\ntwo'],
+    // The dashes of `<!--` close only before `>`: `<!--!>` stays open.
+    ['<p>one</p><!--!><p>HIDDEN</p>', 'one'],
+    // `</` without a name opens a bogus comment that ends at the next `>`.
+    ['<p>a</ junk>b</>c</p>', 'abc'],
+    ['<p>a<?xml version="1.0"?>b<![CDATA[ c ]]>d<!doctype html>e</p>', 'abde'],
+    ['<p>a </', 'a </'],
+  ];
+  for (const [html, text] of cases) expect([html, readableText(html).text]).toEqual([html, text]);
+});
+
+test('script contents stay out, including scripts written inside one', () => {
+  const cases = [
+    // How old pages loaded a script: the inner `</script>` does not end the outer one.
+    `<script><!--\ndocument.write('<script src="a.js"></script>'); LEAK_ONE\n//--></script><p>after</p>`,
+    '<script><!--<script>x</script>LEAK_TWO</script><p>after</p>',
+    '<SCRIPT><!--<SCRIPT >x</SCRIPT\t>LEAK_THREE</SCRIPT><p>after</p>',
+    // A space that is not a tag space (here a no-break space) does not end the name.
+    '<script>x</script >LEAK_FOUR</script><p>after</p>',
+    '<style>x</style >LEAK_FIVE</style><p>after</p>',
+  ];
+  for (const html of cases) expect([html, readableText(html).text]).toEqual([html, 'after']);
+  // `-->` undoes the nesting, so the next `</script>` ends the script again.
+  expect(readableText('<script><!--<script>--></script><p>after</p>').text).toBe('after');
+  expect(readableText('<script><!--></script><p>after</p>').text).toBe('after');
+});
+
+test('an embed has no contents, so the page after it is read', () => {
+  expect(
+    readableText('<p>before</p><embed src="a.pdf" type="application/pdf"><p>after</p>').text,
+  ).toBe('before\n\nafter');
+});
+
+test('a dotted capital I does not move where scripts and titles end', () => {
+  // A full lower-casing turns `İ` into two characters and shifts every position
+  // after it, so a page in Turkish lost text and showed parts of its markup.
+  const words = 'İSTANBUL İZMİR '.repeat(40);
+  const page = readableText(
+    `<title>İstanbul - Vikipedi</title><p>${words}</p><script>SCRIPT_SECRET</script><p>after the script</p>`,
+  );
+  expect(page.title).toBe('İstanbul - Vikipedi');
+  expect(page.text).toBe(`${words.trim()}\n\nafter the script`);
+});
+
+test('a second title is not read as text', () => {
+  const page = readableText('<title>Page</title><p>one</p><title>HIDDEN</title><p>two</p>');
+  expect(page.title).toBe('Page');
+  expect(page.text).toBe('one\n\ntwo');
+});
+
 test('entities decode once, and out-of-range references are dropped', () => {
   expect(decodeEntities('&amp;lt; &#65;&#x42; &unknown; &#0; &#xD800; &#x110000;')).toBe(
     '&lt; AB &unknown;   ',
@@ -166,6 +233,12 @@ test('reading is linear in the size of the page, whatever the markup', () => {
     '<'.repeat(1_000_000),
     `${'<div>'.repeat(100_000)}${'</div>'.repeat(100_000)}`,
     `<a href="/x">${'<a href="/y">'.repeat(50_000)}`,
+    `<script><!--${'<script '.repeat(200_000)}`,
+    `<script>${'<!--<script>-->'.repeat(100_000)}`,
+    '<!--->'.repeat(200_000),
+    '<!-- --!'.repeat(200_000),
+    '</ '.repeat(300_000),
+    'İ<script>x</script>'.repeat(50_000),
   ];
   for (const html of hostile) {
     const started = performance.now();
@@ -201,11 +274,7 @@ test('random tag soup never throws and never leaks a planted script', () => {
     'text',
     '\n',
   ];
-  let seed = 7;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2 ** 31;
-    return seed / 2 ** 31;
-  };
+  const random = generator(7);
   for (let round = 0; round < 3_000; round += 1) {
     let soup = '';
     const length = Math.floor(random() * 40);
