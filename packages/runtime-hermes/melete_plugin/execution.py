@@ -37,6 +37,7 @@ import hashlib
 import os
 import re
 import signal
+import stat
 import subprocess  # noqa: S404 - running a command is this module's whole purpose
 import sys
 import time
@@ -131,7 +132,19 @@ def child_environment() -> Dict[str, str]:
 SHARED_UMASK = 0o002
 
 
-def _limits() -> Optional[Any]:
+def _shared_through_group(root: Path) -> bool:
+    """Whether the workspace is shared with the service through a setgid group.
+
+    Only then is what a command makes opened to the group: on a host where the
+    engine runs as the person, their primary group is not the service's.
+    """
+    try:
+        return bool(os.stat(root).st_mode & stat.S_ISGID)
+    except OSError:
+        return False
+
+
+def _limits(shared: bool) -> Optional[Any]:
     """POSIX resource caps for the child, or None where they do not exist.
 
     Belt and braces on top of the container's own limits: a command cannot write
@@ -146,7 +159,8 @@ def _limits() -> Optional[Any]:
     def apply() -> None:  # pragma: no cover - runs in the forked child
         # The workspace is shared with the service through a group: what the
         # command makes is group-writable, so the service can move it on.
-        os.umask(SHARED_UMASK)
+        if shared:
+            os.umask(SHARED_UMASK)
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES))
         resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT_MS // 1000, MAX_TIMEOUT_MS // 1000))
 
@@ -281,7 +295,7 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=_limits() if os.name != "nt" else None,  # noqa: PLW1509
+            preexec_fn=_limits(_shared_through_group(root)) if os.name != "nt" else None,  # noqa: PLW1509
             start_new_session=os.name != "nt",
         )
         reader = threading.Thread(target=capture.drain, args=(process.stdout,), daemon=True)

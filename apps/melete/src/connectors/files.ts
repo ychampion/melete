@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants, lstatSync } from 'node:fs';
 import {
+  access,
   type FileHandle,
   link,
   lstat,
@@ -2118,34 +2119,39 @@ export function createFilesConnector(options: FilesOptions): Connector {
             reason: 'the move did not record an expected content hash',
           };
         if (actual !== expected) return { decision: 'undecided', reason: NOT_LANDED.differs };
-        // A move into Files whose receipt says the workspace copy could not be
-        // removed is delivered once the file in Files holds the bytes moved.
-        const receiptDetail = action.receipt?.detail;
-        const copyKept =
-          action.kind === 'files.move' &&
-          area === 'artifacts' &&
-          receiptDetail !== null &&
-          typeof receiptDetail === 'object' &&
-          !Array.isArray(receiptDetail) &&
-          receiptDetail.workspace_copy === 'kept';
-        if (copyKept) {
-          const evidence = { path: relative, area, content_hash: actual, workspace_copy: 'kept' };
-          return { decision: 'succeeded', evidence, receipt: receiptFor(action, evidence, actual) };
-        }
         if (action.kind === 'files.move') {
-          const source = await resolveFile(
-            ctx,
-            areaFor(payload.area),
-            requiredString(payload, 'from'),
-          );
+          const fromArea = areaFor(payload.area);
+          const source = await resolveFile(ctx, fromArea, requiredString(payload, 'from'));
           try {
             // Looked up inside the walked folder, so a parent swapped for a
             // link cannot make a source that is still there look gone.
             const folder = await holdBeneath(source.base, source.segments.slice(0, -1));
+            let removable = true;
             try {
               await lstat(folder.at(path.basename(source.target)));
+              // Into Files from a workspace folder the service may not change,
+              // the copy left behind is what execute keeps and says so: the
+              // file in Files holding the bytes moved is the move delivered.
+              if (fromArea === 'work' && area === 'artifacts')
+                removable = await access(folder.self, constants.W_OK).then(
+                  () => true,
+                  () => false,
+                );
             } finally {
               await folder.close();
+            }
+            if (!removable) {
+              const evidence = {
+                path: relative,
+                area,
+                content_hash: actual,
+                workspace_copy: 'kept',
+              };
+              return {
+                decision: 'succeeded',
+                evidence,
+                receipt: receiptFor(action, evidence, actual),
+              };
             }
             return { decision: 'undecided', reason: 'the move source still exists' };
           } catch (error) {

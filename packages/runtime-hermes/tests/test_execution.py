@@ -190,25 +190,40 @@ def test_the_filesystem_outside_the_workspace_is_the_containers_job_not_this_mod
     assert (tmp_path / "escaped.txt").exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="file modes and umask are POSIX")
-def test_what_cell_code_makes_the_service_can_manage(workspace):
-    """The workspace is shared with the service through a group. A folder or
-    file the agent's code makes must be group-writable, or the service cannot
-    move a file out of it into the person's Files."""
+
+def _make_in_cell():
     previous = os.umask(0o022)
     try:
-        outcome = run_in_cell(
+        return run_in_cell(
             "python",
             {
                 "code": (
                     "import os\n"
                     "os.makedirs('output/slides')\n"
-                    "open('output/slides/deck.pptx', 'wb').write(b'PK\x03\x04')\n"
+                    "open('output/slides/deck.pptx', 'wb').write(b'PK')\n"
                 )
             },
         )
     finally:
         os.umask(previous)
-    assert outcome["record"]["exit_code"] == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes and umask are POSIX")
+def test_what_cell_code_makes_the_service_can_manage(workspace):
+    """A workspace shared with the service through a setgid group: a folder or
+    file the agent's code makes must be group-writable, or the service cannot
+    move a file out of it into the person's Files."""
+    workspace.chmod(0o2770)
+    assert _make_in_cell()["record"]["exit_code"] == 0
     for made in ("output", "output/slides", "output/slides/deck.pptx"):
         assert (workspace / made).stat().st_mode & 0o020, f"{made} is not group-writable"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes and umask are POSIX")
+def test_a_workspace_shared_with_no_group_keeps_the_umask(workspace):
+    """Run on a host with no shared group, the person's usual umask stands:
+    what the agent makes is not opened to everyone in their primary group."""
+    workspace.chmod(0o755)
+    assert _make_in_cell()["record"]["exit_code"] == 0
+    for made in ("output", "output/slides", "output/slides/deck.pptx"):
+        assert not (workspace / made).stat().st_mode & 0o020, f"{made} is group-writable"

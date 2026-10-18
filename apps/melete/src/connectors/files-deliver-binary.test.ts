@@ -146,19 +146,37 @@ for (const each of cases) {
       expect(String(result.receipt.detail.workspace_note)).toContain(`/work/output/${each.name}`);
       // The workspace copy is left as it was.
       expect(sha(await readFile(work('output', each.name)))).toBe(sha(bytes));
-      // Checked again later, the move is delivered: the copy left behind was said on its receipt.
-      const recorded = { ...action, receipt: result.receipt as unknown as typeof action.receipt };
-      const verdict = await connector().verify(recorded, connectorContext(recorded));
-      expect(verdict.decision).toBe('succeeded');
-      if (verdict.decision === 'succeeded')
-        expect(verdict.evidence).toMatchObject({
-          content_hash: sha(bytes),
-          workspace_copy: 'kept',
-        });
-      // Without that receipt, a source still there leaves the move undecided.
-      expect((await connector().verify(action, connectorContext(action))).decision).toBe(
-        'undecided',
-      );
     },
   );
 }
+
+/**
+ * A move whose acknowledgement was lost: the file reached Files whole and the
+ * workspace copy could not be removed. Checked later with no receipt, it is
+ * delivered, not undecided. Only POSIX says a folder cannot be written.
+ */
+test.skipIf(process.platform === 'win32' || asRoot)(
+  'a move into Files checked with no receipt is delivered when the copy left behind cannot be removed',
+  async () => {
+    const bytes = pptxBytes();
+    await mkdir(work('output'));
+    await writeFile(work('output', 'deck.pptx'), bytes);
+    await writeFile(files('deck.pptx'), bytes);
+    const action = connectorAction('files.move', {
+      from: 'output/deck.pptx',
+      to: 'deck.pptx',
+      to_area: 'artifacts',
+      content_hash: sha(bytes),
+    });
+    // While the service could still remove the copy, the move is not finished.
+    expect((await connector().verify(action, connectorContext(action))).decision).toBe('undecided');
+    await lockAgainstRemoval(work('output'), work('output', 'deck.pptx'));
+    const verdict = await connector().verify(action, connectorContext(action));
+    expect(verdict.decision).toBe('succeeded');
+    if (verdict.decision === 'succeeded')
+      expect(verdict.evidence).toMatchObject({ content_hash: sha(bytes), workspace_copy: 'kept' });
+    // Files holding other bytes is still not this move.
+    await writeFile(files('deck.pptx'), Buffer.from('other'));
+    expect((await connector().verify(action, connectorContext(action))).decision).toBe('undecided');
+  },
+);

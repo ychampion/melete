@@ -215,18 +215,34 @@ def test_helpers_take_only_the_value_the_renderer_writes(tmp_path, monkeypatch, 
         boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "MELETE_ENGINE_DELEGATION": value})
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="runs the entrypoint's shell")
-def test_the_engine_starts_with_a_group_writable_umask():
-    """What the engine and its commands make in the shared /work must be
-    group-writable, so the service can move it into the person's Files."""
+
+def _umask_after_entrypoint(work):
     import subprocess  # noqa: PLC0415
 
     script = (Path(__file__).parents[1] / "entrypoint.sh").read_text()
-    start = script.index("\numask ")
-    launch = script[start:]
-    assert launch.index("\numask ") < launch.index('\nexec "$@"')
+    launch = script[script.index("\n# /work is shared"):]
+    assert launch.index("umask 002") < launch.index('\nexec "$@"')
     shown = subprocess.run(
-        ["sh", "-c", "umask 077\nSPARE=\n" + launch, "entrypoint", "sh", "-c", "umask"],
+        ["sh", "-c", f"umask 077\nSPARE=\nMELETE_WORK_DIR={work}\n" + launch,
+         "entrypoint", "sh", "-c", "umask"],
         capture_output=True, text=True, check=True,
     )
-    assert shown.stdout.strip() == "0002"
+    return shown.stdout.strip()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the entrypoint's shell")
+def test_the_engine_starts_with_a_group_writable_umask_in_a_shared_workspace(tmp_path):
+    """What the engine and its commands make in the setgid /work must be
+    group-writable, so the service can move it into the person's Files."""
+    work = tmp_path / "work"
+    work.mkdir()
+    work.chmod(0o2770)
+    assert _umask_after_entrypoint(work) == "0002"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the entrypoint's shell")
+def test_the_engine_keeps_its_umask_in_a_workspace_with_no_shared_group(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    work.chmod(0o700)
+    assert _umask_after_entrypoint(work) == "0077"
