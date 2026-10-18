@@ -96,3 +96,18 @@ export function onlyNarration(text: string): boolean {
   }
   return true;
 }
+
+/**
+ * Whether words already sent in a turn are its answer rather than a line about
+ * what came next: more than nothing-but-narration, and more than one short
+ * sentence, which may only announce the next step in other words ("Checking
+ * what I know about your book club."). A short answer reads as a line here;
+ * the cost is one more ask to say only what is new, never a turn left with no
+ * answer.
+ */
+export function answersAlready(said: string): boolean {
+  if (onlyNarration(said)) return false;
+  const kept = withoutNarration(said).trim();
+  const sentences = kept.split(/\n+|(?<=[.!?…])\s+/).filter((part) => part.trim()).length;
+  return sentences >= 2 || kept.length > 160;
+}

@@ -40,10 +40,11 @@ import {
 import {
   DELIVER_CONTINUATION,
   quietAllowanceMs,
+  SAID_DELIVER_CONTINUATION,
   stalledContinuation,
   stalledNote,
 } from './liveness.ts';
-import { onlyNarration } from './narration.ts';
+import { answersAlready, onlyNarration } from './narration.ts';
 import { asksWithoutProposing, UNPROPOSED_CONTINUATION } from './proposal.ts';
 import { steerContinuation, steerInput } from './steer.ts';
 import { RUNTIME_VERSION } from './version.ts';
@@ -260,11 +261,18 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     // speak to the person after it stopped without a word.
     const started = this.now();
     let stalled: RunResult['stalled'];
-    // An earlier attempt of this turn already gave the person more than a line
-    // about its next step: one that ends without words here has nothing new to
-    // say, and asking it to say something would send the answer again.
+    // An earlier attempt of this turn already gave the person its answer, and
+    // nothing new came in since: one that ends without words here has nothing
+    // new to say, and asking it to say something would send the answer again.
+    // Words that may only be a line about the next step, or a new message,
+    // approval or event to answer, leave the one ask in place, told what the
+    // person already has.
     const said = bundle.inputs.said_this_turn?.trim() ?? '';
-    let delivered = said !== '' && !onlyNarration(said);
+    const news =
+      bundle.inputs.new_user_messages.length > 0 ||
+      bundle.inputs.approval_results.length > 0 ||
+      bundle.inputs.trigger_events.length > 0;
+    let delivered = said !== '' && !news && answersAlready(said);
     // A reply that claims a step no tool took gets one hidden chance to take
     // it or say it again without the claim. Actions the person approved in
     // this wake were carried out for it, so they back a claim as well.
@@ -411,7 +419,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           )
             break;
           delivered = true;
-          input = DELIVER_CONTINUATION;
+          input = said ? SAID_DELIVER_CONTINUATION : DELIVER_CONTINUATION;
           continue;
         }
         // Words the person sent while this ran become the next run's input,

@@ -22,6 +22,7 @@ import {
   type EventSink,
   type RuntimeAdapter,
 } from '@melete/contracts';
+import { renderInput, SAID_THEN_WROTE } from '@melete/runtime-hermes';
 import { and, eq } from 'drizzle-orm';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -37,7 +38,9 @@ import {
 } from '../../src/db/schema.ts';
 import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
+import { withdrawSettledQuestion } from '../../src/jobs/questions.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
+import { RUNAWAY_NOTE } from '../../src/jobs/runaway.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
@@ -51,6 +54,14 @@ const key = 'answered-turn-signing-key-32-bytes-long';
 const runners: AttemptRunner[] = [];
 const LETTER = 'Dear Hiring Manager,\n\nHere is the letter.\n\nSincerely,\nRiya Sharma';
 const FOLLOW_UP = 'The word count did not run, so I could not confirm the length.';
+const STEER = 'Also, can you make it a little warmer?';
+const STEER_REPLY =
+  'Here is a warmer closing line: I would love to bring this energy to your team.';
+/** One paragraph of a reply gone round in a loop, long enough to count as one. */
+const LOOPED =
+  'This paragraph is written the same way every time, word for word, because the reply has fallen into a loop and keeps going on and on. '.repeat(
+    5,
+  );
 
 function fixture() {
   if (!handle || !queue || !jobs) throw new Error('Postgres unavailable');
@@ -97,8 +108,25 @@ const computer: Connector = {
  *   when the turn ends, and its result lands later;
  * - `lost`: the engine failed after the answer, with the step still out, and
  *   the turn is retried.
+ * - `steered`: the step went through, and the person wrote again while the
+ *   step was still out, words the answer never read;
+ * - `refenced`: the step failed, and the follow-up's engine went away part way
+ *   through its first words, so the follow-up is run once more;
+ * - `looping`: `lost`, and the retry falls into repeating one paragraph;
+ * - `two_through` / `two_one_failed`: two steps out, both going through, or
+ *   the second failing after the first went through.
  */
-type Shape = 'went_through' | 'failed' | 'lost';
+type Shape =
+  | 'went_through'
+  | 'failed'
+  | 'lost'
+  | 'steered'
+  | 'refenced'
+  | 'looping'
+  | 'two_through'
+  | 'two_one_failed';
+const FAILS = new Set<Shape>(['failed', 'refenced', 'two_one_failed']);
+const RETRIED = new Set<Shape>(['lost', 'looping']);
 
 withDb('a turn answered while a step it started was still out', () => {
   beforeEach(async () => {
@@ -147,16 +175,20 @@ withDb('a turn answered while a step it started was still out', () => {
     });
 
     const bundles: AttemptBundle[] = [];
-    let stepId = '';
-    const say = (bundle: AttemptBundle, sink: EventSink, text: string) =>
-      sink.emit({
+    const steps: string[] = [];
+    const pieces = new Map<string, number>();
+    const say = (bundle: AttemptBundle, sink: EventSink, text: string) => {
+      const at = pieces.get(bundle.attempt.id) ?? 0;
+      pieces.set(bundle.attempt.id, at + 1);
+      return sink.emit({
         type: 'text_delta',
         text,
         attempt_id: bundle.attempt.id,
-        local_seq: 0,
-        dedup_key: dedupKey(bundle.attempt.id, 0),
+        local_seq: at,
+        dedup_key: dedupKey(bundle.attempt.id, at),
         at: new Date().toISOString(),
       } as never);
+    };
     const runtime: RuntimeAdapter = {
       capabilities: async () => ({
         streaming: true,
@@ -167,9 +199,22 @@ withDb('a turn answered while a step it started was still out', () => {
       async start(bundle: AttemptBundle, sink: EventSink): Promise<AttemptOutcome> {
         bundles.push(bundle);
         if (bundles.length > 1) {
+          // A message the person sent since is answered whatever else was said.
+          if (bundle.inputs.new_user_messages.some((message) => message.content.includes(STEER))) {
+            await say(bundle, sink, STEER_REPLY);
+            return { kind: 'completed', summary: STEER_REPLY, evidence: [] };
+          }
           // Told the letter reached the person, it adds only what changed.
           if (bundle.inputs.said_this_turn?.includes('Dear Hiring Manager')) {
-            if (shape !== 'failed') return { kind: 'completed', summary: '', evidence: [] };
+            if (shape === 'refenced' && bundles.length === 2) {
+              await say(bundle, sink, 'The word count');
+              throw new Error('The engine went away.');
+            }
+            if (shape === 'looping') {
+              for (let copy = 0; copy < 6; copy++) await say(bundle, sink, `${LOOPED}\n\n`);
+              return { kind: 'completed', summary: LOOPED.repeat(6), evidence: [] };
+            }
+            if (!FAILS.has(shape)) return { kind: 'completed', summary: '', evidence: [] };
             await say(bundle, sink, FOLLOW_UP);
             return { kind: 'completed', summary: FOLLOW_UP, evidence: [] };
           }
@@ -178,31 +223,37 @@ withDb('a turn answered while a step it started was still out', () => {
         }
         await say(bundle, sink, LETTER);
         // The word count, sent and still out when the letter is written.
-        stepId = newId('act');
-        const sessionId = `session_${stepId}`;
-        await handle.db.insert(action).values({
-          id: stepId,
-          jobId: bundle.attempt.job_id,
-          attemptId: bundle.attempt.id,
-          connectionId,
-          kind: 'test.exec',
-          effectClass: 'write_reversible',
-          canonicalPayload: { command: 'python3 count.py' },
-          payloadHash: 'a'.repeat(64),
-          idempotencyKey: newId('act'),
-          status: 'dispatched',
-          dispatchedAt: new Date(),
-        });
-        await handle.sql`insert into sandbox_session (id, connection_id, space_id, job_id,
-            attempt_id, adapter, provider_sandbox_id, image_ref, egress_policy, persistence,
-            status, lease_expires_at)
-          values (${sessionId}, ${connectionId}, ${spaceId}, ${bundle.attempt.job_id},
-            ${bundle.attempt.id}, 'fake', ${sessionId}, 'image',
-            ${JSON.stringify({ kind: 'open' })}::jsonb, 'ephemeral', 'ready',
-            now() + interval '10 minutes')`;
-        await handle.sql`insert into sandbox_command (action_id, session_id, marker)
-          values (${stepId}, ${sessionId}, ${stepId})`;
-        if (shape === 'lost')
+        const sessionId = `session_${bundle.attempt.id}`;
+        for (let count = shape.startsWith('two_') ? 2 : 1; count > 0; count--) {
+          const stepId = newId('act');
+          steps.push(stepId);
+          await handle.db.insert(action).values({
+            id: stepId,
+            jobId: bundle.attempt.job_id,
+            attemptId: bundle.attempt.id,
+            connectionId,
+            kind: 'test.exec',
+            effectClass: 'write_reversible',
+            canonicalPayload: { command: `python3 count.py ${count}` },
+            payloadHash: String(count).repeat(64),
+            idempotencyKey: newId('act'),
+            status: 'dispatched',
+            dispatchedAt: new Date(),
+          });
+          await handle.sql`insert into sandbox_session (id, connection_id, space_id, job_id,
+              attempt_id, adapter, provider_sandbox_id, image_ref, egress_policy, persistence,
+              status, lease_expires_at)
+            values (${sessionId}, ${connectionId}, ${spaceId}, ${bundle.attempt.job_id},
+              ${bundle.attempt.id}, 'fake', ${sessionId}, 'image',
+              ${JSON.stringify({ kind: 'open' })}::jsonb, 'ephemeral', 'ready',
+              now() + interval '10 minutes')
+            on conflict do nothing`;
+          await handle.sql`insert into sandbox_command (action_id, session_id, marker)
+            values (${stepId}, ${sessionId}, ${stepId})`;
+        }
+        // Words the person sends while the turn is still running, after its answer.
+        if (shape === 'steered') await jobs.steer(chat.id, { id: 'steer-warmer', text: STEER });
+        if (RETRIED.has(shape))
           return { kind: 'failed', reason: 'The engine went away.', retryable: true };
         return { kind: 'completed', summary: LETTER, evidence: [] };
       },
@@ -215,7 +266,8 @@ withDb('a turn answered while a step it started was still out', () => {
     });
     runners.push(worker);
     // The step's sender has let go of it, as a tool call that ended does.
-    if (shape !== 'lost') worker.settleAbandoned = (attemptId) => broker.settleAbandoned(attemptId);
+    if (!RETRIED.has(shape))
+      worker.settleAbandoned = (attemptId) => broker.settleAbandoned(attemptId);
     // Runs the conversation until it waits on the person, retries included.
     const run = async (row: JobRow) => {
       let current = row;
@@ -238,24 +290,38 @@ withDb('a turn answered while a step it started was still out', () => {
     });
     if (!sent.job) throw new Error(`message refused: ${JSON.stringify(sent.error)}`);
     await run(sent.job);
-    if (shape !== 'lost') {
-      // The word count reports back after the turn ended.
-      await broker.recordResult(
-        stepId,
-        shape === 'went_through'
-          ? {
-              outcome: 'succeeded',
-              receipt: {
-                action_id: stepId,
-                connection_id: connectionId,
-                external_ref: null,
-                detail: { stdout: '207' },
-                received_at: new Date().toISOString(),
-                late: false,
+    if (!RETRIED.has(shape)) {
+      // The word count reports back after the turn ended; of two, the last one fails.
+      for (const [index, stepId] of steps.entries()) {
+        const fails = FAILS.has(shape) && index === steps.length - 1;
+        await broker.recordResult(
+          stepId,
+          fails
+            ? { outcome: 'failed', reason: 'python3: command not found', retryable: false }
+            : {
+                outcome: 'succeeded',
+                receipt: {
+                  action_id: stepId,
+                  connection_id: connectionId,
+                  external_ref: null,
+                  detail: { stdout: '207' },
+                  received_at: new Date().toISOString(),
+                  late: false,
+                },
               },
-            }
-          : { outcome: 'failed', reason: 'python3: command not found', retryable: false },
-      );
+        );
+        if (index < steps.length - 1) {
+          // Nothing wakes the turn while another step is still out, and its
+          // question stays: answering it is what settles that step.
+          expect((await jobs.get(chat.id)).state).not.toBe('queued');
+          await jobs.transaction((tx) => withdrawSettledQuestion(tx, chat.id));
+          const asked = await handle.db
+            .select({ id: question.id })
+            .from(question)
+            .where(and(eq(question.jobId, chat.id), eq(question.state, 'open')));
+          expect(asked).toHaveLength(1);
+        }
+      }
       await run(await jobs.get(chat.id));
     }
 
@@ -295,8 +361,10 @@ withDb('a turn answered while a step it started was still out', () => {
   });
 
   test('a step that failed after the answer gets a follow-up that knows the answer', async () => {
-    const { bundles, letters, turn } = await converse('failed');
+    const { bundles, letters, turn, open } = await converse('failed');
     expect(bundles).toHaveLength(2);
+    // The step settled, so its question is gone even though a follow-up ran.
+    expect(open).toEqual([]);
     expect(bundles[1]?.inputs.said_this_turn).toContain('Dear Hiring Manager');
     expect(bundles[1]?.inputs.new_user_messages).toEqual([]);
     expect(letters).toBe(1);
@@ -311,5 +379,57 @@ withDb('a turn answered while a step it started was still out', () => {
     expect(letters).toBe(1);
     // The letter the person was shown stays the turn's answer.
     expect(turn?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+  });
+
+  test('words the person sent while the step was out are answered, not settled away', async () => {
+    const { bundles, letters, turn, open } = await converse('steered');
+    // The step went through, but the wake carries the person's words: an engine runs.
+    expect(bundles).toHaveLength(2);
+    const [message] = bundles[1]?.inputs.new_user_messages ?? [];
+    expect(message?.content).toContain(STEER);
+    expect(bundles[1]?.inputs.said_this_turn).toContain('Dear Hiring Manager');
+    // It is told the letter does not answer them.
+    expect(renderInput(bundles[1] as AttemptBundle)).toContain(SAID_THEN_WROTE);
+    expect(letters).toBe(1);
+    expect(turn?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+    expect(turn?.answer).toContain(STEER_REPLY);
+    expect(open).toEqual([]);
+  });
+
+  test('a follow-up lost part way keeps the answer it followed', async () => {
+    const { bundles, letters, turn } = await converse('refenced');
+    expect(bundles).toHaveLength(3);
+    // The retry is told everything the person has, the lost attempt's words included.
+    expect(bundles[2]?.inputs.said_this_turn).toContain('Dear Hiring Manager');
+    expect(bundles[2]?.inputs.said_this_turn).toContain('The word count');
+    expect(letters).toBe(1);
+    // Only a lost attempt's own words are ever taken back, never the answer before it.
+    expect(turn?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+    expect(turn?.answer).toContain(FOLLOW_UP);
+  });
+
+  test('a retry that loops is cut back after the answer it carried on from', async () => {
+    const { bundles, turn } = await converse('looping');
+    expect(bundles).toHaveLength(2);
+    expect(turn?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+    // The saved turn keeps the first copy and the line that says why it stopped.
+    expect(turn?.answer.split(LOOPED.trim())).toHaveLength(2);
+    expect(turn?.answer).toContain(RUNAWAY_NOTE);
+  });
+
+  test('two steps that went through after the answer run nothing again', async () => {
+    const { bundles, letters, open, state } = await converse('two_through');
+    expect(bundles).toHaveLength(1);
+    expect(letters).toBe(1);
+    expect(open).toEqual([]);
+    expect(state).toBe('waiting_for_input');
+  });
+
+  test('of two steps, the one that failed last gets the follow-up', async () => {
+    const { bundles, letters, turn } = await converse('two_one_failed');
+    expect(bundles).toHaveLength(2);
+    expect(letters).toBe(1);
+    expect(turn?.answer.split('Dear Hiring Manager')).toHaveLength(2);
+    expect(turn?.answer).toContain(FOLLOW_UP);
   });
 });

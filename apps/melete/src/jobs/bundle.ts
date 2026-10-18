@@ -69,6 +69,7 @@ import { withSharedItems } from '../rooms/shares.ts';
 import { roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
+import { CARRIES_ON } from './answer-join.ts';
 import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import {
@@ -998,14 +999,25 @@ const SAID_SHOWN_CHARS = 6000;
 async function saidThisTurn(
   tx: Transaction,
   row: JobRow,
-  attempts: readonly { id: string; turnId: string | null; outcome: string | null }[],
+  /** The job's ended attempts, newest first. */
+  attempts: readonly {
+    id: string;
+    turnId: string | null;
+    outcome: string | null;
+    epoch: number;
+  }[],
 ): Promise<string> {
   if (!row.currentTurnId) return '';
-  // A fenced attempt's words are taken back from view (`answerJoin`), so they
-  // are not carried on from either.
-  const earlier = attempts
-    .filter((entry) => entry.turnId === row.currentTurnId && entry.outcome !== 'fenced')
-    .map((entry) => entry.id);
+  const turn = attempts.filter((entry) => entry.turnId === row.currentTurnId);
+  // Only an answer, or a failure after words, is carried on from
+  // (`carriesOnAnswer`): an attempt that waited for an approval or an event
+  // is answered whole by the attempt that follows it.
+  const kept = turn.find((entry) => entry.outcome !== 'fenced');
+  if (!kept?.outcome || !CARRIES_ON.has(kept.outcome)) return '';
+  // Fenced attempts before the turn's first kept one were replaced by it
+  // (`answerJoin`); from that one on, every word stayed in view.
+  const first = [...turn].reverse().find((entry) => entry.outcome !== 'fenced') ?? kept;
+  const earlier = turn.filter((entry) => entry.epoch >= first.epoch).map((entry) => entry.id);
   if (!earlier.length) return '';
   const rows = await tx
     .select({ attemptId: event.attemptId, payload: event.payload })

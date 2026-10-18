@@ -18,11 +18,20 @@ import {
   type SubmissionReceipt,
   TERMINAL_STATES,
 } from '@melete/contracts';
-import { and, desc, eq, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
 import { databaseNow } from '../db/clock.ts';
-import { agent, attempt, event, experienceTurn, job, owner, question } from '../db/schema.ts';
+import {
+  action,
+  agent,
+  attempt,
+  event,
+  experienceTurn,
+  job,
+  owner,
+  question,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -216,9 +225,19 @@ export async function resolveQuestions(
 
 /**
  * The open question about steps that had not settled, withdrawn once every one
- * of them has: there is nothing left to ask about them.
+ * of them has: there is nothing left to ask about them. While any step of the
+ * job is still out, or back with nobody able to say how it went, the question
+ * stays: its answers are what settles them.
  */
 export async function withdrawSettledQuestion(tx: Transaction, jobId: string): Promise<void> {
+  const [out] = await tx
+    .select({ id: action.id })
+    .from(action)
+    .where(
+      and(eq(action.jobId, jobId), inArray(action.status, ['dispatched', 'unknown', 'unresolved'])),
+    )
+    .limit(1);
+  if (out) return;
   const [open] = await tx
     .select({ options: question.options })
     .from(question)

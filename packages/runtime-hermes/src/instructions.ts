@@ -398,6 +398,10 @@ export function renderKnowledge(knowledge: AttemptBundle['knowledge']): string[]
 export const SAID_THIS_TURN =
   'You already wrote to the person earlier in this turn, and they have it: the words below. Do not send them again, in the same or in other words. Carry on from where they stopped. If they already answer the request, finish only what is still left of it, such as a step whose result came back, and write again only if that changes what you told them, saying only the change; if nothing changed, end without writing anything. If they only said what you were about to do, or stopped partway, give the rest of the answer now without repeating what is already there.';
 
+/** Added when the person wrote again after those words: the new words still need their answer. */
+export const SAID_THEN_WROTE =
+  'The person has written again since those words, below under "From the person". The words above do not answer that: reply to it now, without repeating what they already have.';
+
 /**
  * The volatile half: the job, the prior conversation, and then what this turn
  * brings: the skills chosen for it, recalled knowledge, what changed since the
@@ -486,6 +490,7 @@ export function renderInput(bundle: AttemptBundle): string {
       '<already_said>',
       said,
       '</already_said>',
+      ...(bundle.inputs.new_user_messages.length ? ['', SAID_THEN_WROTE] : []),
     );
   // In a room each message names who said it; anywhere else it is the owner's.
   for (const message of bundle.inputs.new_user_messages) {
