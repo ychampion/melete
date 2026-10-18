@@ -2685,11 +2685,18 @@ MELETE_MODEL_FALLBACK=fireworks/accounts/fireworks/models/deepseek-v3
 ```
 
 `MELETE_ACK_AFTER_MS` (default `0`, off) is how long a chat turn may stay
-silent before the fast model writes the person one line saying what the agent
-is about to do, from their message alone, with no tools and no memory. It is
-cancelled as soon as the agent's own words arrive, and the agent is told what
-was said so it never says it twice. `1200` is a good value when the fast model
-answers quickly.
+silent before the person is shown one line saying what the agent is about to
+do, written by the fast model from their message alone, with no tools and no
+memory. Off, nothing is written and no model is called for it. On, the line is
+written as each chat turn with a new message starts, so it is ready by then,
+and shown at that time or as soon as it is ready after, only while the agent
+has said nothing. That is one short fast-model call for nearly every such turn,
+including turns the agent answers before the line is needed; the call is
+cancelled once the agent's own words arrive. Once the line is shown, the agent
+is told what was said, and its own opening line about what it will do is left
+out (an English plan line only; anything else it writes is shown). With
+`MELETE_MODEL_FAST` unset, the line is written by the default model, which is
+slower; set a small fast model for it. `800` is a good value with one.
 
 The rules, in order:
 

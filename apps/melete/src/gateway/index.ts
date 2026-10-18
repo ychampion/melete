@@ -29,6 +29,7 @@ import {
   withEffort,
 } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
+import { skillsSent } from './given-skills.ts';
 import { countImages, isInlineImage, withoutImages, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { withLongTurnNote } from './long-turn.ts';
@@ -511,6 +512,8 @@ export function createModelGateway(options: GatewayOptions): Server {
         body = withLongTurnNote(body, protocol);
         // What the person was already told, and a line asked for after a quiet stretch.
         body = withTurnNotes(body, protocol, principal.attemptId);
+        // Which skills given in full the agent still holds (given-skills.ts).
+        skillsSent(principal.attemptId, body);
       }
       const router = options.privacy === false ? null : options.privacy;
       let firstFailure: unknown;

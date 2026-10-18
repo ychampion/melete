@@ -24,10 +24,19 @@ describe('reading an acknowledgement', () => {
       said('The rate is 1.08 dollars.'), // a number not in the message: a guessed answer
       said('Checking **the** rate.'), // markup
       said(
-        'Checking the rate from several sources and comparing them all carefully for you today.',
+        'Checking the rate from several different sources and then comparing them all very carefully for you today.',
       ),
     ])
       expect(readAck(reply, message)).toBeNull();
+  });
+
+  test('a line a few words over the twelve asked for is still shown', () => {
+    // Written by the model for a writing turn; dropped at 14 words before.
+    const message =
+      'Write a short reply to Sam declining the planning meeting on Thursday the 23rd and offering two other times next week. Sign it Riya. Keep it under 120 words.';
+    const line =
+      "Drafting a short reply to Sam declining Thursday's meeting and offering two other times.";
+    expect(readAck(said(line), message)).toBe(line);
   });
 
   test('a number the person wrote may be repeated', () => {

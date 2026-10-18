@@ -29,6 +29,7 @@ import {
   toolOffered,
 } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
+import { stillGiven } from '../gateway/given-skills.ts';
 import { attemptContextBudget } from '../jobs/context-budget.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
@@ -185,7 +186,7 @@ export const SAY_TOOL: ToolSpec = {
 export const SKILL_READ_TOOL: ToolSpec = {
   name: SKILL_READ_TOOL_NAME,
   description:
-    'Read the full instructions of a skill listed in your skill index, by its exact name. Read one before doing the kind of work it describes.',
+    'Read the full instructions of a skill listed under "Other skills you can read", by its exact name, before doing the kind of work it describes. It only returns text and does no work. Skills given in full in your instructions are already there: never read those.',
   input_schema: {
     type: 'object',
     properties: { name: { type: 'string', minLength: 1, maxLength: 80 } },
@@ -1013,6 +1014,16 @@ export class ToolCatalog {
           : `skills.${item.frontmatter.name.replaceAll('-', '_')}` === name,
       );
       if (!skill) throw new BrokerFault('unknown_tool');
+      // A skill the agent still holds in full, at this version, is in its
+      // instructions already: its words again would cost a long tool result and
+      // say nothing new, and a second "Used the skill" entry would tell the
+      // person nothing. One a compaction left out, or that changed since, is
+      // read in full (gateway/given-skills.ts).
+      if (reading && stillGiven(claims.attempt_id, skill.frontmatter.name, skill.body))
+        return {
+          name: skill.frontmatter.name,
+          body: 'This skill is already in your instructions, in full, under "How to do this kind of work". Follow it from there; there is nothing more to read.',
+        };
       // The conversation shows the read as a tool entry naming the skill.
       const at = new Date().toISOString();
       const title = plainSkillTitle(skill.frontmatter.name);

@@ -20,7 +20,15 @@ import {
 } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
-import { event, job, owner, question, space } from '../../src/db/schema.ts';
+import {
+  attempt,
+  event,
+  experienceTurn,
+  job,
+  owner,
+  question,
+  space,
+} from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import type { AckCall } from '../../src/experience/ack.ts';
@@ -262,6 +270,290 @@ withDb('first words', () => {
     expect(messages[3]?.role).toBe('system');
     expect(messages[3]?.content).toContain('"Checking the ECB rate now."');
     expect(messages[3]?.content).toContain('Do not say that again');
+  });
+
+  test('the agent’s own plan line gives way to an acknowledgement already shown', async () => {
+    // The model's first request was on its way before the line was shown, so
+    // it could not be told; its plan line would say the same thing again.
+    const chatId = await runTurn('What is the euro to dollar rate today?', async (say) => {
+      await pause(300);
+      // The engine reports the model call before the model writes anything.
+      await say({ type: 'turn_started', turn: 0 });
+      await say({ type: 'text_delta', text: 'Looking up ' });
+      await say({ type: 'text_delta', text: 'the ECB rate.' });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'web_search',
+        call_id: 'search#0',
+        arguments: { preview: 'ECB rate' },
+      });
+      await say({ type: 'tool_result', call_id: 'search#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: 'It is 1.08 dollars to the euro (ECB).' });
+      return { kind: 'completed', summary: 'It is 1.08 dollars to the euro (ECB).', evidence: [] };
+    });
+    expect(await acknowledgements(chatId)).toEqual(['Checking the ECB rate now.']);
+    const shown = await items(chatId);
+    const words = shown
+      .filter((item) => item.type === 'text_delta')
+      .map((item) => (item as { text: string }).text)
+      .join('');
+    expect(words).not.toContain('Looking up');
+    expect(words).toContain('It is 1.08 dollars to the euro (ECB).');
+    expect(shown.filter((item) => item.type === 'say')).toHaveLength(1);
+  });
+
+  test('a plan line before a draft gives way to the acknowledgement; the draft is whole', async () => {
+    const chatId = await runTurn('Write a short reply to Sam declining Thursday', async (say) => {
+      await pause(300);
+      await say({ type: 'text_delta', text: 'Drafting the reply to Sam.\n\n' });
+      await say({ type: 'text_delta', text: 'Hi Sam,\n\nI can’t make Thursday.\n\nRiya' });
+      return { kind: 'completed', summary: 'Hi Sam, I can’t make Thursday. Riya', evidence: [] };
+    });
+    expect(await acknowledgements(chatId)).toEqual(['Checking the ECB rate now.']);
+    const words = (await items(chatId))
+      .filter((item) => item.type === 'text_delta')
+      .map((item) => (item as { text: string }).text)
+      .join('');
+    expect(words).not.toContain('Drafting the reply');
+    expect(words.trim()).toBe('Hi Sam,\n\nI can’t make Thursday.\n\nRiya');
+  });
+
+  /**
+   * A turn run as two attempts: the first shows the line, works in silence and
+   * ends without a word (here it fails and is retried); the second writes
+   * `second`. Returns what the person was shown and what the turn kept.
+   */
+  async function twoAttempts(
+    first: string | null,
+    second: (say: Say) => Promise<string>,
+    /** How the first attempt ends: failed and retried, or lost and fenced. */
+    end: 'failed' | 'lost' = 'failed',
+  ) {
+    let attempts = 0;
+    const chatId = await runTurn('Which month had the most revenue in this file?', async (say) => {
+      attempts++;
+      if (attempts === 1) {
+        await pause(300);
+        await say({ type: 'turn_started', turn: 0 });
+        if (first) await say({ type: 'text_delta', text: first });
+        await say({ type: 'tool_call_proposed', tool: 'file.save', call_id: 'f#0', arguments: {} });
+        await say({ type: 'tool_result', call_id: 'f#0', ok: true, result: {} });
+        if (end === 'lost') throw new Error('The engine went away.');
+        return { kind: 'failed', reason: 'The engine went away.', retryable: true };
+      }
+      const summary = await second(say);
+      return { kind: 'completed', summary, evidence: [] };
+    });
+    const row = await required(jobs).get(chatId);
+    expect(row.state).toBe('queued');
+    if (row.nextWakeAt) await pause(Math.max(0, row.nextWakeAt.getTime() - Date.now()) + 20);
+    await required(runner).handleWake({
+      job_id: row.id,
+      expected_epoch: row.leaseEpoch,
+      expected_version: row.stateVersion,
+      reason: 'recovery',
+    });
+    expect(attempts).toBe(2);
+    const words = (await items(chatId))
+      .filter((item) => item.type === 'text_delta')
+      .map((item) => (item as { text: string }).text)
+      .join('');
+    const [saved] = await required(handle)
+      .db.select({ answer: experienceTurn.answer })
+      .from(experienceTurn)
+      .where(eq(experienceTurn.jobId, chatId));
+    return { chatId, words, saved: saved?.answer };
+  }
+
+  test('a later attempt of the turn does not say the acknowledged plan again after its steps', async () => {
+    const answer = 'For 2025: December was the best month, at $19,032.';
+    const { chatId, words, saved } = await twoAttempts(null, async (say) => {
+      await say({ type: 'turn_started', turn: 0 });
+      await say({ type: 'text_delta', text: "I'll run the numbers on the" });
+      await say({ type: 'text_delta', text: ' file.' });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'sandbox.exec',
+        call_id: 's#0',
+        arguments: {},
+      });
+      await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: answer });
+      return answer;
+    });
+    // One line, asked for once, by the first attempt.
+    expect(writer.calls).toHaveLength(1);
+    expect(await acknowledgements(chatId)).toEqual(['Checking the ECB rate now.']);
+    expect(words).not.toContain("I'll run the numbers");
+    expect(words.trim()).toBe(answer);
+    expect(saved).toBe(answer);
+  });
+
+  test('a later attempt keeps its answer, and its plan line once the turn has spoken', async () => {
+    const dinners = "Here are three dinner ideas for tonight. They're all vegetarian:";
+    const kept = await twoAttempts(null, async (say) => {
+      await say({ type: 'tool_call_proposed', tool: 'memory.read', call_id: 'm#0', arguments: {} });
+      await say({ type: 'tool_result', call_id: 'm#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: `${dinners}\n\n1. Lentil soup` });
+      return `${dinners}\n\n1. Lentil soup`;
+    });
+    expect(kept.words.trim()).toBe(`${dinners}\n\n1. Lentil soup`);
+    expect(kept.saved).toBe(`${dinners}\n\n1. Lentil soup`);
+    // The first attempt said something: the line is no longer the last thing read.
+    const spoken = await twoAttempts('The file has two years in it.', async (say) => {
+      await say({ type: 'text_delta', text: "I'll run the numbers on the file." });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'sandbox.exec',
+        call_id: 's#0',
+        arguments: {},
+      });
+      await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: 'For 2025: December.' });
+      return 'For 2025: December.';
+    });
+    expect(spoken.words).toContain("I'll run the numbers on the file.");
+  });
+
+  test('words shown by an attempt that was then lost end the silence after the line', async () => {
+    const second = async (say: Say) => {
+      await say({ type: 'text_delta', text: "I'll run the numbers on the file." });
+      await say({
+        type: 'tool_call_proposed',
+        tool: 'sandbox.exec',
+        call_id: 's#0',
+        arguments: {},
+      });
+      await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+      await say({ type: 'text_delta', text: 'For 2025: December.' });
+      return 'For 2025: December.';
+    };
+    const shown = await twoAttempts('The file has two years in it.', second, 'lost');
+    const outcomes = await required(handle)
+      .db.select({ outcome: attempt.outcome })
+      .from(attempt)
+      .where(eq(attempt.jobId, shown.chatId))
+      .orderBy(attempt.epoch);
+    expect(outcomes.map((row) => row.outcome)).toEqual(['fenced', 'completed']);
+    // The person read the lost attempt's words after the line: the plan line
+    // that follows them is not the line again, and is said.
+    expect(shown.words).toContain("I'll run the numbers on the file.");
+    // Lost with nothing said after the line, the turn still rests on it.
+    const silent = await twoAttempts(null, second, 'lost');
+    expect(silent.words).not.toContain("I'll run the numbers");
+    expect(silent.words.trim()).toBe('For 2025: December.');
+    expect(silent.saved).toBe('For 2025: December.');
+    // A plan line opening the reply the retry ends on is neither shown nor kept.
+    const letter = "I'll draft it and check the word count.\n\nDear Hiring Manager,\n\nRiya";
+    const drafted = await twoAttempts(
+      null,
+      async (say) => {
+        await say({ type: 'text_delta', text: letter });
+        return letter;
+      },
+      'lost',
+    );
+    expect(drafted.words.trim()).toBe('Dear Hiring Manager,\n\nRiya');
+    expect(drafted.saved).toBe('Dear Hiring Manager,\n\nRiya');
+  });
+
+  test('turned off, no line is asked for and the agent’s words go out as written', async () => {
+    const options = required(runner).options;
+    const before = options.acknowledge;
+    options.acknowledge = { afterMs: 0, writer };
+    try {
+      const chatId = await runTurn('What is the euro to dollar rate today?', async (say) => {
+        await pause(300);
+        await say({ type: 'text_delta', text: 'Checking the ECB rate.' });
+        await say({
+          type: 'tool_call_proposed',
+          tool: 'web_search',
+          call_id: 's#0',
+          arguments: {},
+        });
+        await say({ type: 'tool_result', call_id: 's#0', ok: true, result: {} });
+        await say({ type: 'text_delta', text: 'It is 1.08.' });
+        return { kind: 'completed', summary: 'It is 1.08.', evidence: [] };
+      });
+      // No model call for a line that is off.
+      expect(writer.calls).toEqual([]);
+      expect(await acknowledgements(chatId)).toEqual([]);
+      const words = (await items(chatId))
+        .filter((item) => item.type === 'text_delta')
+        .map((item) => (item as { text: string }).text)
+        .join('');
+      expect(words).toContain('Checking the ECB rate.');
+    } finally {
+      options.acknowledge = before;
+    }
+  });
+
+  test('the saved answer is what was shown: a dropped plan line is not in it', async () => {
+    const reply = 'Drafting the reply to Sam.\n\nHi Sam,\n\nI can’t make Thursday.';
+    const chatId = await runTurn('Write a short reply to Sam declining Thursday', async (say) => {
+      await pause(300);
+      await say({ type: 'text_delta', text: reply });
+      // The engine's final output is the whole last message, plan line included.
+      return { kind: 'completed', summary: reply, evidence: [] };
+    });
+    const words = (await items(chatId))
+      .filter((item) => item.type === 'text_delta')
+      .map((item) => (item as { text: string }).text)
+      .join('');
+    expect(words.trim()).toBe('Hi Sam,\n\nI can’t make Thursday.');
+    const [saved] = await required(handle)
+      .db.select({ answer: experienceTurn.answer })
+      .from(experienceTurn)
+      .where(eq(experienceTurn.jobId, chatId));
+    expect(saved?.answer).toBe('Hi Sam,\n\nI can’t make Thursday.');
+  });
+
+  test('the line is written as the turn starts, so it is ready by the deadline', async () => {
+    const options = required(runner).options;
+    const before = options.acknowledge;
+    const asked: number[] = [];
+    let started = 0;
+    options.acknowledge = {
+      afterMs: 400,
+      writer: {
+        async write() {
+          asked.push(Date.now() - started);
+          await pause(300);
+          return 'Checking the ECB rate now.';
+        },
+      },
+    };
+    try {
+      writer.calls = [];
+      runtime.script = async (say) => {
+        await pause(600);
+        await say({ type: 'text_delta', text: 'It is 1.08.' });
+        return { kind: 'completed', summary: 'It is 1.08.', evidence: [] };
+      };
+      const created = await request('/agents', 'POST', freshAgent());
+      const persona = agentResponse.parse(await created.json()).agent;
+      const chat = conversationResponse.parse(
+        await (
+          await request('/conversations', 'POST', { title: 'Deadline', agent_id: persona.id })
+        ).json(),
+      ).conversation;
+      await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Rate today?' });
+      const row = await required(jobs).get(chat.id);
+      started = Date.now();
+      await required(runner).handleWake({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      });
+      // Asked long before the deadline, so the line shows at the deadline, not
+      // the deadline plus the writer's time (which would land after the answer).
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toBeLessThan(250);
+      expect(await acknowledgements(chat.id)).toEqual(['Checking the ECB rate now.']);
+    } finally {
+      options.acknowledge = before;
+    }
   });
 
   test('no line is shown when the writer has none', async () => {
