@@ -184,9 +184,25 @@ export function withLongTurnNote(
   const note =
     background && rounds >= LONG_TURN_ROUNDS
       ? LONG_TURN_NOTE
-      : narrated && quiet >= PROGRESS_ROUNDS
+      : // A note of the service's that already follows the latest step, such
+        // as `turn-notes.ts` asking for a line after a quiet stretch, is the
+        // update this request asks for: a second ask beside it would only
+        // repeat it.
+        narrated && quiet >= PROGRESS_ROUNDS && !endsOnNote(list, protocol)
         ? PROGRESS_NOTE
         : null;
   if (!note) return body;
   return noted(body, protocol, list, note) ?? body;
+}
+
+/** The request already ends on words of the service's, after the latest step's results. */
+function endsOnNote(list: unknown[], protocol: GatewayProtocol): boolean {
+  const last = record(list.at(-1));
+  if (protocol === 'chat/completions') return last?.role === 'system';
+  if (protocol === 'responses') return last?.role === 'developer' || last?.role === 'system';
+  const content = last?.role === 'user' && Array.isArray(last.content) ? last.content : [];
+  return (
+    record(content.at(-1))?.type === 'text' &&
+    content.some((part) => record(part)?.type === 'tool_result')
+  );
 }

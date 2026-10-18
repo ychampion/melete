@@ -7,6 +7,7 @@ import {
   PROGRESS_ROUNDS,
   withLongTurnNote,
 } from './long-turn.ts';
+import { PROGRESS_AFTER_MS, turnEnded, turnStarted, withTurnNotes } from './turn-notes.ts';
 
 const tool = (name: string) => ({ type: 'function', function: { name, parameters: {} } });
 const round = (name = 'web.fetch') => [
@@ -361,4 +362,61 @@ describe('a long or quiet turn over the Responses protocol', () => {
     ]);
     expect(withLongTurnNote(spoken, 'responses')).toBe(spoken);
   });
+});
+
+describe("beside the service's own ask for a line after a quiet stretch", () => {
+  // `turn-notes.ts` asks for a line once a turn has gone quiet for a while;
+  // when that ask follows the same step this note would, one ask is enough.
+  const chat = (rounds: number) => ({
+    model: 'm',
+    tools: [tool('say'), tool('web.fetch')],
+    messages: [
+      { role: 'user', content: 'Compare three flights.' },
+      ...Array.from({ length: rounds }, () => {
+        const id = `c${++used}`;
+        return [
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              { id, type: 'function', function: { name: 'web.fetch', arguments: '{}' } },
+            ],
+          },
+          { role: 'tool', tool_call_id: id, content: '{"status":"succeeded"}' },
+        ];
+      }).flat(),
+    ],
+  });
+  const bodies = {
+    'chat/completions': () => chat(PROGRESS_ROUNDS),
+    messages: () => claude(PROGRESS_ROUNDS, [claudeTool('say'), claudeTool('web.fetch')]),
+    responses: () => openai(PROGRESS_ROUNDS, [fnTool('say'), fnTool('web.fetch')]),
+  } as const;
+  const asks = (body: Record<string, unknown>) => {
+    const text = JSON.stringify(body);
+    return {
+      timed: text.split('seconds have passed with nothing said').length - 1,
+      rounds: text.split(PROGRESS_NOTE).length - 1,
+    };
+  };
+  for (const [protocol, body] of Object.entries(bodies))
+    test(`over ${protocol}, a request carries one ask, not two`, () => {
+      const attempt = `att_quiet_${protocol}`;
+      turnStarted(attempt, Date.now() - PROGRESS_AFTER_MS - 1_000);
+      const both = withLongTurnNote(
+        withTurnNotes(body(), protocol as keyof typeof bodies, attempt),
+        protocol as keyof typeof bodies,
+      );
+      expect(asks(both)).toEqual({ timed: 1, rounds: 0 });
+      if (protocol === 'messages') wellFormed(both);
+      // A later request that ends on a new step, still quiet, gets this note.
+      const next = withLongTurnNote(
+        withTurnNotes(body(), protocol as keyof typeof bodies, attempt),
+        protocol as keyof typeof bodies,
+      );
+      expect(asks(next).rounds).toBe(1);
+      turnEnded(attempt);
+      // Without the service's ask, the note is added as before.
+      expect(asks(withLongTurnNote(body(), protocol as keyof typeof bodies)).rounds).toBe(1);
+    });
 });
