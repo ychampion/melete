@@ -4434,18 +4434,18 @@
                           ]
                         },
                         "total": {
-                          "$ref": "#/components/schemas/__schema338"
+                          "$ref": "#/components/schemas/__schema350"
                         },
                         "events": {
                           "type": "array",
                           "items": {
-                            "$ref": "#/components/schemas/__schema343"
+                            "$ref": "#/components/schemas/__schema355"
                           }
                         },
                         "events_cursor": {
                           "anyOf": [
                             {
-                              "$ref": "#/components/schemas/__schema338"
+                              "$ref": "#/components/schemas/__schema350"
                             },
                             {
                               "type": "null"
@@ -4453,10 +4453,10 @@
                           ]
                         },
                         "last_seq": {
-                          "$ref": "#/components/schemas/__schema338"
+                          "$ref": "#/components/schemas/__schema350"
                         },
                         "messages_after": {
-                          "$ref": "#/components/schemas/__schema338"
+                          "$ref": "#/components/schemas/__schema350"
                         }
                       },
                       "required": [
