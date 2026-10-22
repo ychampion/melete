@@ -1,237 +1,165 @@
+<div align="center">
+
+<img src="apps/web/public/melete-logo.png" alt="Melete" width="88" />
+
 # Melete
 
-**Personal superintelligence that runs as you.**
+### Personal superintelligence that runs as you.
 
-Melete lives on your own computers and works in every account you're signed
-into: work and personal mail, both calendars, your files, your browser, your
-servers. It keeps watch over all of it, day and night, notices what needs you,
-and takes care of it.
+Hand it the job. Melete works across your apps, uses a computer, and follows through while you get on with your day.
 
-> Melete is in early beta. You can run it yourself today.
+**Open source · Self-hosted · Your choice of model**
 
-Learn more at [melete.si](https://melete.si). Hosted Melete: join the waitlist at
-[waitlist.melete.si](https://waitlist.melete.si).
+[![Release](https://img.shields.io/github/v/release/ychampion/melete?color=315be8&label=release)](https://github.com/ychampion/melete/releases) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-315be8)](LICENSE) [![CI](https://github.com/ychampion/melete/actions/workflows/ci.yml/badge.svg)](https://github.com/ychampion/melete/actions/workflows/ci.yml)
 
-## Try it
+[**Get started**](#get-started) · [**See what it does**](#give-it-the-job-it-keeps-working) · [**Website**](https://melete.si) · [**Docs**](#documentation)
 
-With Docker running, one command installs and starts Melete:
+</div>
+
+![Melete works in its browser beside the conversation; the person takes over, hands it back, and approves the sample booking.](docs/assets/readme/computer.gif)
+
+<p align="center"><em>Watch, take over, hand it back. A sample booking workflow.</em><br />
+<a href="docs/assets/readme/computer.mp4">Watch the clip</a> · <a href="docs/assets/readme/computer.png">Open the screenshot</a></p>
+
+## A computer of its own
+
+Melete can open sites, fill forms, run code, and work with files. Watch its browser beside the conversation, take over when you need to, and hand it back.
+
+Its own Docker computer comes with the standard install. You can also connect a cloud sandbox, or pair your own machine to use your signed-in browser and the folders you share.
+
+[Its own computer](docs/sandbox-docker.md) · [Your computer](docs/DEVICES.md) · [Browser and takeover](docs/browser-worker.md)
+
+## Give it the job. It keeps working.
+
+“Chase the refund.” “Compare these quotes.” “Keep an eye on this and tell me when it changes.”
+
+Melete reads the context, does the work, and keeps hold of the next step. Close the tab; long work continues. When it needs a decision, it brings that decision back to you.
+
+- **Work across your accounts.** Mail, calendars, files, connected apps, and the browser you're already signed into.
+- **Follow through.** Watch connected mail and calendars for replies and changes, run scheduled routines, and pick up long jobs in shifts.
+- **Choose how much it handles.** Review drafts, or choose what it may send on its own. See the work, its sources, and the record of what changed.
+
+![Melete follows a refund from the first draft through replies and follow-ups to settlement.](docs/assets/readme/demo.gif)
+
+<p align="center"><em>A refund, from “chase this” to settled. Demo workspace with sample data.</em><br />
+<a href="docs/assets/readme/follow-through.mp4">Watch the clip</a> · <a href="docs/assets/readme/walkthrough/03-hand-it-one.png">Open the screenshot</a></p>
+
+## More than a conversation
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<h3>Keep the whole job in view</h3>
+<p>Long research, a recurring check, a decision waiting on you. See what's running and return to the conversation behind it.</p>
+<a href="docs/assets/readme/work.png"><img src="docs/assets/readme/work.png" alt="Work lists running jobs, work waiting for a decision, and scheduled checks." width="100%" /></a>
+<p><a href="docs/RUNS.md">Long work →</a></p>
+</td>
+<td width="50%" valign="top">
+<h3>Memory you can change</h3>
+<p>Preferences and useful context stay with you. See where a memory came from, correct it, or tell Melete to forget it.</p>
+<a href="docs/assets/readme/memory.png"><img src="docs/assets/readme/memory.png" alt="Memory with saved context and controls to inspect, edit, and forget it." width="100%" /></a>
+<p><a href="docs/MEMORY.md">Memory →</a></p>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>Put your apps to work</h3>
+<p>Connect mail and calendars, add an MCP server, or use the app catalog. Choose what each agent can reach.</p>
+<a href="docs/assets/readme/connections.png"><img src="docs/assets/readme/connections.png" alt="The app catalog with managed integrations, mail, and calendar connections." width="100%" /></a>
+<p><a href="docs/CONNECTORS.md">Connections →</a></p>
+</td>
+<td width="50%" valign="top">
+<h3>Stay on top of the small print</h3>
+<p>See what companies charge, what they owe you, and what they promised. Turn a loose end into a task Melete can follow up.</p>
+<a href="docs/assets/readme/companies.png"><img src="docs/assets/readme/companies.png" alt="Companies organizes subscriptions, refunds, renewal dates, and promises from sample mail." width="100%" /></a>
+<p><a href="apps/melete/src/companies/README.md">Companies →</a></p>
+</td>
+</tr>
+</table>
+
+<p align="center"><sub>App screenshots use a demo workspace with sample accounts and tasks.</sub></p>
+
+Also built in:
+
+- **Voice and calls.** Speak to your agent and hear it answer while it works. [Voice setup](docs/VOICE.md).
+- **Plans and routines.** Keep a project together, schedule the repeat work, and get a morning brief.
+- **Apps it builds for you.** Ask for a dashboard or a small tool, then open it inside Melete. [Apps](docs/APPS.md).
+- **Melete in your other assistants.** Connect it to ChatGPT, Claude, Claude Code, Hermes, or another MCP client. [MCP server](docs/MCP-SERVER.md).
+
+## Get started
+
+Run Melete on macOS, Windows, or Linux with **Docker running**.
+
+**macOS / Linux**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ychampion/melete/main/install.sh | bash
 ```
 
-On Windows with Docker Desktop, in PowerShell:
+**Windows PowerShell** — Docker Desktop and [Git for Windows](https://gitforwindows.org/) installed:
 
 ```powershell
 irm https://raw.githubusercontent.com/ychampion/melete/main/install.ps1 | iex
 ```
 
-The installer prints a one-time setup code and a link that fills it in; open the
-link to create your account. It starts with a
-practice model, so you can look around right away; add your own key in
-**Settings → Models**. Run the command again to update. [Run it yourself](#run-it-yourself) shows the longer
-manual path, and [Deployment](docs/DEPLOYMENT.md#one-line-install) lists the
-installer's options.
+Open the setup link printed by the installer and create your account. You can explore with the practice model immediately, then connect your model in **Settings → Models**. The default address is **http://localhost:3101**.
 
-- `melete account setup-code` gives you a new setup code, good for 72 hours.
-- `melete account` lists accounts and creates, resets or disables them.
+Run the same command again to update. [Deployment](docs/DEPLOYMENT.md#one-line-install) covers requirements, installer options, remote servers, HTTPS, backups, and manual installation.
 
-After the one-line install, run these in the service container, for example
-`docker compose -f ~/melete/deploy/docker-compose.yml exec melete bun run melete account setup-code`.
-
-## A day with Melete
-
-**2:10 a.m. It notices.** The card on your domain renewal was declined, and the
-notice went to an old personal address you rarely open. Melete watches every
-inbox you connect, so by the time you're up the renewal page is open in your
-browser, waiting for you to confirm the new card.
-
-**8:30 a.m. Two calendars, one life.** The dentist moved your appointment, and
-it now lands on a board call in your work calendar. Melete sees the overlap
-across both calendars and has a reschedule drafted from the right address.
-
-**11:00 a.m. Things only you are signed into.** Your accountant asks for last
-quarter's numbers. Melete opens your bank in your own browser, where you're
-already signed in, reads the statements and lines them up against the invoices
-in your Drive. Two-factor prompts and logins work the way they do for you,
-because it's your browser.
-
-**4:45 p.m. Say it once.** "Dinner for six on the 9th, somewhere the kids will
-like." Melete keeps hold of it until it's booked, and tells you plainly if time
-is running short.
-
-**On the drive home.** You talk, it answers out loud, and it keeps working while
-you speak.
-
-## Why it runs as you
-
-- **One agent across your whole world.** Google, Microsoft, iCloud and any
-  IMAP mailbox, your calendars and Drive, any app with an MCP server, and your
-  own computer, all in one place, for one agent that sees how they connect.
-- **Your sign-ins, your devices.** The [companion](docs/DEVICES.md) on your
-  computer lets Melete use your browser signed in as you, the folders you share
-  and the commands you approve, and it does only what both you and that computer
-  allow.
-- **It can afford to watch everything.** It runs on hardware you already have,
-  with the model you choose, including one on your own machine. When nothing
-  changes, nothing runs and nothing is spent.
-- **Its own computer too.** Code, commands and long jobs run in a sandbox on
-  [E2B](https://e2b.dev), [Modal](https://modal.com) or
-  [Daytona](https://www.daytona.io), and a separate browser handles web forms,
-  so heavy work never ties up yours.
-- **You can check its work.** It asks before anything leaves your hands: a
-  message to someone, a payment, a delete. Everything else leaves a receipt, with
-  Undo while it still works. You can see, correct or forget anything it
-  remembers, and a [privacy router](docs/PRIVACY-ROUTER.md) keeps account
-  numbers and private conversations away from cloud models.
-
-![Melete following a job through: the draft, the one approval, then the replies and follow-up until it's settled.](docs/assets/readme/demo.gif)
-
-## Run it yourself
-
-You need Docker, Bun and an API key for your model provider.
-
-```bash
-git clone https://github.com/ychampion/melete.git && cd melete && bun install --frozen-lockfile
-read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY; bun run deploy/scripts/configure.ts; unset FIREWORKS_API_KEY
-docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
-```
-
-The second line waits for you to paste your Fireworks API key and press Enter.
-The key stays hidden, `configure.ts` writes it into `deploy/.env`, and the line
-then clears it from your shell. For another provider, export its key instead and
-name the provider and model, for example
-`bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
-with `ANTHROPIC_API_KEY`. Then open http://localhost:3101 and create your
-account.
-
-Once your account exists, give the agent a browser of its own to read pages and
-fill in forms with:
-
-```bash
-bun run melete browser enable
-```
-
-It sets up the [browser worker](docs/browser-worker.md) for your space and
-starts it. From then on, add `-f deploy/docker-compose.browser.yml` after
-`-f deploy/docker-compose.yml` on a `docker compose` command.
-
-To try a demo with a practice model first, use
-`bun run deploy/scripts/configure.ts --fake` as the second line. It needs no
-key, and you can switch to your own model later.
-
-On a server, you can skip the build and pull the published images instead:
-[Using prebuilt images](docs/DEPLOYMENT.md#using-prebuilt-images).
-
-`bun run melete check`, `bun run melete doctor` and `bun run melete status` judge
-an installation and name what to do next:
-[The melete command](docs/DEPLOYMENT.md#the-melete-command).
-
-[Deployment](docs/DEPLOYMENT.md) covers version requirements, Windows, remote
-servers, HTTPS, Tailscale, backups and removal.
-
-## Set it up with your coding agent
-
-Claude Code, Codex, Cursor or another coding agent can install Melete for you,
-on this computer or on a server. It checks the machine, starts Melete, and tells
-you when to create your account. You type your own passwords and keys, into
-Melete or your own terminal, and the agent does the rest. Paste this:
+**Prefer to have your coding agent set it up?** Paste this into Claude Code, Codex, Cursor, or another coding agent:
 
 ```text
 Set up Melete on this machine using https://github.com/ychampion/melete/blob/main/SETUP-WITH-AN-AGENT.md
 ```
 
-The [guide](SETUP-WITH-AN-AGENT.md) also covers the optional parts: a computer
-for the agent, voice, mail and calendar, and a public address for other
-assistants. For Claude Code there is a [skill](skills/README.md) you can install
-once.
+[Setup guide](SETUP-WITH-AN-AGENT.md) · [Claude Code skill](skills/README.md) · [Hosted waitlist](https://waitlist.melete.si)
 
-## Connect your model
+## Your model. Your setup.
 
-Pass the provider to `configure.ts` with `--provider` and `--model`, and export
-the key it reads first:
+Choose a provider in **Settings → Models**, test the connection, and switch models without restarting the app.
 
-| Provider | Key it reads |
+| Provider | Connect with |
 | --- | --- |
-| `fireworks` (the default) | `FIREWORKS_API_KEY` |
-| `anthropic` | `ANTHROPIC_API_KEY` |
-| `openai` | `OPENAI_API_KEY` |
-| `google` | `GOOGLE_API_KEY` |
-| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, which can point at a model server on your own network |
-| `chatgpt` | No key. Once Melete is running, you sign in to your ChatGPT account under **Settings → Models**, or through its [sign-in routes](docs/DEPLOYMENT.md#signing-in-to-a-provider). |
+| Fireworks | API key |
+| Anthropic | API key |
+| OpenAI | API key |
+| Google | API key |
+| ChatGPT | Sign in with your account |
+| OpenAI-compatible | Endpoint and key, including a model server on your own network |
 
-You can also connect a provider from the app, in Settings › Models: paste a key,
-test it, and choose the model, with no restart. Write the model's name the way the provider does. To change provider or model
-later, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and the key in
-`deploy/.env`, then restart the two services that use them:
+[Provider configuration](docs/DEPLOYMENT.md#providers) covers operator defaults and supported sign-in options.
 
-```bash
-docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
-```
+Mail and calendars connect through **Settings → Connections**. Add remote or packaged MCP servers for more tools. Managed app sign-in through Composio, Google/Microsoft OAuth, cloud sandboxes, and ElevenLabs voice have their own setup steps in the docs.
 
-[Providers](docs/DEPLOYMENT.md#providers) explains each one, including signing
-in with ChatGPT.
+## Make it yours
 
-## Connections and plugins
+Run the stack on your hardware, keep your data with it, and change the parts you want. Melete is built with **TypeScript, React, Hono, Postgres, and Hermes Agent**.
 
-- **Mail and calendars.** Add them in **Settings → Connections**. Gmail and
-  iCloud take an app password, and other IMAP and CalDAV accounts take their
-  password. With your own Google or Microsoft app set in `deploy/.env`, Gmail,
-  Google Calendar and Outlook connect by signing in
-  ([Google setup](docs/mail-calendar.md#setting-up-your-google-client),
-  [Microsoft setup](docs/mail-calendar.md#setting-up-your-microsoft-app)).
-- **Any MCP server.** Add one over HTTP, or from a package or image, and a
-  packaged server runs in its own locked-down container. A starter set of files,
-  fetch, time and GitHub is listed at `GET /plugins`, and each installs with one
-  request.
-- **A sandbox.** Connect an E2B, Modal or Daytona account as a **Sandbox**
-  connection, and the agent's terminal runs there, with a receipt for each
-  command.
-- **A browser.** The [browser worker](docs/browser-worker.md) fills forms in its
-  own isolated browser.
-- **Your own computer.** Pair it in **Settings → Devices** to share folders,
-  approve commands, and let Melete use your browser signed in as you
-  ([devices](docs/DEVICES.md)).
+| Layer | Where to look |
+| --- | --- |
+| Web app | [`apps/web`](apps/web) |
+| Service, jobs, connections, and memory | [`apps/melete`](apps/melete) |
+| Agent runtime | [`packages/runtime-hermes`](packages/runtime-hermes) |
+| API contracts and typed client | [`packages/contracts`](packages/contracts) · [`packages/client`](packages/client) |
+| Your computer's companion | [`packages/device`](packages/device) |
+| Deployment | [`deploy`](deploy) |
 
-## Security
-
-- Every message it sends waits for your approval, or falls under a limit you set for someone you trust. Approving a chase's first message also covers up to three follow-ups that repeat it to the same person, and you can withdraw that in **Settings → Rules**.
-- The passwords and sign-in tokens it stores are sealed with your installation's master key.
-- The agent's code runs in an isolated container that can reach only Melete's own service, which checks each action against what you allowed.
-- Each person on an installation has their own space, and their jobs, drafts and receipts stay private to them.
-- Every action leaves a receipt, and one that can be reversed shows an Undo button while it still works.
-- To report a vulnerability, follow [SECURITY.md](SECURITY.md). The [threat model](docs/THREAT-MODEL.md) has the details.
-
-## More it can do
-
-- Talk to it: push-to-talk and a hands-free voice mode, with one ElevenLabs key ([voice](docs/VOICE.md)).
-- Give it long work, and it keeps going in shifts for as long as it takes ([long work](docs/RUNS.md)).
-- Use it from ChatGPT, Claude, Claude Code, Hermes or OpenClaw as a connector ([Melete as an MCP server](docs/MCP-SERVER.md)).
-- Teach it by correcting it, then see, pause or remove what it learned in **Settings → Memory**.
-- Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
-- Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
+[Contributing](CONTRIBUTING.md) has the development setup and checks. [Building on Melete](FORKING.md) covers your own name, appearance, and services.
 
 ## Documentation
 
-- [melete.si](https://melete.si): the website
-- [Deployment](docs/DEPLOYMENT.md): hosting, providers, sandboxes, Tailscale, backups and removal
-- [Upgrading](docs/UPGRADING.md): moving an installation to a later release
-- [Building on Melete](FORKING.md): your own name, logo and colours, and your own services beside the stack
-- [Connectors](docs/CONNECTORS.md) and [mail and calendars](docs/mail-calendar.md)
-- [Melete in other assistants](docs/MCP-SERVER.md): adding Melete to ChatGPT, Claude or Hermes as a connector
-- [Browser worker](docs/browser-worker.md): the browser Melete drives, and taking over from it
-- [Your own computer](docs/DEVICES.md): the companion, and what it allows
-- [Noticing what changes](docs/SITUATIONAL-AWARENESS.md), [saying it once](docs/INTENTS.md) and [undo](docs/UNDO.md)
-- [Memory](docs/MEMORY.md) and [learning](docs/LEARNING.md)
-- [Architecture](docs/ARCHITECTURE.md), [privacy and isolation](docs/PRIVACY-AND-ISOLATION.md) and [threat model](docs/THREAT-MODEL.md)
-- [Building a client](docs/CLIENT.md): the API and how the app uses it
-- [Problem reports](docs/FEEDBACK.md): reporting a problem from the app, and pulling one by its id to fix it
-- [Contributing](CONTRIBUTING.md): setting up, testing and sending changes
+| Start here | Go deeper |
+| --- | --- |
+| [Install and deploy](docs/DEPLOYMENT.md) · [Upgrade](docs/UPGRADING.md) | [Architecture](docs/ARCHITECTURE.md) · [Build a client](docs/CLIENT.md) |
+| [Connections](docs/CONNECTORS.md) · [Mail and calendars](docs/mail-calendar.md) | [Memory](docs/MEMORY.md) · [Learning](docs/LEARNING.md) |
+| [Your computer](docs/DEVICES.md) · [Agent computer](docs/sandbox-docker.md) | [Long work](docs/RUNS.md) · [Watching for changes](docs/SITUATIONAL-AWARENESS.md) |
+| [Voice](docs/VOICE.md) · [MCP server](docs/MCP-SERVER.md) | [Privacy](docs/PRIVACY-AND-ISOLATION.md) · [Threat model](docs/THREAT-MODEL.md) |
+| [Report a problem](docs/FEEDBACK.md) · [Request a feature](https://github.com/ychampion/melete/issues) | [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md) |
 
-## Licence and credits
+## License and credits
 
-Melete is Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
 
-Melete's agent runtime is built on
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,
-customised for Melete.
+Melete's agent runtime is built on [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research, customised for Melete.
+
+If you'd like more people to find Melete, give the repo a star.
