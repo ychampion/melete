@@ -22,8 +22,3 @@ bold-label bullet format.
 ## Routines and dates
 
 - **Weekly planning**: I usually plan the coming week on Sunday evening.
-
-## Accounts and bills
-
-Use this section for useful context such as your preferred review cadence.
-Connect actual accounts through Settings; keep credentials out of this file.

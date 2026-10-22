@@ -53,11 +53,9 @@ You can also start with the [context template](templates/PERSONAL-CONTEXT.md), o
 
 The **Agent library** offers ready-made agents with a brief, a connection checklist, preference questions, and a starter routine you can choose to enable. Preview one that fits your first task, or continue with your existing agent.
 
-Open **Settings → Connections**. Start with a mailbox or calendar you want Melete to work with. Follow [Mail and calendars](mail-calendar.md) for the connection method your provider supports.
+Choose the sources your first task needs: notes, files, links, or a connected account. A learning plan or project brief can begin with material you provide. For mail or calendar work, open **Settings → Connections** and follow [Mail and calendars](mail-calendar.md).
 
 Account sign-in connects the account; the **Watch** switch controls automatic mail/calendar checks. If you want proactive work, enable it for the account involved. Google/Microsoft OAuth and the managed app catalog may need operator setup first. [Connection configuration](CONNECTORS.md).
-
-For refund and renewal playbooks, open **Companies → Scan the inbox** and wait for the scan to finish. Connecting a mailbox or enabling Watch doesn't run that first Companies scan for you.
 
 For a browser task, use the agent's own [Docker computer](sandbox-docker.md). For your already signed-in browser or selected local folders, [pair your computer](DEVICES.md). Set up the capability the first task actually needs.
 
@@ -66,17 +64,18 @@ For a browser task, use the agent's own [Docker computer](sandbox-docker.md). Fo
 Choose one [playbook](PLAYBOOKS.md), then describe the result you want, the relevant constraints, and what should come back to you for review.
 
 ```text
-Review the upcoming renewals in Companies. Show dates, amounts, and the
-original email behind each one. Tell me which need a decision this month.
-Done means a short table with sources and a suggested next step for each.
-Leave account changes for me to approve.
+Turn these side-project notes into a launch brief. Ask about the goal if
+it isn't clear, compare the main approaches, and recommend a first milestone
+that fits five hours a week. Save the brief and open questions in a file.
+Done means I can open the file and know what to work on next. Bring the
+choice of approach back to me before making commitments on my behalf.
 ```
 
 Open **Work** to see the running job or anything waiting on you. Check the output against the finish line. Correct one preference in **Memory** if it would make the next task better.
 
 ## 6. Make it part of your day
 
-Once one task works, add a weekday brief, a weekly renewal review, or a follow-up on something you're waiting for. Start with a small scope and choose sending preferences in Settings. [Watching for changes](SITUATIONAL-AWARENESS.md), [persistent goals](INTENTS.md), and [long runs](RUNS.md) explain how work continues.
+Once one task works, add a weekday brief, a weekly project review, or a recurring practice prompt. Start with a small scope and choose sending preferences in Settings. [Watching for changes](SITUATIONAL-AWARENESS.md), [persistent goals](INTENTS.md), and [long runs](RUNS.md) explain how work continues.
 
 Keep the host running for unattended work. A paired laptop's browser and files are available only while its companion is connected; an always-on server does not keep a sleeping laptop online.
 

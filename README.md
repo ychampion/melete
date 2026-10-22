@@ -4,17 +4,17 @@
 
 # Melete
 
-### The personal agent for your unfinished business.
+### A personal agent for the life you're building.
 
-A refund that never arrived. A reply you're still waiting for. A plan that needs ten tabs and three follow-ups.
+The project you're building. The skill you're learning. The trip taking shape.
 
-**Melete connects what it knows about you to what still needs doing — across your inbox, calendar, browser, and files.**
+**Bring your context. Work through a bigger goal. Turn the result into plans, files, and useful apps you can come back to.**
 
 Open source. Self-hosted. Your choice of model.
 
 [![Release](https://img.shields.io/github/v/release/ychampion/melete?color=315be8&label=release)](https://github.com/ychampion/melete/releases) [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-315be8)](LICENSE) [![CI](https://github.com/ychampion/melete/actions/workflows/ci.yml/badge.svg)](https://github.com/ychampion/melete/actions/workflows/ci.yml)
 
-[**Self-host now**](#get-started) · [**Join the Cloud waitlist**](https://waitlist.melete.si) · [**What makes it different**](#why-melete) · [**Try a playbook**](docs/PLAYBOOKS.md)
+[**Self-host now**](#get-started) · [**Join the Cloud waitlist**](https://waitlist.melete.si) · [**Try a playbook**](docs/PLAYBOOKS.md) · [**Explore the Spaces proposal**](docs/SPACES.md)
 
 </div>
 
@@ -25,31 +25,33 @@ Open source. Self-hosted. Your choice of model.
 
 ## Why Melete?
 
-The work in your life lives between apps: a promise in an email, a date on a calendar, a preference you've explained before. Melete brings those pieces into the same workspace.
+Your life has more than one thread. A side project needs research and files. Learning needs practice and a sense of progress. Travel needs decisions, preferences, and a plan you can actually use.
 
-Melete is built around **personal context with follow-through**: what you care about, what you committed to, what you're owed, and what has to happen next. That context lives in your installation, alongside the work, rather than being tied to one model.
+Melete brings **personal context and working tools** together. Keep the preferences you've already explained, work through a longer goal, and turn the result into something you can reopen or use. Your memory and work live in your installation, across your choice of models.
 
 | What you want | What Melete brings together |
 | --- | --- |
-| **Know what you're still waiting on** | An inbox-derived Companies map of recurring charges, refunds, renewals, and promises, with the source passage behind each figure. Start a chase from the item itself. |
-| **Keep a request alive beyond its chat** | Persistent goals, deadlines, reply follow-ups, and work that resumes in shifts. Long runs keep an attempt record and check the result against explicit completion criteria. |
+| **Start with an agent that knows you** | Bring a reviewed preferences file from your current assistant. Inspect, correct, export, and import memory as your life changes. |
+| **Make progress on something bigger** | Plans, milestones, persistent goals, and long work that resumes in shifts. Runs retain findings and attempts, then check the result against explicit completion criteria. |
 | **Use the accounts and tools you already have** | Connected mail and calendars, MCP tools, its own computer, and optional access to your signed-in browser and shared local folders. |
 | **Keep the relationship when you change models** | Inspectable memory with sources, correction, forgetting, Markdown/JSON export and import. Switch providers while your context stays in Melete. |
+| **Keep something more useful than a transcript** | Saved files, downloadable run records, and private apps whose data can be refreshed by routines. Turn a recurring need into a small tool of your own. |
 | **Choose the amount of autonomy** | Drafts, approval cards, per-kind sending preferences, action receipts, and undo for supported actions. Give a routine room to work and keep the decisions that matter. |
 | **Own and extend the whole thing** | Apache-2.0 source, Docker deployment, a typed API, and an MCP server your other assistants can use. |
 
-Looking at **Dots, Grok Bot, Claude Duet, OpenClaw, or Hermes**? [Compare the approaches](docs/PERSONAL-AGENTS.md). Melete's focus is a personal workspace that connects memory, obligations, and finished work on infrastructure you control.
+Looking at **Dots, Grok Bot, Claude Duet, OpenClaw, or Hermes**? [Compare the approaches](docs/PERSONAL-AGENTS.md). Melete brings your personal context, ongoing work, and useful outputs into a workspace you can own and shape.
 
-## From “they owe me” to handled
+## Next: personal Spaces
 
-Connect your inbox, open **Companies → Scan the inbox**, and let Melete build a picture of the companies in your life: what you pay, what renews next, what was promised, and what hasn't arrived.
+**A place for each part of your life, kept useful by your agent.** This is the next experience we're proposing for Melete.
 
-Open an item, inspect the original evidence, and choose **Handle it**. Review the first message; Melete can keep track of the reply and follow-up sequence within your rules. The work has a record you can return to, instead of another reminder to chase it yourself.
+Open **Learn Spanish**, **Launch my portfolio**, or **Kyoto in October** and return to the current plan, decisions, files, and next step together. Drop in a note or link; Melete proposes where it belongs and what it changes. Come back a week later and see what's moved, what's still open, and where to begin.
 
-![Melete follows a refund from the first draft through replies and follow-ups to settlement.](docs/assets/readme/demo.gif)
+The aim is an agent that helps maintain your projects: it keeps the brief current, remembers why you made a decision, and shows which parts of the plan need revisiting when your priorities change.
 
-<p align="center"><em>The original promise, the follow-up, the reply, and the outcome — in one place.</em><br />
-<a href="docs/assets/readme/follow-through.mp4">Watch the clip</a> · <a href="docs/assets/readme/walkthrough/03-hand-it-one.png">Open the screenshot</a></p>
+[Explore the Spaces experience and first build slice →](docs/SPACES.md)
+
+*Personal Spaces is a design proposal. The features below are available today.*
 
 ## A workspace that knows the next step
 
@@ -76,10 +78,10 @@ Open an item, inspect the original evidence, and choose **Handle it**. Review th
 <p><a href="docs/CONNECTORS.md">Connections →</a></p>
 </td>
 <td width="50%" valign="top">
-<h3>The small print, surfaced</h3>
-<p>Recurring charges, refunds, renewals, and company promises become a view you can act on. Each extracted figure links back to its source.</p>
-<a href="docs/assets/readme/companies.png"><img src="docs/assets/readme/companies.png" alt="Companies organizes subscriptions, refunds, renewal dates, and promises from the inbox." width="100%" /></a>
-<p><a href="docs/PLAYBOOKS.md#recover-a-refund-or-credit">Try the refund playbook →</a></p>
+<h3>Begin with a useful setup</h3>
+<p>Choose an agent from the library. Preview its brief and connections, answer a few preferences, and personalise it around a real goal.</p>
+<a href="docs/assets/readme/library.png"><img src="docs/assets/readme/library.png" alt="The Agent library offers ready-made setups to preview and personalise." width="100%" /></a>
+<p><a href="docs/START-HERE.md#4-connect-one-account-that-makes-it-useful">Your first session →</a></p>
 </td>
 </tr>
 </table>
@@ -106,13 +108,13 @@ Mail and calendar watches can wake work when something changes. Follow a reply, 
 
 ### Build the little tools your life needs
 
-Ask for a renewal tracker, a trip dashboard, or a form. Melete can build an app you open inside your installation, connect it to files a routine updates, and keep earlier versions available. You choose who on your installation can open it.
+Ask for a trip dashboard, a learning log, or a tool for your side project. Melete can build an app you open inside your installation, connect it to files a routine updates, and keep earlier versions available. You choose who on your installation can open it.
 
-[Apps and live data](docs/APPS.md) · [A dashboard playbook](docs/PLAYBOOKS.md#build-a-dashboard-that-stays-useful)
+[Apps and live data](docs/APPS.md) · [A personal-tool playbook](docs/PLAYBOOKS.md#build-a-little-tool-for-your-life)
 
 ### Keep your other assistants in the loop
 
-Use Melete from ChatGPT, Claude, Claude Code, Hermes, OpenClaw, or another MCP client. Let them look up saved context, see what companies owe you, start a chase, propose an email for approval, and check the outcome.
+Use Melete from ChatGPT, Claude, Claude Code, Hermes, OpenClaw, or another MCP client. Let them recall saved context, save a preference you've reviewed, propose an email for approval, and check the status of work.
 
 Melete becomes a shared personal resource for the assistants you choose. [Connect an assistant](docs/MCP-SERVER.md).
 
@@ -124,12 +126,12 @@ Start with a situation you actually have. These are prompts to adapt to your own
 
 | Situation | Try this |
 | --- | --- |
-| **A refund has gone quiet** | “Find the refund Acme promised. Show me the original promise and what's happened since. Draft a follow-up for review and keep track of the reply.” |
-| **Too many renewals to remember** | “Review the recurring charges and renewals in Companies. Put the upcoming ones in a table with amounts, dates, and source links. Flag anything I should decide this month.” |
-| **A birthday is becoming a project** | “Plan dinner for six next Friday near home. Use my food preferences, compare three places, and show the total cost. Check with me before booking or paying.” |
-| **A long comparison needs real work** | “Compare these three quotes against my requirements. Save the evidence and your recommendation. Done means a sourced comparison, a clear winner or unresolved trade-offs, and a file I can use.” |
+| **You want to learn, then keep going** | “Help me learn conversational Spanish in four weeks. Use my available time and interests. Save a practice plan, prepare the first session, and propose a weekly review.” |
+| **Your side project lives in scattered notes** | “Turn these notes into a launch brief. Research the options, record the decisions I make, and save a first milestone plan I can work from.” |
+| **A trip should feel like yours** | “Plan Kyoto around my saved travel preferences. Compare neighbourhoods and build a sourced itinerary. Show which decisions still need me.” |
+| **A comparison needs real work** | “Compare these courses against my goals and schedule. Save your sources and recommendation in a file. Check the result against every requirement.” |
 | **You need a calm start to the day** | “At 8:30 on weekdays, give me a brief from my connected inbox and calendar: today's commitments, replies that need me, and what could slip. Keep it short.” |
-| **Your work needs its own interface** | “Build me a private dashboard for these renewal records. Show upcoming dates and amounts. Keep its data current from a weekly routine.” |
+| **Your progress needs its own interface** | “Build a private learning log from these practice records. Show sessions, topics, and progress. Bind it to a data file I can update through a routine.” |
 
 [Step-by-step playbooks, connection requirements, and completion checks →](docs/PLAYBOOKS.md)
 
@@ -167,7 +169,7 @@ The installer pulls prebuilt images and starts the stack; you don't need a sourc
 1. **Connect a model** in **Settings → Models**. The practice model lets you explore the interface before adding one.
 2. **Bring your context** through **Memory → Import**, or tell Melete a few preferences in chat.
 3. **Choose a ready-made agent** in the **Agent library**, or use your existing one.
-4. **Connect one useful account** in **Settings → Connections**. For company records, open **Companies → Scan the inbox**.
+4. **Add the sources your first task needs**: files, links, or one useful account in **Settings → Connections**.
 5. **Try one playbook** and review the work and its sources.
 
 Run the same installer command again to update; it preserves your settings and data volumes. [Start here](docs/START-HERE.md) covers the first useful session. [Deployment](docs/DEPLOYMENT.md#one-line-install) covers install options, HTTPS, servers, backups, and troubleshooting.
@@ -229,7 +231,7 @@ Want Melete running while your own machines are off, without operating the stack
 
 ## What we're building toward
 
-More of your existing context on day one. Personal-agent starter packs. A clearer view of promises across your life. Repeat workflows that get better when you show Melete how you work.
+Personal Spaces that your agent helps maintain. A useful return brief when you pick a project back up. Decisions remembered with their reasons. More of your existing context on day one, and portable setups that make the first session feel like yours.
 
 [The proposed roadmap](docs/ROADMAP.md) spells out these next steps, what already works, and what each new feature would unlock. Bring a use case, choose a proposal, or help build it.
 

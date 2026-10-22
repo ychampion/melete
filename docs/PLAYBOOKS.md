@@ -1,149 +1,144 @@
-# Put Melete to work
+# Make something worth coming back to
 
-These playbooks turn Melete's memory, connections, computer, and background work into a useful result. Replace the examples with your own details. Set up the listed connections first; a prompt alone doesn't connect an account.
+Start with a real interest, project, or decision. These playbooks use Melete's current memory, computer, files, apps, and background work. Adapt the prompts to your circumstances and connect only the sources each task needs.
 
-New here? [Install Melete](START-HERE.md) and [bring a few preferences](BRING-YOUR-CONTEXT.md) before you begin.
+[Install Melete](START-HERE.md) · [Bring your context](BRING-YOUR-CONTEXT.md) · [Proposed personal Spaces](SPACES.md)
 
-## Recover a refund or credit
+## Build a learning rhythm
 
-**Use when:** a company promised a refund, credit, deposit return, or other follow-up and you are still waiting.
+**Use when:** you want to make steady progress on a language, skill, or subject around the time you actually have.
 
-**Needs:** the relevant mailbox connected. Enable its Watch switch to notice incoming changes.
-
-Open **Companies → Scan the inbox** and wait for results if you haven't scanned this mailbox yet. Find the owed item, check the source email, amount, and timing, then choose **Handle it**. Review the first message Melete proposes. Approving a company chase also covers its bounded follow-ups to that recipient within your saved rules; review those rules before starting unattended chasing.
-
-For a more specific brief:
+**Needs:** a working model, your goal and available time, and web access if you want current learning resources.
 
 ```text
-Find the refund [company] promised for [order or issue]. Check the original
-promise and all later replies before deciding it is overdue. Show me the
-amount, the promised date, and the source messages.
+Help me learn conversational Spanish for travel. I can practise for
+20 minutes on weekdays and I enjoy food, films, and everyday conversation.
+Ask about my current level before planning.
 
-Draft a concise follow-up for my review. Track the reply in this job and
-tell me if the company gives a new date or asks for information. Done means
-the refund is confirmed in the connected evidence, or you clearly explain
-what remains unresolved and what I need to do next.
+Save a four-week plan with a clear goal for each week. Compare a small
+set of resources with source links, prepare the first practice session,
+and create an editable practice log. Done means I can start today and
+know how we'll review the first week. Show me the plan before scheduling
+anything.
 ```
 
-**Check the result:** the amount and promise match the source; the first message went to the right recipient; the outcome distinguishes a new promise from evidence that it was fulfilled. Mail evidence doesn't independently verify a bank balance.
+**Come back with:** “Here is what I practised and what was difficult. Update the log, suggest the next session, and explain any change to the plan.”
 
-[Company map](../apps/melete/src/companies/README.md) · [Sending and chase behavior](MCP-SERVER.md#approving-what-an-assistant-sends)
+Review the material, try a session, then ask for a recurring practice prompt or weekly review. Melete can save plans and run routines; the prompt does not create an automatic proficiency assessment or an adaptive learning engine.
 
-## Get ahead of renewals
+## Take a side project from notes to a first milestone
 
-**Use when:** recurring charges and renewal notices are spread across your inbox.
+**Use when:** an idea is spread across notes and references, and the next step keeps changing.
 
-**Needs:** the mailbox containing those notices, and a Companies scan with useful records.
-
-For a fresh setup, open **Companies → Scan the inbox** first and wait for results.
+**Needs:** the notes or source files, a working model, and browsing for external research.
 
 ```text
-Review the recurring charges and upcoming renewals in Companies. Build a
-table of company, amount and currency, billing period, next relevant date,
-and the email supporting each fact. Separate known amounts from anything
-missing. Flag the decisions I should make in the next 30 days.
+Turn these notes into a brief for my portfolio project. I have five hours
+a week and want to publish by [date]. Establish the audience, the smallest
+useful first version, the main options, and the questions I need to answer.
 
-Recommend what I should review first based on my current priorities.
-Don't cancel or change an account during this review. Done means a sourced
-list and a practical next step for each upcoming decision.
+Save a brief, a decision log, and a first milestone plan. Record the
+reasoning for the approach I choose. Work through research as a long run
+if needed. Done means I can open the files and begin the first milestone.
+Ask me before publishing or committing to an external service.
 ```
 
-**Check the result:** currencies and billing periods remain explicit; a monthly charge hasn't become an annual total by guesswork; each decision has a source and a date where known. The map reflects connected evidence, so add missing records rather than treating it as a complete financial inventory.
+**Come back with:** “Use the brief and decision log we saved. I have two hours this week. Recommend the most useful thing to finish and update the plan after I choose.”
 
-**Make it repeat:** ask for a weekly review once the first report is useful. Use a separate, explicit request for an account change.
+In **Work**, inspect longer research and its result. Existing plans, files, and run records give you material to continue with today. The proposed [Spaces experience](SPACES.md) would bring those records into one maintained project view.
 
-## Keep a personal commitment from slipping
+## Develop a trip around your preferences
 
-**Use when:** a booking, meeting, or reply needs several steps before a deadline.
+**Use when:** you want to shape a trip over several sessions instead of collecting unrelated recommendations.
 
-**Needs:** the relevant calendar/mail connection and browser access for the sites involved. Save useful food, travel, scheduling, or location preferences first.
+**Needs:** dates and starting point, browsing, and the preferences you want used. A calendar connection is optional until you want to check or change events.
 
 ```text
-Plan dinner for six on [exact date] near [area], within [budget and
-currency]. Use my saved food preferences, and check current menus and
-availability. Compare three options with travel time and total cost where
-available. Tell me which you recommend and why.
+Help plan Kyoto for [dates]. Use my saved travel and food preferences.
+I prefer slower mornings, neighbourhood walks, and one main activity a day.
+Compare neighbourhoods with current sources, then suggest an itinerary.
 
-I need the plan settled by [deadline and timezone]. Keep track of the next
-step and tell me early if the deadline is at risk. Check with me before
-booking or paying. Done means I have approved an option and you have shown
-the booking confirmation, or explained the obstacle and next action.
+Save the itinerary, a map-link list, and the decisions still open. Keep
+confirmed arrangements separate from ideas. Done means a plan I can use,
+with source links and a clear next decision. Show me before booking or
+changing anything.
 ```
 
-**Check the result:** Home shows the right date, budget, people, and next step. Correct any inferred detail before approval. When a site needs a login or human step, take over the browser and hand it back afterward.
+**Come back with:** “We are staying one night less. Show which days need revising and preserve the places we decided matter most.”
 
-An agent's separate computer needs its own logins. Pairing your own browser is an option when you want it to work in an existing session. [Devices](DEVICES.md) · [Persistent goals and deadlines](INTENTS.md).
+When a site needs a human login step, take over the browser and hand it back. The agent's own computer has its own sessions. [Your computer](DEVICES.md) · [Agent computer](sandbox-docker.md).
 
-## Turn research into a decision
+## Turn research into a decision you can revisit
 
-**Use when:** comparing quotes, venues, products, or options needs more than a quick answer.
+**Use when:** choosing a course, a creative tool, or an approach needs evidence and a reasoned comparison.
 
-**Needs:** the input files or source links, a working model, and any tools needed to read them.
+**Needs:** your requirements, source links or files, and tools to inspect them.
 
 ```text
-Compare [options] for [decision]. My requirements are [constraints], with
-[must-haves] and [trade-offs I can accept]. Work through this as a long run.
-Keep your findings and sources, and record approaches that don't work.
+Compare [options] for [decision]. My goals are [goals], I have [time],
+and my must-haves are [requirements]. Work through this as a long run.
+Keep findings and sources, and record approaches that don't work.
 
 Done means:
 1. A comparison against every requirement, with dated source links.
-2. A recommendation explaining the trade-offs and remaining uncertainties.
-3. A saved Markdown report I can use without rereading this conversation.
+2. A recommendation explaining the trade-offs and open questions.
+3. A saved Markdown report recording why the recommendation fits me and
+   which assumptions would change it.
 
-Check the final result against those criteria. If a fact can't be verified,
-say which decision it affects instead of filling in a plausible value.
+Check the final result against those criteria. Bring the decision to me.
 ```
 
-**Check the result:** open the report and its sources; confirm every requirement was addressed. In **Work**, inspect the long run's progress and any decision waiting on you. A long run uses durable shifts and an independent completion check; a gap in the result should remain a gap, rather than disappearing into a confident summary. [How long runs work](RUNS.md).
+**Come back with:** “My main constraint has changed to [constraint]. Recheck the parts of the comparison this affects and show whether your recommendation changes.”
 
-## Start the day with the right things
+Open the report and inspect its sources. Long runs use durable shifts and an independent completion check. The saved reasoning is useful context for the next conversation; automatic decision memory and change propagation are [proposals](ROADMAP.md#3-decisions-with-their-reasons). [How long runs work](RUNS.md).
 
-**Use when:** you want a brief that reflects your day, your preferences, and your active work.
+## Start the day with a useful brief
 
-**Needs:** connected mail/calendar, the timezone you actually use, and an awake Melete host for the scheduled time.
+**Use when:** you want a small, consistent view of your day rather than another feed to check.
+
+**Needs:** connected mail/calendar, your timezone, and an awake Melete host at the scheduled time.
 
 ```text
-Create a weekday routine for 8:30 am in [timezone]. Give me a brief from my
-connected inbox and calendar: today's commitments, replies that need me,
-and deadlines or active work that could slip. Use my current priorities
-from memory. Put the three most useful decisions first and link the sources.
+Create a weekday routine for 8:30 am in [timezone]. Give me a short brief
+from my connected inbox and calendar: today's commitments, replies that
+need me, and time-sensitive decisions. Use my current priorities from
+memory. Put the three most useful things first and link the sources.
 
-Keep it under 250 words unless something needs a fuller explanation.
-Don't send messages or change events as part of this routine.
+Keep it under 250 words. Don't send messages or change events in this
+routine. Show me the schedule and the first result so I can tune it.
 ```
 
-**Check the result:** inspect the schedule and timezone, then review the first brief. Correct one noisy category or missing priority. Add actions to the routine only when you want those actions and have chosen the relevant sending preferences.
+Review the first brief and adjust a noisy category or missing priority. Mail/calendar watches can wake work on changes; a routine gives you a scheduled review. [Watching for changes](SITUATIONAL-AWARENESS.md).
 
-Mail/calendar watches wake work on changes; the routine provides a scheduled review. They serve different purposes. [Watching for changes](SITUATIONAL-AWARENESS.md).
+## Build a little tool for your life
 
-## Build a dashboard that stays useful
+**Use when:** a learning log or recurring project report would be more useful as a small interface.
 
-**Use when:** a repeated report deserves its own small interface.
-
-**Needs:** source records Melete can read, a working model, and the app tools. Begin with a small JSON or CSV dataset you can inspect.
+**Needs:** records Melete can read, a working model, and app tools. Begin with a JSON or CSV file you can inspect.
 
 ```text
-Build a private renewal dashboard from [these records]. Show the upcoming
-dates, amounts and currencies, source links, and items needing a decision.
-Use a readable table with filters and a simple monthly view.
+Build a private learning log from [these practice records]. Show sessions,
+topics practised, time spent, and things I want to revisit. Use a readable
+table and a simple weekly view. Keep the original notes accessible.
 
 Publish it as an app only I can open in Melete. Create a weekly routine
-that refreshes its data file, and bind the app's data to that routine's
-output so new runs update the dashboard. Show when the data was refreshed.
-Keep unknown amounts and dates visibly unknown.
+that reads my updated practice notes and writes a refreshed data file.
+Bind the app's data to that output and show when it was refreshed.
+Check that the app matches the source records.
 ```
 
-**Check the result:** open the app, compare it with the input records, and verify that the data source is bound to the routine. After the routine writes another version, check that the app shows the new data. Apps can be private or shared with selected accounts on your installation; viewers sign in to Melete. [Apps, live files, and version history](APPS.md).
+Open the app and compare it with the input records. After a routine writes another version, verify that the app shows the new data. Viewers sign in to your Melete installation. [Apps, live files, and version history](APPS.md).
 
-## Write your own playbook
+## Make your own playbook
 
 ```text
-Outcome: [what I want to be true]
-Context: [the relevant memory, account, files, and sources]
-Constraints: [budget, dates, preferences, and exclusions]
-Review with me: [decisions or actions I want to approve]
-Done means: [observable result and evidence]
-If blocked: [what to try next and when to bring it back to me]
+What I'm working toward: [the goal]
+What you should know about me: [relevant preferences and available time]
+Start from: [notes, files, links, and connected sources]
+Make something I can keep: [brief, plan, file, app, or practice material]
+Bring back to me: [decisions or actions I want to review]
+Done means: [observable result]
+When I return: [the context I will need to continue]
 ```
 
-For repeat work, run the first instance, inspect its result, and refine the brief before turning it into a routine. Keep personal facts in Memory, durable working style in an agent's instruction, and actual access and sending preferences in Settings.
+Run the first instance, inspect its result, and refine the brief before making a routine. Keep personal facts in Memory, durable working style in the agent's instruction, and actual account access in Settings.

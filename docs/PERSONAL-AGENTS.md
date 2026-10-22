@@ -1,49 +1,64 @@
 # Choosing a personal agent
 
-Researched **October 22, 2026**, using the projects' own documentation and repositories. Products in this category change quickly; follow the linked sources for current access and features.
+Researched **October 22–23, 2026**, using the projects' own documentation and repositories. Follow the linked sources for current access and features.
 
-The important choice is where your agent lives, how it uses your context, and which kind of work its interface helps you manage. Browsing, memory, and background execution are widely shared capabilities now.
+Browsing, memory, useful files, and background execution are shared capabilities across this category. Melete's positioning needs to explain the personal experience those tools create.
 
 ## The approaches
 
-| Project | Its centre of gravity | Why choose Melete alongside or instead |
+| Project | Its centre of gravity | Melete's emphasis |
 | --- | --- | --- |
-| [OpenAI Dots](https://learn.chatgpt.com/docs/dots) | An always-on GPT-powered agent inside ChatGPT, with a cloud computer, plugins, and personalisation. Desktop can also connect your computer. | Run your own installation, choose among model providers, inspect/export/import personal memory, and manage inbox-derived obligations in the Companies view. |
-| [Grok Bot](https://docs.x.ai/grok-bot/overview) | Named AI teammates that coordinate, keep context, and work on an account's shared cloud computer. | Use a personal workspace organised around your context, commitments, company records, and action history, with self-hosting and a choice of models. |
-| [Claude Duet](https://support.claude.com/en/articles/17631495-get-started-with-claude-duet) | An ongoing assistant using existing Claude memory, skills, and connectors, with proactive and background cloud work. | Own the stack and model choice; work with inspectable personal memory, an inbox-derived company map, and a browser you can watch and take over. |
-| [OpenClaw](https://github.com/openclaw/openclaw) | An extensible self-hosted assistant gateway across messaging channels and devices, with swappable models and harnesses. | Start from an integrated personal web workspace with Companies, Work, Memory, approvals, and apps as visible surfaces for everyday follow-through. |
-| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | A model-flexible agent runtime with memory, learning, skills, scheduled work, and terminal/messaging interfaces. | Get that runtime foundation inside a personal product with accounts, an app UI, company chases, persistent goals, and reviewable work. Melete builds on Hermes. |
-| [OpenMausBot](https://github.com/milind-soni/OpenMausBot) | A team-of-bots desktop/chat experience using local agent CLIs, computer access, connected apps, and portable team packages. | Choose a self-hosted personal service with its own model connections and a workflow focused on obligations, provenance, and outcomes. |
-| [Rowboat](https://github.com/rowboatlabs/rowboat) | A personal coworker built around a knowledge graph and work surfaces such as email, docs, a browser, and project workspaces. | Put inbox obligations, persistent goals, result-checked runs, and your choice of model at the centre of a self-hosted personal workspace. |
-| [nanobot](https://github.com/HKUDS/nanobot) | A lightweight Python personal-agent framework with a WebUI, messaging, memory, tools, and automation. | Use Melete's opinionated product surfaces and built-in company-follow-up workflow rather than assembling the personal workflow around a framework. |
+| [OpenAI Dots](https://learn.chatgpt.com/docs/dots) | An ongoing GPT-powered agent inside ChatGPT, with a cloud computer, plugins, personalisation, and tasks. | Your own installation, choice of providers, inspectable portable memory, plans, run records, and private apps. |
+| [Grok Bot](https://docs.x.ai/grok-bot/overview) | Named AI teammates that coordinate, keep context, and use an account's shared cloud computer. | A personal workspace for one person's ongoing goals, with a computer, reviewable work, and control of the stack. |
+| [Claude Duet](https://support.claude.com/en/articles/17631495-get-started-with-claude-duet) | A persistent main thread and topic channels sharing Claude memory, proactive briefs, background cloud work, and finished files. | Personal context that stays with your installation across model changes, alongside visible work, files, and tools you can extend. |
+| [OpenClaw](https://github.com/openclaw/openclaw) | An extensible self-hosted assistant gateway across messaging channels and devices, with swappable models and harnesses. | An integrated personal web workspace with Work, Memory, plans, approvals, and apps. |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | A model-flexible runtime with memory, learning, skills, scheduled work, and terminal/messaging interfaces. | That runtime foundation inside a personal product with accounts, a web UI, connected sources, goals, and reviewable work. Melete builds on Hermes. |
+| [OpenMausBot](https://github.com/milind-soni/OpenMausBot) | A team-of-bots desktop/chat experience using local agent CLIs, computer access, connected apps, and portable team packages. | A self-hosted personal service with its own model connections and persistent records of your work. |
+| [Rowboat](https://github.com/rowboatlabs/rowboat) | A knowledge graph and work surfaces including docs, email, a browser, code, apps, and project workspaces. | Personal goals, result-checked long runs, portable memory, and a proposed focus on maintained personal Spaces. |
+| [nanobot](https://github.com/HKUDS/nanobot) | A lightweight Python personal-agent framework with a WebUI, messaging, memory, tools, and automation. | A ready personal product with an integrated interface, deployment path, work records, and app surfaces. |
 
-These are differences in emphasis and deployment, not a claim that another agent cannot perform a similar task. A capable general agent may chase a refund too. Melete makes the obligation, source, follow-up, and outcome part of the product.
+These are differences in emphasis, not exclusive capabilities. A comparison should help someone choose a product without suggesting that other capable agents cannot research, remember, or execute a similar task.
 
 ## What is gaining adoption
 
-The public GitHub repository snapshot below shows substantial adoption across several different approaches. **Stars are a point-in-time interest signal, not active users, a growth rate, or evidence of product quality.**
+This public GitHub snapshot illustrates interest in several approaches. Stars measure repository interest at a point in time; they do not measure active use or a growth rate.
 
-| Open-source project | Stars, rounded on October 22 | What its current product presentation makes easy to understand |
+| Open-source project | Stars, rounded on October 22 | What its presentation makes clear |
 | --- | --- | --- |
-| [OpenClaw](https://github.com/openclaw/openclaw) | 392.8k | Where the assistant runs, how to install it, and the channels where you'll use it |
-| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | 256.2k | Learning and continuity, followed by concrete tools and a direct install path |
-| [nanobot](https://github.com/HKUDS/nanobot) | 49.3k | Lightweight self-hosting, a “start here” table, and separate paths for different experience levels |
-| [OpenMausBot](https://github.com/milind-soni/OpenMausBot) | 5.4k | A visible bot team, feature demonstrations, and packaging that helps people begin with a useful setup |
+| [OpenClaw](https://github.com/openclaw/openclaw) | 392.8k | Deployment, installation, and the channels where the assistant is used |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | 256.2k | Learning and continuity, concrete tools, and a direct install path |
+| [nanobot](https://github.com/HKUDS/nanobot) | 49.3k | Lightweight self-hosting and separate getting-started paths |
+| [OpenMausBot](https://github.com/milind-soni/OpenMausBot) | 5.4k | A visible team, product demonstrations, and useful starter packages |
 
-Counts were checked against each repository's GitHub API metadata. [OpenClaw releases](https://github.com/openclaw/openclaw/releases), [Hermes releases](https://github.com/NousResearch/hermes-agent/releases), and [OpenMausBot releases](https://github.com/milind-soni/OpenMausBot/releases) also show active product development. This is an adoption snapshot rather than a ranking of which project is growing fastest.
+Counts were checked against each repository's GitHub API metadata on October 22. This is a dated adoption snapshot, not a ranking of which project is growing fastest.
 
-## What the category is building toward
+## What the research changes for Melete
 
-**A useful first day.** Duet starts with existing Claude context. OpenMausBot's recent releases describe bringing skills and tools from other AI apps into setup. A new assistant has to earn its place quickly. Melete's current route is a [reviewed context file](BRING-YOUR-CONTEXT.md), followed by a real first task. A richer import bridge and starter packs are [proposed next steps](ROADMAP.md). [Duet setup](https://support.claude.com/en/articles/17631495-get-started-with-claude-duet) · [OpenMausBot releases](https://github.com/milind-soni/OpenMausBot/releases).
+**Start with useful personal context.** Duet carries existing Claude memory, skills, and connectors into its first session. Melete should make its own first day concrete: bring a small reviewed profile, connect the sources a real task needs, and make something useful. The [context guide](BRING-YOUR-CONTEXT.md) works today; richer import and portable starter setups are [proposals](ROADMAP.md). [Duet setup](https://support.claude.com/en/articles/17631495-get-started-with-claude-duet).
 
-**Visible places to work.** Rowboat leads with a demonstration and shows its work surfaces. OpenMausBot presents features beside captures. Our interpretation: readers should see where work, context, and decisions go before reading an architecture reference. Melete's [README](../README.md) shows the computer, follow-through, Work, Memory, Connections, and Companies. [Rowboat](https://github.com/rowboatlabs/rowboat) · [OpenMausBot](https://github.com/milind-soni/OpenMausBot).
+**Show the work and what it leaves behind.** Rowboat shows work surfaces and apps. OpenMausBot places demonstrations beside feature descriptions. Melete's README should let someone see the computer, Work, Memory, Connections, and Agent library, then try a task that produces a plan, file, or small app. [Rowboat](https://github.com/rowboatlabs/rowboat) · [OpenMausBot](https://github.com/milind-soni/OpenMausBot).
 
-**Continuity over a single clever response.** Dots, Grok Bot, Duet, Hermes, and the other projects all emphasise ongoing work or accumulated context. Melete should make its own combination concrete: evidence-backed company records, durable goals, result-checked runs, portable memory, and control of the deployment. This is our positioning choice, not a claim of exclusive invention. [Dots](https://learn.chatgpt.com/docs/dots) · [Grok Bot](https://docs.x.ai/grok-bot/overview) · [Hermes](https://github.com/NousResearch/hermes-agent).
+**Make continuity a designed experience.** Ongoing context and background work are already central to Dots, Duet, Grok Bot, and Hermes. Melete's opportunity is to make a person's longer projects easier to continue: what is current, why a decision was made, what changed, and where to begin. This is our interpretation of a useful direction, not evidence of an unserved market. [Dots](https://learn.chatgpt.com/docs/dots) · [Grok Bot](https://docs.x.ai/grok-bot/overview) · [Hermes](https://github.com/NousResearch/hermes-agent).
 
-## Where Melete is most useful
+## Why Spaces need more than organisation
 
-Choose Melete when you want **personal context and unfinished work in a system you can own**, especially when the work crosses mail, calendars, websites, and files. The source-linked company map and chase workflow make refunds, recurring charges, renewals, and promises a concrete starting point.
+Duet already offers topic channels that share memory. Rowboat already describes workspaces for different projects. A new folder or a renamed conversation is too thin a reason to switch. [Duet channels](https://support.claude.com/en/articles/17631495-get-started-with-claude-duet) · [Rowboat workspaces](https://github.com/rowboatlabs/rowboat).
 
-You can also keep your existing assistant. [Melete's MCP server](MCP-SERVER.md) lets it recall saved context, inspect owed items, start a chase, propose an email, and check status. Melete can be the persistent personal resource behind more than one assistant.
+The proposed Melete experience combines a personal place to work with an agent that helps maintain it:
 
-Start with [one playbook](PLAYBOOKS.md). If your ideal workflow needs something beyond the current product, check the [proposed roadmap](ROADMAP.md) and describe the missing outcome in an issue.
+- **Capture into progress:** a new note can propose a change to an existing plan or answer an open question.
+- **Revisit a decision:** preserve the choice and its reasons, then show the effect of a changed constraint.
+- **Return with context:** see relevant changes, current work, and a next step tied to the actual project.
+- **Keep the relationship portable:** retain personal memory across model changes and move reviewed context when you choose.
+
+The first three are [Spaces proposals](SPACES.md), not shipped features. Reviewed memory import/export and model choice work today. The product has to earn the proposed differentiation through the experience, rather than through claims that these ideas exist nowhere else.
+
+## Who to start with
+
+A person learning something over several weeks, developing a creative project, or making a longer life transition has repeated reasons to return. The useful unit is a project that develops over time, with personal context and artifacts worth keeping.
+
+Melete's current foundations support [learning plans, project briefs, trip planning, research, and private tools](PLAYBOOKS.md). Personal Spaces would connect those foundations into a more coherent experience.
+
+You can also keep your existing assistant. [Melete's MCP server](MCP-SERVER.md) lets it recall saved context, save reviewed preferences, propose an email, and check work status.
+
+[Try one playbook](PLAYBOOKS.md) · [Explore personal Spaces](SPACES.md) · [Choose a build slice](ROADMAP.md)

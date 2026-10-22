@@ -6,10 +6,12 @@ mail was sent, money recovered, or restaurant booking made during capture.
 
 | Asset | Source |
 | --- | --- |
-| `demo.gif` and `walkthrough/` | Existing September 25 Companies walkthrough, recorded from the web app against the sample company-chase scenario |
-| `follow-through.mp4` | H.264 copy of `demo.gif`, with a one-pixel pad for even video dimensions |
+| `demo.gif` and `walkthrough/` | Historical September 25 Companies walkthrough; retained as an archive and no longer used in the README |
+| `follow-through.mp4` | Historical H.264 copy of `demo.gif`; no longer used in the README |
 | `computer.png`, `computer.gif`, `computer.mp4` | October 22 capture of the app at commit `ca2d4b551`, using the `book-a-table` development scenario; shows the browser, terminal, takeover, hand-back, and approval |
-| `memory.png`, `work.png`, `connections.png`, `companies.png` | October 22 captures of the same app's seeded Memory, Work, Connections catalog, and Companies views |
+| `work.png`, `connections.png` | October 22 captures of the same app's Work and Connections catalog |
+| `library.png`, `memory.png` | October 23 captures of the same app; the library is searched for a study coach with its setup preview open, and Memory is filtered to Preferences with the weekly summary dismissed through the UI |
+| `companies.png` | Historical October 22 capture; no longer used in the README |
 
 The booking page inside the computer is a fixture, rather than a live capture
 of the external site. All account names, tasks, totals, and addresses are sample

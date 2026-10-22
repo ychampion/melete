@@ -1,92 +1,107 @@
 # What Melete could do next
 
-These are **feature proposals for discussion and future implementation**, not features available in the current release. They build on existing capabilities and the [personal-agent research](PERSONAL-AGENTS.md). There are no promised dates or delivery order.
+These are **product proposals**, with no promised dates. [The playbooks](PLAYBOOKS.md) use today's capabilities; this page describes the experiences we want to explore next.
 
-## 1. A reviewed context bridge
+The direction is a personal agent that helps you keep developing the things you care about: learning, creative projects, travel, a career move, or a longer personal goal.
 
-**The experience:** “Bring what my current assistant knows about me.” Select a source, see a proposed personal profile, resolve contradictions, and start Melete with useful context.
+## 1. Personal Spaces
 
-**Already works:** reviewed Markdown/Melete JSON memory import, memory export, and `remember`/`recall` through MCP. [Use it today](BRING-YOUR-CONTEXT.md).
+**The experience:** open a part of your life and find the current brief, decisions, useful material, and next step together. The agent helps keep it current as you work.
 
-**Build next:** guided readers for supported assistant exports, previewed changes, source attribution, duplicate/conflict review, and an easy way to undo a particular import. Keep preferences, instructions, active tasks, and access requests distinct.
+**Already works:** memory, conversations, plans, goals, files, run records, apps, and routines exist as separate product surfaces.
 
-**Ready when:** a person can review what will be imported before any memory changes, preserve existing corrections, and see where each imported detail came from. Credentials and embedded instructions from source material never become permissions.
+**Build next:** personal Spaces with explicit associations to those records, reviewed brief updates, and scoped project context. Start with one person and a few projects. Keep personal organisation separate from the existing tenant and collaboration model.
 
-```text
-Build a reviewed context bridge for Melete. Start with one documented export
-format, a local parse/preview step, conflict review, and an import receipt.
-Use the existing portable-memory implementation as the boundary. Define
-acceptance checks before adding more sources.
-```
+**Ready when:** someone can leave a project, return, understand its state, and continue with the right context. An unrelated private Space stays out of retrieval.
 
-## 2. Shareable personal-agent packs
+[Read the experience, sketch, implementation prompt, and first slice →](SPACES.md)
 
-**The experience:** choose “freelancer admin”, “household coordinator”, or “travel planning”, personalise a few details, and begin with an agent that has a useful setup.
+## 2. A useful return brief
 
-**Already works:** the Agent library provides ready-made briefs, suggested connections, preference questions, setup previews, and starter routines you choose to enable. Agents also have standing instructions and scoped access. [Try a first task](START-HERE.md).
+**The experience:** “I have 30 minutes. Bring me back into this project.” See what changed since the last visit, why it matters, what needs a decision, and one useful next step.
 
-**Build next:** a versioned, shareable file format for those setups, plus reviewed package import and export. Let someone publish a useful personal workflow as a pack another person can inspect and personalise. Reuse the library's existing setup flow for the imported content.
+**Already works:** Work records, saved files, plans, and chat history provide material for a manually requested recap.
 
-**Ready when:** a pack can be shared without carrying someone's conversations, credentials, personal memory, or permissions. Importing it shows every proposed change and leaves schedules paused until the owner enables them.
+**Build next:** a Space return view based on changes to attached records, with a last-visited marker and links behind each claim. Distinguish completed work, open questions, and suggestions. Bring in external changes only from configured sources.
+
+**Ready when:** a person can verify the recap, correct it, and act without reading several chats. A lack of activity produces a quiet, accurate return view.
 
 ```text
-Make Agent library setups portable with a versioned pack format and
-reviewed import/export. Reuse existing previews and setup controls. Ship
-one shareable freelancer-admin pack. Keep secrets, personal memory, and
-authority out of exported packages.
+Build a return brief for one personal Space. Use attached records and a
+last-visited marker. Link changes to their sources, separate recorded
+progress from suggestions, and offer one next step. Verify a quiet week,
+a completed run, a blocked task, and a missing source.
 ```
 
-## 3. One view of promises in both directions
+## 3. Decisions with their reasons
 
-**The experience:** see both “what I'm waiting for” and “what I owe someone”, with the original promise, due date, latest change, next step, and relevant work together.
+**The experience:** remember why you chose an approach, and see what should be reconsidered when your constraints change.
 
-**Already works:** the Companies map, company chases, persistent intents and deadlines, reply follow-ups, mail/calendar watches, and Work.
+**Already works:** an agent can write a decision log into a file, and long runs record decisions. [Try the research playbook](PLAYBOOKS.md#turn-research-into-a-decision-you-can-revisit).
 
-**Build next:** a unified commitment view across company promises, the person's own commitments, and explicit follow-up requests. Review inferred commitments, reconcile replies, connect existing jobs, and avoid duplicate chasing across surfaces.
+**Build next:** reviewed Space decisions with alternatives, reasons, assumptions, and links to affected plans or artifacts. A new constraint should produce a proposed change with a visible diff. Automatic detection from an external source needs a configured watch or routine.
 
-**Ready when:** each commitment has a source, owner, status, and next step; a changed promise updates the right record; the same obligation cannot launch several independent chases by accident. A proposed commitment remains distinguishable from one the person accepted.
+**Ready when:** “I now have two hours a week” produces a useful revision, preserves the earlier rationale, and changes nothing the person declined.
 
 ```text
-Prototype a unified commitments view in Melete. Reuse Companies, intents,
-and follow-up records. Start with explicit commitments and source links,
-then add reviewed extraction. Define how duplicates, changed deadlines,
-and existing jobs reconcile before enabling automatic follow-through.
+Add reviewed decisions to a Space. Record the choice, reasons, assumptions,
+sources, and related artifacts. Implement one explicit constraint-change
+flow that proposes a revised plan. Preserve history and verify accept,
+decline, and stale-source cases before automatic update suggestions.
 ```
 
-## 4. Teach a workflow by doing it together
+## 4. Capture that helps organise
 
-**The experience:** take over a browser step, show Melete the right way, and turn the correction into a reusable workflow you can inspect, try, and roll back.
+**The experience:** drop in a note, link, or file. Melete suggests where it belongs and which existing question or plan it could update.
 
-**Already works:** browser takeover, standing instructions, routines, and a narrow evaluated-learning path for organising typed table records. [Current learning scope](LEARNING.md).
+**Already works:** conversations and files can hold material supplied by the person; agents can read available sources and save outputs.
 
-**Build next:** evaluated browser procedures for a small set of repeatable tasks, with required accounts, checkpoints, expiry, and recovery when the page changes. Let a person review a proposed procedure and trial it before reuse.
+**Build next:** an intake flow with suggested Space placement, duplicate detection, and a preview of the proposed use. Let people leave something unfiled or change its destination.
 
-**Ready when:** a recorded demonstration becomes a procedure only after task-specific checks; reused procedures cannot expand access; a changed interface stops or recovers visibly. General browser workflow learning is outside today's evaluated scope.
+**Ready when:** a useful capture reduces later organising, while an ambiguous or sensitive note stays available for review. Source text cannot change permissions or become an instruction by being captured.
 
 ```text
-Extend Melete's evaluated-learning pipeline to one bounded browser task.
-Define the task contract, captured demonstration, evaluator, and review UI.
-Test changed pages and expired sessions. Keep procedure knowledge separate
-from memory facts, account credentials, and permissions.
+Build reviewed capture into one personal Space. Start with a note, a link,
+and a file. Propose placement and a useful follow-on update, with accept,
+change, and leave-unfiled controls. Test duplicate material and context
+that must stay private to a different Space.
 ```
 
-## 5. A portable continuation brief
+## 5. A reviewed context bridge
 
-**The experience:** change an assistant, model, or installation without reconstructing an unfinished project from chat history. Bring the goal, decisions, evidence, outstanding questions, and next step together.
+**The experience:** bring useful context from an assistant you already know, review it, and start Melete with a profile that feels like yours.
 
-**Already works:** portable memory, account export, and long-run **Work → Download record**. The [run record](RUNS.md#the-record) already exports plans, findings, decisions, attempts, and shift handoffs as Markdown. Memory portability and record export alone don't move a running job.
+**Already works:** reviewed Markdown/Melete JSON memory import, memory export, and MCP remember/recall. [Use it today](BRING-YOUR-CONTEXT.md).
 
-**Build next:** a curated continuation brief derived from the existing record, artifact/source resolution across installations, and reviewed destination import. Keep a clear boundary between “context for continuing” and “an action already carried out”. A destination should preview its interpretation before starting new work.
+**Build next:** readers for documented assistant exports, conflict review, source attribution, and an import receipt. Propose personal preferences separately from project-specific context.
 
-**Ready when:** importing a brief cannot replay an email, payment, or booking; the person can see which sources are still available; missing evidence and stale facts are explicit. Live credentials and action permissions stay with the original installation.
+**Ready when:** the person can preview every change, preserve existing corrections, and undo an import. Credentials and embedded source instructions never become permissions.
 
 ```text
-Build on Melete's existing Markdown run export to create a curated
-continuation brief with artifact/source resolution and reviewed import on
-another installation. Do not clone execution state or replay completed
-actions. Verify with a project resumed elsewhere.
+Build a reviewed context bridge for one documented assistant export.
+Reuse Melete's portable-memory implementation. Add parse/preview, source
+attribution, conflict review, and an import receipt. Propose Space context
+separately from personal preferences. Verify corrections and undo.
 ```
 
-## Help choose what ships
+## 6. Portable personal setups and continuation
 
-Use the current [playbooks](PLAYBOOKS.md), then [open an issue](https://github.com/ychampion/melete/issues) with the situation, the desired result, and where the current flow falls short. Link a proposal above if it fits. For implementation, follow [Contributing](../CONTRIBUTING.md) and scope one complete, reviewable slice first.
+**The experience:** start with a useful learning or creative-project setup, personalise it, and keep enough context to continue elsewhere when you choose.
+
+**Already works:** the Agent library supplies briefs, connection suggestions, preference questions, previews, and optional starter routines. Memory is portable. Work's Download record already exports plans, findings, decisions, attempts, and shift handoffs as Markdown.
+
+**Build next:** a versioned format for sharing reviewed starter setups, and a curated continuation brief that resolves project artifacts and sources in another installation. These can ship as separate slices.
+
+**Ready when:** a starter setup carries no private history, credentials, or permissions, and schedules arrive paused. Importing a continuation brief previews the new context and cannot replay completed actions.
+
+```text
+Make one Agent library learning setup portable with a reviewed package
+format. Reuse the existing setup preview and leave schedules paused.
+Separately scope a project continuation brief on top of Work's existing
+record export. Resolve sources and preview destination import before
+starting work; never clone credentials or replay completed actions.
+```
+
+## Help shape the experience
+
+[Try a playbook](PLAYBOOKS.md), then [open an issue](https://github.com/ychampion/melete/issues) with the project you wanted to continue, what you needed to see, and where the current flow fell short. For implementation, follow [Contributing](../CONTRIBUTING.md) and scope one complete slice first.

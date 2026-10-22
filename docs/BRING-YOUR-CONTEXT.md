@@ -22,7 +22,6 @@ Use only these headings where useful:
 ## People
 ## Work
 ## Routines and dates
-## Accounts and bills
 ## Everything else
 
 Format EVERY imported item exactly as:
@@ -141,6 +140,8 @@ Run `/mcp`, authenticate in the browser, and approve the connection in Melete. O
 
 Use **Memory → Export Markdown** for an editable copy or **Export JSON** for Melete's versioned memory format. In **Settings → Account → Download everything**, the account export also includes an importable `memory.json` alongside chats and other records.
 
-Raw ChatGPT/Claude conversation exports and complete account ZIPs are not memory-import formats. Use the reviewed-summary workflow for another assistant's history. Automatic conversation migration and richer context bridges are [roadmap proposals](ROADMAP.md#1-a-reviewed-context-bridge).
+Raw ChatGPT/Claude conversation exports and complete account ZIPs are not memory-import formats. Use the reviewed-summary workflow for another assistant's history. Automatic conversation migration and richer context bridges are [roadmap proposals](ROADMAP.md#5-a-reviewed-context-bridge).
+
+Today's import adds personal memory. The proposed [personal Spaces](SPACES.md) would add a place for project-specific context, with a distinction between preferences used across your life and details kept within one project.
 
 Correct details in Memory or tell Melete what changed. Tell it to forget details you no longer want it to retain. [Memory](MEMORY.md) explains sources, correction, forgetting, and restore behavior.
