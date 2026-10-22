@@ -150,6 +150,8 @@ describe('default connections', () => {
     expect(
       dockerSandboxSettings({ ...env, MELETE_COMPOSE_PROJECT: 'melete-mine' }).installProject,
     ).toBe('melete-mine');
+    // Outside Compose no installation is known, so none is claimed.
+    expect(dockerSandboxSettings(env).installProject).toBeUndefined();
   });
 
   test('every default effect that leaves the space waits for approval', () => {
