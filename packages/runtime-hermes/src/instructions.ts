@@ -784,10 +784,11 @@ export const IDENTITY_TOKENS: number = estimateTokens(IDENTITY);
  * name is placed after that check, so a name of any allowed length adds at
  * most its own length and never stops the service.
  */
-const NAME_ALLOWANCE = Math.ceil(DISPLAY_NAME_MAX / 4);
+export const IDENTITY_TOKEN_LIMIT: number =
+  CONTEXT_LIMITS.identity_tokens + Math.ceil(DISPLAY_NAME_MAX / 4);
 
-if (IDENTITY_TOKENS > CONTEXT_LIMITS.identity_tokens + NAME_ALLOWANCE) {
+if (IDENTITY_TOKENS > IDENTITY_TOKEN_LIMIT) {
   throw new Error(
-    `the identity is about ${IDENTITY_TOKENS} tokens; the contract caps it at ${CONTEXT_LIMITS.identity_tokens}`,
+    `the identity is about ${IDENTITY_TOKENS} tokens; with the assistant's name it may be at most ${IDENTITY_TOKEN_LIMIT}`,
   );
 }

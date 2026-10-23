@@ -8,7 +8,14 @@ import { DISPLAY_NAME_MAX } from '@melete/contracts';
 const load = (env: Record<string, string>) =>
   Bun.spawnSync(['bun', '-e', 'await import("./instructions.ts")'], {
     cwd: import.meta.dir,
-    env: { ...process.env, MELETE_ASSISTANT_NAME: '', MELETE_INSTANCE_NAME: '', ...env },
+    // A blank identity file is unset, so the built-in identity takes the name.
+    env: {
+      ...process.env,
+      MELETE_IDENTITY_FILE: '',
+      MELETE_ASSISTANT_NAME: '',
+      MELETE_INSTANCE_NAME: '',
+      ...env,
+    },
     stderr: 'pipe',
   });
 
