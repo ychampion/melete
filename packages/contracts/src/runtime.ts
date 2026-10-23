@@ -383,6 +383,12 @@ export const attemptBundle = z.object({
      */
     cancelled_wait: waitSpec.optional(),
     /**
+     * True when `cancelled_wait` is a conversation's reminder the person
+     * cancelled from another conversation: it comes back still cancelled and
+     * does not fire unless run.resume turns it back on.
+     */
+    cancelled_wait_held: z.boolean().optional(),
+    /**
      * What a correction broke and where. Each brief names the handle that moved,
      * the value before and after, and the outputs that cited the old revision.
      */

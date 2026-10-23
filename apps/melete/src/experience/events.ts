@@ -38,6 +38,7 @@ import {
   providerFailureCard,
   providerRetryNote,
 } from '../jobs/provider-notes.ts';
+import { REMINDER_NOTES } from '../jobs/reminder-hold.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import { AnswerStream, answerText } from './answer-filter.ts';
 import type { ExperienceEffects } from './effects.ts';
@@ -1029,6 +1030,15 @@ export class ExperienceEvents {
                 ? `Waiting for the agent's computer: it is in use by "${holder}".`
                 : "Waiting for the agent's computer: another conversation is using it.",
             });
+          } else if (
+            source.type === 'notice' &&
+            source.jobId === id &&
+            REMINDER_NOTES.includes(String(payload.kind)) &&
+            typeof payload.note === 'string'
+          ) {
+            // A reminder cancelled or turned back on, said where it was done
+            // and in the conversation it belongs to.
+            await emit(source, { type: 'note', text: plainText(payload.note, '', 400) });
           } else if (
             source.type === 'notice' &&
             payload.kind === 'processes_stopped' &&
