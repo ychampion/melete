@@ -70,7 +70,7 @@ type Evidence = {
 };
 
 const objective =
-  'Call test.send exactly once with exactly {"message":"scripted hello"}. ' +
+  'Call test.send exactly once with exactly {"message":"scripted hello"}, but do not send it until I approve it. ' +
   'When approval is required, stop and wait. After owner approval, propose the same payload ' +
   'again to obtain its receipt, then report completion. Do not change the payload.';
 
