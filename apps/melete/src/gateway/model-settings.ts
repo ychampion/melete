@@ -9,7 +9,7 @@
  * Precedence, so the server's own configuration never changes under it:
  * - A key the environment names for a provider (FIREWORKS_API_KEY and the rest)
  *   is used for that provider, shown as set by the operator, and cannot be
- *   replaced here. The same holds for OPENAI_COMPAT_BASE_URL.
+ *   replaced here. The same holds for OPENAI_COMPAT_BASE_URL and ANTHROPIC_BASE_URL.
  * - MELETE_DEFAULT_PROVIDER and MELETE_DEFAULT_MODEL are the starting model. A
  *   model chosen in the app replaces them for new attempts until it is cleared,
  *   which goes back to them.
@@ -80,6 +80,7 @@ import type { Env } from '../env.ts';
 import { allowedChoices, modelAllowed, modelRefusal, readSpaceRules } from '../spaces/policy.ts';
 import type { ProviderSignIn } from './credentials.ts';
 import {
+  anthropicProvider,
   CHATGPT_PROVIDER,
   compatibleBaseUrl,
   OPENAI_COMPATIBLE,
@@ -133,6 +134,24 @@ const isModelProvider = (name: string): name is ModelProvider =>
 
 /** The built-in providers' addresses, from the one provider table. */
 const BUILT_IN = new Map(providersFromEnv({}).map((provider) => [provider.name, provider]));
+
+/**
+ * Where Anthropic is called when the operator names no gateway. A key saved
+ * before Anthropic keys were bound to an address was saved for this one.
+ */
+const ANTHROPIC_DIRECT = anthropicProvider(undefined).baseUrl;
+
+/**
+ * The address a saved key belongs to, for the providers whose keys are bound
+ * to one: the compatible endpoint's (none when it was never given), and
+ * Anthropic's, directly or through a gateway. Null for every other provider,
+ * whose key goes to its one built-in address.
+ */
+function savedAddress(row: Pick<KeyRow, 'provider' | 'baseUrl'>): string | null | undefined {
+  if (row.provider === OPENAI_COMPATIBLE) return row.baseUrl ?? undefined;
+  if (row.provider === 'anthropic') return row.baseUrl ?? ANTHROPIC_DIRECT;
+  return null;
+}
 
 /**
  * Sealing binds the provider into the box, so a ciphertext copied onto another
@@ -276,15 +295,23 @@ export class ModelSettingsService {
 
   /**
    * The stored key a call to this provider may carry. A compatible endpoint's
-   * key only goes to the address it was saved for: when the operator's address
-   * has changed since, it is not used.
+   * key, and Anthropic's, only go to the address they were saved for: when the
+   * operator's address has changed since, the key is not used.
    */
   private usableRow(provider: string, rows: Map<string, KeyRow>): KeyRow | undefined {
     const row = rows.get(provider);
-    if (!row || provider !== OPENAI_COMPATIBLE) return row;
-    if (!row.baseUrl) return undefined;
+    if (!row) return undefined;
+    const saved = savedAddress(row);
+    if (saved === null) return row;
+    if (saved === undefined) return undefined;
+    if (provider === 'anthropic') return saved === this.anthropicBase() ? row : undefined;
     const operatorBase = this.operatorBaseUrl();
-    return !operatorBase || operatorBase === row.baseUrl ? row : undefined;
+    return !operatorBase || operatorBase === saved ? row : undefined;
+  }
+
+  /** Where Anthropic's calls go: directly, or through the operator's ANTHROPIC_BASE_URL. */
+  private anthropicBase(): string {
+    return anthropicProvider(this.env.ANTHROPIC_BASE_URL).baseUrl;
   }
 
   /**
@@ -636,11 +663,17 @@ export class ModelSettingsService {
     const providers = await Promise.all(
       MODEL_PROVIDERS.map(async (provider) => {
         const row = this.usableRow(provider, rows);
+        // An Anthropic key saved for an address other than the one calls go to now.
+        const elsewhere = row || provider !== 'anthropic' ? undefined : rows.get(provider);
         const byOperator =
           provider !== CHATGPT_PROVIDER &&
           (Boolean(this.operatorKey(provider)) || this.operatorSignIn(provider));
         const compatible = provider === OPENAI_COMPATIBLE;
-        const operatorBase = compatible ? this.operatorBaseUrl() : undefined;
+        const operatorBase = compatible
+          ? this.operatorBaseUrl()
+          : provider === 'anthropic' && this.env.ANTHROPIC_BASE_URL
+            ? this.anthropicBase()
+            : undefined;
         return {
           provider,
           label:
@@ -657,15 +690,20 @@ export class ModelSettingsService {
                   last_four: canEdit ? row.lastFour : null,
                   updated_at: row.updatedAt.toISOString(),
                 }
-              : { state: 'unset' as const, last_four: null, updated_at: null },
-          base_url: compatible ? (operatorBase ?? row?.baseUrl ?? null) : null,
-          base_url_source: compatible
-            ? operatorBase
-              ? ('operator' as const)
-              : row?.baseUrl
-                ? ('app' as const)
-                : null
-            : null,
+              : elsewhere
+                ? {
+                    // Kept, but never sent to the address in use (`base_url`).
+                    state: 'other_address' as const,
+                    last_four: canEdit ? elsewhere.lastFour : null,
+                    updated_at: elsewhere.updatedAt.toISOString(),
+                  }
+                : { state: 'unset' as const, last_four: null, updated_at: null },
+          base_url: compatible ? (operatorBase ?? row?.baseUrl ?? null) : (operatorBase ?? null),
+          base_url_source: operatorBase
+            ? ('operator' as const)
+            : compatible && row?.baseUrl
+              ? ('app' as const)
+              : null,
           connected: await this.connected(provider, rows),
           lists_models: provider !== CHATGPT_PROVIDER,
         };
@@ -890,9 +928,12 @@ export class ModelSettingsService {
         'That does not look like an API key. Paste the whole key, without spaces.',
         400,
       );
-    // A compatible endpoint's key is bound to the address it is saved for.
+    // A compatible endpoint's key is bound to the address it is saved for, and
+    // an Anthropic key to where Anthropic is called now: directly, or the
+    // operator's gateway.
     let baseUrl: string | null = null;
     if (provider === OPENAI_COMPATIBLE) baseUrl = this.operatorBaseUrl() ?? null;
+    if (provider === 'anthropic') baseUrl = this.anthropicBase();
     if (provider === OPENAI_COMPATIBLE && !baseUrl) {
       if (!input.base_url)
         throw new ServiceError(
@@ -976,8 +1017,10 @@ export class ModelSettingsService {
     if (!rows.size) return configured;
     const result = configured.map((provider) => {
       const row = rows.get(provider.name);
-      // A compatible endpoint's key is attached only at the address it was saved for.
-      const boundHere = provider.name !== OPENAI_COMPATIBLE || row?.baseUrl === provider.baseUrl;
+      // A compatible endpoint's key, and Anthropic's, are attached only at the
+      // address they were saved for.
+      const saved = row ? savedAddress(row) : null;
+      const boundHere = saved === null || saved === provider.baseUrl;
       return row && boundHere && !provider.fake && !provider.apiKey && !provider.signedIn
         ? { ...provider, signedIn: this.storedCredential(row) }
         : provider;
@@ -1079,20 +1122,28 @@ export class ModelSettingsService {
     return isModelProvider(provider) ? this.configuredBase(provider) : undefined;
   }
 
-  /** The address a provider's model list is fetched from: built in, or the compatible endpoint's. */
+  /**
+   * The address a provider's model list is fetched from: built in, the
+   * compatible endpoint's, or Anthropic's gateway (ANTHROPIC_BASE_URL), the
+   * same address the gateway's calls go to.
+   */
   private async configuredBase(provider: ModelProvider): Promise<string | undefined> {
-    return provider === OPENAI_COMPATIBLE
-      ? (this.operatorBaseUrl() ??
-          this.usableRow(provider, await this.keyRows())?.baseUrl ??
-          undefined)
-      : BUILT_IN.get(provider)?.baseUrl;
+    if (provider === OPENAI_COMPATIBLE)
+      return (
+        this.operatorBaseUrl() ??
+        this.usableRow(provider, await this.keyRows())?.baseUrl ??
+        undefined
+      );
+    if (provider === 'anthropic') return this.anthropicBase();
+    return BUILT_IN.get(provider)?.baseUrl;
   }
 
   /**
    * How a request to this provider's address goes out. An OpenAI-compatible
    * address the owner chose in the app may be on their own network, but it is
    * resolved, checked and pinned for each request, and never reaches cloud
-   * metadata. The operator's address and the built-in providers go as they are.
+   * metadata. The operator's addresses (OPENAI_COMPAT_BASE_URL and
+   * ANTHROPIC_BASE_URL) and the built-in providers go as they are.
    */
   private transportFor(
     provider: ModelProvider,

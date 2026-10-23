@@ -3,7 +3,7 @@ import type { ModelProviderStatus } from './api.ts';
 import { statusLine } from './ModelConnect.tsx';
 
 const fireworks = (
-  state: 'unset' | 'set' | 'operator',
+  state: 'unset' | 'set' | 'operator' | 'other_address',
   connected: boolean,
 ): ModelProviderStatus => ({
   provider: 'fireworks',
@@ -27,4 +27,9 @@ test('a tick only for a key that is really there', () => {
   });
   expect(statusLine(fireworks('operator', false), true).tone).not.toBe('ok');
   expect(statusLine(fireworks('unset', false)).text).toBe('Not connected');
+  // A key saved for another address is not a connection here.
+  expect(statusLine(fireworks('other_address', false))).toEqual({
+    text: 'Saved key is for another address',
+    tone: 'attention',
+  });
 });

@@ -28264,7 +28264,7 @@ export interface components {
                 provider: string;
             };
             providers: {
-                /** @description The OpenAI-compatible endpoint’s version prefix; null for the rest */
+                /** @description Where calls go: the OpenAI-compatible endpoint’s version prefix, or the gateway the server routes Anthropic through; null for the rest */
                 base_url: components["schemas"]["__schema799"] | null;
                 base_url_source: ("app" | "operator") | null;
                 /** @description A key is set or the owner is signed in, so a model call has a credential. It is not a promise that the provider accepts it; test the connection for that. */
@@ -28273,10 +28273,10 @@ export interface components {
                     /** @description The last four characters of a key entered in the app */
                     last_four: components["schemas"]["__schema798"] | null;
                     /**
-                     * @description `set`: entered in the app and stored sealed. `operator`: the server environment names a key for this provider; it is used, cannot be changed here, and is never shown.
+                     * @description `set`: entered in the app and stored sealed. `operator`: the server environment names a key for this provider; it is used, cannot be changed here, and is never shown. `other_address`: an Anthropic key entered in the app for another address than the one calls go to now (`base_url`); it is kept but never sent there.
                      * @enum {string}
                      */
-                    state: "unset" | "set" | "operator";
+                    state: "unset" | "set" | "operator" | "other_address";
                     updated_at: components["schemas"]["__schema248"] | null;
                 };
                 label: string;
