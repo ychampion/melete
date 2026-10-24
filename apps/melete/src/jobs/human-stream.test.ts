@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { type AttemptOutcome, humanText, type RuntimeEvent } from '@melete/contracts';
+import { FirstLine } from './first-line.ts';
 import { HumanStream, humanOutcome } from './human-stream.ts';
 
 const ATTEMPT = 'att_01J8ZP3QWABCDEFGHJKMNPQRST' as RuntimeEvent['attempt_id'];
@@ -110,6 +111,91 @@ describe('the stream on its way to the record', () => {
     await stream.emit(delta('Half a thought —'));
     await stream.emit(delta(' and the rest'));
     await expect(stream.drain()).rejects.toThrow('store down');
+  });
+});
+
+describe('asides in the middle of a message', () => {
+  test('an aside while no words are held leaves the message open', async () => {
+    for (const aside of [reasoning('think'), { ...base(), type: 'stalled' } as RuntimeEvent]) {
+      const { stream, recorded, shown } = recorder();
+      const sent = [delta('Booked it'), aside, delta(' — the room is yours.')];
+      for (const event of sent) await stream.emit(event);
+      await stream.drain();
+      expect(shown()).toBe(humanText('Booked it — the room is yours.'));
+      expect(recorded.map((event) => event.local_seq)).toEqual(
+        sent.map((event) => event.local_seq),
+      );
+    }
+  });
+});
+
+describe('behind the first-line gate', () => {
+  // A fixed sequence of choices, so a failure can be replayed.
+  let state = 7;
+  const chance = () => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return state / 2147483648;
+  };
+  const later = async () => {
+    const roll = chance();
+    if (roll < 0.5)
+      for (let tick = 0; tick < Math.floor(roll * 10); tick++) await Promise.resolve();
+    else if (roll < 0.6) await new Promise((done) => setImmediate(done));
+  };
+  const replies = [
+    'Booked it — the room is yours. Hours are 9–5.',
+    'The rate is 1.08 — up from 1.07 — since Monday.\nAnything else?',
+    'Here is the list:\n\n- one — two\n- three\n\nDone — thanks.',
+  ];
+
+  test('every word reaches the record in the order it was said, however slowly each is written', async () => {
+    for (let round = 0; round < 300; round++) {
+      const reply = replies[round % replies.length] as string;
+      const sent: RuntimeEvent[] = [];
+      for (let at = 0; at < reply.length; ) {
+        const size = 1 + Math.floor(chance() * 8);
+        sent.push(delta(reply.slice(at, at + size)));
+        if (chance() < 0.15) sent.push(reasoning('think'));
+        at += size;
+      }
+      sent.push(done(reply));
+      const recorded: RuntimeEvent[] = [];
+      const stream = new HumanStream(async (event) => {
+        await later();
+        recorded.push(event);
+      });
+      const acknowledging = chance() < 0.7;
+      const gate = new FirstLine((event) => stream.emit(event), acknowledging);
+      // The acknowledgement, shown or not, at any point in the reply.
+      const acknowledgement = (async () => {
+        await later();
+        if (!acknowledging || !gate.beginShow()) return;
+        await later();
+        await gate.endShow(chance() < 0.5);
+      })();
+      const waits = chance() < 0.5;
+      const pending: Promise<void>[] = [];
+      for (const event of sent) {
+        const out = gate.emit(event);
+        if (waits) await out;
+        else pending.push(out);
+        await later();
+      }
+      await Promise.all(pending);
+      gate.cancel();
+      await gate.drain();
+      await stream.drain();
+      await acknowledgement;
+      expect(recorded.map((event) => event.local_seq)).toEqual(
+        sent.map((event) => event.local_seq),
+      );
+      expect(
+        recorded
+          .filter((event) => event.type === 'text_delta')
+          .map((event) => (event as { text: string }).text)
+          .join(''),
+      ).toBe(humanText(reply));
+    }
   });
 });
 
