@@ -11,7 +11,7 @@ import {
   humanText,
   type RuntimeEvent,
 } from '@melete/contracts';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { ServiceError } from '../../src/api/errors.ts';
 import { action, artifact, attempt, connection, event, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -106,6 +106,19 @@ async function execution(id: string) {
   const [row] = await fixture().handle.db.select().from(attempt).where(eq(attempt.id, id));
   if (!row) throw new Error('Attempt not found');
   return row;
+}
+
+/**
+ * A job's events in the order they were recorded. A read without an order
+ * returns rows as they sit on disk, which is not the order they were written
+ * once deleted rows' space is reused.
+ */
+function recorded(jobId: string) {
+  return fixture()
+    .handle.db.select()
+    .from(event)
+    .where(eq(event.jobId, jobId))
+    .orderBy(asc(event.seq));
 }
 
 async function effect(claimed: ClaimedAttempt, status: string) {
@@ -531,7 +544,7 @@ withDb('attempt runner against Postgres and pg-boss', () => {
       { type: 'outcome', outcome: { kind: 'completed', summary: raw, evidence: [] } },
     ]);
     await worker.handleWake(wake(row));
-    const stored = await handle.db.select().from(event).where(eq(event.jobId, row.id));
+    const stored = await recorded(row.id);
     const shown = stored
       .filter((entry) => entry.type === 'text_delta')
       .map((entry) => (entry.payload as { text: string }).text)
@@ -562,7 +575,7 @@ withDb('attempt runner against Postgres and pg-boss', () => {
     expect(lost?.leaseStatus).toBe('lost');
     expect(lost?.outcome).toBe('fenced');
     expect(lost?.outcomeDetail).toMatchObject({ kind: 'lost', reason: 'stub died after effect' });
-    const stored = await handle.db.select().from(event).where(eq(event.jobId, row.id));
+    const stored = await recorded(row.id);
     expect(stored.filter((entry) => entry.type === 'text_delta')).toHaveLength(1);
     expect(stored.some((entry) => (entry.payload as { kind?: string }).kind === 'gap')).toBe(true);
     await worker.handleWake(wake(retry));
@@ -908,24 +921,24 @@ withDb('attempt runner against Postgres and pg-boss', () => {
     expect(completed.stateVersion).toBe(2);
     expect(completed.leaseEpoch).toBe(1);
     expect((await execution(admitted.claims.attempt_id)).outcomeDetail).toEqual(completion());
-    const before = await handle.db.select().from(event).where(eq(event.jobId, row.id));
+    const before = await recorded(row.id);
     await worker.recover();
     await worker.handleWake(wake(row));
     await rejects(() => worker.commitOutcome(admitted.claims, completion()), 'stale_epoch');
-    expect(await handle.db.select().from(event).where(eq(event.jobId, row.id))).toEqual(before);
+    expect(await recorded(row.id)).toEqual(before);
     expect(await handle.db.select().from(attempt).where(eq(attempt.jobId, row.id))).toHaveLength(1);
   });
 
   test('repeating a successful outcome cannot add another transition or ended event', async () => {
-    const { jobs, handle } = fixture();
+    const { jobs } = fixture();
     const worker = runner();
     const row = await create();
     const admitted = await claim(worker, row);
     const completed = await worker.commitOutcome(admitted.claims, completion());
-    const before = await handle.db.select().from(event).where(eq(event.jobId, row.id));
+    const before = await recorded(row.id);
     await rejects(() => worker.commitOutcome(admitted.claims, completion()), 'stale_epoch');
     expect(await jobs.get(row.id)).toEqual(completed);
-    expect(await handle.db.select().from(event).where(eq(event.jobId, row.id))).toEqual(before);
+    expect(await recorded(row.id)).toEqual(before);
     expect(before.filter((entry) => entry.type === 'job_state_changed')).toHaveLength(2);
     expect(before.filter((entry) => entry.type === 'attempt_ended')).toHaveLength(1);
   });

@@ -113,8 +113,11 @@ export class HumanStream {
       });
       return Promise.resolve();
     }
-    if (this.held && ASIDES.has(event.type)) {
-      // An aside written mid-message waits behind the delta, in order.
+    if (ASIDES.has(event.type)) {
+      // An aside written mid-message waits behind the delta, in order. With
+      // no delta held it goes straight through, and the message goes on: the
+      // words after it are read with the words before.
+      if (!this.held) return this.record(event);
       this.behind.push(event);
       return Promise.resolve();
     }
