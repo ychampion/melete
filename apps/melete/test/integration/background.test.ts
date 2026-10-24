@@ -214,6 +214,7 @@ withDb('background and interactive model calls', () => {
     await handle.sql`delete from model_usage`;
     await handle.sql`delete from usage_day`;
     await handle.sql`delete from spending_notice`;
+    await handle.sql`delete from spend_hold`;
     personId = newId('own');
     spaceId = newId('sp');
     await handle.db.insert(principal).values({ id: personId, email: `${personId}@example.test` });
@@ -578,6 +579,9 @@ withDb('background and interactive model calls', () => {
       local: false,
     };
     const results = async (parallel: boolean) => {
+      // Every guard on the database holds the same running calls: each run
+      // starts without the ones the last run left running.
+      await handle.sql`delete from spend_hold`;
       const guard = new SpendingGuard(handle.sql, limits({ day: { usd: 1, tokens: null } }));
       const one = () =>
         guard.admit(service('memory'), call).then(

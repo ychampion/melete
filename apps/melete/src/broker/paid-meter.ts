@@ -102,7 +102,7 @@ export function jobPaidMeter(sql: Sql, spending?: GatewaySpending): PaidApiMeter
       try {
         ledgerId = await reserveOnJob(call, charge, amount);
       } catch (error) {
-        spending?.release?.(principal);
+        await spending?.release?.(principal);
         throw error;
       }
       holds.set(ledgerId, {
@@ -139,7 +139,7 @@ export function jobPaidMeter(sql: Sql, spending?: GatewaySpending): PaidApiMeter
             httpStatus: null,
             feeUsd: charge,
           });
-        else spending?.release?.(held.principal);
+        else await spending?.release?.(held.principal);
       }
     },
   };
