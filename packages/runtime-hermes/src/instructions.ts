@@ -29,6 +29,7 @@ import {
   type AttemptBundle,
   CONTEXT_LIMITS,
   DEFAULT_REPLY_VOICE,
+  DISPLAY_NAME_MAX,
   MEMORY_SEARCH_TOOL_NAME,
   type ReplyVoice,
   renderSinceLast,
@@ -778,8 +779,16 @@ export const instructionTokens = (bundle: AttemptBundle): number =>
 /** The identity's share of that, checked against the contract on every build. */
 export const IDENTITY_TOKENS: number = estimateTokens(IDENTITY);
 
-if (IDENTITY_TOKENS > CONTEXT_LIMITS.identity_tokens) {
+/**
+ * The cap holds the identity file as written (`loadIdentity`); the assistant's
+ * name is placed after that check, so a name of any allowed length adds at
+ * most its own length and never stops the service.
+ */
+export const IDENTITY_TOKEN_LIMIT: number =
+  CONTEXT_LIMITS.identity_tokens + Math.ceil(DISPLAY_NAME_MAX / 4);
+
+if (IDENTITY_TOKENS > IDENTITY_TOKEN_LIMIT) {
   throw new Error(
-    `the identity is about ${IDENTITY_TOKENS} tokens; the contract caps it at ${CONTEXT_LIMITS.identity_tokens}`,
+    `the identity is about ${IDENTITY_TOKENS} tokens; with the assistant's name it may be at most ${IDENTITY_TOKEN_LIMIT}`,
   );
 }

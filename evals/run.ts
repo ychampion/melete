@@ -2,7 +2,11 @@ import { closeSync, openSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { IDENTITY, IDENTITY_TOKENS } from '../packages/runtime-hermes/src/instructions.ts';
+import {
+  IDENTITY,
+  IDENTITY_TOKEN_LIMIT,
+  IDENTITY_TOKENS,
+} from '../packages/runtime-hermes/src/instructions.ts';
 import { unmetRequirement } from './capability.ts';
 import { grade, rubricGrade } from './grading.ts';
 import { openLab } from './lab.ts';
@@ -249,7 +253,8 @@ try {
     `${prefix}selection`,
     JSON.stringify({ ids: scenarios.map((scenario) => scenario.id), runs, seed }),
   );
-  if (IDENTITY_TOKENS > 250) throw new Error('Identity exceeds 250 tokens');
+  if (IDENTITY_TOKENS > IDENTITY_TOKEN_LIMIT)
+    throw new Error(`Identity exceeds ${IDENTITY_TOKEN_LIMIT} tokens`);
   console.log(
     `Campaign ${options.campaign}: ${scenarios.length} scenarios x ${runs} runs; ${provider}/${model}.`,
   );
