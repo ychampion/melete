@@ -36,12 +36,13 @@ import {
   question,
   space,
 } from '../../src/db/schema.ts';
+import { appendEvent } from '../../src/events/store.ts';
 import { ExperienceService } from '../../src/experience/service.ts';
 import { newId } from '../../src/ids.ts';
 import { QuestionService, withdrawSettledQuestion } from '../../src/jobs/questions.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { RUNAWAY_NOTE } from '../../src/jobs/runaway.ts';
-import { AttemptRunner } from '../../src/jobs/runner.ts';
+import { AttemptRunner, BUNDLE_FAILED_NOTE } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
@@ -152,7 +153,9 @@ type Shape =
   | 'answered_lost'
   | 'spoofed'
   | 'read_only'
-  | 'read_and_effect';
+  | 'read_and_effect'
+  | 'unbuilt'
+  | 'unbuilt_steered';
 const FAILS = new Set<Shape>(['failed', 'refenced', 'two_one_failed']);
 const RETRIED = new Set<Shape>(['lost', 'looping']);
 /** A read-only check left out when the turn ended, alone or beside a step with effects. */
@@ -301,7 +304,8 @@ withDb('a turn answered while a step it started was still out', () => {
             values (${stepId}, ${sessionId}, ${stepId})`;
         }
         // Words the person sends while the turn is still running, after its answer.
-        if (shape === 'steered') await jobs.steer(chat.id, { id: 'steer-warmer', text: STEER });
+        if (shape === 'steered' || shape === 'unbuilt_steered')
+          await jobs.steer(chat.id, { id: 'steer-warmer', text: STEER });
         if (RETRIED.has(shape))
           return { kind: 'failed', reason: 'The engine went away.', retryable: true };
         return { kind: 'completed', summary: LETTER, evidence: [] };
@@ -398,6 +402,16 @@ withDb('a turn answered while a step it started was still out', () => {
           expect(asked).toHaveLength(1);
         }
       }
+      // A record the next build reads and cannot parse: the wake's bundle is not built.
+      if (shape === 'unbuilt' || shape === 'unbuilt_steered')
+        await jobs.transaction((tx) =>
+          appendEvent(tx, {
+            jobId: chat.id,
+            type: 'tool_result',
+            payload: { not: 'a tool result' },
+            dedupKey: `${chat.id}:broken-result`,
+          }),
+        );
       await run(await jobs.get(chat.id));
     }
 
@@ -501,6 +515,26 @@ withDb('a turn answered while a step it started was still out', () => {
     // Nothing is left to ask about a step that went through.
     expect(open).toEqual([]);
     expect(state).toBe('waiting_for_input');
+  });
+
+  test('a settled answer whose wake cannot build its bundle keeps its answer', async () => {
+    const { bundles, letters, turn, open } = await converse('unbuilt');
+    // No engine runs on a bundle that was not built.
+    expect(bundles).toHaveLength(1);
+    expect(letters).toBe(1);
+    // The answer the person already has stands as it was: done, with no
+    // failure sentence added to it, as when the bundle is built.
+    expect(turn?.answer).not.toContain(BUNDLE_FAILED_NOTE);
+    expect(turn?.status).toBe('done');
+    expect(open).toEqual([]);
+  });
+
+  test('words the person sent stop an unbuilt wake from settling the turn away', async () => {
+    const { bundles, turn } = await converse('unbuilt_steered');
+    expect(bundles).toHaveLength(1);
+    // Their words were never read: the turn says it could not get started.
+    expect(turn?.answer).toContain(BUNDLE_FAILED_NOTE);
+    expect(turn?.status).toBe('failed');
   });
 
   test('a step that failed after the answer gets a follow-up that knows the answer', async () => {
