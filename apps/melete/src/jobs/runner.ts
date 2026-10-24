@@ -40,10 +40,12 @@ import {
   DrizzleQueryError,
   desc,
   eq,
+  gt,
   inArray,
   isNotNull,
   isNull,
   ne,
+  or,
   sql,
 } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
@@ -398,16 +400,58 @@ async function answeredTurnSettled(
     inputs.cancelled_wait
   )
     return false;
+  return stepsWentThrough(tx, row.id, previous.endedAt);
+}
+
+/** No step is open, and every step that settled after `answeredAt` went through. */
+async function stepsWentThrough(tx: Transaction, jobId: string, answeredAt: Date) {
   const steps = await tx
     .select({ status: action.status, resolvedAt: action.resolvedAt })
     .from(action)
-    .where(eq(action.jobId, row.id));
-  const answeredAt = previous.endedAt.getTime();
+    .where(eq(action.jobId, jobId));
   return steps.every(
     (step) =>
       !OPEN_STEPS.includes(step.status) &&
-      (!step.resolvedAt || step.resolvedAt.getTime() < answeredAt || step.status === 'succeeded'),
+      (!step.resolvedAt ||
+        step.resolvedAt.getTime() < answeredAt.getTime() ||
+        step.status === 'succeeded'),
   );
+}
+
+/**
+ * `answeredTurnSettled` for a wake whose bundle could not be built, read from
+ * the rows the bundle would have read its inputs from. It leans toward "not
+ * settled": anything that could be news for the turn (a message, a decision, a
+ * trigger, a wait the wake cancelled) leaves it to fail as an unbuilt turn does.
+ */
+async function answeredTurnSettledUnbuilt(
+  tx: Transaction,
+  row: JobRow,
+  previous: typeof attempt.$inferSelect | undefined,
+): Promise<boolean> {
+  if (row.kind !== 'chat' || !row.currentTurnId || !previous?.endedAt) return false;
+  if (previous.turnId !== row.currentTurnId || previous.outcome !== 'completed') return false;
+  const wait = waitSpec.safeParse(row.wait);
+  if (!wait.success || wait.data.kind === 'event' || wait.data.kind === 'timer') return false;
+  const [news] = await tx
+    .select({ seq: event.seq })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, row.id),
+        gt(event.seq, previous.inputCursor),
+        or(
+          eq(event.type, 'approval_decided'),
+          and(
+            eq(event.type, 'notice'),
+            sql`${event.payload}->>'kind' in ('user_message', 'trigger_event')`,
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  if (news) return false;
+  return stepsWentThrough(tx, row.id, previous.endedAt);
 }
 
 /**
@@ -836,7 +880,13 @@ export class AttemptRunner {
       // steps show on the turn's record and the answer stands. Running the
       // turn would answer it a second time. A step that failed instead goes to
       // an attempt, which is shown what was already said (`said_this_turn`).
-      if (bundle && (await answeredTurnSettled(tx, row, previous, bundle))) {
+      // A bundle that could not be built is no reason to fail a turn already
+      // answered: the same question is asked of the rows instead.
+      if (
+        bundle
+          ? await answeredTurnSettled(tx, row, previous, bundle)
+          : await answeredTurnSettledUnbuilt(tx, row, previous)
+      ) {
         await this.finish(
           tx,
           row,
@@ -2428,6 +2478,9 @@ export class AttemptRunner {
       acknowledgement?.cancel();
       await firstLine.drain().catch(() => undefined);
       await human.drain();
+      // Words held until now can be the ones that show a loop: the reply is
+      // still cut back to its first copy, as one seen while it streamed is.
+      if (controller.signal.reason instanceof RunawayReply) throw controller.signal.reason;
       // The answer is saved as the person saw it, without a line dropped from it.
       const outcome = firstLine.settled(isOutcomeEnvelope(result) ? result.outcome : result);
       if (outcome.kind === 'completed') {
