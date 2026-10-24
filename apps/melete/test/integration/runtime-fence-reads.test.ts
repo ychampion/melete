@@ -141,13 +141,14 @@ withDb('runtime fence reads within one commit', () => {
         expect(reads('space')).toHaveLength(1);
         expect(reads('space_membership')).toHaveLength(1);
         expect(reads('connection')).toHaveLength(connected ? 2 : 0);
-        expect(reads('job')).toHaveLength(2);
+        // Per record: the job row lock, then its attempt read after that lock.
+        expect(reads('job')).toHaveLength(4);
         expect(
           statements.filter(
             (statement) =>
               /^\s*select\b/i.test(statement) && !statement.includes('pg_advisory_xact_lock'),
           ),
-        ).toHaveLength(connected ? 6 : 4);
+        ).toHaveLength(connected ? 8 : 6);
         const result = await saved([first, second]);
         expect(result.executions.map((row) => row.runtimeCursor)).toEqual([localSeq, localSeq]);
         if (localSeq === 0) {
@@ -273,6 +274,36 @@ withDb('runtime fence reads within one commit', () => {
       }
     },
   );
+
+  test("an attempt ended by the job row's holder is read after that holder commits", async () => {
+    const { first } = await fixture('Ended under the job row');
+    const { sql } = required(handle);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding!: () => void;
+    const held = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    // Holds the job row, not the event order, and ends the attempt alone.
+    const ender = sql.begin(async (tx) => {
+      await tx`select id from job where id = ${first.job_id} for update`;
+      await tx`update attempt set ended_at = now(), lease_status = 'ended',
+        lease_expires_at = null, outcome = 'fenced' where id = ${first.attempt_id}`;
+      holding();
+      await gate;
+    });
+    await held;
+    const writing = required(runner).emit(first, text(first));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    release();
+    await ender;
+    expect((await refusal(writing)).code).toBe('stale_epoch');
+    const result = await saved([first]);
+    expect(result.words).toHaveLength(0);
+    expect(result.executions.map((row) => row.runtimeCursor)).toEqual([-1]);
+  });
 });
 
 function required<T>(value: T | null | undefined): T {

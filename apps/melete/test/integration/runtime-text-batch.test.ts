@@ -253,12 +253,13 @@ withDb('conversation text recorded together', () => {
     );
     runners.push(worker);
     await write(worker, fixture.admitted, text(fixture.admitted, ['The answer.']), true);
-    // Only the runtime fence loader and locked authority read separately.
-    // Join history, answer, events and cursor share the following CTE.
+    // Only the runtime fence loader (the job row lock and the attempt read
+    // sent with it) and locked authority read separately. Join history,
+    // answer, events and cursor share the following CTE.
     const reads = statements.filter(
       (statement) => /^select\b/i.test(statement.trimStart()) && !statement.includes('pg_advisory'),
     );
-    expect(reads).toHaveLength(2);
+    expect(reads).toHaveLength(3);
     expect((await saved(fixture.admitted, fixture.turnId)).answer).toBe('The answer.');
   });
 
