@@ -122,6 +122,11 @@ export class ExperienceService {
   attachments?: AttachmentService;
   /** Where conversations' workspaces are, so a deleted one's goes to its trash. */
   workspaces?: WorkspaceTrash;
+  /**
+   * Where the chat list and pages of messages are read: connections that never
+   * wait behind writers on the event order lock, when the service has them.
+   */
+  reader: Database;
   constructor(
     readonly db: Database,
     readonly jobs?: JobService,
@@ -135,6 +140,7 @@ export class ExperienceService {
       stage: 'under_way' | 'waiting' | 'ended',
     ) => Promise<ConversationProgress>,
   ) {
+    this.reader = db;
     if (submissions) {
       const prior = submissions.onAccepted;
       submissions.onAccepted = async (tx, receipt, row, kind) => {
@@ -532,7 +538,7 @@ export class ExperienceService {
 
   async view(row: JobRow) {
     const [turn] = row.currentTurnId
-      ? await this.db
+      ? await this.reader
           .select()
           .from(experienceTurn)
           .where(and(eq(experienceTurn.id, row.currentTurnId), eq(experienceTurn.jobId, row.id)))
@@ -553,7 +559,7 @@ export class ExperienceService {
         : undefined;
     const [schedule] =
       row.kind === 'routine'
-        ? await this.db
+        ? await this.reader
             .select({ id: trigger.id })
             .from(trigger)
             .where(and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule')))
@@ -576,7 +582,7 @@ export class ExperienceService {
     // Compared to the millisecond, the precision the cursor carries, with the id
     // breaking ties, so no chat is skipped or shown twice across pages.
     const activity = sql`date_trunc('milliseconds', ${job.updatedAt})`;
-    const rows = await this.db
+    const rows = await this.reader
       .select()
       .from(job)
       .where(
@@ -673,7 +679,7 @@ export class ExperienceService {
     // to the microsecond, with the id breaking ties: no turn is skipped or shown
     // twice, and the turns index reads them in order.
     if (before) {
-      const [anchor] = await this.db
+      const [anchor] = await this.reader
         .select({ id: experienceTurn.id })
         .from(experienceTurn)
         .where(and(eq(experienceTurn.id, before.id), eq(experienceTurn.jobId, id)));
@@ -681,7 +687,7 @@ export class ExperienceService {
     }
     const rows = paged
       ? (
-          await this.db
+          await this.reader
             .select()
             .from(experienceTurn)
             .where(
@@ -695,7 +701,7 @@ export class ExperienceService {
             .orderBy(desc(experienceTurn.createdAt), desc(experienceTurn.id))
             .limit(limit + 1)
         ).reverse()
-      : await this.db
+      : await this.reader
           .select()
           .from(experienceTurn)
           .where(eq(experienceTurn.jobId, id))
@@ -714,7 +720,7 @@ export class ExperienceService {
               : null,
           total: Number(
             (
-              await this.db
+              await this.reader
                 .select({ count: sql<number>`count(*)::int` })
                 .from(experienceTurn)
                 .where(eq(experienceTurn.jobId, id))

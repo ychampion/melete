@@ -447,6 +447,8 @@ services:
       MELETE_ATTEMPT_CONCURRENCY: ${MELETE_ATTEMPT_CONCURRENCY:-}
       # How many of them one person may run at once (default no limit).
       MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: ${MELETE_ATTEMPT_CONCURRENCY_PER_PERSON:-}
+      MELETE_DB_POOL_MAX: ${MELETE_DB_POOL_MAX:-}
+      MELETE_DB_READ_POOL_MAX: ${MELETE_DB_READ_POOL_MAX:-}
       # The text-to-speech model, when an OpenAI or OpenAI-compatible key is set.
       MELETE_SPEECH_MODEL: ${MELETE_SPEECH_MODEL:-}
       MELETE_ENABLE_FAKE_PROVIDER: ${MELETE_ENABLE_FAKE_PROVIDER:-false}

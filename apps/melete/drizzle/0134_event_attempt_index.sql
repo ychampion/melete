@@ -1,0 +1,2 @@
+CREATE INDEX "event_attempt_type_idx" ON "event" USING btree ("attempt_id","type","seq");--> statement-breakpoint
+CREATE INDEX "memory_outbox_open_idx" ON "memory_outbox" USING btree ("kind","created_at","id") WHERE "memory_outbox"."completed_at" is null;

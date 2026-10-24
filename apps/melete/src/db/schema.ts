@@ -846,6 +846,9 @@ export const event = pgTable(
   (t) => [
     uniqueIndex('event_dedup_idx').on(t.dedupKey),
     index('event_job_seq_idx').on(t.jobId, t.seq),
+    // An attempt's own events: its tool calls, its text so far and its turns are read
+    // by attempt while a turn is recorded, and an attempt's removal finds them here.
+    index('event_attempt_type_idx').on(t.attemptId, t.type, t.seq),
     // A page of a chat's messages reads the events of its turns alone.
     index('event_experience_turn_idx')
       .on(t.jobId, sql`(${t.payload}->>'turn_id')`, t.seq)

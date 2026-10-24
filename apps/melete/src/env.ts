@@ -167,6 +167,19 @@ const variables = z.object({
     .refine(isPostgresUrl, 'must be a postgres:// address')
     .optional(),
   /**
+   * How many database connections the service keeps for its own work. Writers
+   * that wait on the event order lock each hold one while they wait, so a host
+   * running many attempts at once may want more; the database's own
+   * `max_connections` must leave room for every pool.
+   */
+  MELETE_DB_POOL_MAX: unsetWhenBlank(z.coerce.number().int().min(2).max(200).default(10)),
+  /**
+   * Connections kept apart for reads that take no lock (chat lists, pages of
+   * messages, live streams), so they never queue behind writers. 0 shares the
+   * main pool.
+   */
+  MELETE_DB_READ_POOL_MAX: unsetWhenBlank(z.coerce.number().int().min(0).max(100).default(4)),
+  /**
    * Web Push: this installation's VAPID key pair, base64url, written once by
    * configure.ts. Unset, the web app does not offer push.
    */

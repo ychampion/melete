@@ -66,6 +66,8 @@ import type { WorkspaceTrash } from './workspace-trash.ts';
 
 export type ExperienceDeps = {
   db: Database;
+  /** Connections for reads that take no lock; left out, they use db. */
+  reader?: Database;
   jobs?: JobService;
   submissions?: SubmissionService;
   runner?: AttemptRunner;
@@ -128,6 +130,7 @@ const SPACE_OWNER_SURFACES = new Set([
 
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
+  if (deps.reader) service.reader = deps.reader;
   if (deps.attachments) service.attachments = deps.attachments;
   if (deps.workspaces) service.workspaces = deps.workspaces;
   const longWork = deps.runs;
@@ -184,6 +187,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         : undefined,
     },
     deps.changes,
+    deps.reader,
   );
   service.progress = (spaceId, jobId, turnId, stage) =>
     events.progress(spaceId, jobId, turnId, stage);

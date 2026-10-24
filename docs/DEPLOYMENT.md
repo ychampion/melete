@@ -2711,6 +2711,17 @@ order across chats, routines and quiet work, and the conversation says it is
 waiting and how many other tasks are running. Raise it on a host with memory to
 spare; each running attempt may use up to 2 GB.
 
+`MELETE_DB_POOL_MAX` (default `10`) is how many database connections the
+service keeps for its own work. A change that records a conversation's events
+waits its turn on one connection, so with many attempts running at once a larger
+pool keeps the rest of the service from waiting for a connection; raise it with
+`MELETE_ATTEMPT_CONCURRENCY`. `MELETE_DB_READ_POOL_MAX` (default `4`) keeps that
+many more connections apart for the chat list, pages of messages and live
+conversation streams, which only read, so they stay quick while many people are
+chatting at once; `0` reads on the service's own connections. Postgres's
+`max_connections` (`100` by default) must leave room for both, plus about a dozen
+that the job queue, the effects role and event notifications use.
+
 Slots are shared fairly between people too: within chats, routines and quiet
 work alike, the next free slot goes to the waiting person who is running the
 fewest, and among equals to the one who started something longest ago, so one
