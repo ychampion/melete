@@ -207,7 +207,8 @@ describe('the stream recorded together', () => {
     await stream.emit(done('Done.'));
     await stream.drain();
     expect(recorded).toHaveLength(202);
-    expect(batches.length).toBeLessThan(20);
+    // About one write for every eight events, not one each.
+    expect(batches.length).toBeLessThan(40);
     expect(Math.max(...batches)).toBeLessThanOrEqual(64);
   });
 
@@ -247,13 +248,16 @@ describe('the stream recorded together', () => {
     for (let index = 0; index < 400; index++) {
       const emitted = stream.emit(delta(`w${index}. `));
       pending.push(emitted);
-      const settled = await Promise.race([emitted.then(() => true), Bun.sleep(0).then(() => false)]);
+      const settled = await Promise.race([
+        emitted.then(() => true),
+        Bun.sleep(0).then(() => false),
+      ]);
       if (!settled) break;
       acknowledged++;
     }
     // Acknowledged up to the backlog, then the next one waits on the write.
-    expect(acknowledged).toBeGreaterThan(64);
-    expect(acknowledged).toBeLessThan(400);
+    expect(acknowledged).toBeGreaterThan(8);
+    expect(acknowledged).toBeLessThan(40);
     release();
     await Promise.all(pending);
     await stream.drain();

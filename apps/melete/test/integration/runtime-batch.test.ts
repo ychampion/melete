@@ -92,10 +92,11 @@ withDb('runtime events recorded together', () => {
     return {
       // Without the ids that differ between attempts.
       events: rows.map((row) => {
-        const { attempt_id: _attempt, dedup_key: _key, ...payload } = row.payload as Record<
-          string,
-          unknown
-        >;
+        const {
+          attempt_id: _attempt,
+          dedup_key: _key,
+          ...payload
+        } = row.payload as Record<string, unknown>;
         return { type: row.type, payload, key: row.dedupKey.split(':').slice(1).join(':') };
       }),
       seqs: rows.map((row) => row.seq),
@@ -125,7 +126,7 @@ withDb('runtime events recorded together', () => {
     expect(b.cursor).toBe(11);
     expect(a.cursor).toBe(11);
     // One batch commits as one run of the event order.
-    expect(b.seqs.at(-1)! - b.seqs[0]!).toBe(b.seqs.length - 1);
+    expect((b.seqs.at(-1) ?? 0) - (b.seqs[0] ?? 0)).toBe(b.seqs.length - 1);
   });
 
   test('a batch sent again adds nothing, and one overlapping it adds only what is new', async () => {
@@ -144,9 +145,13 @@ withDb('runtime events recorded together', () => {
   test('a bad event in a batch fails alone and the rest are kept, in order', async () => {
     const { runner: one, claims } = await claimed('Bad');
     const events = reply(claims.attempt_id, [0, 1, 2, 3, 4, 5]);
-    await one.emit(claims, events[2]!);
+    await one.emit(claims, required(events[2]));
     // Place 1 now arrives after place 2: out of order, as it would be alone.
-    const results = await one.emitMany(claims, [events[1]!, events[3]!, events[4]!]);
+    const results = await one.emitMany(claims, [
+      required(events[1]),
+      required(events[3]),
+      required(events[4]),
+    ]);
     expect(results[0]).not.toBeNull();
     expect(String((results[0] as { error: unknown }).error)).toMatch(/out of order/);
     expect(results.slice(1)).toEqual([null, null]);
@@ -161,7 +166,7 @@ withDb('runtime events recorded together', () => {
     const stale = { ...claims, epoch: claims.epoch + 1 };
     const results = await one.emitMany(stale, events);
     expect(results.every((result) => result !== null)).toBe(true);
-    const alone = await one.emit(stale, events[0]!).then(
+    const alone = await one.emit(stale, required(events[0])).then(
       () => null,
       (error: unknown) => String(error),
     );

@@ -59,8 +59,12 @@ const ASIDES: ReadonlySet<RuntimeEvent['type']> = new Set([
 
 /** The most events recorded in one go. */
 const BATCH = 64;
-/** Words recorded together wait for their write once this many events are queued. */
-const BACKLOG = 4 * BATCH;
+/**
+ * Words recorded together wait for their write once this many events are
+ * queued, so the engine runs only a little ahead of the record: what watches
+ * the recorded words (a reply stuck repeating itself) can still stop it in time.
+ */
+const BACKLOG = 16;
 
 export class HumanStream {
   private text = new HumanText('reply');
