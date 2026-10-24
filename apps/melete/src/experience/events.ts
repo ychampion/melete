@@ -521,26 +521,52 @@ export class ExperienceEvents {
       const work = await this.changedBetween(from, through);
       // Only once the conversations are known, so a failed look is tried again.
       this.through = through;
-      await Promise.all(
-        Array.from({ length: Math.min(PROJECTOR_PARALLEL, work.length) }, async () => {
-          for (let next = work.shift(); next; next = work.shift()) {
-            const { id, spaceId, principalId, raw, projectable } = next;
-            // Nothing new to project (it was projected as it was written), or
-            // a conversation whose own readers project it: its streams decide.
-            if (!raw || !projectable) {
-              this.told(spaceId, id, !raw);
-              continue;
-            }
-            // As the conversation's owner, who its stream is read as.
-            const pass = () => this.project(spaceId, id);
-            await (principalId ? principalContext.run(principalId, pass) : pass()).catch(
-              (error: unknown) => this.report(error),
-            );
-          }
-        }),
-      );
+      for (const { id, spaceId, principalId, raw, projectable } of work) {
+        // Nothing new to project (it was projected as it was written), or
+        // a conversation whose own readers project it: its streams decide.
+        if (!raw || !projectable) this.told(spaceId, id, !raw);
+        else this.due(id, spaceId, principalId);
+      }
     } catch (error) {
       this.report(error);
+    }
+  }
+
+  /** Conversations waiting for the projector, in the order they changed. */
+  private readonly dueList = new Map<string, { spaceId: string; principalId: string | null }>();
+  private workers = 0;
+
+  /**
+   * Queue a conversation for projection without waiting for it, so the next
+   * look is not held up by one slow pass (one waiting its turn on the event
+   * order lock, or far behind). One already queued has not started: its pass
+   * covers this change too.
+   */
+  private due(id: string, spaceId: string, principalId: string | null): void {
+    if (!this.dueList.has(id)) this.dueList.set(id, { spaceId, principalId });
+    while (this.workers < PROJECTOR_PARALLEL && this.dueList.size) {
+      this.workers++;
+      void this.work();
+    }
+  }
+
+  private async work(): Promise<void> {
+    try {
+      for (
+        let next = this.dueList.entries().next();
+        !next.done;
+        next = this.dueList.entries().next()
+      ) {
+        const [id, { spaceId, principalId }] = next.value;
+        this.dueList.delete(id);
+        // As the conversation's owner, who its stream is read as.
+        const pass = () => this.project(spaceId, id);
+        await (principalId ? principalContext.run(principalId, pass) : pass()).catch(
+          (error: unknown) => this.report(error),
+        );
+      }
+    } finally {
+      this.workers--;
     }
   }
 
