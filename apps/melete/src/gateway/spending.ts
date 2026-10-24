@@ -22,7 +22,7 @@
  * refused by them.
  */
 import { randomUUID } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { Env } from '../env.ts';
 import { limitsWithCaps, PersonLimitStore } from './person-limits.ts';
 import { PriceTable, parseModelPrices } from './prices.ts';
@@ -185,20 +185,19 @@ function warningMessage(period: Period, percent: number): string {
 
 const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 
-type Totals = {
+type Spent = {
   installation: { month: SpendingTotals; day: SpendingTotals };
   person: { month: SpendingTotals; day: SpendingTotals } | null;
   /** The person's background calls alone. */
   background: { month: SpendingTotals; day: SpendingTotals } | null;
 };
 
-/** A call admitted and still running: what it may cost, held against the limits. */
-type Hold = {
-  personId: string | null;
-  usageClass: UsageClass;
-  usd: number;
-  tokens: number;
-  at: number;
+type Totals = Spent & {
+  /**
+   * The most the calls still running may cost (`spend_hold`), on every
+   * instance: all of them, the person's, and the person's background ones.
+   */
+  held: { installation: SpendingTotals; person: SpendingTotals; background: SpendingTotals };
 };
 
 function callCost(
@@ -236,6 +235,8 @@ export function settledCost(prices: PriceTable, settlement: GatewaySettlement): 
 const TOTALS_TTL_MS = 2_000;
 /** A hold whose call never reported back is let go after this long. */
 const HOLD_TTL_MS = 10 * 60_000;
+/** How often an admission also removes the holds past their time. */
+const HOLD_SWEEP_MS = 60_000;
 
 /**
  * The person who caused a job's calls: whoever spoke last in its conversation;
@@ -276,14 +277,17 @@ export function counterPeriods(now: Date) {
 
 export class SpendingGuard implements GatewaySpending {
   private readonly scopes = new WeakMap<GatewayPrincipal, Promise<SpendingScope>>();
-  private readonly holds = new Map<GatewayPrincipal, Hold[]>();
+  /** The `spend_hold` rows of each principal's calls admitted here, oldest first. */
+  private readonly holds = new WeakMap<GatewayPrincipal, string[]>();
   private readonly cached = new Map<string, { at: number; totals: Totals }>();
-  /** Bumped when a call is recorded: a read begun before it is not kept. */
+  /** Bumped when a call is recorded or a hold taken or let go: a read begun before it is not kept. */
   private generation = 0;
   /** Whether each person's account is turned off, as read a moment ago. */
   private readonly off = new Map<string, { at: number; off: boolean }>();
-  /** The admission now being judged; the next waits for it. */
-  private admitting: Promise<void> = Promise.resolve();
+  /** The admission now being judged under each lock key; the next waits for it. */
+  private readonly admitting = new Map<string, Promise<void>>();
+  /** When this process last removed holds past their time. */
+  private swept = 0;
   /** Told when a job's call is refused, so its attempt can end at once. */
   onRefused?: (scope: SpendingScope, principal: GatewayPrincipal, message: string) => void;
   /** Told the first time in a period that a limit passes the notice level. */
@@ -406,11 +410,19 @@ export class SpendingGuard implements GatewaySpending {
   /**
    * The person's and the installation's totals for today and this month, read
    * from the running counters `model_usage` keeps (`spend_counter`): a few
-   * rows by key, however many calls the month holds. A read is reused for a
-   * moment; recording a call drops every reuse, so the next admission reads
-   * the totals with that call in them.
+   * rows by key, however many calls the month holds. The calls still running
+   * on any instance are read in the same statement, so a call recorded in
+   * between is never missing from both. A read is reused for a moment;
+   * recording a call, or taking or letting go of a hold, drops every reuse, so
+   * the next admission reads the totals with that change in them. `db` is the
+   * admission's transaction, which always reads afresh.
    */
-  async totals(personId: string | null, now = this.now(), fresh = false): Promise<Totals> {
+  async totals(
+    personId: string | null,
+    now = this.now(),
+    fresh = false,
+    db: Sql | TransactionSql = this.sql,
+  ): Promise<Totals> {
     const key = personId ?? '';
     const hit = this.cached.get(key);
     if (!fresh && hit && now.getTime() - hit.at < TOTALS_TTL_MS) return hit.totals;
@@ -419,9 +431,22 @@ export class SpendingGuard implements GatewaySpending {
     const scopes = personId
       ? ['installation', `person:${personId}`, `background:${personId}`]
       : ['installation'];
-    const rows = await this.sql<{ period: string; scope: string; usd: number; tokens: number }[]>`
+    const at = now.toISOString();
+    const rows = await db<{ period: string; scope: string; usd: number; tokens: number }[]>`
       select period, scope, usd::float8 as usd, tokens::float8 as tokens from spend_counter
-      where period in (${month}, ${day}) and scope in ${this.sql(scopes)}`;
+      where period in (${month}, ${day}) and scope in ${db(scopes)}
+      union all
+      select 'held', scope, sum(usd)::float8, sum(tokens)::float8 from (
+        select 'installation' as scope, usd, tokens from spend_hold
+          where expires_at > ${at}::timestamptz
+        union all
+        select 'person:' || person_id, usd, tokens from spend_hold
+          where expires_at > ${at}::timestamptz and person_id = ${personId}
+        union all
+        select 'background:' || person_id, usd, tokens from spend_hold
+          where expires_at > ${at}::timestamptz and person_id = ${personId}
+            and class = 'background'
+      ) running group by scope`;
     const total = (scope: string, period: string): SpendingTotals => {
       const row = rows.find((entry) => entry.scope === scope && entry.period === period);
       return { usd: round(Number(row?.usd ?? 0)), tokens: Number(row?.tokens ?? 0) };
@@ -431,8 +456,14 @@ export class SpendingGuard implements GatewaySpending {
       installation: both('installation'),
       person: personId ? both(`person:${personId}`) : null,
       background: personId ? both(`background:${personId}`) : null,
+      held: {
+        installation: total('installation', 'held'),
+        person: total(`person:${personId}`, 'held'),
+        background: total(`background:${personId}`, 'held'),
+      },
     };
-    // A call recorded while this read was under way may be missing from it.
+    // A call recorded, or a hold taken or let go, while this read was under
+    // way may be missing from it.
     if (generation === this.generation) {
       if (this.cached.size > 1000) this.cached.clear();
       this.cached.set(key, { at: now.getTime(), totals });
@@ -453,43 +484,28 @@ export class SpendingGuard implements GatewaySpending {
     return off;
   }
 
-  /** The totals with the calls still running in this process added. */
-  private withHolds(totals: Totals, personId: string | null, now: number): Totals {
-    let all = { usd: 0, tokens: 0 };
-    let mine = { usd: 0, tokens: 0 };
-    let mineBackground = { usd: 0, tokens: 0 };
-    for (const [principal, list] of this.holds) {
-      const live = list.filter((hold) => now - hold.at < HOLD_TTL_MS);
-      if (!live.length) this.holds.delete(principal);
-      else if (live.length !== list.length) this.holds.set(principal, live);
-      for (const hold of live) {
-        all = { usd: all.usd + hold.usd, tokens: all.tokens + hold.tokens };
-        if (personId && hold.personId === personId) {
-          mine = { usd: mine.usd + hold.usd, tokens: mine.tokens + hold.tokens };
-          if (hold.usageClass === 'background')
-            mineBackground = {
-              usd: mineBackground.usd + hold.usd,
-              tokens: mineBackground.tokens + hold.tokens,
-            };
-        }
-      }
-    }
-    const add = (a: SpendingTotals, b: { usd: number; tokens: number }) => ({
+  /** The totals with the calls still running on every instance added. */
+  private withHolds(totals: Totals): Spent {
+    const { held } = totals;
+    const add = (a: SpendingTotals, b: SpendingTotals) => ({
       usd: round(a.usd + b.usd),
       tokens: a.tokens + b.tokens,
     });
     return {
       installation: {
-        month: add(totals.installation.month, all),
-        day: add(totals.installation.day, all),
+        month: add(totals.installation.month, held.installation),
+        day: add(totals.installation.day, held.installation),
       },
       person: totals.person
-        ? { month: add(totals.person.month, mine), day: add(totals.person.day, mine) }
+        ? {
+            month: add(totals.person.month, held.person),
+            day: add(totals.person.day, held.person),
+          }
         : null,
       background: totals.background
         ? {
-            month: add(totals.background.month, mineBackground),
-            day: add(totals.background.day, mineBackground),
+            month: add(totals.background.month, held.background),
+            day: add(totals.background.day, held.background),
           }
         : null,
     };
@@ -501,7 +517,7 @@ export class SpendingGuard implements GatewaySpending {
    * warnings about the installation's limits out, for a person who may not see them.
    */
   noticeFor(
-    totals: Totals,
+    totals: Spent,
     now = this.now(),
     installation = true,
     limits: SpendingLimits = this.limits,
@@ -552,7 +568,7 @@ export class SpendingGuard implements GatewaySpending {
 
   /** A reached background limit, the month's before the day's, or null. */
   private backgroundReached(
-    totals: Totals,
+    totals: Spent,
     now: Date,
     all: SpendingLimits = this.limits,
   ): LimitReached | null {
@@ -578,11 +594,24 @@ export class SpendingGuard implements GatewaySpending {
     personId: string | null,
     usageClass: UsageClass = 'interactive',
   ): Promise<LimitReached | null> {
-    const limits = await this.limitsFor(personId);
+    return this.judge(personId, usageClass, await this.limitsFor(personId));
+  }
+
+  /**
+   * `reachedLimit` with the person's limits already read. `db` is an
+   * admission's transaction, which reads the totals afresh under its lock and
+   * reads nothing on another connection while it holds one.
+   */
+  private async judge(
+    personId: string | null,
+    usageClass: UsageClass,
+    limits: SpendingLimits,
+    db?: TransactionSql,
+  ): Promise<LimitReached | null> {
     const background = usageClass === 'background' && anyBackgroundLimit(limits);
     if (!anyLimit(limits) && !background) return null;
     const now = this.now();
-    const totals = this.withHolds(await this.totals(personId, now), personId, now.getTime());
+    const totals = this.withHolds(await this.totals(personId, now, Boolean(db), db));
     const notice = this.noticeFor(totals, now, true, limits);
     if (notice?.level === 'reached')
       return { message: notice.message, resetsAt: new Date(notice.resets_at) };
@@ -623,29 +652,44 @@ export class SpendingGuard implements GatewaySpending {
   async admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void> {
     if (!this.limited && !this.backgroundLimited && !(await this.overrides?.any())) return;
     const scope = await this.scopeOf(principal);
-    // Reading the totals and holding this call's most are one step: admissions
-    // in this process take their turn, so calls started side by side are
-    // judged one after another, each with the ones before it held.
-    const message = await this.inTurn(async () => {
-      const reached = (await this.isOff(scope.personId))
-        ? ACCOUNT_OFF_MESSAGE
-        : await this.reached(scope.personId, scope.usageClass);
-      // While it runs, the call's most it can cost is held against the limits,
-      // so calls running side by side cannot all slip in under one.
-      if (!reached && call) {
-        const hold: Hold = {
-          personId: scope.personId,
-          usageClass: scope.usageClass,
-          usd:
-            callCost(this.prices, call, {
-              inputTokens: call.inputTokens,
-              outputTokens: call.maxOutputTokens,
-              cachedInputTokens: 0,
-            }) + (call.feeUsd ?? 0),
-          tokens: call.inputTokens + call.maxOutputTokens,
-          at: this.now().getTime(),
-        };
-        this.holds.set(principal, [...(this.holds.get(principal) ?? []), hold]);
+    const key = this.lockKey(scope.personId);
+    // Reading the totals and holding this call's most are one step, taken
+    // under a database lock every instance on the database shares, so calls
+    // started side by side anywhere are judged one after another, each with
+    // the ones before it held. In this process they also wait their turn
+    // here, so at most one waits on the lock with a connection.
+    const message = await this.inTurn(key, async () => {
+      if (await this.isOff(scope.personId)) return ACCOUNT_OFF_MESSAGE;
+      // Read before the transaction: inside it, a read on another connection
+      // could wait for a free one while admissions hold them all.
+      const limits = await this.limitsFor(scope.personId);
+      const { reached, held } = await this.sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+        const found = await this.judge(scope.personId, scope.usageClass, limits, tx);
+        if (found || !call) return { reached: found?.message ?? null, held: null };
+        // While it runs, the call's most it can cost is held against the
+        // limits, so calls running side by side cannot all slip in under one.
+        const now = this.now();
+        if (now.getTime() - this.swept >= HOLD_SWEEP_MS) {
+          this.swept = now.getTime();
+          await tx`delete from spend_hold where expires_at <= ${now.toISOString()}::timestamptz`;
+        }
+        const id = randomUUID();
+        const usd =
+          callCost(this.prices, call, {
+            inputTokens: call.inputTokens,
+            outputTokens: call.maxOutputTokens,
+            cachedInputTokens: 0,
+          }) + (call.feeUsd ?? 0);
+        await tx`insert into spend_hold (id, person_id, class, usd, tokens, expires_at)
+          values (${id}, ${scope.personId}, ${scope.usageClass}, ${usd},
+            ${call.inputTokens + call.maxOutputTokens},
+            ${new Date(now.getTime() + HOLD_TTL_MS).toISOString()}::timestamptz)`;
+        return { reached: null, held: id };
+      });
+      if (held) {
+        this.holds.set(principal, [...(this.holds.get(principal) ?? []), held]);
+        this.changed();
       }
       return reached;
     });
@@ -659,32 +703,68 @@ export class SpendingGuard implements GatewaySpending {
     }
   }
 
-  /** Runs `step` after every admission started before it in this process has finished. */
-  private inTurn<T>(step: () => Promise<T>): Promise<T> {
-    const turn = this.admitting.then(step);
-    this.admitting = turn.then(
+  /**
+   * The lock an admission takes: the installation's while it has a cap of its
+   * own, since every call counts toward it, else the person's alone.
+   */
+  private lockKey(personId: string | null): string {
+    const { day, month } = this.limits.installation;
+    return isSet(day) || isSet(month) ? 'spending' : `spending:${personId ?? ''}`;
+  }
+
+  /**
+   * Runs `step` after every admission under the same lock key started before
+   * it in this process has finished.
+   */
+  private inTurn<T>(key: string, step: () => Promise<T>): Promise<T> {
+    const turn = (this.admitting.get(key) ?? Promise.resolve()).then(step);
+    const done = turn.then(
       () => undefined,
       () => undefined,
     );
+    this.admitting.set(key, done);
+    void done.then(() => {
+      if (this.admitting.get(key) === done) this.admitting.delete(key);
+    });
     return turn;
   }
 
-  release(principal: GatewayPrincipal): void {
+  /** Every total read before now is out of date: none is reused, nor one being read now. */
+  private changed(): void {
+    this.generation += 1;
+    this.cached.clear();
+  }
+
+  /** The oldest hold this principal's calls have here, no longer theirs to let go twice. */
+  private takeHold(principal: GatewayPrincipal): string | undefined {
     const list = this.holds.get(principal);
-    if (list?.length) {
-      list.shift();
-      if (!list.length) this.holds.delete(principal);
+    const id = list?.shift();
+    if (list && !list.length) this.holds.delete(principal);
+    return id;
+  }
+
+  /** Removes a hold; one that cannot be removed stops counting when it expires. */
+  private async dropHold(id: string): Promise<void> {
+    try {
+      await this.sql`delete from spend_hold where id = ${id}`;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'error';
+      process.stderr.write(
+        `spending: a call's hold was not let go, so it counts until it expires (${reason})\n`,
+      );
+    } finally {
+      this.changed();
     }
   }
 
+  async release(principal: GatewayPrincipal): Promise<void> {
+    const id = this.takeHold(principal);
+    if (id) await this.dropHold(id);
+  }
+
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
-    // This call's hold goes once: a later step failing must not take another call's.
-    let released = false;
-    const releaseOnce = () => {
-      if (released) return;
-      released = true;
-      this.release(principal);
-    };
+    // This call's hold, taken at once: a later step failing cannot take another call's.
+    const hold = this.takeHold(principal);
     let recorded = false;
     try {
       const scope = await this.scopeOf(principal);
@@ -713,15 +793,14 @@ export class SpendingGuard implements GatewaySpending {
       recorded = true;
       // Every total read before now lacks this call, the installation's in
       // other people's included: none is reused, nor one being read now.
-      this.generation += 1;
-      this.cached.clear();
+      this.changed();
       // Only now that the call is in the totals does its hold go, so neither
-      // is missing in between from what the next admission reads.
-      releaseOnce();
+      // is missing in between from what any instance's next admission reads.
+      if (hold) await this.dropHold(hold);
       const limits = await this.limitsFor(scope.personId);
       if (anyLimit(limits)) await this.noticeOnce(scope.personId, limits);
     } catch (error) {
-      releaseOnce();
+      if (hold && !recorded) await this.dropHold(hold);
       const reason = error instanceof Error ? error.message : 'error';
       process.stderr.write(
         recorded

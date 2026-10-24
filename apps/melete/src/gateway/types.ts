@@ -118,8 +118,8 @@ export interface GatewaySpending {
   admit(principal: GatewayPrincipal, call?: GatewaySpendingCall): Promise<void>;
   /** Records one settled call's usage and cost. Never throws. */
   record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void>;
-  /** Lets go of an admitted call's hold without recording it: the call was never sent, or cost nothing. */
-  release?(principal: GatewayPrincipal): void;
+  /** Lets go of an admitted call's hold without recording it: the call was never sent, or cost nothing. Never throws. */
+  release?(principal: GatewayPrincipal): Promise<void>;
 }
 
 export interface GatewayReservationRequest {

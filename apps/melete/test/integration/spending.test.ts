@@ -149,6 +149,7 @@ withDb('spending caps', () => {
     await resetTestRows(handle.sql);
     await handle.sql`delete from model_usage`;
     await handle.sql`delete from spending_notice`;
+    await handle.sql`delete from spend_hold`;
     personId = newId('own');
     spaceId = newId('sp');
     await handle.db.insert(principal).values({ id: personId, email: `${personId}@example.test` });
@@ -507,6 +508,99 @@ withDb('spending caps', () => {
     });
     expect(refused).toMatchObject({ code: 'spending_limit_reached' });
     expect((await guard.totals(personId, NOW, true)).person?.month.usd).toBeCloseTo(1, 6);
+  });
+
+  test("service instances on one database hold each other's running calls against a cap", async () => {
+    const { handle } = fixture();
+    const instance = (caps: SpendingLimits) =>
+      new SpendingGuard(handle.sql, caps, prices, () => NOW);
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 60,
+      local: false,
+    };
+    // Four calls started at once, two on each instance; each instance lets
+    // go of the ones it started. How many started is returned.
+    const started = async (tries: (readonly [SpendingGuard, GatewayPrincipal])[]) => {
+      const settled = await Promise.allSettled(
+        tries.map(([guard, principal]) => guard.admit(principal, call)),
+      );
+      for (const one of settled)
+        if (one.status === 'rejected')
+          expect(one.reason).toMatchObject({ code: 'spending_limit_reached' });
+      for (const [guard, principal] of tries) await guard.release(principal);
+      expect(await handle.sql`select 1 from spend_hold`).toHaveLength(0);
+      return settled.filter((one) => one.status === 'fulfilled').length;
+    };
+    // A person's $1 cap and $0.60 calls: two start, as on one instance, never four.
+    const one = instance(limits({ month: { usd: 1, tokens: null } }));
+    const two = instance(limits({ month: { usd: 1, tokens: null } }));
+    const both = () => [one, two, one, two].map((guard) => [guard, servicePrincipal()] as const);
+    expect(await started(both())).toBe(2);
+    // A call running on one instance is held on the other until it reports.
+    const running = servicePrincipal();
+    await one.admit(running, call);
+    await two.admit(servicePrincipal(), call);
+    let refused: unknown;
+    await two.admit(servicePrincipal(), call).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+    // It used $0.05: $0.65 with the other's hold, so another call starts.
+    await one.record(running, settlement(5));
+    await two.admit(servicePrincipal(), call);
+    // The installation's own $1 cap holds across people too: of four calls
+    // by two people on two instances, two start.
+    await handle.sql`delete from spend_hold`;
+    await handle.sql`delete from model_usage`;
+    const whole: SpendingLimits = {
+      installation: { day: NO_LIMIT, month: { usd: 1, tokens: null } },
+      person: { day: NO_LIMIT, month: NO_LIMIT },
+      noticePercent: 80,
+    };
+    const three = instance(whole);
+    const four = instance(whole);
+    const other = newId('own');
+    expect(
+      await started([
+        [three, servicePrincipal()],
+        [four, { ...servicePrincipal(), actor: other }],
+        [three, { ...servicePrincipal(), actor: other }],
+        [four, servicePrincipal()],
+      ]),
+    ).toBe(2);
+  });
+
+  test('a hold whose call never reports stops counting once it expires', async () => {
+    const { handle } = fixture();
+    let now = NOW;
+    const guard = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 1, tokens: null } }),
+      prices,
+      () => now,
+    );
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 60,
+      local: false,
+    };
+    await guard.admit(servicePrincipal(), call);
+    await guard.admit(servicePrincipal(), call);
+    let refused: unknown;
+    await guard.admit(servicePrincipal(), call).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+    // Neither call ever reported back. Ten minutes on, their holds are gone:
+    // a call starts, and only its own hold is left.
+    now = new Date(NOW.getTime() + 10 * 60_000 + 1);
+    await guard.admit(servicePrincipal(), call);
+    expect(await handle.sql`select 1 from spend_hold`).toHaveLength(1);
   });
 
   test('the totals the caps read stay in step with every call written, changed and removed', async () => {

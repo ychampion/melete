@@ -1805,6 +1805,28 @@ export const spendCounter = pgTable(
 );
 
 /**
+ * A model call admitted and still running: the most it can cost, held
+ * against the spending caps until its cost is written to `model_usage` or the
+ * call is let go. Every service instance on the database admits against the
+ * same holds, so calls started side by side on different instances cannot
+ * all slip in under one cap. A hold whose call never reported back stops
+ * counting at `expires_at` and is removed by a later admission.
+ */
+export const spendHold = pgTable(
+  'spend_hold',
+  {
+    id: text('id').primaryKey(),
+    personId: text('person_id'),
+    /** `interactive` or `background`, as `model_usage.class`. */
+    class: text('class').notNull(),
+    usd: doublePrecision('usd').notNull(),
+    tokens: bigint('tokens', { mode: 'number' }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('spend_hold_expires_idx').on(t.expiresAt)],
+);
+
+/**
  * A person's own spending caps, set by the installation's owner in place of
  * the installation's per-person caps (`MELETE_SPEND_PERSON_*`). A column left
  * null keeps the installation's cap for that period. Dollars only: token
