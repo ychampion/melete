@@ -153,6 +153,24 @@ withDb('a reply that keeps repeating itself', () => {
     expect(attempts.map((row) => row.outcome)).toEqual(['completed']);
   });
 
+  test.each([4, 5])(
+    'a reply that ends after its fourth copy (%i copies in all) is cut back too',
+    async (copies) => {
+      // Each copy is one paragraph and ends on a blank line, so the fourth
+      // copy is whole once its last words are in. The plain-text pass holds
+      // trailing whitespace back until the next words come, so the loop may
+      // only be seen as the attempt's held words are written at its end.
+      const block = LETTER.replace(/\n\n/g, ' ');
+      const text = Array.from({ length: copies }, () => `${block}\n\n`).join('');
+      const { runtime } = streaming(text);
+      const { turn, state, attempts } = await conversation(runtime);
+      expect(turn?.answer.split('Dear Hiring Manager').length).toBe(2);
+      expect(turn?.answer.endsWith(RUNAWAY_NOTE)).toBe(true);
+      expect(state).toBe('waiting_for_input');
+      expect(attempts.map((row) => row.outcome)).toEqual(['completed']);
+    },
+  );
+
   test('a song with its chorus repeated is left whole', async () => {
     const { runtime, seen } = streaming(song);
     const { turn, state } = await conversation(runtime);
