@@ -86,16 +86,17 @@ import type { UsageClass } from '../gateway/usage-class.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { instanceName } from '../names.ts';
-import { spaceAuthority } from '../principals/authority.ts';
+import { principalContext, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
 import { EngineImageUnavailable } from '../runtime/cell-host.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
-import { type AnswerJoin, answerJoin, carriesOnAnswer } from './answer-join.ts';
+import { type AnswerJoin, carriesOnAnswer } from './answer-join.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildAttemptSkeleton, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
+import { EventWrites } from './event-writes.ts';
 import { FairScheduler } from './fair-scheduler.ts';
-import { requireCurrentAttempt } from './fence.ts';
+import { FenceReads, requireCurrentAttempt, requireCurrentAttemptFrom } from './fence.ts';
 import { FirstLine } from './first-line.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { personWords } from './history-summary.ts';
@@ -566,6 +567,12 @@ export class AttemptRunner {
   private readonly running = new Map<string, { jobId: string; returned: Promise<void> }>();
   /** Attempts whose answer text has started, so only the first piece is joined. */
   private readonly answering = new Set<string>();
+  /** Only record callbacks share a transaction here; none changes authority. */
+  private readonly fenceReads = new WeakMap<Transaction, FenceReads>();
+  private readonly eventWrites = new EventWrites(
+    (operation) => this.jobs.transaction(operation),
+    () => (this.active.size > 1 ? 32 : 0),
+  );
   private workerStarted = false;
   private stopping = false;
   scheduler: FairScheduler;
@@ -1046,7 +1053,7 @@ export class AttemptRunner {
 
   async emit(claims: CapabilityClaims, input: RuntimeEvent): Promise<void> {
     const value = this.runtimeValue(claims, input);
-    await this.jobs.transaction((tx) => this.record(tx, claims, [value]));
+    await this.write(claims, [value]);
   }
 
   /**
@@ -1067,18 +1074,37 @@ export class AttemptRunner {
         (error: unknown) => ({ error }),
       );
     if (inputs.length === 1 && inputs[0]) return [await alone(inputs[0])];
-    const answering = this.answering.has(claims.attempt_id);
     try {
       const values = inputs.map((input) => this.runtimeValue(claims, input));
-      await this.jobs.transaction((tx) => this.record(tx, claims, values));
+      await this.write(claims, values);
       return inputs.map(() => null);
     } catch {
-      // Whatever the shared transaction noted went with it.
-      if (!answering) this.answering.delete(claims.attempt_id);
       const results: ({ error: unknown } | null)[] = [];
       for (const input of inputs) results.push(await alone(input));
       return results;
     }
+  }
+
+  /** Ready runtime writes share a commit; each caller keeps its request authority. */
+  private write(claims: CapabilityClaims, values: readonly RuntimeEvent[]): Promise<void> {
+    const principal = requestPrincipal();
+    let answering = false;
+    return this.eventWrites.write(
+      (tx) => {
+        const record = () => {
+          // Capture when this operation runs, after any preceding write of the
+          // same attempt. A shared rollback restores these snapshots in reverse.
+          answering = this.answering.has(claims.attempt_id);
+          return this.record(tx, claims, values);
+        };
+        // Clear an inherited caller for trusted internal writes without leaving
+        // the transaction's separate lock-guard scope.
+        return principal ? principalContext.run(principal, record) : principalContext.exit(record);
+      },
+      () => {
+        if (!answering) this.answering.delete(claims.attempt_id);
+      },
+    );
   }
 
   private runtimeValue(claims: CapabilityClaims, input: RuntimeEvent): RuntimeEvent {
@@ -1101,33 +1127,46 @@ export class AttemptRunner {
     claims: CapabilityClaims,
     values: readonly RuntimeEvent[],
   ): Promise<void> {
-    const row = await this.jobs.lock(tx, claims.job_id);
-    const [execution] = await tx.select().from(attempt).where(eq(attempt.id, claims.attempt_id));
-    if (!row || !execution || execution.jobId !== row.id)
-      throw new ServiceError('stale_epoch', 'Attempt not found.');
-    const recorded = new Set(
-      (
-        await tx
-          .select({ key: event.dedupKey })
-          .from(event)
-          .where(
-            inArray(
-              event.dedupKey,
-              values.map((value) => value.dedup_key),
-            ),
-          )
-      ).map((found) => found.key),
+    const records = await this.jobs.lockRuntime(
+      tx,
+      claims.job_id,
+      claims.attempt_id,
+      values.map((value) => value.dedup_key),
     );
+    if (!records?.attempt) throw new ServiceError('stale_epoch', 'Attempt not found.');
+    const { job: row, attempt: execution } = records;
+    const recorded = new Set(records.recorded);
     const fresh = values.filter((value) => !recorded.has(value.dedup_key));
     if (!fresh.length) return;
     let current = true;
     let fenced: unknown;
     try {
-      await requireCurrentAttempt(tx, claims, { settling: true });
+      let reads = this.fenceReads.get(tx);
+      if (!reads) {
+        reads = new FenceReads(tx);
+        this.fenceReads.set(tx, reads);
+      }
+      await requireCurrentAttemptFrom(
+        tx,
+        claims,
+        { job: row, attempt: execution },
+        { settling: true },
+        reads,
+      );
     } catch (error) {
       if (!(error instanceof ServiceError)) throw error;
       current = false;
       fenced = error;
+    }
+    if (
+      current &&
+      fresh.every(
+        (value, index): value is Extract<RuntimeEvent, { type: 'text_delta' }> =>
+          value.type === 'text_delta' && value.local_seq === execution.runtimeCursor + index + 1,
+      )
+    ) {
+      await this.recordText(tx, row, execution.id, fresh);
+      return;
     }
     // Where the attempt's stream stands, event by event; saved once, after the last.
     let cursor = execution.runtimeCursor;
@@ -1158,6 +1197,7 @@ export class AttemptRunner {
       if (!current && persisted.type === 'tool_result') {
         await appendEvent(tx, {
           jobId: row.id,
+          epoch: row.leaseEpoch,
           attemptId: execution.id,
           type: 'notice',
           payload: {
@@ -1172,7 +1212,7 @@ export class AttemptRunner {
       if (value.local_seq <= cursor)
         throw new ServiceError('invalid_event', 'Runtime events arrived out of order.', 400);
       if (value.local_seq > cursor + 1) {
-        await this.gap(tx, execution.id, row.id, `stream:${cursor + 1}:${value.local_seq}`, {
+        await this.gap(tx, execution.id, row, `stream:${cursor + 1}:${value.local_seq}`, {
           from_local_seq: cursor + 1,
           to_local_seq: value.local_seq - 1,
         });
@@ -1192,25 +1232,10 @@ export class AttemptRunner {
       )
         throw new AttemptBudgetExceeded('The attempt output-token budget is exhausted.');
       const type = value.type === 'attempt_outcome' ? 'notice' : value.type;
-      if (current && row.currentTurnId) await this.liveness(tx, row, execution.id, value);
-      if (current && row.currentTurnId && value.type === 'text_delta') {
-        // A turn run again after a lost attempt replaces what that attempt
-        // left; a turn that carries on from words the person already has
-        // (after a wait, a failure or its answer) starts a new paragraph.
-        const join = await this.firstAnswerJoin(tx, execution.id, row.id);
-        await tx
-          .update(experienceTurn)
-          .set({
-            answer:
-              join === 'replace'
-                ? value.text
-                : join === 'separate'
-                  ? sql`case when ${experienceTurn.answer} = '' then ${value.text}
-                      else ${experienceTurn.answer} || ${`\n\n${value.text}`} end`
-                  : sql`${experienceTurn.answer} || ${value.text}`,
-            status: 'streaming',
-          })
-          .where(eq(experienceTurn.id, row.currentTurnId));
+      if (current && row.currentTurnId) {
+        if (value.type === 'text_delta')
+          await this.recordAnswer(tx, row, execution.id, value, value.text);
+        else await this.liveness(tx, row, execution.id, value);
       }
       const payload: JsonObject =
         persisted.type === 'attempt_outcome'
@@ -1218,6 +1243,7 @@ export class AttemptRunner {
           : { ...persisted, late: !current };
       await appendEvent(tx, {
         jobId: row.id,
+        epoch: row.leaseEpoch,
         attemptId: execution.id,
         type,
         payload,
@@ -1230,6 +1256,98 @@ export class AttemptRunner {
       .update(attempt)
       .set({ runtimeCursor: cursor, ...(usage ? { usage } : {}) })
       .where(eq(attempt.id, execution.id));
+  }
+
+  /** Each chunk records its answer, original events and cursor together in one statement. */
+  private async recordText(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+    values: readonly Extract<RuntimeEvent, { type: 'text_delta' }>[],
+  ): Promise<void> {
+    // Bound the parameters of each statement even for a caller handing over a long stream.
+    for (let start = 0; start < values.length; start += 64) {
+      const chunk = values.slice(start, start + 64);
+      const first = chunk[0];
+      const last = chunk.at(-1);
+      if (!first || !last) return;
+      const joining = Boolean(row.currentTurnId) && !this.answering.has(attemptId);
+      if (joining) this.answering.add(attemptId);
+      const join = joining
+        ? this.answerJoinQuery(attemptId, row.id)
+        : sql`select 'none'::text as mode`;
+      const text = chunk.map((value) => value.text).join('');
+      const mode = sql`coalesce((select mode from join_mode), 'none')`;
+      const answer = sql`case when ${mode} = 'replace' then ${text}
+        when ${mode} = 'separate' then case when ${experienceTurn.answer} = '' then ${text}
+          else ${experienceTurn.answer} || ${`\n\n${text}`} end
+        else ${experienceTurn.answer} || ${text} end`;
+      const words = sql.join(
+        chunk.map(
+          (value, index) => sql`(${index}::integer, 'text_delta'::text,
+            ${JSON.stringify({ ...value, late: false })}::jsonb, ${value.dedup_key}::text)`,
+        ),
+        sql`, `,
+      );
+      // The resumed notice and words share one ordered insert: no empty notice
+      // insert, and no later writer can commit until this transaction ends.
+      await tx.execute(sql`with join_mode as materialized (${join}), prior as materialized (
+          select id, status from ${experienceTurn}
+          where ${experienceTurn.id} = ${row.currentTurnId} for update
+        ), updated_turn as (
+          update ${experienceTurn} set answer = ${answer}, status = 'streaming'
+          from prior where ${experienceTurn.id} = prior.id returning prior.status
+        ), source(ordinal, type, payload, dedup_key) as (
+          select -1, 'notice'::text,
+            ${JSON.stringify({ kind: 'turn_resumed', turn_id: row.currentTurnId })}::jsonb,
+            ${`${first.dedup_key}:resumed`}::text
+          from updated_turn where status = 'stalled'
+          union all
+          select * from (values ${words}) as words(ordinal, type, payload, dedup_key)
+        ), inserted as (
+          insert into ${event} (job_id, epoch, attempt_id, type, payload, dedup_key)
+          select ${row.id}, ${row.leaseEpoch}, ${attemptId}, type, payload, dedup_key
+          from source order by ordinal
+          on conflict (dedup_key) do nothing returning seq
+        ), advanced as (
+          update ${attempt} set runtime_cursor = ${last.local_seq} where id = ${attemptId}
+        )
+        select pg_notify('melete_events', max(seq)::text) from inserted having count(*) > 0`);
+    }
+  }
+
+  /** Preserve the first answer join and a stalled turn's notice in the same turn-row write. */
+  private async recordAnswer(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+    first: Extract<RuntimeEvent, { type: 'text_delta' }>,
+    text: string,
+  ): Promise<void> {
+    if (!row.currentTurnId) return;
+    // Only the first piece replaces a lost answer or starts a new paragraph.
+    const join = await this.firstAnswerJoin(tx, attemptId, row.id);
+    const answer =
+      join === 'replace'
+        ? sql`${text}`
+        : join === 'separate'
+          ? sql`case when ${experienceTurn.answer} = '' then ${text}
+              else ${experienceTurn.answer} || ${`\n\n${text}`} end`
+          : sql`${experienceTurn.answer} || ${text}`;
+    const [prior] = await tx.execute<{ status: string }>(sql`with prior as materialized (
+        select id, status from ${experienceTurn} where ${experienceTurn.id} = ${row.currentTurnId} for update
+      )
+      update ${experienceTurn} set answer = ${answer}, status = 'streaming'
+      from prior where ${experienceTurn.id} = prior.id returning prior.status`);
+    if (prior?.status === 'stalled')
+      await appendEvent(tx, {
+        jobId: row.id,
+        epoch: row.leaseEpoch,
+        attemptId,
+        type: 'notice',
+        payload: { kind: 'turn_resumed', turn_id: row.currentTurnId },
+        dedupKey: `${first.dedup_key}:resumed`,
+      });
   }
 
   /**
@@ -1266,6 +1384,7 @@ export class AttemptRunner {
     if (resumed)
       await appendEvent(tx, {
         jobId: row.id,
+        epoch: row.leaseEpoch,
         attemptId,
         type: 'notice',
         payload: { kind: 'turn_resumed', turn_id: turnId },
@@ -1276,12 +1395,13 @@ export class AttemptRunner {
   private async gap(
     tx: Transaction,
     attemptId: string,
-    jobId: string,
+    row: Pick<JobRow, 'id' | 'leaseEpoch'>,
     key: string,
     detail: JsonObject = {},
   ) {
     await appendEvent(tx, {
-      jobId,
+      jobId: row.id,
+      epoch: row.leaseEpoch,
       attemptId,
       type: 'notice',
       payload: { kind: 'gap', reason: 'runtime_interrupted', ...detail },
@@ -2082,7 +2202,7 @@ export class AttemptRunner {
         leaseExpiresAt: null,
       })
       .where(eq(attempt.id, attemptId));
-    await this.gap(tx, attemptId, row.id, 'lost');
+    await this.gap(tx, attemptId, row, 'lost');
     const run = this.runs && isRunKind(row.kind) ? this.runs : null;
     // Without its engine image every further attempt would fail the same way
     // until the service starts again, so none is made.
@@ -2813,14 +2933,26 @@ export class AttemptRunner {
   ): Promise<AnswerJoin> {
     if (this.answering.has(attemptId)) return 'none';
     this.answering.add(attemptId);
-    const [earlier] = await tx
-      .select({ seq: event.seq })
-      .from(event)
-      .where(
-        and(eq(event.jobId, jobId), eq(event.attemptId, attemptId), eq(event.type, 'text_delta')),
-      )
-      .limit(1);
-    return earlier ? 'none' : answerJoin(tx, attemptId);
+    const [joined] = await tx.execute<{ mode: AnswerJoin }>(this.answerJoinQuery(attemptId, jobId));
+    return joined?.mode ?? 'none';
+  }
+
+  private answerJoinQuery(attemptId: string, jobId: string) {
+    // The attempt and all earlier outcomes are read in the same post-lock
+    // snapshot, without three client round trips for the first answer piece.
+    return sql`select case
+        when exists (select 1 from ${event}
+          where ${event.jobId} = ${jobId} and ${event.attemptId} = ${attemptId}
+            and ${event.type} = 'text_delta') then 'none'
+        when not exists (select 1 from ${attempt} earlier
+          where earlier.job_id = ${attempt.jobId} and earlier.turn_id = ${attempt.turnId}
+            and earlier.epoch < ${attempt.epoch}) then 'none'
+        when exists (select 1 from ${attempt} earlier
+          where earlier.job_id = ${attempt.jobId} and earlier.turn_id = ${attempt.turnId}
+            and earlier.epoch < ${attempt.epoch}
+            and coalesce(earlier.outcome, 'fenced') <> 'fenced') then 'separate'
+        else 'replace' end as mode
+      from ${attempt} where ${attempt.id} = ${attemptId}`;
   }
 
   /** What this attempt's steps that have not settled are, in the person's words. */

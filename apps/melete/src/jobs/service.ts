@@ -21,13 +21,13 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
 import { bindAttachments } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import { databaseNow } from '../db/clock.ts';
-import { attempt, job, space, trigger } from '../db/schema.ts';
+import { attempt, event, job, space, trigger } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -201,6 +201,26 @@ export class JobService {
       .for('update', skipLocked ? { skipLocked: true } : {});
     if (row && requestPrincipal()) await spaceAuthority(tx, row.spaceId, requestPrincipal(), true);
     return row;
+  }
+
+  /** Runtime records load their fence and dedup state after the global event-order lock. */
+  async lockRuntime(tx: Transaction, id: string, attemptId: string, dedupKeys: string[]) {
+    // This statement follows the advisory-lock statement, so its snapshot
+    // includes every earlier event commit. Only the owning job row is locked.
+    const [records] = await tx
+      .select({
+        job,
+        attempt,
+        recorded: sql<string[]>`coalesce((select jsonb_agg(${event.dedupKey})
+          from ${event} where ${inArray(event.dedupKey, dedupKeys)}), '[]'::jsonb)`,
+      })
+      .from(job)
+      .leftJoin(attempt, and(eq(attempt.id, attemptId), eq(attempt.jobId, job.id)))
+      .where(eq(job.id, id))
+      .for('update', { of: job });
+    if (records && requestPrincipal())
+      await spaceAuthority(tx, records.job.spaceId, requestPrincipal(), true);
+    return records;
   }
 
   async get(id: string): Promise<JobRow> {

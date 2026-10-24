@@ -7,8 +7,13 @@ import type { Transaction } from '../db/transaction.ts';
 export async function readGenerations(
   tx: Transaction,
   spaceId: string,
+  lockedPolicyGeneration?: number,
 ): Promise<ContextGenerations> {
-  const [parent] = await tx.select().from(space).where(eq(space.id, spaceId));
+  // A caller holding the space row's share lock can reuse its policy version.
+  const [parent] =
+    lockedPolicyGeneration === undefined
+      ? await tx.select().from(space).where(eq(space.id, spaceId))
+      : [{ policyGeneration: lockedPolicyGeneration }];
   if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
   const connections = await tx
     .select({ id: connection.id, generation: connection.generation })
@@ -24,9 +29,16 @@ export async function requireGenerations(
   tx: Transaction,
   spaceId: string,
   expected: ContextGenerations,
+  lockedPolicyGeneration?: number,
 ) {
+  const current = await readGenerations(tx, spaceId, lockedPolicyGeneration);
+  assertGenerations(expected, current);
+  return current;
+}
+
+/** Compare every attempt's own snapshot, even when its current policy was already read. */
+export function assertGenerations(expected: ContextGenerations, current: ContextGenerations) {
   const parsed = contextGenerations.safeParse(expected);
-  const current = await readGenerations(tx, spaceId);
   if (
     !parsed.success ||
     current.policy_generation !== parsed.data.policy_generation ||
@@ -38,5 +50,26 @@ export async function requireGenerations(
       'context_invalidated',
       'Account or policy context changed; start a fresh attempt.',
     );
-  return current;
+}
+
+/**
+ * A locked authority row supplies current policy. Empty connection snapshots
+ * constrain no connections: newly active rows were already ignored by the
+ * subset comparison. Nonempty snapshots still read current connections on
+ * every call, including changes made outside event-order transactions.
+ */
+export async function assertCurrentGenerations(
+  tx: Transaction,
+  spaceId: string,
+  expected: ContextGenerations,
+  lockedPolicyGeneration: number,
+): Promise<void> {
+  const parsed = contextGenerations.safeParse(expected);
+  if (!parsed.success || parsed.data.policy_generation !== lockedPolicyGeneration)
+    throw new ServiceError(
+      'context_invalidated',
+      'Account or policy context changed; start a fresh attempt.',
+    );
+  if (!Object.keys(parsed.data.connection_generations).length) return;
+  assertGenerations(parsed.data, await readGenerations(tx, spaceId, lockedPolicyGeneration));
 }

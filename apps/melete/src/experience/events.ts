@@ -13,6 +13,7 @@ import {
   toolCall,
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
+import { unionAll } from 'drizzle-orm/pg-core';
 import { reviewView } from '../broker/auto-review.ts';
 import { AUTONOMY_ASK_NOTICE, askCard, isLevel, isTaskKind } from '../broker/autonomy.ts';
 import type { Database } from '../db/client.ts';
@@ -29,7 +30,6 @@ import {
   question,
 } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
-import { appendEvent } from '../events/store.ts';
 import { answerJoin } from '../jobs/answer-join.ts';
 import { HISTORY_SUMMARY_KIND } from '../jobs/history-summary.ts';
 import { LIMIT_REACHED_NOTE, waitingForSlotNote } from '../jobs/limits.ts';
@@ -409,10 +409,21 @@ export const EXPERIENCE_READ_GAP_MS = 50;
 const PROJECTION_PAGE = 1000;
 /** The most passes one call makes, so a conversation far behind still ends. */
 const PROJECTION_PAGES = 20;
-/** Conversations the projector brings up to date at once; each pass waits on the one event order. */
-const PROJECTOR_PARALLEL = 2;
 /** How often the projector says it failed, at most. */
 const PROJECTOR_REPORT_MS = 60_000;
+
+type Projection = { id: string; spaceId: string; principalId?: string | null };
+type ProjectionPage = {
+  row: typeof job.$inferSelect;
+  jobs: string[];
+  raw: EventRow[];
+};
+type ProjectionWrites = {
+  id: string;
+  writes: (typeof event.$inferInsert)[];
+  cursor: number;
+  group: string[];
+};
 
 /** Projection has its own durable rows on the existing stream; reconnects never re-label history. */
 export class ExperienceEvents {
@@ -470,6 +481,7 @@ export class ExperienceEvents {
   private scanning: Promise<void> | undefined;
   private rescan = false;
   private lastScan = 0;
+  private readGap = EXPERIENCE_READ_GAP_MS;
   private reportedAt = 0;
 
   /** The newest event committed. */
@@ -509,7 +521,7 @@ export class ExperienceEvents {
    */
   private async scan(): Promise<void> {
     const since = Date.now() - this.lastScan;
-    if (since < EXPERIENCE_READ_GAP_MS) await Bun.sleep(EXPERIENCE_READ_GAP_MS - since);
+    if (since < this.readGap) await Bun.sleep(this.readGap - since);
     this.lastScan = Date.now();
     try {
       await this.started;
@@ -520,14 +532,19 @@ export class ExperienceEvents {
         return;
       }
       const work = await this.changedBetween(from, through);
+      const changed = work.filter(({ raw, projectable }) => raw && projectable).length;
+      // Concurrent conversations share the next wake's short collection
+      // window. A lone conversation keeps its original streaming cadence.
+      if (changed) this.readGap = EXPERIENCE_READ_GAP_MS * (changed > 1 ? 3 : 1);
       // Only once the conversations are known, so a failed look is tried again.
       this.through = through;
       for (const { id, spaceId, principalId, raw, projectable } of work) {
         // Nothing new to project (it was projected as it was written), or
         // a conversation whose own readers project it: its streams decide.
         if (!raw || !projectable) this.told(spaceId, id, !raw);
-        else this.due(id, spaceId, principalId);
+        else if (!this.dueList.has(id)) this.dueList.set(id, { spaceId, principalId });
       }
+      if (!this.working && this.dueList.size) void this.work();
     } catch (error) {
       this.report(error);
     }
@@ -535,39 +552,18 @@ export class ExperienceEvents {
 
   /** Conversations waiting for the projector, in the order they changed. */
   private readonly dueList = new Map<string, { spaceId: string; principalId: string | null }>();
-  private workers = 0;
-
-  /**
-   * Queue a conversation for projection without waiting for it, so the next
-   * look is not held up by one slow pass (one waiting its turn on the event
-   * order lock, or far behind). One already queued has not started: its pass
-   * covers this change too.
-   */
-  private due(id: string, spaceId: string, principalId: string | null): void {
-    if (!this.dueList.has(id)) this.dueList.set(id, { spaceId, principalId });
-    while (this.workers < PROJECTOR_PARALLEL && this.dueList.size) {
-      this.workers++;
-      void this.work();
-    }
-  }
+  private working = false;
 
   private async work(): Promise<void> {
+    this.working = true;
     try {
-      for (
-        let next = this.dueList.entries().next();
-        !next.done;
-        next = this.dueList.entries().next()
-      ) {
-        const [id, { spaceId, principalId }] = next.value;
-        this.dueList.delete(id);
-        // As the conversation's owner, who its stream is read as.
-        const pass = () => this.project(spaceId, id);
-        await (principalId ? principalContext.run(principalId, pass) : pass()).catch(
-          (error: unknown) => this.report(error),
-        );
+      while (this.dueList.size) {
+        const work = [...this.dueList].map(([id, context]) => ({ id, ...context }));
+        this.dueList.clear();
+        await this.projectMany(work).catch((error: unknown) => this.report(error));
       }
     } finally {
-      this.workers--;
+      this.working = false;
     }
   }
 
@@ -656,7 +652,7 @@ export class ExperienceEvents {
           ownJob(job.principalId, principalId),
         ),
       );
-    for (const { id } of ids) await this.project(spaceId, id);
+    await this.projectMany(ids.map(({ id }) => ({ id, spaceId, principalId })));
   }
 
   /**
@@ -667,639 +663,792 @@ export class ExperienceEvents {
    * The conversation's live streams are told when a pass ends.
    */
   project(spaceId: string, id: string): Promise<void> {
-    const running = this.passes.get(id);
-    if (running) {
-      let next = this.queued.get(id);
-      if (!next) {
-        next = running
-          .catch(() => undefined)
-          .then(() => {
-            this.queued.delete(id);
-            return this.project(spaceId, id);
-          });
-        this.queued.set(id, next);
-      }
-      return next;
-    }
-    const ended = (projected: boolean) => {
-      this.passes.delete(id);
-      this.told(spaceId, id, projected);
-    };
-    const pass = this.catchUp(spaceId, id).then(
-      () => ended(true),
-      (error: unknown) => {
-        ended(false);
-        throw error;
-      },
-    );
-    this.passes.set(id, pass);
-    return pass;
+    return this.projectMany([{ spaceId, id, principalId: requestPrincipal() }]);
   }
 
+  /** Share each conversation's pass with its readers, including passes in a shared transaction. */
+  private projectMany(work: Projection[]): Promise<void> {
+    const fresh: Projection[] = [];
+    const blocked: Projection[] = [];
+    const dependencies = new Set<Promise<void>>();
+    const waiting = new Set<Promise<void>>();
+    for (const entry of work) {
+      const running = this.passes.get(entry.id);
+      if (!running) fresh.push(entry);
+      else {
+        const queued = this.queued.get(entry.id);
+        if (queued) waiting.add(queued);
+        else {
+          blocked.push(entry);
+          dependencies.add(running);
+        }
+      }
+    }
+    if (blocked.length) {
+      const next = Promise.all([...dependencies].map((pass) => pass.catch(() => undefined))).then(
+        () => {
+          for (const { id } of blocked) this.queued.delete(id);
+          return this.projectMany(blocked);
+        },
+      );
+      for (const { id } of blocked) this.queued.set(id, next);
+      waiting.add(next);
+    }
+    if (fresh.length) {
+      const ended = ({ id, spaceId }: Projection, projected: boolean) => {
+        this.passes.delete(id);
+        this.told(spaceId, id, projected);
+      };
+      const pass = this.catchUp(fresh).then(
+        () => {
+          for (const entry of fresh) ended(entry, true);
+        },
+        async (error: unknown) => {
+          if (fresh.length === 1 && fresh[0]) {
+            ended(fresh[0], false);
+            throw error;
+          }
+          // A bad conversation must not keep the others behind the scan's
+          // cursor. The shared transaction rolled back; retry separately only
+          // on failure, and tell each stream whether its own pass succeeded.
+          let failure: unknown;
+          for (const entry of fresh) {
+            try {
+              await this.catchUp([entry]);
+              ended(entry, true);
+            } catch (error) {
+              ended(entry, false);
+              failure ??= error;
+            }
+          }
+          if (failure) throw failure;
+        },
+      );
+      for (const { id } of fresh) this.passes.set(id, pass);
+      waiting.add(pass);
+    }
+    return Promise.all(waiting).then(() => undefined);
+  }
   /** Passes until nothing is left, so a conversation far behind is caught up in one call. */
-  private async catchUp(spaceId: string, id: string): Promise<void> {
-    for (let page = 0; page < PROJECTION_PAGES; page++) if (!(await this.pass(spaceId, id))) return;
+  private async catchUp(work: Projection[]): Promise<void> {
+    for (let page = 0; page < PROJECTION_PAGES && work.length; page++) {
+      const results = await Promise.allSettled(
+        work.map(async (entry) => {
+          const read = () => this.lookups(entry.spaceId, entry.id);
+          const lookups = await (entry.principalId
+            ? principalContext.run(entry.principalId, read)
+            : principalContext.exit(read));
+          return { ...entry, lookups };
+        }),
+      );
+      const prepared = results.map((result) => {
+        if (result.status === 'rejected') throw result.reason;
+        return result.value;
+      });
+      const ready = prepared.filter((entry) => entry.lookups !== null);
+      if (!ready.length) return;
+      // Every source is already committed. Only the writes wait on the global
+      // event order, once for all the conversations found by this wake.
+      await serviceTransaction(this.db, async (tx) => {
+        const rows = await tx
+          .select()
+          .from(job)
+          .where(
+            or(...ready.map(({ id, spaceId }) => and(eq(job.id, id), eq(job.spaceId, spaceId)))),
+          )
+          .for('update');
+        if (!rows.length) return;
+        const locked = new Map(rows.map((row) => [row.id, row]));
+        const linked = await tx
+          .select({ id: job.id, parentId: job.experienceParentId, spaceId: job.spaceId })
+          .from(job)
+          .where(
+            or(
+              ...rows.map((row) =>
+                and(eq(job.experienceParentId, row.id), eq(job.spaceId, row.spaceId)),
+              ),
+            ),
+          );
+        const windows = ready.flatMap((entry) => {
+          const row = locked.get(entry.id);
+          if (!row || row.spaceId !== entry.spaceId || !entry.lookups) return [];
+          const jobs = [
+            row.id,
+            ...linked
+              .filter((child) => child.parentId === row.id && child.spaceId === row.spaceId)
+              .map((child) => child.id),
+          ];
+          return [{ ...entry, row, jobs, jobIds: new Set(jobs), lookups: entry.lookups }];
+        });
+        if (!windows.length) return;
+        // Keep these reads under the global lock: deleted sources, new links
+        // and a cursor another projector advanced must be seen before writing.
+        const reads = windows.map(({ row, jobs, lookups }) =>
+          tx
+            .select()
+            .from(event)
+            .where(
+              and(
+                sql`coalesce(${event.payload}->>'kind', '') <> 'experience'`,
+                inArray(event.jobId, jobs),
+                gt(event.seq, row.experienceCursor),
+                lte(event.seq, lookups.upTo),
+              ),
+            )
+            .orderBy(asc(event.seq))
+            .limit(PROJECTION_PAGE),
+        );
+        const [first, second, ...remaining] = reads;
+        if (!first) return;
+        // A newly linked job may bring old history into a prepared window.
+        // Limit each branch in SQL, so that history cannot make the shared
+        // read unbounded; overlapping windows still see each source once.
+        const sources = await (second ? unionAll(first, second, ...remaining) : first);
+        const raw = [...new Map(sources.map((source) => [source.seq, source])).values()].sort(
+          (left, right) => left.seq - right.seq,
+        );
+        const pending: ProjectionWrites[] = [];
+        for (const entry of windows) {
+          const page: ProjectionPage = {
+            row: entry.row,
+            jobs: entry.jobs,
+            raw: raw
+              .filter(
+                (source) =>
+                  source.jobId !== null &&
+                  entry.jobIds.has(source.jobId) &&
+                  source.seq > entry.row.experienceCursor &&
+                  source.seq <= entry.lookups.upTo,
+              )
+              .slice(0, PROJECTION_PAGE),
+          };
+          const project = () => this.pass(tx, entry.spaceId, entry.id, entry.lookups, page);
+          const result = await (entry.principalId
+            ? principalContext.run(entry.principalId, project)
+            : principalContext.exit(project));
+          if (result) pending.push(result);
+        }
+        // A pass reads raw sources and its own prior tool notices, never another
+        // conversation's pending notices or cursor. Keep their writes in pass
+        // order, then persist every conversation before releasing the lock.
+        const writes = pending.flatMap((entry) => entry.writes);
+        let newest = 0;
+        for (let offset = 0; offset < writes.length; offset += 500) {
+          const inserted = await tx
+            .insert(event)
+            .values(writes.slice(offset, offset + 500))
+            .onConflictDoNothing({ target: event.dedupKey })
+            .returning({ seq: event.seq });
+          for (const row of inserted) newest = Math.max(newest, row.seq);
+        }
+        // Bound the statement's parameters when a wake catches up many jobs.
+        for (let offset = 0; offset < pending.length; offset += 500) {
+          const updates = pending.slice(offset, offset + 500);
+          const update = tx
+            .update(job)
+            .set({
+              experienceCursor: sql<number>`case ${job.id} ${sql.join(
+                updates.map((entry) => sql`when ${entry.id} then ${entry.cursor}::bigint`),
+                sql` `,
+              )} end`,
+              experienceGroup: sql<string[]>`case ${job.id} ${sql.join(
+                updates.map(
+                  (entry) => sql`when ${entry.id} then ${JSON.stringify(entry.group)}::jsonb`,
+                ),
+                sql` `,
+              )} end`,
+            })
+            .where(
+              inArray(
+                job.id,
+                updates.map((entry) => entry.id),
+              ),
+            );
+          if (offset === 0 && newest) {
+            // Consume the update before notifying, in the same statement.
+            // Delivery still waits for the whole transaction to commit.
+            const advanced = tx.$with('projected').as(update.returning({ id: job.id }));
+            await tx
+              .with(advanced)
+              .select({
+                rows: sql`count(*)`,
+                notified: sql`pg_notify('melete_events', ${String(newest)})`,
+              })
+              .from(advanced);
+          } else await update;
+        }
+      });
+      work = ready.filter((entry) => entry.lookups?.full).map(({ lookups: _, ...entry }) => entry);
+    }
   }
 
   /**
-   * One projection pass over at most a page of a conversation's new events.
-   * True when the page was full, so more may be waiting.
+   * Project one prepared page, under the transaction shared by this wake.
    */
-  private async pass(spaceId: string, id: string): Promise<boolean> {
+  private async pass(
+    tx: Transaction,
+    spaceId: string,
+    id: string,
+    lookups: Lookups,
+    page: ProjectionPage,
+  ): Promise<ProjectionWrites | undefined> {
     // Projection appends events, so it takes the event order first like every
     // other writer; otherwise a slow commit here lands behind a later sequence
     // number that a live stream has already read past. Everything it asks
     // other services is looked up first, so nothing under the lock needs a
     // second connection, and a job with nothing new never takes the lock.
-    const lookups = await this.lookups(spaceId, id);
-    if (!lookups) return false;
-    await serviceTransaction(this.db, async (tx) => {
-      const [row] = await tx
-        .select()
-        .from(job)
-        .where(and(eq(job.id, id), eq(job.spaceId, spaceId)))
-        .for('update');
-      if (!row) return;
-      const linked = await tx
-        .select({ id: job.id })
-        .from(job)
-        .where(and(eq(job.experienceParentId, id), eq(job.spaceId, spaceId)));
-      const jobs = [id, ...linked.map((item) => item.id)];
-      const raw = await tx
-        .select()
-        .from(event)
+    const { row, jobs, raw } = page;
+    if (!raw.length) return;
+    let group = [...row.experienceGroup];
+    const streams = new Map<string, AttemptText>();
+    const streamed = async (source: EventRow): Promise<AttemptText> => {
+      // Text with no attempt is filtered piece by piece; it has nothing to join.
+      if (!source.attemptId)
+        return {
+          answer: new AnswerStream(),
+          reasoning: new AnswerStream(),
+          fresh: false,
+          said: false,
+          split: false,
+        };
+      let found = streams.get(source.attemptId);
+      if (!found) {
+        found = await attemptText(tx, source.attemptId, source.seq);
+        streams.set(source.attemptId, found);
+      }
+      return found;
+    };
+    // What the conversation last showed for each tool entry, read once per
+    // entry and kept as this pass shows more: the read scans the job's events.
+    const shownTools = new Map<string, ToolCall | undefined>();
+    const shown = async (toolId: string, kind: 'tool' | 'action') => {
+      const key = `${kind}:${toolId}`;
+      if (!shownTools.has(key)) shownTools.set(key, await shownTool(tx, id, toolId, kind));
+      return shownTools.get(key);
+    };
+    // Every event of an attempt belongs to the same turn: asked once per attempt.
+    const turns = new Map<string, { turnId: string | null } | undefined>();
+    const writes: (typeof event.$inferInsert)[] = [];
+    const turnOf = async (attemptId: string) => {
+      if (turns.has(attemptId)) return turns.get(attemptId);
+      const [found] = await tx
+        .select({ turnId: attempt.turnId })
+        .from(attempt)
+        .where(eq(attempt.id, attemptId));
+      turns.set(attemptId, found);
+      return found;
+    };
+    const emit = async (
+      source: typeof event.$inferSelect,
+      item: ExperienceEvent['item'],
+      suffix: string = item.type,
+    ) => {
+      const execution = source.attemptId ? await turnOf(source.attemptId) : undefined;
+      if ((item.type === 'tool' || item.type === 'action') && item.tool)
+        shownTools.set(`${item.type}:${item.tool.id}`, item.tool);
+      writes.push({
+        jobId: id,
+        attemptId: source.attemptId,
+        // The row is locked for this whole transaction, so its epoch holds.
+        epoch: row.leaseEpoch,
+        type: 'notice',
+        payload: {
+          kind: 'experience',
+          item,
+          turn_id:
+            execution?.turnId ??
+            (typeof object(source.payload).turn_id === 'string'
+              ? String(object(source.payload).turn_id)
+              : row.currentTurnId),
+          source_seq: source.seq,
+          at: source.createdAt.toISOString(),
+        },
+        dedupKey: `experience:${source.seq}:${suffix}`,
+      });
+    };
+    const flush = async (source: typeof event.$inferSelect) => {
+      if (!group.length) return;
+      const effects = await tx
+        .select({ action, connection })
+        .from(action)
+        .innerJoin(connection, eq(connection.id, action.connectionId))
         .where(
           and(
-            inArray(event.jobId, jobs),
-            gt(event.seq, row.experienceCursor),
-            lte(event.seq, lookups.upTo),
-            sql`coalesce(${event.payload}->>'kind', '') <> 'experience'`,
+            inArray(action.jobId, jobs),
+            eq(connection.spaceId, spaceId),
+            inArray(action.id, group),
           ),
-        )
-        .orderBy(asc(event.seq))
-        .limit(PROJECTION_PAGE);
-      if (!raw.length) return;
-      let group = [...row.experienceGroup];
-      const streams = new Map<string, AttemptText>();
-      const streamed = async (source: EventRow): Promise<AttemptText> => {
-        // Text with no attempt is filtered piece by piece; it has nothing to join.
-        if (!source.attemptId)
-          return {
-            answer: new AnswerStream(),
-            reasoning: new AnswerStream(),
-            fresh: false,
-            said: false,
-            split: false,
-          };
-        let found = streams.get(source.attemptId);
-        if (!found) {
-          found = await attemptText(tx, source.attemptId, source.seq);
-          streams.set(source.attemptId, found);
+        );
+      const projected = projectActionGroup(effects);
+      if (projected) await emit(source, projected, 'group');
+      group = effects
+        .filter(({ action }) => !['succeeded', 'failed', 'denied'].includes(action.status))
+        .map(({ action }) => action.id);
+    };
+    for (const source of raw) {
+      const payload = object(source.payload);
+      // A tool call ends the message the model wrote before it: what it still
+      // held back is shown now, ahead of the call, and the next words start
+      // a new paragraph. Work the engine runs itself is traced before the
+      // call is proposed, so its trace ends the message too.
+      if (endsMessage(source) && source.attemptId) {
+        const text = await streamed(source);
+        if (text.said) {
+          const rest = text.answer.end();
+          if (rest) await emit(source, { type: 'text_delta', text: rest }, 'message_end');
+          text.said = false;
+          text.split = true;
         }
-        return found;
-      };
-      // What the conversation last showed for each tool entry, read once per
-      // entry and kept as this pass shows more: the read scans the job's events.
-      const shownTools = new Map<string, ToolCall | undefined>();
-      const shown = async (toolId: string, kind: 'tool' | 'action') => {
-        const key = `${kind}:${toolId}`;
-        if (!shownTools.has(key)) shownTools.set(key, await shownTool(tx, id, toolId, kind));
-        return shownTools.get(key);
-      };
-      // Every event of an attempt belongs to the same turn: asked once per attempt.
-      const turns = new Map<string, { turnId: string | null } | undefined>();
-      const turnOf = async (attemptId: string) => {
-        if (turns.has(attemptId)) return turns.get(attemptId);
-        const [found] = await tx
-          .select({ turnId: attempt.turnId })
-          .from(attempt)
-          .where(eq(attempt.id, attemptId));
-        turns.set(attemptId, found);
-        return found;
-      };
-      const emit = async (
-        source: typeof event.$inferSelect,
-        item: ExperienceEvent['item'],
-        suffix: string = item.type,
-      ) => {
-        const execution = source.attemptId ? await turnOf(source.attemptId) : undefined;
-        if ((item.type === 'tool' || item.type === 'action') && item.tool)
-          shownTools.set(`${item.type}:${item.tool.id}`, item.tool);
-        await appendEvent(tx, {
-          jobId: id,
-          attemptId: source.attemptId,
-          // The row is locked for this whole transaction, so its epoch holds.
-          epoch: row.leaseEpoch,
-          type: 'notice',
-          payload: {
-            kind: 'experience',
-            item,
-            turn_id:
-              execution?.turnId ??
-              (typeof object(source.payload).turn_id === 'string'
-                ? String(object(source.payload).turn_id)
-                : row.currentTurnId),
-            source_seq: source.seq,
-            at: source.createdAt.toISOString(),
-          },
-          dedupKey: `experience:${source.seq}:${suffix}`,
+      }
+      for (const tool of await toolCalls(tx, source, jobs, spaceId, lookups.arguments)) {
+        const before = await shown(tool.id, 'tool');
+        if (JSON.stringify(before) !== JSON.stringify(tool))
+          await emit(source, { type: 'tool', tool }, `tool:${tool.id}`);
+        // The trail keeps one finished step for each entry it does not already tell.
+        if (
+          ['done', 'failed', 'unknown'].includes(tool.status) &&
+          !offTrail(tool) &&
+          !(await shown(tool.id, 'action'))
+        )
+          await emit(
+            source,
+            {
+              type: 'action',
+              label: tool.title,
+              meta: tool.output_summary?.text ?? '',
+              sources: [],
+              tool,
+            },
+            `trail:${tool.id}`,
+          );
+      }
+      const boundary =
+        source.type === 'turn_started' ||
+        source.type === 'attempt_ended' ||
+        source.type === 'text_delta' ||
+        payload.kind === 'experience_say';
+      if (boundary) await flush(source);
+      if (
+        source.type === 'action_requested' &&
+        typeof payload.action_id === 'string' &&
+        !group.includes(payload.action_id)
+      )
+        group.push(payload.action_id);
+      if (payload.kind === 'experience_say') {
+        const text = plainText(payload.text, '', 600);
+        if (text) await emit(source, { type: 'say', text });
+      } else if (source.type === 'approval_requested' && typeof payload.approval_id === 'string') {
+        const permission = lookups.permissions.get(payload.approval_id);
+        if (permission) await emit(source, { type: 'permission', permission });
+      } else if (source.type === 'approval_decided' && typeof payload.approval_id === 'string') {
+        // "Always" is the approval that saved its standing rule in the same decision.
+        const [rule] = await tx
+          .select({ id: experienceRule.id })
+          .from(experienceRule)
+          .where(
+            and(
+              eq(experienceRule.id, `rule_${payload.approval_id}`),
+              eq(experienceRule.spaceId, spaceId),
+            ),
+          );
+        const decision = projectPermissionDecision({
+          approvalId: payload.approval_id,
+          decision: payload.decision,
+          ruleSaved: Boolean(rule),
+          note: payload.note,
+          at: source.createdAt,
         });
-      };
-      const flush = async (source: typeof event.$inferSelect) => {
-        if (!group.length) return;
-        const effects = await tx
+        await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
+      } else if (payload.kind === 'question_asked' && typeof payload.question_id === 'string') {
+        const question = lookups.questions.get(payload.question_id);
+        if (question) await emit(source, { type: 'question', question });
+      } else if (
+        payload.kind === AUTONOMY_ASK_NOTICE &&
+        typeof payload.ask_id === 'string' &&
+        isTaskKind(payload.task) &&
+        isLevel(payload.level)
+      ) {
+        // The card that asks once about a kind of task, and each later
+        // choice, which the conversation shows in the card's place.
+        await emit(source, {
+          type: 'autonomy',
+          autonomy: askCard({
+            ask_id: payload.ask_id,
+            task: payload.task,
+            level: payload.level,
+            chosen: isLevel(payload.chosen) ? payload.chosen : null,
+          }),
+        });
+      } else if (payload.kind === 'question_closed' && typeof payload.question_id === 'string') {
+        const [closed] = await tx
+          .select({ id: question.id, state: question.state, answer: question.answer })
+          .from(question)
+          .where(and(eq(question.id, payload.question_id), inArray(question.jobId, jobs)));
+        if (closed) {
+          const decision = projectQuestionDecision({
+            questionId: closed.id,
+            state: closed.state,
+            answer: closed.answer,
+            at: source.createdAt,
+          });
+          await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
+        }
+      } else if (source.type === 'text_delta') {
+        // The last word of each piece waits for the next one, so a key cut across
+        // two pieces is still seen whole; the attempt's end shows what is left.
+        const text = await streamed(source);
+        const reasoning = text.reasoning.end();
+        if (reasoning) await emit(source, { type: 'reasoning', text: reasoning });
+        const piece = typeof payload.text === 'string' ? payload.text : '';
+        // A turn run again replaces what the lost attempt said; a turn that
+        // carries on from words the person already has starts a new paragraph.
+        const join =
+          text.fresh && source.attemptId ? await answerJoin(tx, source.attemptId) : 'none';
+        text.fresh = false;
+        if (join === 'replace')
+          await emit(source, { type: 'text_delta', text: '', restart: true }, 'answer_join');
+        else if (join === 'separate' || (text.split && piece))
+          await emit(source, { type: 'text_delta', text: '\n\n' }, 'answer_join');
+        if (piece) {
+          text.said = true;
+          text.split = false;
+        }
+        await emit(source, {
+          type: 'text_delta',
+          text: source.attemptId ? text.answer.push(piece) : answerText(piece),
+        });
+      } else if (source.type === 'reasoning_delta') {
+        // The same filter as the answer: reasoning is shown, so it is content.
+        const text = await streamed(source);
+        const piece = typeof payload.text === 'string' ? payload.text : '';
+        const shown = source.attemptId ? text.reasoning.push(piece) : answerText(piece);
+        if (shown) await emit(source, { type: 'reasoning', text: shown });
+      } else if (
+        source.type === 'action_status_changed' &&
+        typeof payload.action_id === 'string' &&
+        (payload.to === 'succeeded' ||
+          // A message held before sending, and one cancelled in its hold.
+          ((payload.to === 'admitted' || payload.to === 'failed') &&
+            this.projections?.receiptState !== undefined))
+      ) {
+        const [effect] = await tx
           .select({ action, connection })
           .from(action)
           .innerJoin(connection, eq(connection.id, action.connectionId))
           .where(
             and(
+              eq(action.id, payload.action_id),
               inArray(action.jobId, jobs),
               eq(connection.spaceId, spaceId),
-              inArray(action.id, group),
             ),
           );
-        const projected = projectActionGroup(effects);
-        if (projected) await emit(source, projected, 'group');
-        group = effects
-          .filter(({ action }) => !['succeeded', 'failed', 'denied'].includes(action.status))
-          .map(({ action }) => action.id);
-      };
-      for (const source of raw) {
-        const payload = object(source.payload);
-        // A tool call ends the message the model wrote before it: what it still
-        // held back is shown now, ahead of the call, and the next words start
-        // a new paragraph. Work the engine runs itself is traced before the
-        // call is proposed, so its trace ends the message too.
-        if (endsMessage(source) && source.attemptId) {
-          const text = await streamed(source);
-          if (text.said) {
-            const rest = text.answer.end();
-            if (rest) await emit(source, { type: 'text_delta', text: rest }, 'message_end');
-            text.said = false;
-            text.split = true;
+        // Looked up before the lock: it reads and writes through the effects
+        // service's own connections, which may all be queued on this lock.
+        const state =
+          effect && (payload.to === 'succeeded' || effect.action.effectClass !== 'read')
+            ? (lookups.receipts.get(effect.action.id) ?? {})
+            : {};
+        if (effect && payload.to !== 'succeeded') {
+          if (state.held) {
+            const held = projectHeldReceipt(
+              effect.action,
+              effect.connection,
+              'until' in state.held
+                ? { until: state.held.until, ...(state.undo ? { undo: state.undo } : {}) }
+                : state.held,
+            );
+            await emit(source, { type: 'receipt', receipt: held }, `held:${source.seq}`);
           }
-        }
-        for (const tool of await toolCalls(tx, source, jobs, spaceId, lookups.arguments)) {
-          const before = await shown(tool.id, 'tool');
-          if (JSON.stringify(before) !== JSON.stringify(tool))
-            await emit(source, { type: 'tool', tool }, `tool:${tool.id}`);
-          // The trail keeps one finished step for each entry it does not already tell.
-          if (
-            ['done', 'failed', 'unknown'].includes(tool.status) &&
-            !offTrail(tool) &&
-            !(await shown(tool.id, 'action'))
-          )
-            await emit(
-              source,
-              {
-                type: 'action',
-                label: tool.title,
-                meta: tool.output_summary?.text ?? '',
-                sources: [],
-                tool,
-              },
-              `trail:${tool.id}`,
-            );
-        }
-        const boundary =
-          source.type === 'turn_started' ||
-          source.type === 'attempt_ended' ||
-          source.type === 'text_delta' ||
-          payload.kind === 'experience_say';
-        if (boundary) await flush(source);
-        if (
-          source.type === 'action_requested' &&
-          typeof payload.action_id === 'string' &&
-          !group.includes(payload.action_id)
-        )
-          group.push(payload.action_id);
-        if (payload.kind === 'experience_say') {
-          const text = plainText(payload.text, '', 600);
-          if (text) await emit(source, { type: 'say', text });
-        } else if (
-          source.type === 'approval_requested' &&
-          typeof payload.approval_id === 'string'
-        ) {
-          const permission = lookups.permissions.get(payload.approval_id);
-          if (permission) await emit(source, { type: 'permission', permission });
-        } else if (source.type === 'approval_decided' && typeof payload.approval_id === 'string') {
-          // "Always" is the approval that saved its standing rule in the same decision.
-          const [rule] = await tx
-            .select({ id: experienceRule.id })
-            .from(experienceRule)
-            .where(
-              and(
-                eq(experienceRule.id, `rule_${payload.approval_id}`),
-                eq(experienceRule.spaceId, spaceId),
-              ),
-            );
-          const decision = projectPermissionDecision({
-            approvalId: payload.approval_id,
-            decision: payload.decision,
-            ruleSaved: Boolean(rule),
-            note: payload.note,
-            at: source.createdAt,
-          });
-          await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
-        } else if (payload.kind === 'question_asked' && typeof payload.question_id === 'string') {
-          const question = lookups.questions.get(payload.question_id);
-          if (question) await emit(source, { type: 'question', question });
-        } else if (
-          payload.kind === AUTONOMY_ASK_NOTICE &&
-          typeof payload.ask_id === 'string' &&
-          isTaskKind(payload.task) &&
-          isLevel(payload.level)
-        ) {
-          // The card that asks once about a kind of task, and each later
-          // choice, which the conversation shows in the card's place.
-          await emit(source, {
-            type: 'autonomy',
-            autonomy: askCard({
-              ask_id: payload.ask_id,
-              task: payload.task,
-              level: payload.level,
-              chosen: isLevel(payload.chosen) ? payload.chosen : null,
-            }),
-          });
-        } else if (payload.kind === 'question_closed' && typeof payload.question_id === 'string') {
-          const [closed] = await tx
-            .select({ id: question.id, state: question.state, answer: question.answer })
-            .from(question)
-            .where(and(eq(question.id, payload.question_id), inArray(question.jobId, jobs)));
-          if (closed) {
-            const decision = projectQuestionDecision({
-              questionId: closed.id,
-              state: closed.state,
-              answer: closed.answer,
-              at: source.createdAt,
+        } else if (effect) {
+          const [review] = await tx
+            .select()
+            .from(actionReview)
+            .where(eq(actionReview.actionId, effect.action.id));
+          const receipt = projectReceipt(
+            effect.action,
+            effect.connection,
+            state.undo,
+            review
+              ? reviewView({
+                  decided_by: review.decidedBy,
+                  outcome: review.outcome,
+                  risk: review.risk,
+                  reason: review.reason,
+                  created_at: review.createdAt,
+                })
+              : null,
+            lookups.because.get(effect.action.id),
+            state.reverses,
+          );
+          if (receipt)
+            await emit(source, {
+              type: 'receipt',
+              receipt: state.what ? { ...receipt, what: state.what } : receipt,
             });
-            await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
-          }
-        } else if (source.type === 'text_delta') {
-          // The last word of each piece waits for the next one, so a key cut across
-          // two pieces is still seen whole; the attempt's end shows what is left.
+          // A card is projected once, when its draft is freshly prepared; its
+          // later status reaches the person through the conversation's drafts.
+          for (const card of projectCards(effect.action, effect.connection, 'draft'))
+            await emit(source, { type: 'card', card }, `card:${card.id}`);
+          if (source.jobId !== id) await flush(source);
+        }
+      } else if (source.type === 'attempt_ended') {
+        if (source.attemptId) {
           const text = await streamed(source);
           const reasoning = text.reasoning.end();
           if (reasoning) await emit(source, { type: 'reasoning', text: reasoning });
-          const piece = typeof payload.text === 'string' ? payload.text : '';
-          // A turn run again replaces what the lost attempt said; a turn that
-          // carries on from words the person already has starts a new paragraph.
-          const join =
-            text.fresh && source.attemptId ? await answerJoin(tx, source.attemptId) : 'none';
-          text.fresh = false;
-          if (join === 'replace')
-            await emit(source, { type: 'text_delta', text: '', restart: true }, 'answer_join');
-          else if (join === 'separate' || (text.split && piece))
-            await emit(source, { type: 'text_delta', text: '\n\n' }, 'answer_join');
-          if (piece) {
-            text.said = true;
-            text.split = false;
-          }
-          await emit(source, {
-            type: 'text_delta',
-            text: source.attemptId ? text.answer.push(piece) : answerText(piece),
-          });
-        } else if (source.type === 'reasoning_delta') {
-          // The same filter as the answer: reasoning is shown, so it is content.
-          const text = await streamed(source);
-          const piece = typeof payload.text === 'string' ? payload.text : '';
-          const shown = source.attemptId ? text.reasoning.push(piece) : answerText(piece);
-          if (shown) await emit(source, { type: 'reasoning', text: shown });
-        } else if (
-          source.type === 'action_status_changed' &&
-          typeof payload.action_id === 'string' &&
-          (payload.to === 'succeeded' ||
-            // A message held before sending, and one cancelled in its hold.
-            ((payload.to === 'admitted' || payload.to === 'failed') &&
-              this.projections?.receiptState !== undefined))
-        ) {
-          const [effect] = await tx
+          const rest = text.answer.end();
+          if (rest) await emit(source, { type: 'text_delta', text: rest });
+        }
+        const [execution] = source.attemptId
+          ? await tx.select().from(attempt).where(eq(attempt.id, source.attemptId))
+          : [];
+        const outcome = object(payload.outcome);
+        // Where the runner left this conversation's turn, as its saved copy has it.
+        const settled =
+          source.jobId === id && TURN_ENDINGS.has(String(payload.turn_status))
+            ? (payload.turn_status as 'done' | 'failed' | 'needs_you')
+            : null;
+        if (outcome.kind === 'completed' && payload.experience_completed !== false) {
+          const effects = await tx
             .select({ action, connection })
             .from(action)
             .innerJoin(connection, eq(connection.id, action.connectionId))
             .where(
               and(
-                eq(action.id, payload.action_id),
-                inArray(action.jobId, jobs),
+                eq(action.jobId, id),
+                source.attemptId ? eq(action.attemptId, source.attemptId) : undefined,
                 eq(connection.spaceId, spaceId),
               ),
             );
-          // Looked up before the lock: it reads and writes through the effects
-          // service's own connections, which may all be queued on this lock.
-          const state =
-            effect && (payload.to === 'succeeded' || effect.action.effectClass !== 'read')
-              ? (lookups.receipts.get(effect.action.id) ?? {})
-              : {};
-          if (effect && payload.to !== 'succeeded') {
-            if (state.held) {
-              const held = projectHeldReceipt(
-                effect.action,
-                effect.connection,
-                'until' in state.held
-                  ? { until: state.held.until, ...(state.undo ? { undo: state.undo } : {}) }
-                  : state.held,
-              );
-              await emit(source, { type: 'receipt', receipt: held }, `held:${source.seq}`);
-            }
-          } else if (effect) {
-            const [review] = await tx
-              .select()
-              .from(actionReview)
-              .where(eq(actionReview.actionId, effect.action.id));
-            const receipt = projectReceipt(
-              effect.action,
-              effect.connection,
-              state.undo,
-              review
-                ? reviewView({
-                    decided_by: review.decidedBy,
-                    outcome: review.outcome,
-                    risk: review.risk,
-                    reason: review.reason,
-                    created_at: review.createdAt,
-                  })
-                : null,
-              lookups.because.get(effect.action.id),
-              state.reverses,
-            );
-            if (receipt)
-              await emit(source, {
-                type: 'receipt',
-                receipt: state.what ? { ...receipt, what: state.what } : receipt,
-              });
-            // A card is projected once, when its draft is freshly prepared; its
-            // later status reaches the person through the conversation's drafts.
-            for (const card of projectCards(effect.action, effect.connection, 'draft'))
-              await emit(source, { type: 'card', card }, `card:${card.id}`);
-            if (source.jobId !== id) await flush(source);
-          }
-        } else if (source.type === 'attempt_ended') {
-          if (source.attemptId) {
-            const text = await streamed(source);
-            const reasoning = text.reasoning.end();
-            if (reasoning) await emit(source, { type: 'reasoning', text: reasoning });
-            const rest = text.answer.end();
-            if (rest) await emit(source, { type: 'text_delta', text: rest });
-          }
-          const [execution] = source.attemptId
-            ? await tx.select().from(attempt).where(eq(attempt.id, source.attemptId))
-            : [];
-          const outcome = object(payload.outcome);
-          // Where the runner left this conversation's turn, as its saved copy has it.
-          const settled =
-            source.jobId === id && TURN_ENDINGS.has(String(payload.turn_status))
-              ? (payload.turn_status as 'done' | 'failed' | 'needs_you')
-              : null;
-          if (outcome.kind === 'completed' && payload.experience_completed !== false) {
-            const effects = await tx
-              .select({ action, connection })
-              .from(action)
-              .innerJoin(connection, eq(connection.id, action.connectionId))
-              .where(
-                and(
-                  eq(action.jobId, id),
-                  source.attemptId ? eq(action.attemptId, source.attemptId) : undefined,
-                  eq(connection.spaceId, spaceId),
-                ),
-              );
-            const done: Extract<TrailStep, { type: 'done' }> = {
-              type: 'done',
-              summary: plainText(outcome.summary, 'Finished this turn.'),
-              elapsed_ms: Math.max(
-                0,
-                (execution?.endedAt ?? source.createdAt).getTime() -
-                  (execution?.startedAt ?? source.createdAt).getTime(),
-              ),
-              apps: [
-                ...new Set(projectActionGroup(effects)?.sources.map((source) => source.app) ?? []),
-              ],
-              source_count: projectActionGroup(effects)?.sources.length ?? 0,
-            };
-            await emit(source, done);
-            const files = await tx
-              .select()
-              .from(artifact)
-              .where(and(eq(artifact.jobId, id), eq(artifact.spaceId, spaceId)));
-            // A browser step's own captures stay with that step's receipt.
-            for (const file of files.filter(meantForPerson))
-              await emit(source, { type: 'card', card: projectArtifact(file) }, `file:${file.id}`);
-          } else if (typeof payload.retry_at === 'string' && source.jobId === id) {
-            // The work runs again by itself, so the turn stays under way. A
-            // provider that turned it away says why and when it is asked again.
-            const failure = providerFailure.safeParse(outcome.failure);
-            const waitMs = Date.parse(payload.retry_at) - source.createdAt.getTime();
-            if (failure.success)
-              await emit(source, {
-                type: 'note',
-                text: providerRetryNote(
-                  failure.data,
-                  Math.round(Math.max(0, Number.isFinite(waitMs) ? waitMs : 0) / 1000),
-                ),
-                // It is about the wait under way; once the turn has ended it says nothing.
-                transient: true,
-              });
-            await emit(source, { type: 'status', status: 'working', composer: 'pause' });
-          } else if (
-            outcome.kind === 'failed' &&
-            providerFailure.safeParse(outcome.failure).success &&
-            source.jobId === id
-          ) {
-            // The provider turned the turn away for good: the person reads
-            // why in plain words, and where the fix is when it is a setting.
-            const failure = providerFailure.parse(outcome.failure);
-            await emit(source, { type: 'note', text: PROVIDER_FAILURE_NOTES[failure] });
-            const card = providerFailureCard(failure, source.attemptId ?? String(source.seq));
-            if (card) await emit(source, { type: 'card', card }, `card:${card.id}`);
-            if (!settled)
-              await emit(source, { type: 'status', status: 'failed', composer: 'send' });
-          } else if (payload.experience_completed === false) {
-            // The saved turn ends with this sentence; a page following live reads it too.
-            if (source.jobId === id && outcome.kind === 'budget_exhausted')
-              await emit(source, {
-                type: 'note',
-                text:
-                  typeof payload.limit_note === 'string' && payload.limit_note.trim()
-                    ? payload.limit_note
-                    : LIMIT_REACHED_NOTE,
-              });
-            // So does a turn a failure ended with a sentence of its own.
-            if (
-              source.jobId === id &&
-              outcome.kind === 'failed' &&
-              typeof payload.failed_note === 'string' &&
-              payload.failed_note.trim()
-            )
-              await emit(source, { type: 'note', text: payload.failed_note });
-            if (!settled)
-              await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
-          } else if (outcome.kind === 'failed')
+          const done: Extract<TrailStep, { type: 'done' }> = {
+            type: 'done',
+            summary: plainText(outcome.summary, 'Finished this turn.'),
+            elapsed_ms: Math.max(
+              0,
+              (execution?.endedAt ?? source.createdAt).getTime() -
+                (execution?.startedAt ?? source.createdAt).getTime(),
+            ),
+            apps: [
+              ...new Set(projectActionGroup(effects)?.sources.map((source) => source.app) ?? []),
+            ],
+            source_count: projectActionGroup(effects)?.sources.length ?? 0,
+          };
+          await emit(source, done);
+          const files = await tx
+            .select()
+            .from(artifact)
+            .where(and(eq(artifact.jobId, id), eq(artifact.spaceId, spaceId)));
+          // A browser step's own captures stay with that step's receipt.
+          for (const file of files.filter(meantForPerson))
+            await emit(source, { type: 'card', card: projectArtifact(file) }, `file:${file.id}`);
+        } else if (typeof payload.retry_at === 'string' && source.jobId === id) {
+          // The work runs again by itself, so the turn stays under way. A
+          // provider that turned it away says why and when it is asked again.
+          const failure = providerFailure.safeParse(outcome.failure);
+          const waitMs = Date.parse(payload.retry_at) - source.createdAt.getTime();
+          if (failure.success)
             await emit(source, {
               type: 'note',
-              text: 'I stopped before finishing. Your progress is saved.',
+              text: providerRetryNote(
+                failure.data,
+                Math.round(Math.max(0, Number.isFinite(waitMs) ? waitMs : 0) / 1000),
+              ),
+              // It is about the wait under way; once the turn has ended it says nothing.
+              transient: true,
             });
-          // The turn settles on the stream as its saved copy does, so a page
-          // that followed it live reads what a reload would.
-          if (settled) await emit(source, { type: 'status', status: settled, composer: 'send' });
-          // An attempt that handed the work to the person ends the turn's work for now: it
-          // waits on them, and the card that says so follows.
-          else if (payload.kind === 'handed_to_person' && source.jobId === id)
+          await emit(source, { type: 'status', status: 'working', composer: 'pause' });
+        } else if (
+          outcome.kind === 'failed' &&
+          providerFailure.safeParse(outcome.failure).success &&
+          source.jobId === id
+        ) {
+          // The provider turned the turn away for good: the person reads
+          // why in plain words, and where the fix is when it is a setting.
+          const failure = providerFailure.parse(outcome.failure);
+          await emit(source, { type: 'note', text: PROVIDER_FAILURE_NOTES[failure] });
+          const card = providerFailureCard(failure, source.attemptId ?? String(source.seq));
+          if (card) await emit(source, { type: 'card', card }, `card:${card.id}`);
+          if (!settled) await emit(source, { type: 'status', status: 'failed', composer: 'send' });
+        } else if (payload.experience_completed === false) {
+          // The saved turn ends with this sentence; a page following live reads it too.
+          if (source.jobId === id && outcome.kind === 'budget_exhausted')
+            await emit(source, {
+              type: 'note',
+              text:
+                typeof payload.limit_note === 'string' && payload.limit_note.trim()
+                  ? payload.limit_note
+                  : LIMIT_REACHED_NOTE,
+            });
+          // So does a turn a failure ended with a sentence of its own.
+          if (
+            source.jobId === id &&
+            outcome.kind === 'failed' &&
+            typeof payload.failed_note === 'string' &&
+            payload.failed_note.trim()
+          )
+            await emit(source, { type: 'note', text: payload.failed_note });
+          if (!settled)
             await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
-        } else if (source.type === 'attempt_started' && source.jobId === id) {
-          await emit(source, { type: 'status', status: 'working', composer: 'pause' });
-        } else if (source.type === 'stalled' && source.jobId === id) {
-          // Nothing has come from the agent for longer than its step may take:
-          // the turn says so instead of reading as working.
-          await emit(source, { type: 'status', status: 'stalled', composer: 'stop' });
-          await emit(source, { type: 'note', text: stalledWords(payload.silent_ms) });
-        } else if (
-          source.type === 'notice' &&
-          source.jobId === id &&
-          payload.kind === 'turn_resumed'
-        ) {
-          await emit(source, { type: 'status', status: 'working', composer: 'pause' });
-        } else if (
-          source.type === 'notice' &&
-          source.jobId === id &&
-          payload.kind === 'turn_settled' &&
-          TURN_ENDINGS.has(String(payload.turn_status))
-        ) {
-          // A turn whose work ended out of the runner's sight (handed to the
-          // person, parked on them) settles as its saved copy did.
-          await emit(source, {
-            type: 'status',
-            status: payload.turn_status as 'done' | 'failed' | 'needs_you',
-            composer: 'send',
-          });
-        } else if (
-          payload.kind === 'experience_stopped' ||
-          payload.kind === 'experience_paused' ||
-          payload.kind === 'experience_resumed'
-        ) {
-          await emit(source, {
-            type: 'status',
-            status:
-              payload.kind === 'experience_stopped'
-                ? 'stopped'
-                : payload.kind === 'experience_paused'
-                  ? 'paused'
-                  : 'working',
-            composer:
-              payload.kind === 'experience_stopped'
-                ? 'send'
-                : payload.kind === 'experience_paused'
-                  ? 'resume'
-                  : 'pause',
-          });
-        } else if (
-          source.type === 'notice' &&
-          payload.kind === 'waiting_for_slot' &&
-          source.jobId === id &&
-          typeof payload.running === 'number'
-        ) {
+        } else if (outcome.kind === 'failed')
           await emit(source, {
             type: 'note',
-            text: waitingForSlotNote(payload.running),
-            transient: true,
+            text: 'I stopped before finishing. Your progress is saved.',
           });
-        } else if (
-          source.type === 'hook_event' &&
-          source.jobId === id &&
-          payload.name === 'on_compaction' &&
-          (payload.outcome === 'succeeded' || payload.outcome === 'observed')
-        ) {
-          // The engine summarised the conversation so far to make room. The
-          // page marks where; the summary's words never leave the engine.
-          await emit(source, { type: 'compacted' });
-        } else if (
-          source.type === 'notice' &&
-          source.jobId === id &&
-          payload.kind === HISTORY_SUMMARY_KIND
-        ) {
-          // Messages too old to hand the agent whole were summarised for it.
-          // The page marks where, as for the engine's own; the words stay out.
-          await emit(source, { type: 'compacted' });
-        } else if (
-          source.type === 'notice' &&
-          source.jobId === id &&
-          payload.kind === 'user_message' &&
-          payload.steer === true &&
-          typeof payload.steer_id === 'string'
-        ) {
-          // Words sent while the turn ran show at once, waiting to be read.
-          await emit(source, {
-            type: 'steer',
-            id: payload.steer_id,
-            text: typeof payload.text === 'string' ? payload.text : '',
-            state: 'queued',
-          });
-        } else if (
-          (source.type === 'steer_delivered' || source.type === 'steer_carried') &&
-          source.jobId === id &&
-          typeof payload.steer_id === 'string'
-        ) {
-          await emit(source, {
-            type: 'steer',
-            id: payload.steer_id,
-            state: source.type === 'steer_delivered' ? 'delivered' : 'carried',
-          });
-        } else if (source.type === 'notice' && payload.kind === 'gap') {
-          await emit(source, {
-            type: 'note',
-            text: 'Part of the answer was interrupted. The saved progress is still here.',
-            transient: true,
-          });
-        } else if (source.type === 'notice' && payload.kind === 'handed_to_person') {
-          // The work came to a check, a sign-in or a page only the person can get past: a
-          // card says what is left and lets them take the browser or computer over. The
-          // conversation waits on them, whether or not an attempt was running.
-          const card = projectHandOff(payload, source.seq);
-          if (card) {
-            await emit(source, { type: 'card', card }, `handoff:${source.seq}`);
-            if (source.jobId === id)
-              await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
-          }
-        } else if (source.type === 'notice' && payload.kind === 'computer_limit') {
-          await emit(source, {
-            type: 'note',
-            text: COMPUTER_LIMIT_NOTE[payload.scope === 'person' ? 'person' : 'installation'],
-          });
-        } else if (source.type === 'notice' && payload.kind === 'computer_busy') {
-          const holder =
-            typeof payload.held_by === 'string' && payload.held_by.trim()
-              ? plainText(payload.held_by, 'another conversation', 120)
-              : null;
-          await emit(source, {
-            type: 'note',
-            text: holder
-              ? `Waiting for the agent's computer: it is in use by "${holder}".`
-              : "Waiting for the agent's computer: another conversation is using it.",
-          });
-        } else if (
-          source.type === 'notice' &&
-          source.jobId === id &&
-          REMINDER_NOTES.includes(String(payload.kind)) &&
-          typeof payload.note === 'string'
-        ) {
-          // A reminder cancelled or turned back on, said where it was done
-          // and in the conversation it belongs to.
-          await emit(source, { type: 'note', text: plainText(payload.note, '', 400) });
-        } else if (
-          source.type === 'notice' &&
-          payload.kind === 'processes_stopped' &&
-          payload.reason === 'awake_allowance_used'
-        ) {
-          await emit(source, { type: 'note', text: awakeAllowanceNote(payload) });
+        // The turn settles on the stream as its saved copy does, so a page
+        // that followed it live reads what a reload would.
+        if (settled) await emit(source, { type: 'status', status: settled, composer: 'send' });
+        // An attempt that handed the work to the person ends the turn's work for now: it
+        // waits on them, and the card that says so follows.
+        else if (payload.kind === 'handed_to_person' && source.jobId === id)
+          await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
+      } else if (source.type === 'attempt_started' && source.jobId === id) {
+        await emit(source, { type: 'status', status: 'working', composer: 'pause' });
+      } else if (source.type === 'stalled' && source.jobId === id) {
+        // Nothing has come from the agent for longer than its step may take:
+        // the turn says so instead of reading as working.
+        await emit(source, { type: 'status', status: 'stalled', composer: 'stop' });
+        await emit(source, { type: 'note', text: stalledWords(payload.silent_ms) });
+      } else if (
+        source.type === 'notice' &&
+        source.jobId === id &&
+        payload.kind === 'turn_resumed'
+      ) {
+        await emit(source, { type: 'status', status: 'working', composer: 'pause' });
+      } else if (
+        source.type === 'notice' &&
+        source.jobId === id &&
+        payload.kind === 'turn_settled' &&
+        TURN_ENDINGS.has(String(payload.turn_status))
+      ) {
+        // A turn whose work ended out of the runner's sight (handed to the
+        // person, parked on them) settles as its saved copy did.
+        await emit(source, {
+          type: 'status',
+          status: payload.turn_status as 'done' | 'failed' | 'needs_you',
+          composer: 'send',
+        });
+      } else if (
+        payload.kind === 'experience_stopped' ||
+        payload.kind === 'experience_paused' ||
+        payload.kind === 'experience_resumed'
+      ) {
+        await emit(source, {
+          type: 'status',
+          status:
+            payload.kind === 'experience_stopped'
+              ? 'stopped'
+              : payload.kind === 'experience_paused'
+                ? 'paused'
+                : 'working',
+          composer:
+            payload.kind === 'experience_stopped'
+              ? 'send'
+              : payload.kind === 'experience_paused'
+                ? 'resume'
+                : 'pause',
+        });
+      } else if (
+        source.type === 'notice' &&
+        payload.kind === 'waiting_for_slot' &&
+        source.jobId === id &&
+        typeof payload.running === 'number'
+      ) {
+        await emit(source, {
+          type: 'note',
+          text: waitingForSlotNote(payload.running),
+          transient: true,
+        });
+      } else if (
+        source.type === 'hook_event' &&
+        source.jobId === id &&
+        payload.name === 'on_compaction' &&
+        (payload.outcome === 'succeeded' || payload.outcome === 'observed')
+      ) {
+        // The engine summarised the conversation so far to make room. The
+        // page marks where; the summary's words never leave the engine.
+        await emit(source, { type: 'compacted' });
+      } else if (
+        source.type === 'notice' &&
+        source.jobId === id &&
+        payload.kind === HISTORY_SUMMARY_KIND
+      ) {
+        // Messages too old to hand the agent whole were summarised for it.
+        // The page marks where, as for the engine's own; the words stay out.
+        await emit(source, { type: 'compacted' });
+      } else if (
+        source.type === 'notice' &&
+        source.jobId === id &&
+        payload.kind === 'user_message' &&
+        payload.steer === true &&
+        typeof payload.steer_id === 'string'
+      ) {
+        // Words sent while the turn ran show at once, waiting to be read.
+        await emit(source, {
+          type: 'steer',
+          id: payload.steer_id,
+          text: typeof payload.text === 'string' ? payload.text : '',
+          state: 'queued',
+        });
+      } else if (
+        (source.type === 'steer_delivered' || source.type === 'steer_carried') &&
+        source.jobId === id &&
+        typeof payload.steer_id === 'string'
+      ) {
+        await emit(source, {
+          type: 'steer',
+          id: payload.steer_id,
+          state: source.type === 'steer_delivered' ? 'delivered' : 'carried',
+        });
+      } else if (source.type === 'notice' && payload.kind === 'gap') {
+        await emit(source, {
+          type: 'note',
+          text: 'Part of the answer was interrupted. The saved progress is still here.',
+          transient: true,
+        });
+      } else if (source.type === 'notice' && payload.kind === 'handed_to_person') {
+        // The work came to a check, a sign-in or a page only the person can get past: a
+        // card says what is left and lets them take the browser or computer over. The
+        // conversation waits on them, whether or not an attempt was running.
+        const card = projectHandOff(payload, source.seq);
+        if (card) {
+          await emit(source, { type: 'card', card }, `handoff:${source.seq}`);
+          if (source.jobId === id)
+            await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
         }
+      } else if (source.type === 'notice' && payload.kind === 'computer_limit') {
+        await emit(source, {
+          type: 'note',
+          text: COMPUTER_LIMIT_NOTE[payload.scope === 'person' ? 'person' : 'installation'],
+        });
+      } else if (source.type === 'notice' && payload.kind === 'computer_busy') {
+        const holder =
+          typeof payload.held_by === 'string' && payload.held_by.trim()
+            ? plainText(payload.held_by, 'another conversation', 120)
+            : null;
+        await emit(source, {
+          type: 'note',
+          text: holder
+            ? `Waiting for the agent's computer: it is in use by "${holder}".`
+            : "Waiting for the agent's computer: another conversation is using it.",
+        });
+      } else if (
+        source.type === 'notice' &&
+        source.jobId === id &&
+        REMINDER_NOTES.includes(String(payload.kind)) &&
+        typeof payload.note === 'string'
+      ) {
+        // A reminder cancelled or turned back on, said where it was done
+        // and in the conversation it belongs to.
+        await emit(source, { type: 'note', text: plainText(payload.note, '', 400) });
+      } else if (
+        source.type === 'notice' &&
+        payload.kind === 'processes_stopped' &&
+        payload.reason === 'awake_allowance_used'
+      ) {
+        await emit(source, { type: 'note', text: awakeAllowanceNote(payload) });
       }
-      await tx
-        .update(job)
-        .set({
-          experienceCursor: raw.at(-1)?.seq ?? row.experienceCursor,
-          experienceGroup: group,
-        })
-        .where(eq(job.id, id));
-    });
-    return lookups.full;
+    }
+    return { id, writes, cursor: raw.at(-1)?.seq ?? row.experienceCursor, group };
   }
 
   /**

@@ -135,17 +135,22 @@ export async function spaceAuthority(
   principalId?: string | null,
   lock = false,
 ) {
-  const query = db.select().from(space).where(eq(space.id, spaceId));
-  const [parent] = lock ? await query.for('share') : await query;
-  if (!parent) throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
+  const query = db
+    .select({
+      parent: space,
+      ownerId: sql<
+        string | null
+      >`coalesce(${space.ownerPrincipalId}, (select ${owner.id} from ${owner} limit 1))`,
+    })
+    .from(space)
+    .where(eq(space.id, spaceId));
+  const [access] = lock ? await query.for('share') : await query;
+  if (!access) throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
+  const { parent, ownerId } = access;
   // A space under removal admits nothing, from anyone: not its owner, and not
   // the owner of a personal space whose emptying is waiting on something. The
   // removal's own routes answer from its record rather than from here.
   if (parent.removedAt) throw new ServiceError('scope_denied', SPACE_BEING_CLEARED, 403);
-  const [installation] = parent.ownerPrincipalId
-    ? []
-    : await db.select({ id: owner.id }).from(owner).limit(1);
-  const ownerId = parent.ownerPrincipalId ?? installation?.id ?? null;
   const actor = principalId ?? ownerId;
   if (parent.kind === 'personal') {
     if (actor !== ownerId) throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
