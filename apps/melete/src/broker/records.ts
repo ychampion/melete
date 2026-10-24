@@ -41,8 +41,9 @@ export function recordId(prefix: string): string {
 export async function lockJob(tx: TransactionSql, id: string): Promise<LockedJob> {
   // Acquire before the row lock, just as serviceTransaction does. Otherwise a
   // later committed event can advance an SSE cursor past this transaction.
-  await lockEventOrderIn(tx);
-  const [job] = await tx<LockedJob[]>`select * from job where id = ${id} for update`;
+  const [job] = await lockEventOrderIn(tx, () =>
+    tx<LockedJob[]>`select * from job where id = ${id} for update`.execute(),
+  );
   if (!job) throw new BrokerFault('stale_epoch', 'Job is not available');
   return job;
 }

@@ -7,8 +7,78 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { requirePrincipalCapability } from '../principals/authority.ts';
 import { verifyCapability } from './capability.ts';
-import { requireGenerations } from './generations.ts';
+import { assertCurrentGenerations, requireGenerations } from './generations.ts';
 import type { JobService } from './service.ts';
+
+type CurrentRecords = {
+  job: typeof job.$inferSelect;
+  attempt: typeof attempt.$inferSelect;
+};
+
+/**
+ * Only runtime record operations may share these reads: they change events,
+ * attempt cursors and turn text, never space or membership authority. The
+ * authority reader keeps its space and membership share locks until commit.
+ * Every job, attempt and claimed identity is still checked for each operation.
+ */
+export class FenceReads {
+  private readonly authority = new Map<string, ReturnType<typeof requirePrincipalCapability>>();
+
+  constructor(private readonly transaction: Transaction) {}
+
+  requireAuthority(
+    tx: Transaction,
+    row: CurrentRecords['job'],
+    claims: CapabilityClaims,
+    legacyPersonal: boolean,
+  ): ReturnType<typeof requirePrincipalCapability> {
+    if (tx !== this.transaction) throw new Error('Fence reads belong to another transaction.');
+    // Object properties distinguish an absent legacy claim from an explicit
+    // null, and every authority input participates in the identity.
+    const key = JSON.stringify({
+      spaceId: row.spaceId,
+      principalId: row.principalId,
+      claimedPrincipal: claims.principal_id,
+      membershipGeneration: claims.membership_generation,
+      legacyPersonal,
+    });
+    let read = this.authority.get(key);
+    if (!read) {
+      read = requirePrincipalCapability(tx, row, claims, legacyPersonal).then(
+        (access) => {
+          // The installation's singleton owner identity is never changed or
+          // removed. Before setup creates it, a null fallback is not stable.
+          if (access.ownerId === null) this.authority.delete(key);
+          return access;
+        },
+        (error: unknown) => {
+          this.authority.delete(key);
+          throw error;
+        },
+      );
+      this.authority.set(key, read);
+    }
+    return read;
+  }
+}
+
+/** The job fence applies before reading or trusting an attempt. */
+function requireCurrentJob(
+  row: CurrentRecords['job'] | undefined,
+  claims: CapabilityClaims,
+  settling: boolean,
+): asserts row is CurrentRecords['job'] {
+  if (
+    !row ||
+    row.id !== claims.job_id ||
+    row.spaceId !== claims.space_id ||
+    row.leaseEpoch !== claims.epoch ||
+    (row.state !== 'running' &&
+      !(settling && ['waiting_for_approval', 'needs_reconciliation'].includes(row.state)))
+  ) {
+    throw new ServiceError('stale_epoch', 'This attempt no longer holds the job lease.');
+  }
+}
 
 /** Admission stays running-only; settlement may drain a still-current leased attempt. */
 export async function requireCurrentAttempt(
@@ -17,15 +87,7 @@ export async function requireCurrentAttempt(
   options: { settling?: boolean } = {},
 ) {
   const [row] = await tx.select().from(job).where(eq(job.id, claims.job_id)).for('update');
-  if (
-    !row ||
-    row.spaceId !== claims.space_id ||
-    row.leaseEpoch !== claims.epoch ||
-    (row.state !== 'running' &&
-      !(options.settling && ['waiting_for_approval', 'needs_reconciliation'].includes(row.state)))
-  ) {
-    throw new ServiceError('stale_epoch', 'This attempt no longer holds the job lease.');
-  }
+  requireCurrentJob(row, claims, Boolean(options.settling));
   const [active] = await tx
     .select()
     .from(attempt)
@@ -37,7 +99,29 @@ export async function requireCurrentAttempt(
         isNull(attempt.endedAt),
       ),
     );
+  return requireCurrentAttemptFrom(tx, claims, { job: row, attempt: active }, options);
+}
+
+/**
+ * Validate records read in this transaction after it locked the job. Runtime
+ * recording needs those same rows even for a late result; checking them again
+ * must retain every fence without sending both reads through the loop twice.
+ */
+export async function requireCurrentAttemptFrom(
+  tx: Transaction,
+  claims: CapabilityClaims,
+  records: { job: CurrentRecords['job']; attempt: CurrentRecords['attempt'] | undefined },
+  options: { settling?: boolean } = {},
+  reads?: FenceReads,
+) {
+  const row = records.job;
+  requireCurrentJob(row, claims, Boolean(options.settling));
+  const active = records.attempt;
   if (
+    active?.id !== claims.attempt_id ||
+    active.jobId !== row.id ||
+    active.epoch !== claims.epoch ||
+    active.endedAt !== null ||
     !active?.leaseExpiresAt ||
     active.leaseExpiresAt.getTime() <= (await databaseNow(tx)).getTime() ||
     active.leaseStatus !== 'active'
@@ -47,17 +131,26 @@ export async function requireCurrentAttempt(
   if (row.revision !== claims.revision || active.revision !== claims.revision) {
     throw new ServiceError('revision_mismatch', 'The job changed after this attempt started.');
   }
-  await requirePrincipalCapability(tx, row, claims, active.principalId === null);
+  const access = await (reads
+    ? reads.requireAuthority(tx, row, claims, active.principalId === null)
+    : requirePrincipalCapability(tx, row, claims, active.principalId === null));
   if (
     active.principalId !== null &&
     (active.principalId !== claims.principal_id ||
       active.membershipGeneration !== claims.membership_generation)
   )
     throw new ServiceError('scope_denied', 'The attempt principal binding changed.', 403);
-  await requireGenerations(tx, row.spaceId, {
-    policy_generation: active.policyGeneration,
-    connection_generations: active.connectionGenerations,
-  });
+  // Authority already holds a share lock on this space row until commit.
+  const checkGenerations = reads ? assertCurrentGenerations : requireGenerations;
+  await checkGenerations(
+    tx,
+    row.spaceId,
+    {
+      policy_generation: active.policyGeneration,
+      connection_generations: active.connectionGenerations,
+    },
+    access.space.policyGeneration,
+  );
   return { job: row, attempt: active };
 }
 

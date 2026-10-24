@@ -4,12 +4,24 @@
  * Postgres.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { appendEvent as appendBrokerEvent, lockJob } from '../../src/broker/records.ts';
 import { openDatabase } from '../../src/db/client.ts';
+import { job, space } from '../../src/db/schema.ts';
 import { lockEventOrderIn, serviceTransaction } from '../../src/db/transaction.ts';
+import { appendEvent } from '../../src/events/store.ts';
+import { newId } from '../../src/ids.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const database = await testDatabase();
 const suite = database ? describe : describe.skip;
+
+function gate<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 async function withGuard<T>(mode: string | undefined, work: () => Promise<T>): Promise<T> {
   const previous = process.env.MELETE_EVENT_LOCK_GUARD;
@@ -27,6 +39,134 @@ suite('event order lock', () => {
   const { sql, db, url } = database ?? ({} as NonNullable<typeof database>);
   afterAll(async () => {
     await database?.close();
+  });
+
+  async function fixtureJob() {
+    const spaceId = newId('sp');
+    const id = newId('job');
+    await db
+      .insert(space)
+      .values({ id: spaceId, name: 'Lock order', gitPath: `/spaces/${spaceId}` });
+    await db
+      .insert(job)
+      .values({ id, spaceId, title: 'Lock order', objective: 'Keep events ordered.' });
+    return { id, spaceId };
+  }
+
+  async function advisoryWaiter(pid: number) {
+    const until = performance.now() + 5_000;
+    do {
+      const [row] = await sql`select wait_event from pg_stat_activity where pid = ${pid}`;
+      if (row?.wait_event === 'advisory') return;
+      await Bun.sleep(10);
+    } while (performance.now() < until);
+    throw new Error('The writer did not wait for the event order lock.');
+  }
+
+  test('a broker waiter takes no job row lock before the event order lock', async () => {
+    const { id } = await fixtureJob();
+    const acquired = gate();
+    const release = gate();
+    const holder = sql.begin(async (tx) => {
+      await lockEventOrderIn(tx);
+      acquired.resolve();
+      await release.promise;
+    });
+    await acquired.promise;
+    const started = gate<number>();
+    const waiting = sql.begin(async (tx) => {
+      const [row] = await tx`select pg_backend_pid() as pid`;
+      started.resolve(Number(row?.pid));
+      return lockJob(tx, id);
+    });
+    try {
+      await advisoryWaiter(await started.promise);
+      // A row-first waiter would hold this row while waiting for the advisory
+      // lock, reversing every other writer's lock order.
+      await sql.begin(async (tx) => {
+        const [row] = await tx`select id from job where id = ${id} for update nowait`;
+        expect(row?.id).toBe(id);
+      });
+    } finally {
+      release.resolve();
+      await holder;
+      expect((await waiting).id).toBe(id);
+    }
+  });
+
+  test('a broker waiter sees a job committed while it waited for event order', async () => {
+    const { spaceId } = await fixtureJob();
+    const id = newId('job');
+    const acquired = gate();
+    const insert = gate();
+    const holder = sql.begin(async (tx) => {
+      await lockEventOrderIn(tx);
+      acquired.resolve();
+      await insert.promise;
+      await tx`insert into job (id, space_id, title, objective)
+        values (${id}, ${spaceId}, 'Committed while waiting', 'Keep events ordered.')`;
+    });
+    await acquired.promise;
+    const started = gate<number>();
+    const waiting = sql.begin(async (tx) => {
+      const [row] = await tx`select pg_backend_pid() as pid`;
+      started.resolve(Number(row?.pid));
+      return lockJob(tx, id);
+    });
+    try {
+      await advisoryWaiter(await started.promise);
+    } finally {
+      insert.resolve();
+      await holder;
+    }
+    // A read in the advisory-lock statement would retain the snapshot taken
+    // before the wait, when this job did not exist yet.
+    expect((await waiting).id).toBe(id);
+  });
+
+  test('a broker event commits before any later sequence becomes visible', async () => {
+    const { id } = await fixtureJob();
+    const written = gate<number>();
+    const release = gate();
+    const firstKey = `${id}:first`;
+    const secondKey = `${id}:second`;
+    const first = sql.begin(async (tx) => {
+      await lockJob(tx, id);
+      await appendBrokerEvent(tx, id, null, 'notice', { text: 'First' }, firstKey);
+      const [row] = await tx`select seq from event where dedup_key = ${firstKey}`;
+      written.resolve(Number(row?.seq));
+      await release.promise;
+    });
+    const firstSeq = await written.promise;
+    let secondCommitted = false;
+    const second = serviceTransaction(db, (tx) =>
+      appendEvent(tx, {
+        jobId: id,
+        type: 'notice',
+        payload: { text: 'Second' },
+        dedupKey: secondKey,
+      }),
+    ).then((row) => {
+      secondCommitted = true;
+      return row;
+    });
+    try {
+      await Bun.sleep(100);
+      const visible = await sql`select seq from event where job_id = ${id}`;
+      expect(visible).toHaveLength(0);
+      expect(secondCommitted).toBe(false);
+    } finally {
+      release.resolve();
+      await first;
+    }
+    const later = await second;
+    expect(Number(later?.seq)).toBeGreaterThan(firstSeq);
+    const visible = await sql`select seq from event where job_id = ${id} order by seq`;
+    expect(visible.map((row) => Number(row.seq))).toEqual([firstSeq, Number(later?.seq)]);
+    // A reader past the later commit has already seen every earlier commit.
+    expect(
+      await sql`select seq from event where job_id = ${id} and seq > ${Number(later?.seq)}`,
+    ).toHaveLength(0);
   });
 
   test('a holder that sends a statement to the pool is refused under the guard', () =>

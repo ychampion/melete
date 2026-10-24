@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { TransactionSql } from 'postgres';
 import type { Database } from './client.ts';
+import { rememberDatabaseNow } from './clock.ts';
 import { callSite, heldEventOrder } from './lock-guard.ts';
 
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -36,15 +37,31 @@ function reportLimit(error: unknown): void {
  * Take the event order lock in a postgres.js transaction. The wait limit and
  * the lock are one statement: the limit is the subquery's output and the
  * filter reads it, so it is in force before the lock is requested.
+ * `following`, when given, submits a statement on this transaction's own
+ * connection before waiting for the lock's result; it must not use the pool.
  */
-export async function lockEventOrderIn(tx: TransactionSql): Promise<void> {
+export function lockEventOrderIn(tx: TransactionSql): Promise<void>;
+export function lockEventOrderIn<T>(tx: TransactionSql, following: () => Promise<T>): Promise<T>;
+export async function lockEventOrderIn<T>(
+  tx: TransactionSql,
+  following?: () => Promise<T>,
+): Promise<T | undefined> {
   // Read before the first await, while the caller is still on the stack.
   const site = callSite();
   try {
-    await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})
+    const locked = tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})
       from (select set_config('lock_timeout', ${EVENT_ORDER_LOCK_TIMEOUT}, true) as timeout) limits
-      where limits.timeout is not null`;
-    heldEventOrder(site);
+      where limits.timeout is not null`
+      .execute()
+      .then(() => heldEventOrder(site));
+    // Queue another statement on this same connection before the lock's result
+    // returns. It still executes after the lock, with a fresh READ COMMITTED
+    // snapshot; putting the read in the lock statement would use an older one.
+    if (following) {
+      const [, result] = await Promise.all([locked, Promise.resolve().then(following)]);
+      return result;
+    }
+    await locked;
   } catch (error) {
     reportLimit(error);
     throw error;
@@ -68,10 +85,13 @@ export function serviceTransaction<T>(
   return db
     .transaction(async (tx) => {
       // The same statement as `lockEventOrderIn`, in Drizzle form.
-      await tx.execute(sql`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})
+      const [clock] = await tx.execute<{
+        now: Date | string;
+      }>(sql`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK}), now() as now
         from (select set_config('lock_timeout', ${EVENT_ORDER_LOCK_TIMEOUT}, true) as timeout) limits
         where limits.timeout is not null`);
       heldEventOrder(site);
+      if (clock) rememberDatabaseNow(tx, clock.now);
       return operation(tx);
     })
     .catch((error: unknown) => {

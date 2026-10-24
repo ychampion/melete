@@ -24,11 +24,30 @@ export async function appendEvent(tx: Transaction, value: EventWrite) {
       : value.jobId
         ? await tx.select({ epoch: job.leaseEpoch }).from(job).where(eq(job.id, value.jobId))
         : [];
-  const [row] = await tx
-    .insert(event)
-    .values({ ...value, epoch: current?.epoch ?? null, payload: value.payload ?? {} })
-    .onConflictDoNothing({ target: event.dedupKey })
-    .returning();
-  if (row) await tx.execute(sql`select pg_notify('melete_events', ${String(row.seq)})`);
-  return row;
+  const inserted = tx.$with('added_event').as(
+    tx
+      .insert(event)
+      .values({ ...value, epoch: current?.epoch ?? null, payload: value.payload ?? {} })
+      .onConflictDoNothing({ target: event.dedupKey })
+      .returning(),
+  );
+  // Selecting from the inserted row keeps the notification in this statement,
+  // skips it on deduplication, and still delivers it only when the writer commits.
+  const [written] = await tx
+    .with(inserted)
+    .select({
+      row: {
+        seq: inserted.seq,
+        jobId: inserted.jobId,
+        attemptId: inserted.attemptId,
+        type: inserted.type,
+        epoch: inserted.epoch,
+        payload: inserted.payload,
+        dedupKey: inserted.dedupKey,
+        createdAt: inserted.createdAt,
+      },
+      notified: sql`pg_notify('melete_events', ${inserted.seq}::text)`,
+    })
+    .from(inserted);
+  return written?.row;
 }
