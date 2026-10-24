@@ -60,7 +60,7 @@ const ASIDES: ReadonlySet<RuntimeEvent['type']> = new Set([
 /** The most events recorded in one go. */
 const BATCH = 64;
 /**
- * Words recorded together wait for their write once this many events are
+ * Held words recorded together wait for their write once this many events are
  * queued, so the engine runs only a little ahead of the record: what watches
  * the recorded words (a reply stuck repeating itself) can still stop it in time.
  */
@@ -83,9 +83,8 @@ export class HumanStream {
    * `pass` records one event; it is called in order, one at a time. With
    * `together`, everything handed in while a recording is under way is
    * recorded in one go after it, in order, and its result names each event's
-   * failure in its place (null once recorded). Words are then acknowledged as
-   * they arrive, even when nothing is held, so a reply streamed while the
-   * record is busy reaches it in a few writes rather than one per piece.
+   * failure in its place (null once recorded), so words held while the record
+   * is busy reach it in a few writes rather than one per piece.
    */
   constructor(
     private readonly pass: (event: RuntimeEvent) => Promise<void>,
@@ -102,15 +101,9 @@ export class HumanStream {
       const shown = this.text.push(event.text);
       const previous = this.release();
       const delta = { ...event, text: shown };
-      if (this.text.idle) {
-        const recorded = Promise.all([previous, this.record(delta)]).then(() => undefined);
-        // Recorded together, words wait only while a few writes are already queued.
-        if (!this.together || this.waiting.length >= BACKLOG) return recorded;
-        void recorded.catch((error: unknown) => {
-          this.failure ??= error;
-        });
-        return Promise.resolve();
-      }
+      // Nothing held: acknowledged once recorded, so words the engine was told
+      // are kept are still there if the process dies right after.
+      if (this.text.idle) return Promise.all([previous, this.record(delta)]).then(() => undefined);
       this.held = delta;
       // Recorded together, a long queue of writes is waited for first.
       if (this.together && this.waiting.length >= BACKLOG) return previous;

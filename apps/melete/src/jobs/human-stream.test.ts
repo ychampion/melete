@@ -133,19 +133,22 @@ describe('an outcome after the pass', () => {
 });
 
 /** Records events in batches, each batch after a short write, like one transaction. */
-function together(fail?: (event: RuntimeEvent) => unknown) {
+function together(
+  fail?: (event: RuntimeEvent) => unknown,
+  write: () => Promise<unknown> = () => Bun.sleep(1),
+) {
   const recorded: RuntimeEvent[] = [];
   const batches: number[] = [];
   const stream = new HumanStream(
     async (event) => {
-      await Bun.sleep(1);
+      await write();
       const error = fail?.(event);
       if (error) throw error;
       recorded.push(event);
     },
     async (events) => {
       batches.push(events.length);
-      await Bun.sleep(1);
+      await write();
       return events.map((event) => {
         const error = fail?.(event);
         if (error) return { error };
@@ -185,7 +188,8 @@ describe('the stream recorded together', () => {
       for (const event of run) await alone.stream.emit(event);
       await alone.stream.drain();
       // The runtime hands events in as they come, waiting only where the stream says to.
-      const batched = together();
+      // A write that yields to the loop, so events handed in meanwhile go together.
+      const batched = together(undefined, () => new Promise((resolve) => setImmediate(resolve)));
       const waits: Promise<void>[] = [];
       for (const [index, event] of run.entries()) {
         const emitted = batched.stream.emit(event);
@@ -200,10 +204,10 @@ describe('the stream recorded together', () => {
     }
   });
 
-  test('words that arrive while a write is under way go in a few writes, not one each', async () => {
+  test('held words that arrive while a write is under way go in a few writes, not one each', async () => {
     const { stream, recorded, batches } = together();
     await stream.emit(step());
-    for (let index = 0; index < 200; index++) await stream.emit(delta(`piece ${index}. `));
+    for (let index = 0; index < 200; index++) await stream.emit(delta(`piece ${index} —`));
     await stream.emit(done('Done.'));
     await stream.drain();
     expect(recorded).toHaveLength(202);
@@ -229,7 +233,32 @@ describe('the stream recorded together', () => {
     expect(recorded.map((event) => (event as { text?: string }).text).join('')).toContain('more.');
   });
 
-  test('words wait for their write once a backlog has built up', async () => {
+  test('words with nothing held are acknowledged only once recorded', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stream = new HumanStream(
+      async () => {},
+      async (events) => {
+        await gate;
+        return events.map(() => null);
+      },
+    );
+    let acknowledged = false;
+    const emitted = stream.emit(delta('Durable words.')).then(() => {
+      acknowledged = true;
+    });
+    await Bun.sleep(5);
+    // The engine may die right after an acknowledgement: the words must be in the record by then.
+    expect(acknowledged).toBe(false);
+    release();
+    await emitted;
+    expect(acknowledged).toBe(true);
+    await stream.drain();
+  });
+
+  test('held words wait for their write once a backlog has built up', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -246,7 +275,7 @@ describe('the stream recorded together', () => {
     let acknowledged = 0;
     const pending: Promise<void>[] = [];
     for (let index = 0; index < 400; index++) {
-      const emitted = stream.emit(delta(`w${index}. `));
+      const emitted = stream.emit(delta(`w${index} —`));
       pending.push(emitted);
       const settled = await Promise.race([
         emitted.then(() => true),
