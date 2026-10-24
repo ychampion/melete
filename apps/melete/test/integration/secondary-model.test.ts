@@ -12,7 +12,7 @@ import type { ReviewInput } from '../../src/broker/reviewer.ts';
 import { loadEnv } from '../../src/env.ts';
 import { ModelSettingsService } from '../../src/gateway/model-settings.ts';
 import { providersFromEnv } from '../../src/gateway/providers.ts';
-import { NO_ROUTING } from '../../src/gateway/routing.ts';
+import { type ModelRouting, NO_ROUTING, routingFromEnv } from '../../src/gateway/routing.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -186,7 +186,7 @@ async function attemptModel(
   spaceId: string,
   personId: string,
   kind: 'chat' | 'routine' | 'responsibility',
-  options: { trigger?: boolean } = {},
+  options: { trigger?: boolean; routing?: ModelRouting } = {},
 ) {
   if (!queue) throw new Error('the job queue is unavailable');
   const jobs = new JobService(database().db, queue.boss);
@@ -194,7 +194,10 @@ async function attemptModel(
     key: 'secondary-model-signing-key-32-chars!',
     scopes: [],
     resolveModel: (tx, row, usageClass) =>
-      api.settings.routedChoice(NO_ROUTING, tx, { spaceId: row.spaceId, usageClass }),
+      api.settings.routedChoice(options.routing ?? NO_ROUTING, tx, {
+        spaceId: row.spaceId,
+        usageClass,
+      }),
   });
   const job = await jobs.create({ space_id: spaceId, title: kind, objective: 'model check' });
   const sql = database().sql;
@@ -353,6 +356,39 @@ describeWithDb('a secondary model beside the primary', () => {
       { host: 'api.fireworks.ai', model: FAST },
     ]);
     expect(await attemptModel(restarted, member.spaceId, member.id, 'routine')).toBe(PRIMARY);
+  }, 60_000);
+
+  test("the operator's background model runs everyone's scheduled work; the owner's secondary still wins in their spaces", async () => {
+    const api = service();
+    const { owner, member, spaceId } = await people(api);
+    const CHEAP = 'accounts/fireworks/models/fixture-cheap';
+    const routing = routingFromEnv({ MELETE_MODEL_BACKGROUND: `fireworks/${CHEAP}` });
+    // A person who is not the owner: their routine runs on it, their chat does not.
+    expect(await attemptModel(api, member.spaceId, member.id, 'routine', { routing })).toBe(CHEAP);
+    expect(
+      await attemptModel(api, member.spaceId, member.id, 'chat', { routing, trigger: true }),
+    ).toBe(CHEAP);
+    expect(await attemptModel(api, member.spaceId, member.id, 'chat', { routing })).toBe(PRIMARY);
+    expect(await attemptModel(api, member.spaceId, member.id, 'responsibility', { routing })).toBe(
+      PRIMARY,
+    );
+    // The owner with no secondary: the same.
+    expect(await attemptModel(api, spaceId, owner.id, 'routine', { routing })).toBe(CHEAP);
+    // The owner moves scheduled work to their secondary: it wins in their spaces only.
+    await api.call(
+      '/model-settings/secondary',
+      owner.cookie,
+      put({ provider: 'fireworks', model: SMALL }),
+    );
+    await api.call('/model-settings/secondary/uses', owner.cookie, put({ scheduled: 'secondary' }));
+    expect(await attemptModel(api, spaceId, owner.id, 'routine', { routing })).toBe(SMALL);
+    expect(await attemptModel(api, member.spaceId, member.id, 'routine', { routing })).toBe(CHEAP);
+    // Unset, scheduled work stays on the primary, as it always did.
+    expect(
+      await attemptModel(api, member.spaceId, member.id, 'routine', {
+        routing: routingFromEnv({}),
+      }),
+    ).toBe(PRIMARY);
   }, 60_000);
 
   test('only the owner sets a secondary, and work follows its space owner, never who asked', async () => {
@@ -584,5 +620,49 @@ describeWithDb('a secondary model beside the primary', () => {
       vision: { provider: 'fireworks', model: VISION },
       fallback: [{ provider: 'fireworks', model: SPARE }],
     });
+  }, 60_000);
+
+  test("the operator's background model never replaces the owner's own choice, a local primary, or a model with no key", async () => {
+    const api = service();
+    const { owner, member } = await people(api);
+    const CHEAP = 'accounts/fireworks/models/fixture-cheap';
+    const operator = routingFromEnv({ MELETE_MODEL_BACKGROUND: `fireworks/${CHEAP}` });
+    const background = async (routing: ModelRouting) =>
+      (
+        await api.settings.routedChoice(routing, database().db, {
+          spaceId: member.spaceId,
+          usageClass: 'background',
+        })
+      ).model;
+    expect(await background(operator)).toBe(CHEAP);
+    // Its provider has no key: the primary, rather than attempts that cannot reach a model.
+    expect(
+      await background(routingFromEnv({ MELETE_MODEL_BACKGROUND: 'anthropic/claude-haiku-5-5' })),
+    ).toBe(PRIMARY);
+    // A model the owner chose in the app is used exactly as chosen.
+    const CHOSEN = 'accounts/fireworks/models/fixture-chosen';
+    const chosen = await api.call(
+      '/model-settings/default',
+      owner.cookie,
+      put({ provider: 'fireworks', model: CHOSEN }),
+    );
+    expect(chosen.status).toBe(200);
+    expect(await background(operator)).toBe(CHOSEN);
+    // A primary on this machine keeps the work on it.
+    const local = service({
+      MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+      MELETE_DEFAULT_MODEL: 'llama3.3',
+      OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+      OPENAI_COMPAT_API_KEY: 'local-fixture-key-1a2b',
+    });
+    await api.call('/model-settings/default', owner.cookie, { method: 'DELETE' });
+    expect(
+      (
+        await local.settings.routedChoice(operator, database().db, {
+          spaceId: member.spaceId,
+          usageClass: 'background',
+        })
+      ).model,
+    ).toBe('llama3.3');
   }, 60_000);
 });

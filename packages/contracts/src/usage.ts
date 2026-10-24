@@ -190,3 +190,75 @@ export const healthDetailResponse = z
     }),
   })
   .strict();
+
+/**
+ * What one finished, waiting or failed piece of work came to: `done`, it
+ * answered; `needs_you`, it is waiting on the person; `failed`, it stopped
+ * without finishing; `working`, it is still going.
+ */
+export const usageRunOutcome = z.enum(['done', 'needs_you', 'failed', 'working']);
+
+export const usageRun = z
+  .object({
+    id: z.string().meta({ description: 'The job that made the calls' }),
+    title: z.string(),
+    at: timestamp.meta({ description: 'Its latest model call this month' }),
+    outcome: usageRunOutcome,
+    usd: z.number().nonnegative(),
+    background: z.boolean().meta({ description: 'Every call of it ran with nobody waiting' }),
+    conversation_id: z
+      .string()
+      .nullable()
+      .meta({ description: 'The chat or routine thread to open; null when there is none' }),
+  })
+  .strict();
+export type UsageRun = z.infer<typeof usageRun>;
+
+export const usageKind = z
+  .object({
+    kind: z.enum(['chats', 'background']).meta({
+      description:
+        '`chats`: calls a person waited on. `background`: routines, watches and other work ' +
+        'nobody was waiting on.',
+    }),
+    calls: z.number().int().nonnegative(),
+    usd: z.number().nonnegative(),
+    tokens: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const myUsageResponse = z
+  .object({
+    month_start: timestamp,
+    month_resets_at: timestamp,
+    day_resets_at: timestamp,
+    spent: periodTotals.meta({ description: 'This account’s own model calls' }),
+    background_spent: periodTotals.meta({
+      description: 'The part of them that ran with nobody waiting',
+    }),
+    caps: z
+      .object({
+        month: usageWindow,
+        day: usageWindow,
+        background: periodLimits.nullable(),
+      })
+      .strict()
+      .nullable()
+      .meta({ description: 'This account’s limits; null when the installation sets none' }),
+    notice: usageNotice.nullable(),
+    days: z
+      .array(usageDayPoint)
+      .meta({ description: 'Each UTC day of this month so far, oldest first' }),
+    kinds: z.array(usageKind),
+    computer_seconds: z
+      .number()
+      .nonnegative()
+      .meta({
+        description:
+          'How long this month the computers of spaces this account owns ran for background ' +
+          'processes alone',
+      }),
+    runs: z.array(usageRun).max(20).meta({ description: 'This month’s work, newest first' }),
+  })
+  .strict();
+export type MyUsageResponse = z.infer<typeof myUsageResponse>;

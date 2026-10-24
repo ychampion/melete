@@ -26,6 +26,7 @@ import type { AgentTemplate, Automation, MemoryItem, TourStage } from '../experi
 import { models } from '../models/api.ts';
 import { ActiveModel, ModelConnect } from '../models/ModelConnect.tsx';
 import { linkParam, navigate, useRoute } from '../router.ts';
+import { InstallLinks } from '../shell/InstallLinks.tsx';
 import { toast } from '../shell/Shell.tsx';
 import { inputOf } from './Agents.tsx';
 import { TopPicks } from './ConnectionInstall.tsx';
@@ -654,6 +655,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
               <Icon name="lock" size={13} />
               Your data stays yours.
             </span>
+            <InstallLinks />
           </div>
         </div>
       </div>
@@ -2050,9 +2052,15 @@ export function OnboardingScreen() {
       </header>
       <div
         className="col grow"
-        style={{ alignItems: 'center', justifyContent: 'flex-start', padding: '16px 16px 40px' }}
+        style={{
+          alignItems: 'center',
+          justifyContent: 'flex-start',
+          gap: 24,
+          padding: '16px 16px 40px',
+        }}
       >
         {card}
+        <InstallLinks />
       </div>
     </div>
   );

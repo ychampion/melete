@@ -90,6 +90,12 @@ import type {
   MemoryRewind,
   MemoryTimeline,
   MessageAcceptance,
+  OperatorAuditEntry,
+  OperatorCaps,
+  OperatorOneTimeLink,
+  OperatorOverview,
+  OperatorPeople,
+  OperatorPerson,
   OwnSkill,
   OwnSkillEdit,
   Permission,
@@ -129,6 +135,11 @@ import type {
   SandboxComputer,
   SandboxControl,
   SandboxViewer,
+  SavedSignIn,
+  SavedSignInCheck,
+  SavedSignInCode,
+  SavedSignInCreate,
+  SavedSignInUpdate,
   SearchResult,
   SendOutcome,
   SensitiveTopic,
@@ -139,6 +150,7 @@ import type {
   SpaceRemovalStarted,
   SpaceRulesChange,
   SpaceRulesView,
+  Starters,
   StreamGap,
   Task,
   TaskAutonomyList,
@@ -322,6 +334,36 @@ export const adapter = {
     guard<{ removal: AccountRemoval }>(() =>
       api.DELETE('/principals/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
     ),
+  /* ---------- the operator console: the installation's owner only ---------- */
+  operatorOverview: () => guard<OperatorOverview>(() => api.GET('/operator/overview')),
+  operatorPeople: () => guard<OperatorPeople>(() => api.GET('/operator/people')),
+  invitePerson: (email: string) =>
+    guard<{ person: OperatorPerson; invite: OperatorOneTimeLink }>(() =>
+      api.POST('/operator/people', { body: { email } }),
+    ),
+  setPersonDisabled: (id: string, disabled: boolean) =>
+    guard<{ person: OperatorPerson }>(() =>
+      disabled
+        ? api.POST('/operator/people/{id}/disable', path(id))
+        : api.POST('/operator/people/{id}/enable', path(id)),
+    ),
+  sendPersonReset: (id: string) =>
+    guard<{ person: OperatorPerson; reset: OperatorOneTimeLink }>(() =>
+      api.POST('/operator/people/{id}/password-reset', path(id)),
+    ),
+  setPersonCaps: (id: string, caps: OperatorCaps) =>
+    guard<{ person: OperatorPerson }>(() =>
+      api.PUT('/operator/people/{id}/caps', { ...path(id), body: caps }),
+    ),
+  personRemovalPreview: (id: string) =>
+    guard<{ preview: AccountRemovalPreview }>(() =>
+      api.GET('/operator/people/{id}/removal/preview', path(id)),
+    ),
+  removePerson: (id: string, confirmEmail: string) =>
+    guard<{ removal: AccountRemoval }>(() =>
+      api.DELETE('/operator/people/{id}', { ...path(id), body: { confirm_email: confirmEmail } }),
+    ),
+  operatorAudit: () => guard<{ entries: OperatorAuditEntry[] }>(() => api.GET('/operator/audit')),
   spaceRemovalPreview: (id: string) =>
     guard<{ preview: SpaceRemovalPreview }>(() =>
       api.GET('/spaces/{id}/removal/preview', path(id)),
@@ -349,6 +391,9 @@ export const adapter = {
       assistant_name?: string;
       code_required?: boolean;
       email_sign_in?: boolean;
+      terms_url?: string;
+      privacy_url?: string;
+      support_url?: string;
       signin?: { password: boolean; oidc: { label: string } | null };
     }>(() => api.GET('/setup')),
   /**
@@ -393,16 +438,26 @@ export const adapter = {
   /** Mails a reset link when this install can send mail; otherwise says why not. */
   requestPasswordReset: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/password-reset', { body: { email } })),
-  /** Whether a reset code is still good, before a new password is chosen for it. */
+  /**
+   * Whether a reset code is still good, before a new password is chosen for
+   * it, and whether it is a new account's invite.
+   */
   checkPasswordReset: (token: string) =>
-    guard<{ status: 'ok' }>(() => api.POST('/password-reset/check', { body: { token } })),
+    guard<{ status: 'ok'; purpose?: 'reset' | 'invite' }>(() =>
+      api.POST('/password-reset/check', { body: { token } }),
+    ),
+  /** Sets the password; an invite also signs this browser in. */
   consumePasswordReset: (token: string, new_password: string) =>
-    guard<{ status: 'ok' }>(() =>
+    guard<{ status: 'ok'; purpose?: 'reset' | 'invite'; signed_in?: boolean }>(() =>
       api.POST('/password-reset/consume', { body: { token, new_password } }),
     ),
 
   /* ---------- home, tasks ---------- */
   home: () => guard<Home>(() => api.GET('/home')),
+  /** One-tap starter tasks for a new person's Home, and whether to show them. */
+  starters: () => guard<Starters>(() => api.GET('/starters')),
+  /** Puts the starters away for this person on every device. */
+  dismissStarters: () => guard<{ status: 'ok' }>(() => api.POST('/starters/dismiss')),
   tasks: () => guard<{ tasks: Task[] }>(() => api.GET('/tasks')),
   addTask: (title: string) =>
     guard<{ task: Task }>(() => api.POST('/tasks', { body: { title, due_at: null, done: false } })),
@@ -1080,6 +1135,23 @@ export const adapter = {
     guard<{ domain: string; forgotten: true }>(() =>
       api.DELETE('/browser/sites/{domain}', { params: { path: { domain } } }),
     ),
+  /**
+   * Sign-ins saved for the agent's browser. The service never sends a saved
+   * password or code secret back: a list carries the username and a mask.
+   */
+  savedSignIns: () => guard<{ sign_ins: SavedSignIn[] }>(() => api.GET('/sign-ins')),
+  saveSignIn: (body: SavedSignInCreate) =>
+    guard<SavedSignIn>(() => api.POST('/sign-ins', { body })),
+  updateSignIn: (id: string, body: SavedSignInUpdate) =>
+    guard<SavedSignIn>(() => api.PATCH('/sign-ins/{id}', { ...path(id), body })),
+  deleteSignIn: (id: string) =>
+    guard<{ id: string; deleted: true }>(() => api.DELETE('/sign-ins/{id}', path(id))),
+  /** The code the site would take right now, for the person to read. */
+  signInCode: (id: string) =>
+    guard<SavedSignInCode>(() => api.POST('/sign-ins/{id}/code', path(id))),
+  /** Whether a saved sign-in is ready to use, checked without visiting the site. */
+  checkSignIn: (id: string) =>
+    guard<SavedSignInCheck>(() => api.POST('/sign-ins/{id}/check', path(id))),
   /* ---------- the agent's computer ---------- */
   computer: (id: string) =>
     guard<AgentComputer>(() => api.GET('/conversations/{id}/computer', path(id))),

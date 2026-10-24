@@ -3,13 +3,22 @@
  * with its one-time code; without one, the page mails a link when this Melete
  * can send email, and takes a code someone sent the person. A code is checked
  * before a new password is asked for.
+ *
+ * A new account's invite link opens here too, as an invite: the person
+ * chooses their password and goes straight on to setting up, signed in.
  */
 import { useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { MeleteMark } from '../design/mark.tsx';
 import { Button, Field, Input } from '../design/primitives.tsx';
-import { NEW_PASSWORD_MIN, resetCodeFrom } from '../experience/account.ts';
+import {
+  consumingAsAnotherAccount,
+  NEW_PASSWORD_MIN,
+  passwordPageWords,
+  resetCodeFrom,
+} from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
+import { useApp } from '../experience/hooks.ts';
 import { instanceName } from '../experience/instance.ts';
 import { linkParam, navigate, useRoute } from '../router.ts';
 
@@ -46,12 +55,28 @@ function Problem({ text }: { text: string }) {
   );
 }
 
-function ChooseNew({ token }: { token: string }) {
+function ChooseNew({ token, invite }: { token: string; invite: boolean }) {
+  const { accountSwitched, profile } = useApp();
+  const words = passwordPageWords(invite);
   const [password, setPassword] = useState('');
   const [again, setAgain] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  if (done && invite)
+    return (
+      <div className="col card" style={panel}>
+        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)' }}>
+          Your password is set
+        </span>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+          Sign in with your email and the password you just chose.
+        </span>
+        <Button icon="chevronRight" onClick={() => navigate('/welcome')}>
+          Sign in
+        </Button>
+      </div>
+    );
   if (done)
     return (
       <div className="col card" style={panel}>
@@ -77,20 +102,36 @@ function ChooseNew({ token }: { token: string }) {
         if (password !== again) return setNotice('The two passwords are not the same.');
         setBusy(true);
         setNotice(null);
-        void adapter.consumePasswordReset(token, password).then((result) => {
+        // An invite opened in a browser signed in to another account replaces
+        // that sign-in: its notifications stop here before the switch.
+        void consumingAsAnotherAccount(invite && profile !== null, () =>
+          adapter.consumePasswordReset(token, password),
+        ).then((result) => {
           setBusy(false);
           if (result.data) {
             // The used code leaves the address bar and the history entry.
             window.history.replaceState(null, '', `${window.location.pathname}#/reset`);
+            if (result.data.signed_in) {
+              // An invite signs the person in: on to setting up, with no second
+              // sign-in, and nothing the previous account had stays on screen.
+              accountSwitched();
+              navigate('/setup');
+              return;
+            }
             setDone(true);
           } else setNotice(result.error ?? result.unavailable ?? 'That did not work.');
         });
       }}
     >
       <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--heading)' }}>
-        Choose a new password
+        {words.heading}
       </span>
-      <Field label="New password">
+      {words.lead ? (
+        <span style={{ fontSize: 13, color: 'var(--muted)', lineHeight: '19px' }}>
+          {words.lead}
+        </span>
+      ) : null}
+      <Field label={words.field}>
         <Input
           type="password"
           icon="lock"
@@ -114,7 +155,7 @@ function ChooseNew({ token }: { token: string }) {
         />
       </Field>
       <Button size="lg" block type="submit" loading={busy}>
-        Set the new password
+        {words.submit}
       </Button>
       {notice ? <Notice text={notice} /> : null}
     </form>
@@ -244,7 +285,7 @@ function AskForLink({
   );
 }
 
-type Verdict = { token: string; ok: boolean; problem: string | null };
+type Verdict = { token: string; ok: boolean; problem: string | null; invite: boolean };
 
 export function PasswordResetScreen() {
   const route = useRoute();
@@ -262,7 +303,12 @@ export function PasswordResetScreen() {
       if (!live) return;
       // An installation that can't check codes leaves the check to the last step.
       const ok = result.data !== null || result.unavailable !== null;
-      setVerdict({ token, ok, problem: ok ? null : (result.error ?? WRONG_CODE) });
+      setVerdict({
+        token,
+        ok,
+        problem: ok ? null : (result.error ?? WRONG_CODE),
+        invite: result.data?.purpose === 'invite',
+      });
     });
     return () => {
       live = false;
@@ -279,7 +325,8 @@ export function PasswordResetScreen() {
 
   const settled = token !== null && verdict?.token === token;
   let body: React.ReactNode;
-  if (token && settled && verdict?.ok) body = <ChooseNew token={token} />;
+  const invite = settled && verdict?.ok === true && verdict.invite;
+  if (token && settled && verdict?.ok) body = <ChooseNew token={token} invite={invite} />;
   else if (token && !settled)
     body = (
       <div className="col card" style={panel}>
@@ -309,7 +356,9 @@ export function PasswordResetScreen() {
     >
       <div className="col" style={{ gap: 16, width: 420, maxWidth: '100%' }}>
         <MeleteMark width={56} />
-        <h1 style={{ fontSize: 26, fontWeight: 700, lineHeight: '32px' }}>Reset your password</h1>
+        <h1 style={{ fontSize: 26, fontWeight: 700, lineHeight: '32px' }}>
+          {passwordPageWords(invite).title}
+        </h1>
         {body}
         <Button variant="ghost" icon="chevronLeft" onClick={() => navigate('/welcome')}>
           Back to sign-in

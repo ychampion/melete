@@ -18,7 +18,7 @@ import {
   serviceModelSource,
   sideCallSource,
 } from './model-settings.ts';
-import { PriceTable, parseModelPrices } from './prices.ts';
+import { type PricedUsage, PriceTable, parseModelPrices } from './prices.ts';
 import {
   agentRoutes,
   allowedWithRoutes,
@@ -166,6 +166,23 @@ describe('routing a call to the best model', () => {
       'MELETE_MODEL_FAST must be written provider/model',
     );
     expect(() => loadEnv({ MELETE_MODEL_VISION: 'no-slash' })).toThrow('MELETE_MODEL_VISION');
+  });
+
+  test('the background model is read the same way, and unset leaves background work on the primary', () => {
+    expect(
+      routingFromEnv({ MELETE_MODEL_BACKGROUND: 'anthropic/claude-haiku-5-5' }).background,
+    ).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+    for (const unset of [{}, { MELETE_MODEL_BACKGROUND: '' }, { MELETE_MODEL_BACKGROUND: '  ' }])
+      expect(routingFromEnv(unset)).toEqual({ fast: null, vision: null, fallback: [] });
+    expect(() => loadEnv({ MELETE_MODEL_BACKGROUND: 'claude-haiku-5-5' })).toThrow(
+      'MELETE_MODEL_BACKGROUND',
+    );
+    expect(
+      routingWarnings(
+        {},
+        routingFromEnv({ MELETE_MODEL_BACKGROUND: 'anthropic/claude-haiku-5-5' }),
+      ),
+    ).toEqual([expect.stringContaining('MELETE_MODEL_BACKGROUND names anthropic')]);
   });
 
   test('side calls take the fast model; a model pinned for the use wins; without one, the default', async () => {
@@ -510,6 +527,43 @@ describe('the price table', () => {
       }),
     ).toBeCloseTo(3.1, 6);
     expect(() => parseModelPrices('{"x": {"input": "cheap"}}')).toThrow('MELETE_MODEL_PRICES');
+  });
+
+  test('the Claude 5.5 models are priced at their list prices, older ones as before', () => {
+    const table = new PriceTable();
+    const cost = (model: string, usage: Partial<PricedUsage>) =>
+      table.cost('anthropic', model, {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        ...usage,
+      });
+    for (const [model, input, output, cacheRead] of [
+      ['claude-opus-5-5', 4, 20, 0.2],
+      ['claude-sonnet-5-5', 2, 10, 0.2],
+      ['claude-haiku-5-5', 0.1, 0.5, 0.01],
+    ] as const) {
+      // A tenth of a million tokens, under Haiku 5.5's long-prompt line (prices.test.ts).
+      expect(cost(model, { inputTokens: 100_000 })).toBeCloseTo(input / 10, 6);
+      expect(cost(model, { outputTokens: 1_000_000 })).toBeCloseTo(output, 6);
+      // A cache read at its listed price (a twentieth of Opus 5.5's input, a
+      // tenth of the others'), a five-minute write a quarter more than input.
+      expect(cost(model, { inputTokens: 100_000, cachedInputTokens: 100_000 })).toBeCloseTo(
+        cacheRead / 10,
+        6,
+      );
+      expect(cost(model, { inputTokens: 100_000, cacheWriteInputTokens: 100_000 })).toBeCloseTo(
+        (input * 1.25) / 10,
+        6,
+      );
+    }
+    // A dated name is the same model.
+    expect(table.priceFor('anthropic', 'claude-opus-5-5-20260901').entry).toBe(
+      'anthropic/*opus-5-5*',
+    );
+    // Older models keep their own entries.
+    expect(table.priceFor('anthropic', 'claude-opus-4').input).toBe(15);
+    expect(table.priceFor('anthropic', 'claude-sonnet-4-5').input).toBe(3);
   });
 });
 

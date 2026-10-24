@@ -24,10 +24,18 @@ import {
   appSubmissionList,
 } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
+import type { Sql } from 'postgres';
 import { AccountRemovalService, removedEmail } from '../../src/account/removal.ts';
 import { SubmissionRefused, submit } from '../../src/apps/submissions.ts';
 import { zipEntries } from '../../src/attachments/extract.ts';
 import { recordId } from '../../src/broker/records.ts';
+import { sweepUnreferencedSecrets } from '../../src/connectors/revocation.ts';
+import {
+  PostgresSecretRepository,
+  SealedSecretStore,
+  useEffectsPool,
+} from '../../src/connectors/secrets.ts';
+import { SignInVault } from '../../src/connectors/sign-in-vault.ts';
 import { loadEnv } from '../../src/env.ts';
 import { removeJobs } from '../../src/experience/removal.ts';
 import { newId } from '../../src/ids.ts';
@@ -52,6 +60,8 @@ afterAll(async () => {
 });
 const withDb = handle ? describe : describe.skip;
 const password = 'a-long-test-password';
+/** The installation key saved sign-ins are sealed under here. */
+const KEY = randomBytes(32).toString('hex');
 
 const there = (path: string) =>
   access(path).then(
@@ -273,6 +283,21 @@ withDb('taking everything along', () => {
       values (${secretId}, ${dana.spaceId}, 'sealed-box-v1:TOP-SECRET-TOKEN')`;
     await h.sql`insert into connection (id, space_id, provider, label, secret_ref, scopes)
       values (${newId('conn')}, ${dana.spaceId}, 'email', 'Dana’s mailbox', ${secretId}, '[]'::jsonb)`;
+    // Her own caps, the starter tasks she put away, and a saved sign-in with one use.
+    await h.sql`insert into person_spend_limit (principal_id, month_usd) values (${dana.id}, 40)`;
+    await h.sql`insert into starter_dismissal (principal_id) values (${dana.id})`;
+    const signInSecret = newId('sec');
+    await h.sql`insert into secret (id, space_id, ciphertext)
+      values (${signInSecret}, ${dana.spaceId}, 'sealed-box-v1:SIGN-IN-PASSWORD')`;
+    const signInId = newId('ssi');
+    await h.sql`insert into saved_sign_in (id, space_id, principal_id, origin, label, username,
+        secret_ref, key_id)
+      values (${signInId}, ${dana.spaceId}, ${dana.id}, 'https://dentist.example', 'Dentist',
+        'dana', ${signInSecret}, 'k1:0')`;
+    await h.sql`insert into saved_sign_in_use (id, sign_in_id, space_id, principal_id, job_id,
+        origin, outcome)
+      values (${newId('ssu')}, ${signInId}, ${dana.spaceId}, ${dana.id}, ${jobId},
+        'https://dentist.example', 'signed_in')`;
     // Someone else's space is not in it.
     const [ownerSpace] = await h.sql<{ id: string }[]>`select id from space
       where kind = 'personal' and coalesce(owner_principal_id, ${h.ownerId}) = ${h.ownerId}`;
@@ -316,8 +341,25 @@ withDb('taking everything along', () => {
     expect(connections[0].label).toBe('Dana’s mailbox');
     expect(connections[0]).not.toHaveProperty('secret_ref');
     expect(names.some((name) => name.endsWith('/records/secret.json'))).toBe(false);
+    // Records kept for the account rather than a space, and its saved sign-ins without their secrets.
+    const caps = JSON.parse(
+      files.get('account/records/person_spend_limit.json')?.toString() ?? '[]',
+    );
+    expect(caps).toMatchObject([{ principal_id: dana.id, month_usd: 40 }]);
+    const dismissed = JSON.parse(
+      files.get('account/records/starter_dismissal.json')?.toString() ?? '[]',
+    );
+    expect(dismissed.map((row: { principal_id: string }) => row.principal_id)).toEqual([dana.id]);
+    const signIns = JSON.parse(files.get('account/saved-sign-ins.json')?.toString() ?? '[]');
+    expect(signIns).toMatchObject([{ origin: 'https://dentist.example', username: 'dana' }]);
+    const uses = JSON.parse(
+      files.get(`${space}/records/saved_sign_in_use.json`)?.toString() ?? '[]',
+    );
+    expect(uses).toMatchObject([{ sign_in_id: signInId, outcome: 'signed_in' }]);
+    expect(names.some((name) => name.endsWith('/records/saved_sign_in.json'))).toBe(false);
     const everything = Buffer.concat([...files.values()]).toString();
     expect(everything).not.toContain('TOP-SECRET-TOKEN');
+    expect(everything).not.toContain('SIGN-IN-PASSWORD');
     expect(everything).not.toContain('signed-in-cookie');
     expect(everything).not.toContain('Private plan');
     expect(everything).not.toMatch(/argon2/);
@@ -540,6 +582,10 @@ withDb('deleting an account', () => {
       values (${recordId('rmg')}, ${room.spaceId}, ${thread?.id ?? ''}, ${room.memberId},
         'I will bring the snacks.', ${recordId('rmg')})`;
     const appId = await responsesInRoom(room);
+    // Caps the owner gave it, and the starter tasks it put away.
+    await h.sql`insert into person_spend_limit (principal_id, day_usd, month_usd)
+      values (${room.memberId}, 5, 50)`;
+    await h.sql`insert into starter_dismissal (principal_id) values (${room.memberId})`;
     const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
       from principal where id = ${room.memberId}`;
     const started = await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', {
@@ -585,9 +631,84 @@ withDb('deleting an account', () => {
     expect(await h.sql`select 1 from session where principal_id = ${room.memberId}`).toHaveLength(
       0,
     );
+    for (const table of ['person_spend_limit', 'starter_dismissal'])
+      expect(
+        await h.sql`select 1 from ${h.sql(table)} where principal_id = ${room.memberId}`,
+      ).toHaveLength(0);
     const listed = accountList.parse(await (await h.call(h.owner, '/principals')).json());
     expect(listed.accounts.some((account) => account.id === room.memberId)).toBe(false);
   }, 120_000);
+
+  test('its saved sign-ins go with their sealed passwords, in rooms too, though the secret store fails at first', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const room = await seedSpace(h.sql, { kind: 'shared', name: 'Logins', spacesRoot, workRoot });
+    // A message it wrote keeps its row, so no cascade from that row takes anything.
+    const [thread] = await h.sql<{ id: string }[]>`select id from room_thread
+      where space_id = ${room.spaceId} limit 1`;
+    await h.sql`insert into room_message (id, space_id, thread_id, author_principal_id, text, submission_id)
+      values (${recordId('rmg')}, ${room.spaceId}, ${thread?.id ?? ''}, ${room.memberId},
+        'Here is the bank login.', ${recordId('rmg')})`;
+    // A room it left before, still holding a sign-in it saved there while a member.
+    const earlier = await seedSpace(h.sql, { kind: 'shared', name: 'Old', spacesRoot, workRoot });
+    await h.sql`insert into space_membership (principal_id, space_id, role, generation)
+      values (${room.memberId}, ${earlier.spaceId}, 'member', 1)`;
+    const vault = new SignInVault(
+      h.sql,
+      new SealedSecretStore(new PostgresSecretRepository(h.sql), () => KEY),
+    );
+    const here = await vault.create(room.spaceId, room.memberId, {
+      site: 'bank.example',
+      username: 'member',
+      password: 'a-sealed-password',
+    });
+    const there = await vault.create(earlier.spaceId, room.memberId, {
+      site: 'shop.example',
+      username: 'member',
+      password: 'a-sealed-password',
+    });
+    await h.sql`update space_membership set revoked_at = now()
+      where principal_id = ${room.memberId} and space_id = ${earlier.spaceId}`;
+    const refOf = async (id: string) =>
+      String((await h.sql`select secret_ref from saved_sign_in where id = ${id}`)[0]?.secret_ref);
+    const [hereRef, thereRef] = [await refOf(here.id), await refOf(there.id)];
+    const [{ email } = { email: '' }] = await h.sql<{ email: string }[]>`select email
+      from principal where id = ${room.memberId}`;
+
+    // Sealed secrets cannot be deleted while the deletion starts.
+    const sql = h.sql;
+    const failing = ((strings: TemplateStringsArray, ...values: unknown[]) =>
+      strings[0]?.startsWith('delete from secret where id')
+        ? Promise.reject(new Error('the secret store is unreachable'))
+        : sql(strings, ...(values as never[]))) as unknown as Sql;
+    useEffectsPool(failing);
+    let started: Response;
+    try {
+      started = await h.call(h.owner, `/principals/${room.memberId}`, 'DELETE', {
+        confirm_email: email,
+      });
+    } finally {
+      useEffectsPool(undefined);
+    }
+    // The account is deleted all the same, and says so rather than failing.
+    expect(started.status).toBe(202);
+    // The room it left before still holds its sign-in, and its secret with it.
+    expect(await h.sql`select 1 from saved_sign_in where id = ${there.id}`).toHaveLength(1);
+    expect(await h.sql`select 1 from secret where id = ${thereRef}`).toHaveLength(1);
+    expect(logged.some((line) => line.includes('saved sign-ins did not all go yet'))).toBe(true);
+
+    // The next pass takes it, with its secret, though its row has to stay.
+    await h.settle(room.memberId);
+    expect(
+      await h.sql`select 1 from saved_sign_in where principal_id = ${room.memberId}`,
+    ).toHaveLength(0);
+    expect(await h.sql`select 1 from secret where id = ${thereRef}`).toHaveLength(0);
+    expect(await h.sql`select 1 from principal where id = ${room.memberId}`).toHaveLength(1);
+    // The room it left now let go of the row as it left; what the failure kept
+    // of its secret goes in the daily sweep of sealed secrets nothing points at.
+    await sweepUnreferencedSecrets(h.sql, Date.now() + 2 * 86_400_000);
+    expect(await h.sql`select 1 from secret where id = ${hereRef}`).toHaveLength(0);
+  }, 120_000);
+
   test('responses it sent to an app in a room someone else owns stay with the app, naming nobody', async () => {
     if (!h) throw new Error('Postgres unavailable');
     const room = await seedSpace(h.sql, {

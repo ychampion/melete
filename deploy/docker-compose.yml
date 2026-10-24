@@ -287,6 +287,7 @@ services:
       MELETE_MODEL_FAST: ${MELETE_MODEL_FAST:-}
       MELETE_MODEL_VISION: ${MELETE_MODEL_VISION:-}
       MELETE_MODEL_FALLBACK: ${MELETE_MODEL_FALLBACK:-}
+      MELETE_MODEL_BACKGROUND: ${MELETE_MODEL_BACKGROUND:-}
       MELETE_REASONING_EFFORT_AGENT: ${MELETE_REASONING_EFFORT_AGENT:-}
       MELETE_REASONING_EFFORT_SIDE: ${MELETE_REASONING_EFFORT_SIDE:-}
       MELETE_ACK_AFTER_MS: ${MELETE_ACK_AFTER_MS:-0}
@@ -305,6 +306,12 @@ services:
       MELETE_ALERT_SPEND_PERSON_PERCENT: ${MELETE_ALERT_SPEND_PERSON_PERCENT:-}
       MELETE_ALERT_SPEND_MIN_USD: ${MELETE_ALERT_SPEND_MIN_USD:-}
       MELETE_FEEDBACK_WEBHOOK_URL: ${MELETE_FEEDBACK_WEBHOOK_URL:-}
+      # Terms, privacy and support links, shown only when set.
+      MELETE_TERMS_URL: ${MELETE_TERMS_URL:-}
+      MELETE_PRIVACY_URL: ${MELETE_PRIVACY_URL:-}
+      MELETE_SUPPORT_URL: ${MELETE_SUPPORT_URL:-}
+      # Home's starter tasks for a new person, as JSON; empty is the built-in list.
+      MELETE_STARTERS: ${MELETE_STARTERS:-}
       # Account mail and the claim code (docs/DEPLOYMENT.md, "Account mail").
       MELETE_SMTP_URL: ${MELETE_SMTP_URL:-}
       MELETE_MAIL_FROM: ${MELETE_MAIL_FROM:-}
@@ -438,6 +445,8 @@ services:
       # Engines kept loaded ahead of the next attempts (default 1), and attempts run at once (default 4).
       MELETE_ENGINE_PREWARM: ${MELETE_ENGINE_PREWARM:-}
       MELETE_ATTEMPT_CONCURRENCY: ${MELETE_ATTEMPT_CONCURRENCY:-}
+      # How many of them one person may run at once (default no limit).
+      MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: ${MELETE_ATTEMPT_CONCURRENCY_PER_PERSON:-}
       MELETE_DB_POOL_MAX: ${MELETE_DB_POOL_MAX:-}
       MELETE_DB_READ_POOL_MAX: ${MELETE_DB_READ_POOL_MAX:-}
       # The text-to-speech model, when an OpenAI or OpenAI-compatible key is set.

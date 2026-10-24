@@ -17,6 +17,18 @@ What each version ships.
   endpoint you name in `MELETE_LOG_SHIP_ENDPOINT`, and never the logs of the
   containers attempts and agents' computers run in; it is off unless you start
   it. See [Shipping logs](docs/DEPLOYMENT.md#shipping-logs).
+- **The owner runs a hosted installation from the web app.** Settings ›
+  Installation, shown to the installation's owner alone and refused by the
+  service to everyone else, lists everyone with their status, last activity
+  and spending against their caps. The owner can invite people, send a new
+  invite or a password reset, turn an account off or on, delete one by typing
+  its email, and set a person's own dollar caps within the installation's.
+  Every link is shown to copy, with or without account mail. The page also
+  shows the installation's spending, people, running work and computers
+  against their limits, the newest backup, free disk, health and version, and
+  a record of each change with who made it; deleting an account takes its
+  email out of that record too. `melete backup` now notes each
+  backup in the database for it. Adds migration `0124_person_spend_limits`.
 - **A new installation others can reach is claimed with a code.** An
   installation with no setup code whose `MELETE_PUBLIC_URL` or
   `MELETE_WEB_ORIGIN` names another machine no longer lets its first visitor
@@ -56,6 +68,58 @@ What each version ships.
 - **`restore --keep-database` also protects the agents' computers.** When
   their volumes on this machine already hold files, it refuses, as it does for
   the people's files, until `--replace-files` says to replace them.
+- **A hosted installation needs its cost guards.** With `"hosted": true`,
+  `melete check` and `melete status` fail until each person has daily and
+  monthly spending caps and background caps, the installation has a monthly
+  cap, uploads, storage and computers are limited per person, and a spending
+  alert is set; they also fail while `MELETE_NETWORK_POOL` is `off`. `melete
+  init --hosted` writes starting values to tune. A self-hosted
+  installation still has no limits unless you set them.
+- **Claude 5.5 models are priced and sized correctly.** Spending estimates use
+  the current list prices for Opus 5.5 ($4 in, $20 out per million tokens),
+  Sonnet 5.5 ($2, $10) and Haiku 5.5 ($0.10, $0.50), with cache reads at
+  $0.20, $0.20 and $0.01 and five-minute cache writes at 1.25 times input. A
+  Haiku 5.5 prompt above 100,000 tokens is charged at its long-prompt price,
+  five times the base, and `MELETE_MODEL_PRICES` entries can name a
+  `long_prompt` price of their own. Their
+  million-token context windows are known, so long conversations are no longer
+  summarised early. Older Claude models keep their prices.
+- **Scheduled work can run on a cheaper model.** `MELETE_MODEL_BACKGROUND`
+  names a model for everyone's routines, watches and other work nobody is
+  waiting on. The owner's own secondary model still wins in their spaces. It
+  never replaces a model the owner chose in the app or moves work off a local
+  primary model, and while its provider has no key that work runs on the
+  primary. Unset, that work runs on the primary model as before.
+- **One person can no longer take every agent slot.** Free slots go in turn to
+  the people waiting, within chats, routines and quiet work alike, so someone
+  with many chats or routines running no longer keeps everyone else waiting.
+  `MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` can also cap how many one person runs
+  at once; their routines may use all of it but one slot, which stays free for
+  their chats, so their own routines never hold back their chat. It is unset by
+  default, and
+  `init --hosted` writes 2. Work waiting on its person's cap takes no queue
+  worker, so other people's work still starts while slots are free.
+- **A full computer is explained in plain words.** When a person already has
+  as many computers running as they may, or every computer on the
+  installation is in use, the conversation says so ("Your computer is busy
+  with another task right now. Ask again once that task finishes."), and the
+  agent passes it on instead of retrying. A hosted installation starts with
+  one computer per person, counted over every space they use, so another
+  member's computer in a shared room never counts against them.
+- **An invite link opens as an invite.** The link `melete account create`
+  prints now asks the new person to "Choose your password" and takes them
+  straight on to setting up, signed in, instead of showing a password reset
+  and asking them to sign in again. Password reset links keep their own words.
+- **Terms, privacy and support links.** `MELETE_TERMS_URL`,
+  `MELETE_PRIVACY_URL` and `MELETE_SUPPORT_URL` (an https page, or `mailto:`
+  for support) are linked on the sign-in page, in setup and in Settings ›
+  Account, each only when it is set. Melete ships no legal text of its own.
+- A daily backup schedule to copy: `deploy/backup-schedule/` runs `melete
+  backup` encrypted to another machine every night and calls a check-in
+  address you choose, so a missed night is noticed. Every finished backup is
+  noted, and on a hosted installation, or with `"backup": { "scheduled": true }`,
+  `check` and `status` fail once the newest backup is more than 26 hours old.
+  See [Backups on a schedule](docs/DEPLOYMENT.md#backups-on-a-schedule).
 
 ### Upgrading from v0.2.1
 
@@ -72,7 +136,30 @@ What each version ships.
    the old open claim; the service, `melete check` and `melete status` then
    warn about it. Installations that already have an account are unaffected.
    See [Claiming a new installation](docs/DEPLOYMENT.md#claiming-a-new-installation).
-3. Backups made before this version still hold each space's search index, and
+3. An installation marked `"hosted": true` fails `check` and `status` until its
+   cost guards are set; each `hosted.*` rule names the setting and a starting
+   value. `melete deploy` runs the same check first, so on an existing hosted
+   installation it refuses to deploy, before any backup or pull, until every
+   guard is set; set them, then deploy. A self-hosted installation only gets
+   warnings. See [Hosting for other people](docs/DEPLOYMENT.md#hosting-for-other-people).
+4. A hosted installation's `check` and `status` now fail until a backup has
+   been taken in the last 26 hours. Run `bun run melete backup`, then schedule
+   it ([Backups on a schedule](docs/DEPLOYMENT.md#backups-on-a-schedule)).
+   `melete deploy` runs the same check, so take that backup before deploying.
+5. Seven migrations for these changes run on start. `0124_person_spend_limits` keeps the
+   per-person spending limits the owner sets. `0125_sign_in_vault` adds the saved sign-ins
+   and their record of use, and gives every existing browser connection that
+   can watch pages (`browser.observe`) the new `browser.sign_in` scope as
+   well, so agents with the browser can use a saved sign-in without the
+   connection being granted again. Remove that scope from a connection that
+   should not sign in to sites. `0126_starter_dismissal` keeps who put Home's
+   starter tasks away. `0127_operator_action_index` and
+   `0128_chat_principal_index` add indexes for the owner's record of changes
+   and for Home's starter tasks. `0129_spend_counter` keeps running spending
+   totals for the caps and fills them in for the current month.
+   `0130_person_computers_and_indexes` records whose computer each one is and
+   adds indexes for the backup note, saved sign-in use and sign-in sessions.
+6. Backups made before this version still hold each space's search index, and
    any forgotten text in it, until they age out; restoring one leaves the
    index out and rebuilds it. The first backup after upgrading (`melete
    backup`, or the one `melete deploy` takes) removes backups in `backup.dir`

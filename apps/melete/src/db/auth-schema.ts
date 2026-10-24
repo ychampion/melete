@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { connection, owner, principal, space } from './schema.ts';
 
@@ -18,7 +19,15 @@ export const session = pgTable(
     /** The browser and system it signed in from, as its User-Agent said, for the person's list. */
     label: text('label'),
   },
-  (table) => [index('session_expires_idx').on(table.expiresAt)],
+  (table) => [
+    index('session_expires_idx').on(table.expiresAt),
+    // A person's sessions, found as every query names them: by the account,
+    // or by the owner for a session from before accounts.
+    index('session_person_idx').on(
+      sql`(coalesce(${table.principalId}, ${table.ownerId}))`,
+      table.createdAt,
+    ),
+  ],
 );
 
 /**

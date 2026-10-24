@@ -353,8 +353,7 @@ export function historyModelSource(options: {
       if (options.settings) {
         const chosen = await options.settings.activeChoice();
         if (!(await side.local(chosen.provider))) {
-          const background = (await options.settings.routingFor(spaceId, options.routing))
-            .background;
+          const background = await options.settings.backgroundModel(spaceId, options.routing);
           if (background) return options.settings.sideModelFor(spaceId, background);
         }
       }

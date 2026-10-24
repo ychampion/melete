@@ -14,7 +14,9 @@
  *
  * `--public-url` writes the address people open as both MELETE_PUBLIC_URL and
  * MELETE_WEB_ORIGIN. `--hosted`, for an installation other people use, also
- * writes an operator token; `melete init` then marks the installation hosted.
+ * writes an operator token and starting values for its cost guards (spending
+ * caps, upload and computer limits, a spending alert); `melete init` then marks
+ * the installation hosted. Without `--hosted` no limit is written.
  *
  * The default is a production configuration: a real model provider, with its
  * key read from this command's environment (FIREWORKS_API_KEY for the default
@@ -72,6 +74,7 @@ import {
   readDockerHost,
   socketProbeCommand,
 } from '../../apps/melete/src/runtime/docker-host.ts';
+import { HOSTED_STARTING_VALUES } from '../../packages/cli/src/hosted-defaults.ts';
 import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 import { tailscaleNodeName, tailscaleNotes } from './tailscale-origin.ts';
 
@@ -222,6 +225,11 @@ export function addressSettings(options: {
       : {}),
     ...(options.hosted ? { MELETE_OPERATOR_TOKEN: randomBytes(32).toString('hex') } : {}),
   };
+}
+
+/** The cost guards a hosted installation starts with; none for any other. */
+export function hostedSettings(options: { hosted?: boolean }): Record<string, string> {
+  return options.hosted ? { ...HOSTED_STARTING_VALUES } : {};
 }
 
 /**
@@ -477,6 +485,7 @@ async function configure(root: string) {
     ...provider,
     ...voice,
     ...addressSettings(options),
+    ...hostedSettings(options),
     ...options.install,
     // TS_AUTHKEY stays as the template leaves it, which is empty: it is issued by
     // the Tailscale admin console and nothing here can invent one.
@@ -506,7 +515,7 @@ async function configure(root: string) {
     );
   if (options.hosted)
     process.stdout.write(
-      'An operator token was written. Name where alerts go before people sign up: export the webhook address as MELETE_ALERT_WEBHOOK_URL, then run bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL (docs/DEPLOYMENT.md, "Alerts").\n',
+      'An operator token and starting spending caps, upload and computer limits were written; tune them in deploy/.env (docs/DEPLOYMENT.md, "Hosting for other people"). Name where alerts go before people sign up: export the webhook address as MELETE_ALERT_WEBHOOK_URL, then run bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL (docs/DEPLOYMENT.md, "Alerts").\n',
     );
   // A real provider is selected with its key still empty. Say so now, not at the first job,
   // unless the key is meant to be pasted into the app.

@@ -185,6 +185,114 @@ export class ComputerMock {
     });
   }
 
+  /**
+   * Saved sign-ins as the mock keeps them: in memory, with what was typed for
+   * a password or code secret dropped on arrival, since nothing here signs in.
+   */
+  private mountSignIns(app: Hono): void {
+    const signIns = new Map<string, C.SavedSignIn>();
+    const fail = (c: Context, status: 400 | 404 | 409, code: string, message: string) =>
+      c.json({ error: { code, message } }, status);
+    const originOf = (site: string): string | null => {
+      try {
+        const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(site) ? site : `https://${site}`);
+        return url.protocol === 'https:' && !url.username && !url.password ? url.origin : null;
+      } catch {
+        return null;
+      }
+    };
+    const missing = (c: Context) =>
+      fail(c, 404, 'not_found', 'There is no such saved sign-in of yours here.');
+    app.get('/sign-ins', (c) =>
+      c.json(C.savedSignInList.parse({ sign_ins: [...signIns.values()] })),
+    );
+    app.post('/sign-ins', async (c) => {
+      const body = C.savedSignInCreate.safeParse(await c.req.json().catch(() => null));
+      if (!body.success) return fail(c, 400, 'invalid_request', 'Check the sign-in and try again.');
+      const origin = originOf(body.data.site);
+      if (!origin)
+        return fail(
+          c,
+          400,
+          'insecure_site',
+          'Saved sign-ins are only used on secure (https) sites.',
+        );
+      const site = new URL(origin).host;
+      const taken = [...signIns.values()].some(
+        (s) => s.origin === origin && s.username === body.data.username,
+      );
+      if (taken)
+        return fail(
+          c,
+          409,
+          'duplicate',
+          'A sign-in for this site with that username is already saved.',
+        );
+      const now = this.now();
+      const saved = C.savedSignIn.parse({
+        id: newId(C.ID_PREFIXES.saved_sign_in),
+        origin,
+        site,
+        label: body.data.label ?? site,
+        username: body.data.username,
+        password: C.PASSWORD_MASK,
+        has_code: Boolean(body.data.code_secret),
+        policy: body.data.policy,
+        created_at: now,
+        updated_at: now,
+        last_used_at: null,
+        last_outcome: null,
+      });
+      signIns.set(saved.id, saved);
+      return c.json(saved, 201);
+    });
+    app.patch('/sign-ins/:id', async (c) => {
+      const found = signIns.get(c.req.param('id'));
+      if (!found) return missing(c);
+      const change = C.savedSignInUpdate.safeParse(await c.req.json().catch(() => null));
+      if (!change.success)
+        return fail(c, 400, 'invalid_request', 'Check the sign-in and try again.');
+      const code = change.data.code_secret;
+      const next = C.savedSignIn.parse({
+        ...found,
+        username: change.data.username ?? found.username,
+        label: change.data.label ?? found.label,
+        policy: change.data.policy ?? found.policy,
+        has_code: code === null ? false : Boolean(code) || found.has_code,
+        updated_at: this.now(),
+      });
+      signIns.set(next.id, next);
+      return c.json(next);
+    });
+    app.delete('/sign-ins/:id', (c) => {
+      const id = c.req.param('id');
+      if (!signIns.delete(id)) return missing(c);
+      return c.json(C.savedSignInDeleted.parse({ id, deleted: true }));
+    });
+    app.post('/sign-ins/:id/code', (c) => {
+      const found = signIns.get(c.req.param('id'));
+      if (!found) return missing(c);
+      if (!found.has_code) return fail(c, 404, 'no_code', 'This sign-in has no code secret saved.');
+      // A stand-in code that changes every thirty seconds, as a real one would.
+      const seconds = Math.floor(Date.now() / 1000);
+      const code = String((Math.floor(seconds / 30) * 7919) % 1_000_000).padStart(6, '0');
+      return c.json(C.savedSignInCode.parse({ code, expires_in: 30 - (seconds % 30) }));
+    });
+    app.post('/sign-ins/:id/check', (c) => {
+      const found = signIns.get(c.req.param('id'));
+      if (!found) return missing(c);
+      const checks = [
+        { name: 'site', ok: true, detail: `Used only on ${found.origin}.` },
+        { name: 'sealed', ok: true, detail: 'It opens with this installation’s key.' },
+        { name: 'password', ok: true, detail: 'A password is saved.' },
+        ...(found.has_code
+          ? [{ name: 'code', ok: true, detail: 'Its code secret makes codes.' }]
+          : []),
+      ];
+      return c.json(C.savedSignInCheck.parse({ id: found.id, ok: true, checks }));
+    });
+  }
+
   /** `link`: each chat has a desktop shown through its provider's own viewer, as on Maritime. */
   desktop: 'none' | 'link' = 'none';
   private readonly desktops = new Map<
@@ -294,6 +402,7 @@ export class ComputerMock {
           );
         return c.json(C.browserSiteForgotten.parse({ domain, forgotten: true }));
       });
+      this.mountSignIns(app);
     }
     const refuse = (c: Context, status: 404 | 409 | 410, code: string) =>
       c.json({ error: { code, message: `The browser could not change: ${code}.` } }, status);

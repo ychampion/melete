@@ -872,7 +872,9 @@ withDb('background processes in the agent computer', () => {
         AbortSignal.timeout(10_000),
       )
       .catch((error: unknown) => error);
-    expect(String(refused)).toContain('already has 1 running, which is its limit');
+    expect(String(refused)).toContain(
+      'every computer this installation runs is in use right now (1)',
+    );
     // Taking the held computer over starts nothing new, so it fits.
     const later = await s.job();
     const taken = await s.sessions.openWorkspace(

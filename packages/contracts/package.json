@@ -40,6 +40,10 @@
     "./attachments": {
       "types": "./src/attachments.ts",
       "default": "./src/attachments.ts"
+    },
+    "./starters": {
+      "types": "./src/starters.ts",
+      "default": "./src/starters.ts"
     }
   },
   "scripts": {

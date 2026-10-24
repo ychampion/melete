@@ -16,6 +16,7 @@ import {
   type ModelRole,
   type ModelSettings,
   modelSettingsResponse,
+  myUsageResponse,
   providerSignInStatus,
   saveModelKeyRequest,
   setDefaultModelRequest,
@@ -162,6 +163,105 @@ export function mountModelsMock(app: Hono, options: { connected?: boolean } = {}
   const body = async <T extends z.ZodType>(c: Context, schema: T) =>
     schema.safeParse(await c.req.json().catch(() => ({})));
   const now = () => new Date().toISOString();
+
+  // Your own usage for Settings › Usage, on the same quiet, warning or
+  // reached month as below (`none` for an installation without limits), with
+  // a few days of spending and some recent work.
+  app.get('/usage/mine', (c) => {
+    const level = process.env.MELETE_MOCK_USAGE;
+    const today = new Date();
+    const monthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+    const nextMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1));
+    const nextDay = new Date(
+      Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1),
+    );
+    const spent = level === 'reached' ? 20.04 : level === 'warning' ? 16.8 : 4.3;
+    const days = Array.from({ length: today.getUTCDate() }, (_, index) => {
+      const day = new Date(monthStart.getTime() + index * 86_400_000).toISOString().slice(0, 10);
+      const usd = Math.round(((index * 37) % 11) * 6) / 100;
+      return { day, usd, background_usd: Math.round(usd * 30) / 100, calls: index % 7 };
+    });
+    const ago = (minutes: number) => new Date(today.getTime() - minutes * 60_000).toISOString();
+    const resetDay = nextMonth.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+    return send(c, myUsageResponse, {
+      month_start: monthStart.toISOString(),
+      month_resets_at: nextMonth.toISOString(),
+      day_resets_at: nextDay.toISOString(),
+      spent: {
+        month: { usd: spent, tokens: Math.round(spent * 310_000) },
+        day: { usd: 0.62, tokens: 190_000 },
+      },
+      background_spent: {
+        month: { usd: 1.1, tokens: 340_000 },
+        day: { usd: 0.12, tokens: 40_000 },
+      },
+      caps:
+        level === 'none'
+          ? null
+          : {
+              month: { usd: 20, tokens: null },
+              day: { usd: 2, tokens: null },
+              background: { month: { usd: 5, tokens: null }, day: { usd: 0.5, tokens: null } },
+            },
+      notice:
+        level === 'reached'
+          ? {
+              level: 'reached',
+              period: 'month',
+              scope: 'person',
+              message: `This month's limit is reached; it resets on ${resetDay}.`,
+              resets_at: nextMonth.toISOString(),
+            }
+          : level === 'warning'
+            ? {
+                level: 'warning',
+                period: 'month',
+                scope: 'person',
+                message: "You have used 84% of this month's model allowance.",
+                resets_at: nextMonth.toISOString(),
+              }
+            : null,
+      days,
+      kinds: [
+        { kind: 'chats', calls: 42, usd: Math.round((spent - 1.1) * 100) / 100, tokens: 1_000_000 },
+        { kind: 'background', calls: 18, usd: 1.1, tokens: 340_000 },
+      ],
+      computer_seconds: 2_700,
+      runs: [
+        {
+          id: 'job_mock_trip',
+          title: 'Plan a 3-day trip to Lisbon',
+          at: ago(12),
+          outcome: 'done',
+          usd: 0.41,
+          background: false,
+          conversation_id: 'job_mock_trip',
+        },
+        {
+          id: 'job_mock_brief',
+          title: 'Morning brief',
+          at: ago(300),
+          outcome: 'needs_you',
+          usd: 0.08,
+          background: true,
+          conversation_id: 'job_mock_brief',
+        },
+        {
+          id: 'job_mock_watch',
+          title: 'Watch the pricing page',
+          at: ago(1500),
+          outcome: 'failed',
+          usd: 0.02,
+          background: true,
+          conversation_id: null,
+        },
+      ],
+    });
+  });
 
   // Model spending. `MELETE_MOCK_USAGE=warning` puts the person at 84% of this
   // month's limit, `reached` past it; anything else is a quiet month.

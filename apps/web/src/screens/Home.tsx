@@ -67,6 +67,7 @@ import './home.css';
 import { assistantName } from '../experience/instance.ts';
 import { FirstSteps } from './FirstSteps.tsx';
 import { NeedsYouSection } from './NeedsYouSection.tsx';
+import { StarterList, starterSelection } from './Starters.tsx';
 import { WaitingOnSection } from './WaitingOnSection.tsx';
 import { WhatImOnSection } from './WhatImOnSection.tsx';
 
@@ -1078,6 +1079,8 @@ function DayColumn({ now }: { now: number }) {
 export function HomeScreen() {
   const { agents, profile, refreshConversations, capabilities, member } = useApp();
   const home = useLoad(() => adapter.home(), []);
+  const starters = useLoad(() => adapter.starters(), []);
+  const [startersHidden, setStartersHidden] = useState(false);
   const decisions = useDecisions();
   const [map, setMap] = useState<CompanyMap | null>(null);
   const [text, setText] = useState('');
@@ -1163,19 +1166,34 @@ export function HomeScreen() {
     map?.currency ?? 'GBP',
   );
   const suggestions = suggestionsOf(map, now);
-  const prompts = promptChips(Array.isArray(home.data?.upcoming)).slice(
-    0,
-    Math.max(0, 3 - suggestions.length),
-  );
-  // A chip's words go into the box with the cursor after them, ready to finish.
-  const begin = (words: string) => {
+  const offered = !startersHidden && starters.data?.show ? starters.data.starters : [];
+  // While the starters are offered they stand in for the general chips.
+  const prompts = offered.length
+    ? []
+    : promptChips(Array.isArray(home.data?.upcoming)).slice(0, Math.max(0, 3 - suggestions.length));
+  // A chip's words go into the box with the cursor after them, ready to
+  // finish; a starter's blank is selected, so typing replaces it.
+  const begin = (words: string, select = { start: words.length, end: words.length }) => {
     setText(words);
     requestAnimationFrame(() => {
       const box = composeRef.current?.querySelector('textarea');
       if (!box) return;
       box.focus();
-      box.setSelectionRange(words.length, words.length);
+      box.setSelectionRange(select.start, select.end);
     });
+  };
+  const putStartersAway = async () => {
+    setStartersHidden(true);
+    composeRef.current?.querySelector('textarea')?.focus();
+    const result = await adapter.dismissStarters();
+    if (result.data === null) {
+      setStartersHidden(false);
+      toast({
+        kind: 'err',
+        title: 'Couldn’t hide the starters',
+        sub: result.error ?? result.unavailable ?? '',
+      });
+    }
   };
   const data = home.data;
 
@@ -1230,6 +1248,12 @@ export function HomeScreen() {
                 </button>
               ))}
             </div>
+            <StarterList
+              starters={offered}
+              disabled={busy}
+              onPick={(starter) => begin(starter.text, starterSelection(starter))}
+              onDismiss={() => void putStartersAway()}
+            />
             {agents.some((agent) => !agent.is_default) ? (
               <nav className="home-agents" aria-label="Your agents">
                 <span className="home-agents-label">Or start with</span>

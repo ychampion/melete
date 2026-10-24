@@ -12,12 +12,15 @@
  *   to it when the model the turn runs on does not read images.
  * - MELETE_MODEL_FALLBACK: tried in order when the provider rate-limits,
  *   fails or cannot be reached, before any of the reply has been sent.
+ * - MELETE_MODEL_BACKGROUND: scheduled and repeating work, and any attempt
+ *   nobody is waiting on, runs on it in every space. Unset, that work runs on
+ *   the primary.
  *
  * Two of these roles may be filled by the installation owner's secondary
  * model, chosen in Settings, for the work in the spaces they own: `fast` for
- * short side calls, and `background` for scheduled and repeating work, which
- * otherwise runs on the primary. With no secondary set, the operator's roles
- * apply as they are. Vision and fallback stay the operator's.
+ * short side calls, and `background` for scheduled and repeating work. With
+ * no secondary set, the operator's roles apply as they are. Vision and
+ * fallback stay the operator's.
  *
  * Each is written `provider/model`, the provider name before the first slash.
  * A model the owner chose in the app always wins for agent turns: those turns
@@ -77,10 +80,13 @@ export function routingFromEnv(env: {
   MELETE_MODEL_FAST?: string;
   MELETE_MODEL_VISION?: string;
   MELETE_MODEL_FALLBACK?: string;
+  MELETE_MODEL_BACKGROUND?: string;
 }): ModelRouting {
   const one = (value: string | undefined, setting: string) =>
     value?.trim() ? parseModelChoice(value, setting) : null;
+  const background = one(env.MELETE_MODEL_BACKGROUND, 'MELETE_MODEL_BACKGROUND');
   return {
+    ...(background ? { background } : {}),
     fast: one(env.MELETE_MODEL_FAST, 'MELETE_MODEL_FAST'),
     vision: one(env.MELETE_MODEL_VISION, 'MELETE_MODEL_VISION'),
     fallback: (env.MELETE_MODEL_FALLBACK ?? '')
@@ -187,6 +193,9 @@ export function routingWarnings(
     ...(routing.fast ? [['MELETE_MODEL_FAST', routing.fast] as [string, ModelChoice]] : []),
     ...(routing.vision ? [['MELETE_MODEL_VISION', routing.vision] as [string, ModelChoice]] : []),
     ...routing.fallback.map((choice) => ['MELETE_MODEL_FALLBACK', choice] as [string, ModelChoice]),
+    ...(routing.background
+      ? [['MELETE_MODEL_BACKGROUND', routing.background] as [string, ModelChoice]]
+      : []),
   ];
   const warnings: string[] = [];
   for (const [setting, { provider }] of named) {

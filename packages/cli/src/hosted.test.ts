@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { judgeCheck } from './commands/check.ts';
 import { runStatus } from './commands/status.ts';
 import { DEPLOY_FILE, deployConfigSchema, renderDeployConfig } from './deploy-config.ts';
-import { judgeHosted } from './hosted.ts';
+import { COST_GUARDS, judgeCostGuards, judgeHosted } from './hosted.ts';
+import { HOSTED_STARTING_VALUES } from './hosted-defaults.ts';
 import { readInstallation } from './installation.ts';
 import { temporaryDeployDir, testContext, writeEnv } from './testing.ts';
 
@@ -13,7 +14,9 @@ const READY = {
   MELETE_WEB_ORIGIN: 'https://assistant.example.net',
   MELETE_ALERT_WEBHOOK_URL: 'https://hooks.example.net/melete',
   MELETE_OPERATOR_TOKEN: 'o'.repeat(48),
+  ...HOSTED_STARTING_VALUES,
 };
+const GUARD_IDS = COST_GUARDS.map((guard) => guard.id);
 const config = (hosted?: boolean) =>
   deployConfigSchema.parse({ contract: 1, ...(hosted === undefined ? {} : { hosted }) });
 const levels = (results: ReturnType<typeof judgeHosted>) =>
@@ -26,6 +29,8 @@ describe('what an installation for other people needs', () => {
       'hosted.web_origin': 'ok',
       'hosted.alerts': 'ok',
       'hosted.operator_token': 'ok',
+      'hosted.network_pool': 'ok',
+      ...Object.fromEntries(GUARD_IDS.map((id) => [id, 'ok'])),
     });
   });
 
@@ -34,6 +39,9 @@ describe('what an installation for other people needs', () => {
       'hosted.public_url': 'fail',
       'hosted.alerts': 'fail',
       'hosted.operator_token': 'fail',
+      // Unset, the pool is the default range, which is what it asks for.
+      'hosted.network_pool': 'ok',
+      ...Object.fromEntries(GUARD_IDS.map((id) => [id, 'fail'])),
     });
     const plainHttp = judgeHosted(config(true), {
       ...READY,
@@ -58,9 +66,105 @@ describe('what an installation for other people needs', () => {
     expect(results[0]?.detail).toContain('"hosted": true');
   });
 
+  test('a self-hosted installation is never asked for limits', () => {
+    const ids = judgeHosted(config(), {}).map((result) => result.id);
+    expect(ids.filter((id) => GUARD_IDS.includes(id))).toEqual([]);
+    expect(judgeHosted(config(false), READY).map((result) => result.id)).not.toContain(
+      'hosted.spend_person',
+    );
+  });
+
+  test("a hosted installation keeps people's computers on their own network pool", () => {
+    const pool = (value: string) =>
+      judgeHosted(config(true), { ...READY, MELETE_NETWORK_POOL: value }).find(
+        (result) => result.id === 'hosted.network_pool',
+      );
+    expect(pool('')?.level).toBe('ok');
+    expect(pool('10.40.0.0/16')?.level).toBe('ok');
+    for (const off of ['off', ' OFF ']) {
+      expect(pool(off)?.level).toBe('fail');
+      expect(pool(off)?.fix).toContain('MELETE_NETWORK_POOL');
+    }
+    // A self-hosted installation may turn it off.
+    expect(
+      judgeHosted(config(), { MELETE_NETWORK_POOL: 'off' }).map((result) => result.id),
+    ).not.toContain('hosted.network_pool');
+  });
+
   test('the key is optional: a file without it reads, and one with it keeps it', () => {
     expect(renderDeployConfig(config())).not.toContain('hosted');
     expect(JSON.parse(renderDeployConfig(config(true))).hosted).toBe(true);
+  });
+});
+
+describe('the cost guards a hosted installation needs', () => {
+  const levelOf = (env: Record<string, string>, id: string) =>
+    judgeCostGuards(env).find((result) => result.id === id)?.level;
+
+  test('the starting values pass every guard', () => {
+    expect(judgeCostGuards({ ...HOSTED_STARTING_VALUES }).map((result) => result.level)).toEqual(
+      GUARD_IDS.map(() => 'ok'),
+    );
+  });
+
+  test('each guard fails on its own setting, and names a starting value to set', () => {
+    for (const guard of COST_GUARDS)
+      for (const name of guard.names) {
+        const env: Record<string, string> = { ...HOSTED_STARTING_VALUES };
+        delete env[name];
+        if (guard.any) {
+          // One spending alert is enough, whichever it is; only none fails.
+          for (const other of guard.names) delete env[other];
+          for (const other of guard.names.filter((each) => each !== name)) env[other] = '50';
+          expect(levelOf(env, guard.id)).toBe('ok');
+          for (const other of guard.names) delete env[other];
+        }
+        const result = judgeCostGuards(env).find((entry) => entry.id === guard.id);
+        expect(result?.level).toBe('fail');
+        expect(result?.detail).toContain(guard.any ? (guard.names[0] as string) : name);
+        expect(result?.fix).toMatch(/^Run bun run melete set MELETE_[A-Z_]+=[0-9.]+/);
+        // The other guards are untouched by it.
+        expect(
+          judgeCostGuards(env).filter((entry) => entry.id !== guard.id && entry.level !== 'ok'),
+        ).toEqual([]);
+      }
+  });
+
+  test('a cap must be a positive number: zero, negative, blank or a word fails', () => {
+    for (const value of ['0', '-1', '', '   ', 'ten', 'NaN', 'Infinity'])
+      expect(
+        levelOf(
+          { ...HOSTED_STARTING_VALUES, MELETE_SPEND_MONTHLY_USD: value },
+          'hosted.spend_installation',
+        ),
+      ).toBe('fail');
+    for (const value of ['0.01', '1', ' 250 '])
+      expect(
+        levelOf(
+          { ...HOSTED_STARTING_VALUES, MELETE_SPEND_MONTHLY_USD: value },
+          'hosted.spend_installation',
+        ),
+      ).toBe('ok');
+  });
+
+  test("each person's storage is capped, starting at 2 GB", () => {
+    const env: Record<string, string> = { ...HOSTED_STARTING_VALUES };
+    expect(levelOf(env, 'hosted.storage')).toBe('ok');
+    expect(HOSTED_STARTING_VALUES.MELETE_STORAGE_PER_PERSON_MB).toBe('2048');
+    delete env.MELETE_STORAGE_PER_PERSON_MB;
+    const storage = judgeCostGuards(env).find((result) => result.id === 'hosted.storage');
+    expect(storage?.level).toBe('fail');
+    expect(storage?.fix).toContain('MELETE_STORAGE_PER_PERSON_MB=2048');
+  });
+
+  test('a per-person computer limit of one passes', () => {
+    expect(
+      levelOf(
+        { ...HOSTED_STARTING_VALUES, MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: '1' },
+        'hosted.computers',
+      ),
+    ).toBe('ok');
+    expect(HOSTED_STARTING_VALUES.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION).toBe('1');
   });
 });
 
@@ -87,12 +191,18 @@ describe('check and status judge it', () => {
       expect.arrayContaining(['hosted.public_url', 'hosted.alerts', 'hosted.operator_token']),
     );
     const ready = judgeCheck(readInstallation(hostedInstall(READY), 'linux'));
-    expect(ready.filter((result) => result.id.startsWith('hosted.')).map((r) => r.level)).toEqual([
-      'ok',
-      'ok',
-      'ok',
-      'ok',
-    ]);
+    const hostedLevels = ready
+      .filter((result) => result.id.startsWith('hosted.'))
+      .map((result) => result.level);
+    expect(hostedLevels).toHaveLength(5 + GUARD_IDS.length);
+    expect(hostedLevels.every((level) => level === 'ok')).toBe(true);
+    // Without its caps a hosted installation fails check, every other piece set.
+    const uncapped = { ...READY } as Record<string, string>;
+    delete uncapped.MELETE_SPEND_PERSON_DAILY_USD;
+    const failing = judgeCheck(readInstallation(hostedInstall(uncapped), 'linux'))
+      .filter((result) => result.level === 'fail')
+      .map((result) => result.id);
+    expect(failing).toContain('hosted.spend_person');
   });
 
   test('the alert fix keeps a webhook address and a mail password off the command line', () => {
@@ -107,5 +217,8 @@ describe('check and status judge it', () => {
     await runStatus(context, true);
     const report = JSON.parse(context.printed()) as { results: { id: string; level: string }[] };
     expect(report.results.find((result) => result.id === 'hosted.public_url')?.level).toBe('fail');
+    expect(report.results.find((result) => result.id === 'hosted.spend_person')?.level).toBe(
+      'fail',
+    );
   });
 });

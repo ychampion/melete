@@ -54,7 +54,7 @@ import {
 } from '../sandbox/connection.ts';
 import { type DisplayRow, ownerJobOf } from '../sandbox/displays.ts';
 import { checkHandOffs, handComputerToPerson, MAX_CHECK_HAND_OFFS } from '../sandbox/hand-off.ts';
-import { SandboxRefusal } from '../sandbox/manifest.ts';
+import { type ComputerLimitScope, SandboxRefusal } from '../sandbox/manifest.ts';
 import { type CommandResult, type ExecutionRecord, runCommand } from '../sandbox/marker.ts';
 import { describeSkipped } from '../sandbox/move-out.ts';
 import type { SandboxProcesses } from '../sandbox/processes.ts';
@@ -404,13 +404,16 @@ export function sandboxManifestFor(provider: SandboxProvider): ConnectorManifest
 }
 
 /**
- * Why nothing ran, as the model reads it: a full computer, or a provider at
- * the operator's cap, is said in plain words and is not tried again by itself.
+ * Why nothing ran, as the model reads it: a full computer, no computer free,
+ * or a provider at the operator's cap is said in plain words and is not tried
+ * again by itself.
  */
 function refusedBefore(error: unknown) {
   if (
     error instanceof SandboxRefusal &&
-    (error.code === 'computer_full' || error.code === 'provider_capacity')
+    (error.code === 'computer_full' ||
+      error.code === 'concurrency_exhausted' ||
+      error.code === 'provider_capacity')
   )
     return { outcome: 'failed' as const, reason: error.message, retryable: false };
   return {
@@ -553,7 +556,42 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
    * agent's persistent workspace, or a new one. A later command in the same
    * attempt therefore reuses the sandbox rather than opening a second.
    */
+  /**
+   * Opens this action's session; when no computer may start, the conversation
+   * also says so to the person, whatever the model makes of the refusal. The
+   * note is best effort: a note that cannot be written never hides the refusal.
+   */
   const sessionFor = async (action: Action, ctx: ConnectorContext, signal: AbortSignal) => {
+    try {
+      return await openSessionFor(action, ctx, signal);
+    } catch (error) {
+      if (error instanceof SandboxRefusal && error.code === 'concurrency_exhausted')
+        await noteComputerLimit(ctx, error.scope ?? 'installation');
+      throw error;
+    }
+  };
+
+  const noteComputerLimit = (ctx: ConnectorContext, scope: ComputerLimitScope) =>
+    sql
+      .begin(async (tx) => {
+        await lockEventOrderIn(tx);
+        await appendEvent(
+          tx,
+          ctx.job_id,
+          null,
+          'notice',
+          { kind: 'computer_limit', scope },
+          `${ctx.idempotency_key}:computer_limit`,
+        );
+      })
+      .catch((error: unknown) => {
+        process.stderr.write(
+          `the computer limit note for ${ctx.job_id} was not recorded: ${error instanceof Error ? error.message : String(error)}
+`,
+        );
+      });
+
+  const openSessionFor = async (action: Action, ctx: ConnectorContext, signal: AbortSignal) => {
     // Only this connection's own session: another connection's is another
     // account's sandbox, even under the same adapter.
     const [existing] = await sql`select * from sandbox_session

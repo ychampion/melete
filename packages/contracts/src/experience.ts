@@ -38,6 +38,7 @@ import {
   runRecordResponse,
   runResponse,
 } from './runs.ts';
+import { startersResponse } from './starters.ts';
 
 const id = z.string().min(1).max(240);
 const text = z.string().min(1).max(4000);
@@ -1560,6 +1561,20 @@ export const passwordResetConsume = z.strictObject({
   token: z.string().min(20).max(200),
   new_password: newPassword,
 });
+/**
+ * What a one-time code is for: `invite` when it came with a new account, so
+ * the page asks the person to choose their password; `reset` otherwise.
+ */
+export const passwordResetChecked = z.strictObject({
+  status: z.literal('ok'),
+  purpose: z.enum(['reset', 'invite']),
+});
+/** An invite also signs the person in, so they go straight on to setting up. */
+export const passwordResetDone = z.strictObject({
+  status: z.literal('ok'),
+  purpose: z.enum(['reset', 'invite']),
+  signed_in: z.boolean(),
+});
 
 /** Shared operation table makes the mock and OpenAPI cover precisely the same surface. */
 export const experienceOperations = {
@@ -1700,6 +1715,13 @@ export const experienceOperations = {
   'GET /profile': { response: profileResponse },
   'PATCH /profile': { request: profileInput, response: profileResponse },
   'GET /home': { response: homeResponse },
+  /**
+   * One-tap starter tasks for a new person's Home, until they have a few chats
+   * or put them away. Each is a request to edit and send, never sent for them.
+   */
+  'GET /starters': { response: startersResponse },
+  /** Puts the starters away for this person, on every device. */
+  'POST /starters/dismiss': { response: experienceOk },
   'GET /tasks': { response: taskList },
   'POST /tasks': { request: taskInput, response: taskResponse },
   'PATCH /tasks/{id}': { request: taskInput, response: taskResponse },
@@ -1801,12 +1823,16 @@ export const experienceOperations = {
    */
   'POST /password-reset': { request: passwordResetRequest, response: experienceOk },
   /**
-   * Whether a reset code is still good: unused and unexpired. A code that isn't
-   * answers 400 invalid_reset_link. Spends nothing.
+   * Whether a reset code is still good: unused and unexpired, and whether it is
+   * a new account's invite. A code that isn't answers 400 invalid_reset_link.
+   * Spends nothing.
    */
-  'POST /password-reset/check': { request: passwordResetCheck, response: experienceOk },
-  /** Sets a new password from a one-time link and signs out every session. */
-  'POST /password-reset/consume': { request: passwordResetConsume, response: experienceOk },
+  'POST /password-reset/check': { request: passwordResetCheck, response: passwordResetChecked },
+  /**
+   * Sets a new password from a one-time link and signs out every session. An
+   * invite's link then signs this browser in to the new account.
+   */
+  'POST /password-reset/consume': { request: passwordResetConsume, response: passwordResetDone },
   'GET /search': {
     query: z.strictObject({ q: z.string().min(1).max(200) }),
     response: experienceSearch,

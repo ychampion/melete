@@ -69,6 +69,7 @@ import type {
   RuleBounds,
   TurnStatus,
 } from '../experience/types.ts';
+import { ChatCapBanner } from '../models/Usage.tsx';
 import { NEW_CHAT_AGAIN, navigate, useRoute } from '../router.ts';
 import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
@@ -1652,6 +1653,7 @@ ${words}`
                   ))}
                 </div>
               ) : null}
+              <ChatCapBanner working={working} />
               <WorkPill
                 turn={atWorkTurn}
                 conversationId={conversationId}

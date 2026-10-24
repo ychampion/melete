@@ -10,7 +10,9 @@ import { ATTACHMENT_LIMITS, displayName, EXEC_LIMITS, PROCESS_LIMITS } from '@me
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 import { formatRange, parsePrivateHosts, rangesOverlap } from './connectors/private-hosts.ts';
+import { startersFromSetting } from './experience/starters.ts';
 import { REASONING_EFFORTS } from './gateway/effort.ts';
+import { MAX_CAP_USD } from './gateway/person-limits.ts';
 import { parseModelPrices } from './gateway/prices.ts';
 import { parseModelChoice } from './gateway/routing.ts';
 import { DEFAULT_NETWORK_POOL, parseNetworkPool } from './runtime/network-pool.ts';
@@ -73,6 +75,14 @@ function brokerUrlMismatch(bind: string, url: string): string | null {
  */
 const unsetWhenBlank = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
+
+/** A per-person dollar cap: at most what the operator console shows and sets (`MAX_CAP_USD`). */
+const personCapUsd = () =>
+  z.coerce
+    .number()
+    .positive()
+    .max(MAX_CAP_USD, `A per-person cap can be at most $${MAX_CAP_USD.toLocaleString('en-US')}`)
+    .optional();
 
 /** One of the installation's names (instance-name.ts): trimmed, one line, Melete when unset. */
 const nameSetting = (setting: string) =>
@@ -401,6 +411,16 @@ const variables = z.object({
    * waits for a free slot, and its conversation says so.
    */
   MELETE_ATTEMPT_CONCURRENCY: unsetWhenBlank(z.coerce.number().int().min(1).max(32).default(4)),
+  /**
+   * How many of those one person may run at once; their further attempts wait
+   * while others' start. Their background work (routines, watches, quiet work)
+   * may use all of them but one, which stays free for their chats, so their own
+   * routines never hold back their chat. Unset is no limit of its own: free slots are shared in
+   * turn between the people waiting for them either way.
+   */
+  MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(32).optional(),
+  ),
   MELETE_HERMES_ROOT: z.string().default(join(root, '.hermes-src')),
   MELETE_HERMES_PYTHON: z
     .string()
@@ -822,11 +842,13 @@ const variables = z.object({
    * Spending caps on model calls, in US dollars (estimated from the price
    * table) and in tokens, for the whole installation and for each person, per
    * UTC day and month. Unset is no limit. docs/DEPLOYMENT.md, "Spending caps".
+   * A per-person dollar cap is at most $1,000,000, as one the owner gives a
+   * person is.
    */
   MELETE_SPEND_MONTHLY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
   MELETE_SPEND_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
-  MELETE_SPEND_PERSON_MONTHLY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
-  MELETE_SPEND_PERSON_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_PERSON_MONTHLY_USD: unsetWhenBlank(personCapUsd()),
+  MELETE_SPEND_PERSON_DAILY_USD: unsetWhenBlank(personCapUsd()),
   MELETE_SPEND_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_DAILY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   MELETE_SPEND_PERSON_MONTHLY_TOKENS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
@@ -837,10 +859,8 @@ const variables = z.object({
    * messages never count here and are never held back by them. Unset is no
    * limit. docs/BACKGROUND-COMPUTE.md.
    */
-  MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD: unsetWhenBlank(
-    z.coerce.number().positive().optional(),
-  ),
-  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD: unsetWhenBlank(z.coerce.number().positive().optional()),
+  MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD: unsetWhenBlank(personCapUsd()),
+  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD: unsetWhenBlank(personCapUsd()),
   MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_TOKENS: unsetWhenBlank(
     z.coerce.number().int().positive().optional(),
   ),
@@ -957,6 +977,14 @@ const variables = z.object({
   MELETE_MODEL_VISION: unsetWhenBlank(z.string().max(400).optional()),
   MELETE_MODEL_FALLBACK: unsetWhenBlank(z.string().max(2000).optional()),
   /**
+   * The model scheduled and background work runs on (routines, watches,
+   * standing runs and other attempts nobody is waiting on), written
+   * `provider/model`, for every person's spaces. The owner's own secondary
+   * model, when they moved scheduled work to it, still wins in their spaces.
+   * Unset, that work runs on the primary model as before.
+   */
+  MELETE_MODEL_BACKGROUND: unsetWhenBlank(z.string().max(400).optional()),
+  /**
    * The model that sorts new mail and calendar changes into needs you, for
    * your information, or ignore, written `provider/model`, or `off` to turn
    * sorting off. Unset, sorting uses the owner's secondary model for scheduled
@@ -1003,6 +1031,37 @@ const variables = z.object({
    * running the installation. docs/FEEDBACK.md.
    */
   MELETE_FEEDBACK_WEBHOOK_URL: unsetWhenBlank(z.url({ protocol: /^https?$/ }).optional()),
+  /**
+   * Where people read this installation's terms and privacy notice, and how
+   * they reach its support (a web page, or a mailto: address). Each is shown
+   * on sign-in, in setup and in Settings only when it is set; none is by
+   * default. docs/DEPLOYMENT.md, "Hosting for other people".
+   */
+  MELETE_TERMS_URL: unsetWhenBlank(
+    z
+      .url({ protocol: /^https$/ })
+      .max(2000)
+      .optional(),
+  ),
+  MELETE_PRIVACY_URL: unsetWhenBlank(
+    z
+      .url({ protocol: /^https$/ })
+      .max(2000)
+      .optional(),
+  ),
+  MELETE_SUPPORT_URL: unsetWhenBlank(
+    z
+      .url({ protocol: /^(https|mailto)$/ })
+      .max(2000)
+      .optional(),
+  ),
+  /**
+   * The one-tap starter tasks a new person's Home offers, as a JSON array of
+   * { id, label, text, icon, capability }, at most six; `text` may hold
+   * {city} and one [blank]. Unset, the built-in list. Checked at start.
+   * docs/DEPLOYMENT.md, "Starter tasks".
+   */
+  MELETE_STARTERS: unsetWhenBlank(z.string().max(20_000).optional()),
 
   /**
    * The installation's own mail sender, for sign-in and password reset links
@@ -1161,10 +1220,10 @@ const variables = z.object({
   /** The most sandboxes this installation may have running at once, over every connection. */
   MELETE_SANDBOX_MAX_CONCURRENT: unsetWhenBlank(z.coerce.number().int().positive().default(4)),
   /**
-   * The most any one connection may have running. A provider quota belongs to
-   * an account, and a connection is an account here, so this keeps one busy
-   * space from spending another's. Left unset it is the ceiling above, and it
-   * is never allowed past it.
+   * The most computers any one person may have running at once, counted over
+   * every space they work in (the name is kept from when it counted per
+   * connection). Work nobody can be named for is counted per connection. Left
+   * unset it is the ceiling above, and it is never allowed past it.
    */
   MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: unsetWhenBlank(
     z.coerce.number().int().positive().optional(),
@@ -1436,13 +1495,39 @@ export const envSchema = variables.transform((value, context) => {
           path: [name],
           message: `MELETE_BLOB_STORE=s3 needs ${name}`,
         });
-  for (const name of ['MELETE_MODEL_FAST', 'MELETE_MODEL_VISION', 'MELETE_MODEL_FALLBACK'] as const)
-    for (const entry of (value[name] ?? '').split(',').filter((part) => part.trim()))
+  for (const name of [
+    'MELETE_MODEL_FAST',
+    'MELETE_MODEL_VISION',
+    'MELETE_MODEL_FALLBACK',
+    'MELETE_MODEL_BACKGROUND',
+  ] as const) {
+    const setting = value[name] ?? '';
+    // Only the fallbacks are a list; any other names one model, as routingFromEnv reads it.
+    if (name !== 'MELETE_MODEL_FALLBACK' && setting.includes(',')) {
+      context.addIssue({
+        code: 'custom',
+        path: [name],
+        message: `${name} names one model, written provider/model; only MELETE_MODEL_FALLBACK takes a comma-separated list`,
+      });
+      continue;
+    }
+    for (const entry of setting.split(',').filter((part) => part.trim()))
       try {
         parseModelChoice(entry, name);
       } catch (error) {
         context.addIssue({ code: 'custom', path: [name], message: (error as Error).message });
       }
+  }
+  if (value.MELETE_STARTERS)
+    try {
+      startersFromSetting(value.MELETE_STARTERS);
+    } catch (error) {
+      context.addIssue({
+        code: 'custom',
+        path: ['MELETE_STARTERS'],
+        message: (error as Error).message,
+      });
+    }
   if (value.MELETE_MODEL_TRIAGE && value.MELETE_MODEL_TRIAGE.trim() !== 'off')
     try {
       parseModelChoice(value.MELETE_MODEL_TRIAGE, 'MELETE_MODEL_TRIAGE');

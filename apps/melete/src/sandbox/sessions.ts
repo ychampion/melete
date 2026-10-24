@@ -45,7 +45,13 @@ import {
   PostgresComputerControls,
 } from './computer-control.ts';
 import { type DisplayRow, displayInUse, passToJoiners, SandboxDisplays } from './displays.ts';
-import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
+import {
+  checkSpec,
+  computerLimitReached,
+  LABEL_SESSION,
+  SandboxRefusal,
+  type SessionPersistence,
+} from './manifest.ts';
 import type { SessionHolder, SessionStatus } from './schema.ts';
 import {
   type EgressPolicy,
@@ -100,11 +106,17 @@ export type OpenSession = {
   /** The job's sandbox-time budget in seconds. Absent or null means no cap. */
   maxSandboxSeconds?: number | null;
   /**
-   * How many sandboxes may be running when this one opens: this connection's
-   * own allowance, and the whole installation's ceiling. Absent means neither
-   * is enforced.
+   * How many sandboxes may be running when this one opens: the allowance of
+   * the person the job is for, counted over every space they work in, and the
+   * whole installation's ceiling. Absent means neither is enforced.
+   *
+   * `perConnection` is the same person's allowance under the name its setting
+   * keeps (MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION); `perPerson` wins when
+   * both are given. It is not counted by connection: a connection is a
+   * space's, so that let one member's computer in a room refuse another
+   * member, and let one person run one computer in every room they are in.
    */
-  concurrency?: { perConnection: number; installation: number };
+  concurrency?: { perPerson?: number; perConnection?: number; installation: number };
 };
 
 export type WorkspacePersistence = Exclude<SessionPersistence, 'ephemeral'>;
@@ -318,6 +330,24 @@ export async function markSessionLost(
   return rows.length > 0;
 }
 
+/**
+ * The person whose turn a job's work is: whoever spoke last in its
+ * conversation, as `PERSON_FOR_JOB` in gateway/spending.ts and
+ * `personForWake` in jobs/runner.ts name them; for a job nobody has written
+ * in, the member who asked, for a request of a room, else the job's own
+ * person, else its space's owner. Null for a job that is gone.
+ */
+async function personOf(tx: Query, jobId: string): Promise<string | null> {
+  const [row] = await tx<{ person: string | null }[]>`select coalesce(
+      (select e.payload->>'principal_id' from event e
+        where e.job_id = j.id and e.type = 'notice' and e.payload->>'kind' = 'user_message'
+          and e.payload->>'principal_id' is not null
+        order by e.seq desc limit 1),
+      j.requested_by_principal_id, j.principal_id, s.owner_principal_id) as person
+    from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+  return row?.person ?? null;
+}
+
 /** Time used by one job's sandboxes: live sessions count up to now, ended ones as charged. */
 async function usedSeconds(tx: Query, jobId: string): Promise<number> {
   const [row] = await tx`select coalesce(sum(case
@@ -427,38 +457,63 @@ export class SandboxSessions {
    * Both allowances, counted inside the transaction that writes the row and
    * behind one lock, so concurrent opens queue rather than all reading the same
    * count and passing. The lock is the installation's, which is what the
-   * ceiling belongs to; a connection's own allowance is counted under it too.
+   * ceiling belongs to; a person's own allowance is counted under it too.
+   *
+   * A computer is the person's whose turn opened it, as slots are shared
+   * (`jobs/runner.ts`) and calls are charged (`gateway/spending.ts`): see
+   * `personOf`. It is kept on the row, so a computer stays its opener's
+   * however the conversation goes on. Work nobody can be named for, in a
+   * space with no owner, keeps the allowance it had before people did: its
+   * connection's. Returns the person, for the row.
    */
-  private async checkConcurrency(tx: TransactionSql, input: OpenSession, takesOver = false) {
+  private async checkConcurrency(
+    tx: TransactionSql,
+    input: OpenSession,
+    takesOver = false,
+  ): Promise<string | null> {
+    const person = await personOf(tx, input.jobId);
     const limit = input.concurrency;
-    if (!limit || (!Number.isFinite(limit.perConnection) && !Number.isFinite(limit.installation)))
-      return;
+    const perPerson = limit?.perPerson ?? limit?.perConnection ?? Number.POSITIVE_INFINITY;
+    if (!limit || (!Number.isFinite(perPerson) && !Number.isFinite(limit.installation)))
+      return person;
     await tx`select pg_advisory_xact_lock(hashtext('sandbox-open'))`;
     // A computer its processes keep running is running, so it counts. The one
     // this opening would take over is not counted: taking it over starts
-    // nothing new.
+    // nothing new. A row from before the person was kept is counted by its job.
     const [counted] = await tx`select count(*)::int as live,
-        count(*) filter (where connection_id = ${input.connectionId})::int as own
-      from sandbox_session where status in ('opening', 'ready')
+        count(*) filter (where case when ${person}::text is null
+          then ss.connection_id = ${input.connectionId}
+          else coalesce(ss.person_id, j.requested_by_principal_id, j.principal_id,
+            s.owner_principal_id) = ${person} end)::int as own
+      from sandbox_session ss
+        left join job j on j.id = ss.job_id
+        left join space s on s.id = ss.space_id
+      where ss.status in ('opening', 'ready')
         ${
           takesOver && input.agentId
-            ? tx`and not (held_by is not distinct from 'processes' and space_id = ${input.spaceId}
-                and agent_id = ${input.agentId} and connection_id = ${input.connectionId})`
+            ? tx`and not (ss.held_by is not distinct from 'processes'
+                and ss.space_id = ${input.spaceId} and ss.agent_id = ${input.agentId}
+                and ss.connection_id = ${input.connectionId})`
             : tx``
         }`;
     const live = Number(counted?.live ?? 0);
     const mine = Number(counted?.own ?? 0);
-    // The connection's own first: it names the account that is full.
-    if (mine >= limit.perConnection)
+    // The person's own limit first, when it is below the ceiling, counted over
+    // every space they are in and nobody else's computers. At the ceiling or
+    // above, only the installation's limit can be reached.
+    if (perPerson < limit.installation && mine >= perPerson)
       throw new SandboxRefusal(
         'concurrency_exhausted',
-        `this connection already has ${mine} running, which is its limit`,
+        computerLimitReached('person', mine),
+        'person',
       );
     if (live >= limit.installation)
       throw new SandboxRefusal(
         'concurrency_exhausted',
-        `this installation already has ${live} running, which is its limit`,
+        computerLimitReached('installation', live),
+        'installation',
       );
+    return person;
   }
 
   private insertOpening(
@@ -469,15 +524,16 @@ export class SandboxSessions {
     spec: SandboxSpec,
     persistence: SessionPersistence,
     resumeRef: string | null,
+    person: string | null,
   ) {
     return tx`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id,
         agent_id, adapter, provider_sandbox_id, image_ref, region, egress_policy, persistence,
-        resume_ref, status, lease_expires_at)
+        resume_ref, status, lease_expires_at, person_id)
       values (${id}, ${input.connectionId}, ${input.spaceId}, ${input.jobId}, ${input.attemptId},
         ${input.agentId}, ${provider.capabilities.adapter}, ${`${PENDING_SANDBOX}${id}`},
         ${spec.image}, ${spec.region}, ${JSON.stringify(spec.egress)}::jsonb,
         ${persistence}, ${resumeRef}, 'opening',
-        now() + make_interval(secs => ${this.options.leaseSeconds}))`;
+        now() + make_interval(secs => ${this.options.leaseSeconds}), ${person})`;
   }
 
   /**
@@ -496,7 +552,7 @@ export class SandboxSessions {
       await this.sql.begin(async (tx) => {
         await this.checkConnection(tx, input);
         await this.checkCap(tx, input, cap);
-        await this.checkConcurrency(tx, input);
+        const person = await this.checkConcurrency(tx, input);
         if (input.agentId) {
           await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${input.spaceId}:${input.agentId}`}))`;
           const [existing] = await tx`select id from sandbox_session
@@ -509,7 +565,7 @@ export class SandboxSessions {
               'this agent already has a live workspace in this space',
             );
         }
-        await this.insertOpening(tx, id, input, provider, spec, persistence, null);
+        await this.insertOpening(tx, id, input, provider, spec, persistence, null, person);
       });
     } catch (error) {
       throw this.refusalFor(error);
@@ -588,7 +644,7 @@ export class SandboxSessions {
         await this.checkCap(tx, input, cap);
         // Before the workspace lock, and in that order in both paths: two locks
         // taken in opposite orders by two openings would deadlock.
-        await this.checkConcurrency(tx, input, true);
+        const person = await this.checkConcurrency(tx, input, true);
         await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${input.spaceId}:${input.agentId}`}))`;
         const live = (
           await tx`select * from sandbox_session
@@ -666,7 +722,7 @@ export class SandboxSessions {
             throw new SandboxRefusal('workspace_busy', PERSON_BUSY);
           // Running, with its processes in it: taken over as it is, on a new
           // row, so nothing is paused or resumed under them.
-          adopted = await this.takeOver(tx, held, id, input);
+          adopted = await this.takeOver(tx, held, id, input, person);
           return;
         }
         const paused = kept;
@@ -687,6 +743,7 @@ export class SandboxSessions {
           spec,
           input.persistence,
           paused?.resumeRef ?? null,
+          person,
         );
       });
     } catch (error) {
@@ -716,6 +773,7 @@ export class SandboxSessions {
     held: SessionRow,
     id: string,
     input: OpenWorkspace,
+    person: string | null,
   ): Promise<SessionRow> {
     await this.meterHeld(tx, held.id);
     const [closed] = await tx`update sandbox_session set status = 'closed', closed_at = now(),
@@ -725,12 +783,12 @@ export class SandboxSessions {
     if (!closed) throw new SandboxRefusal('workspace_busy', BUSY);
     const [row] = await tx`insert into sandbox_session (id, connection_id, space_id, job_id,
         attempt_id, agent_id, adapter, provider_sandbox_id, image_ref, image_digest, region,
-        egress_policy, persistence, resume_ref, status, lease_expires_at, held_by)
+        egress_policy, persistence, resume_ref, status, lease_expires_at, held_by, person_id)
       values (${id}, ${input.connectionId}, ${input.spaceId}, ${input.jobId}, ${input.attemptId},
         ${input.agentId}, ${held.adapter}, ${held.providerSandboxId}, ${held.imageRef},
         ${held.imageDigest}, ${held.region}, ${JSON.stringify(held.egressPolicy)}::jsonb,
         ${held.persistence}, ${held.resumeRef}, 'ready',
-        now() + make_interval(secs => ${this.options.leaseSeconds}), 'attempt')
+        now() + make_interval(secs => ${this.options.leaseSeconds}), 'attempt', ${person})
       returning *`;
     if (!row) throw new Error('the workspace was not taken over');
     return toRow(row);

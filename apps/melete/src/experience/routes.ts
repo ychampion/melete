@@ -1,3 +1,4 @@
+import type { StarterTask } from '@melete/contracts';
 import {
   COMPUTER_PROCESS_LIMIT,
   connectionWatching,
@@ -60,6 +61,7 @@ import {
 import { ExperienceQuestions } from './questions.ts';
 import { memorySourcesOf, removeJobs } from './removal.ts';
 import { ExperienceService } from './service.ts';
+import { StarterService } from './starters.ts';
 import type { WorkspaceTrash } from './workspace-trash.ts';
 
 export type ExperienceDeps = {
@@ -91,6 +93,8 @@ export type ExperienceDeps = {
   workspaces?: WorkspaceTrash;
   /** Whether an active connection's connector runs here; see connectorLiveness. */
   liveness?: ConnectionLiveness;
+  /** Home's starter tasks for a new person; left out, the built-in list. */
+  starters?: readonly StarterTask[];
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -101,8 +105,11 @@ export type ExperienceDeps = {
  */
 const NOT_CONNECTED = 'Your saved details are not connected yet.';
 const RUNS_UNAVAILABLE = 'Long work is not connected yet.';
+const STARTERS_UNAVAILABLE = 'Starter tasks are not connected yet.';
 const SPACE_OWNER_SURFACES = new Set([
   'PATCH /profile',
+  'GET /starters',
+  'POST /starters/dismiss',
   'GET /tasks',
   'POST /tasks',
   'PATCH /tasks/{id}',
@@ -150,6 +157,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
       : undefined;
   const home = new ExperienceHome(deps.db, ownerEffects, deps.liveness);
+  const starters = deps.sql
+    ? new StarterService(deps.sql, deps.starters, (spaceId, recorded) =>
+        home.onboarded(spaceId, recorded),
+      )
+    : undefined;
   // Work rooms handed the person, shown on their Home and with their approvals.
   const handoffs = deps.jobs
     ? new HandoffService({ db: deps.db, jobs: deps.jobs, triggers: deps.triggers })
@@ -234,6 +246,12 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         ...waiting,
       };
     },
+    'GET /starters': (spaceId, c) =>
+      starters
+        ? starters.view(spaceId, String(c.get('owner').id))
+        : unavailable(STARTERS_UNAVAILABLE),
+    'POST /starters/dismiss': (_spaceId, c) =>
+      starters ? starters.dismiss(String(c.get('owner').id)) : unavailable(STARTERS_UNAVAILABLE),
     'GET /tasks': (spaceId) => home.tasks(spaceId),
     'POST /tasks': (spaceId, _c, input) => home.saveTask(spaceId, input),
     'PATCH /tasks/{id}': (spaceId, c, input) =>

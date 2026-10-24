@@ -12,11 +12,13 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Logo } from '../design/logos.tsx';
 import { Badge, Button, TabsUnderline, Toggle } from '../design/primitives.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
+import { featureOn } from '../experience/features.ts';
 import { type Loaded, useApp, useLoad } from '../experience/hooks.ts';
 import type { Connection, Rule } from '../experience/types.ts';
 import { FeedbackTab } from '../feedback/FeedbackTab.tsx';
 import { models } from '../models/api.ts';
 import { ModelsTab } from '../models/ModelConnect.tsx';
+import { YourUsageTab } from '../models/YourUsage.tsx';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { AccountSettings } from './AccountSettings.tsx';
@@ -26,8 +28,10 @@ import { MemoryPanel } from './Beliefs.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 import { DevicesTab } from './Devices.tsx';
 import { NotificationsTab } from './Notifications.tsx';
+import { OperatorTab } from './Operator.tsx';
 import { PeopleTab } from './People.tsx';
 import { PrivacyTab, SignedInSites } from './Privacy.tsx';
+import { SavedSignIns } from './SavedSignIns.tsx';
 import { SpaceRules } from './SpaceRules.tsx';
 import './settings.css';
 import { assistantName, instanceName } from '../experience/instance.ts';
@@ -420,9 +424,11 @@ const TABS = [
   'rules',
   'activity',
   'models',
+  'usage',
   'space-rules',
   'privacy',
   'feedback',
+  'installation',
 ] as const;
 type Tab = (typeof TABS)[number] | 'memory';
 /**
@@ -453,7 +459,7 @@ const off = <T,>(): Promise<Result<T>> =>
   Promise.resolve({ data: null, error: null, unavailable: 'The space’s owner keeps this.' });
 
 export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: string | null }) {
-  const { member } = useApp();
+  const { capabilities, member } = useApp();
   const connections = useLoad(
     () => (member ? off<{ connections: Connection[] }>() : adapter.connections()),
     [member],
@@ -463,6 +469,9 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
   const people = useLoad(() => adapter.spaceMembers(), []);
   // People is a shared space's page; a personal space has only its owner.
   const shared = people.data?.space.kind === 'shared';
+  // The installation's console is its setup owner's alone; an admin chooses the
+  // model (can_edit) but does not run the installation, and the service refuses them.
+  const owner = model.data?.secondary.can_edit === true;
   const current = settingsTab(tab, member === true);
   const [deviceCount, setDeviceCount] = useState<number | undefined>(undefined);
   const list = connections.data?.connections ?? [];
@@ -539,9 +548,12 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
                 },
                 { value: 'activity', label: 'Activity' },
                 { value: 'models', label: 'Models' },
+                { value: 'usage', label: 'Usage' },
                 { value: 'space-rules', label: 'Space rules' },
                 { value: 'privacy', label: 'Privacy' },
                 { value: 'feedback', label: 'Feedback' },
+                // Only the installation's owner runs it; the service refuses everyone else too.
+                ...(owner ? [{ value: 'installation' as const, label: 'Installation' }] : []),
               ].filter((item) => showsTab(item.value, member === true))}
             />
           </div>
@@ -549,7 +561,12 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
         {current === 'privacy' ? (
           <div className="col" style={{ gap: 14 }}>
             <PrivacyTab />
-            <SignedInSites />
+            {featureOn(capabilities, 'browser') ? (
+              <>
+                <SignedInSites />
+                <SavedSignIns />
+              </>
+            ) : null}
           </div>
         ) : null}
         {current === 'activity' ? <ActivityTab /> : null}
@@ -580,6 +597,16 @@ export function SettingsScreen({ tab, detail = null }: { tab: string; detail?: s
           <FeedbackTab selected={detail} />
         ) : current === 'models' ? (
           <ModelsTab loaded={model} />
+        ) : current === 'installation' ? (
+          owner ? (
+            <OperatorTab />
+          ) : model.loading ? null : (
+            <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
+              Only the person who runs this {instanceName()} sees this page.
+            </p>
+          )
+        ) : current === 'usage' ? (
+          <YourUsageTab />
         ) : current === 'account' ? (
           <AccountSettings />
         ) : current === 'connections' ? (

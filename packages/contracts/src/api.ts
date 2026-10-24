@@ -134,6 +134,13 @@ export const setupStatusResponse = z.strictObject({
    * forgotten password needs the person who runs the installation.
    */
   email_sign_in: z.boolean(),
+  /**
+   * This installation's terms, privacy notice and support (a web page or a
+   * mailto: address), each only when its operator set one.
+   */
+  terms_url: z.string().max(2000).optional(),
+  privacy_url: z.string().max(2000).optional(),
+  support_url: z.string().max(2000).optional(),
   /** What the installation calls itself (`MELETE_INSTANCE_NAME`); Melete unless set. */
   instance_name: z.string().min(1).max(DISPLAY_NAME_MAX),
   /** What the assistant calls itself (`MELETE_ASSISTANT_NAME`); Melete unless set. */

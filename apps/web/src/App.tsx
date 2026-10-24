@@ -151,12 +151,16 @@ export function App() {
     features: {},
   });
   // Whether the server has rooms switched on, and the names the installation
-  // goes by, read once whoever is signed in. No screen is drawn before the
-  // answer, so every one of them starts with the right names.
+  // goes by, read again when the signed-in account changes. No screen is
+  // drawn before the answer, so each person starts with their own features.
   const [multiplayerKnown, setMultiplayerKnown] = useState(false);
   const instance = useInstance();
-  useEffect(() => {
+  const setupRead = useRef(0);
+  const refreshSetupStatus = useCallback(() => {
+    const read = ++setupRead.current;
     void adapter.setupStatus().then((status) => {
+      // An answer begun under the old account cannot restore its features.
+      if (read !== setupRead.current) return;
       if (status.data) setInstance(status.data);
       const multiplayer = status.data?.multiplayer === true;
       // What the operator turned off, for whoever is signed in; a surface that is off is left out.
@@ -165,6 +169,7 @@ export function App() {
       setMultiplayerKnown(true);
     });
   }, []);
+  useEffect(refreshSetupStatus, [refreshSetupStatus]);
   useEffect(() => {
     document.title = instance.name;
   }, [instance.name]);
@@ -306,6 +311,23 @@ export function App() {
     setGuest(false);
   }, []);
 
+  // An invite used here signed this browser in to another account: what was
+  // held for the previous one goes, and the profile is read for the new one.
+  const accountSwitched = useCallback(() => {
+    forgetEveryConversation();
+    setMultiplayerKnown(false);
+    refreshSetupStatus();
+    setAgents([]);
+    setRemovedAgents([]);
+    setAgentsLoaded(false);
+    askedAgents.current.clear();
+    setConversations([]);
+    setConversationsError(null);
+    setDecisions(NO_DECISIONS);
+    setOnboarded(false);
+    profile.reload();
+  }, [setOnboarded, profile.reload, refreshSetupStatus]);
+
   const signOut = useCallback(async () => {
     // Notifications stop here first, while the session can still say so.
     await stopPushHere();
@@ -356,11 +378,13 @@ export function App() {
       refreshConversations,
       refreshAgents,
       signOut,
+      accountSwitched,
       guest: guest && !signedOut,
       member,
     }),
     [
       signOut,
+      accountSwitched,
       guest,
       member,
       signedOut,

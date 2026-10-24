@@ -394,6 +394,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   sandbox_work_file: 'operational',
   sandbox_work_read: 'operational',
   sandbox_work_removal: 'operational',
+  saved_sign_in: 'operational',
+  saved_sign_in_use: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
   privacy_settings: 'operational',
@@ -764,6 +766,15 @@ describe.if(handle !== null)('removing a space', () => {
     // The time that process kept the computer running after its turn ended.
     await sql`insert into sandbox_awake_day (space_id, day, seconds)
       values (${seeded.spaceId}, current_date, 600)`;
+    // A sign-in saved for the agent's browser, and the record of one use of it.
+    await sql`insert into saved_sign_in (id, space_id, principal_id, origin, label, username,
+        secret_ref, key_id)
+      values (${`ssi_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId},
+        'https://example.com', 'Example', 'jo', ${`sec_${seeded.spaceId}`}, 'k1:0')`;
+    await sql`insert into saved_sign_in_use (id, sign_in_id, space_id, principal_id, job_id,
+        origin, outcome)
+      values (${`ssu_${seeded.spaceId}`}, ${`ssi_${seeded.spaceId}`}, ${seeded.spaceId},
+        ${seeded.principalId}, ${seeded.jobId}, 'https://example.com', 'signed_in')`;
     // The privacy router's rows: settings, a sealed vault, a conversation's state, an audit row.
     const conversation = `job_privacy_${seeded.spaceId}`;
     await sql`insert into privacy_settings (space_id, settings) values (${seeded.spaceId}, '{}'::jsonb)`;

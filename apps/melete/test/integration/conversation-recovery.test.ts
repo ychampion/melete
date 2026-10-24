@@ -499,6 +499,66 @@ withDb('a conversation goes on after a turn that did not finish cleanly', () => 
     expect(later.events.filter((event) => event.item.type === 'note')).toHaveLength(1);
   });
 
+  test('a computer that could not start is told in plain words, and whose limit it was', async () => {
+    const chat = await createConversation();
+    expect((await send(chat.id, 'Open the spreadsheet on my computer')).status).toBe(200);
+    for (const scope of ['person', 'installation'] as const)
+      await serviceTransaction(required(handle).db, (tx) =>
+        appendEvent(tx, {
+          jobId: chat.id,
+          type: 'notice',
+          payload: { kind: 'computer_limit', scope },
+          dedupKey: `${chat.id}:computer_limit:${scope}`,
+        }),
+      );
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    expect(
+      page.events.filter((event) => event.item.type === 'note').map((event) => event.item),
+    ).toEqual([
+      {
+        type: 'note',
+        text: 'Your computer is busy with another task right now. Ask again once that task finishes.',
+      },
+      { type: 'note', text: 'Every computer here is busy right now. Try again in a little while.' },
+    ]);
+  });
+
+  test("a wake waits in its person's line: the job's own person, else its space's owner", async () => {
+    const chat = await createConversation();
+    const db = required(handle).db;
+    const [row] = await db.select({ person: job.principalId }).from(job).where(eq(job.id, chat.id));
+    expect(await required(runner).personForWake(chat.id)).toBe(row?.person ?? undefined);
+    // With no person of its own, the space's owner.
+    const otherId = newId('own');
+    await required(handle)
+      .sql`insert into principal (id, email) values (${otherId}, 'other-wake@example.test')`;
+    await db.update(job).set({ principalId: null }).where(eq(job.id, chat.id));
+    await db.update(space).set({ ownerPrincipalId: otherId }).where(eq(space.id, spaceId));
+    try {
+      expect(await required(runner).personForWake(chat.id)).toBe(otherId);
+      // With neither, nobody's: it keeps its place in line.
+      await db.update(space).set({ ownerPrincipalId: null }).where(eq(space.id, spaceId));
+      expect(await required(runner).personForWake(chat.id)).toBeUndefined();
+    } finally {
+      await db.update(space).set({ ownerPrincipalId: null }).where(eq(space.id, spaceId));
+    }
+    // A job that is gone has nobody.
+    expect(await required(runner).personForWake(newId('job'))).toBeUndefined();
+    // The runner holds each person to MELETE_ATTEMPT_CONCURRENCY_PER_PERSON when it is set.
+    const limited = new AttemptRunner(required(jobs), new StubRuntimeAdapter(), {
+      key: 'conversation-recovery-signing-key-32b',
+      concurrency: 4,
+      concurrencyPerPerson: 1,
+    });
+    expect(limited.scheduler.perPerson).toBe(1);
+    expect(required(runner).scheduler.perPerson).toBe(Number.POSITIVE_INFINITY);
+    expect(
+      loadEnv({ MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: '2' }).MELETE_ATTEMPT_CONCURRENCY_PER_PERSON,
+    ).toBe(2);
+    expect(loadEnv({}).MELETE_ATTEMPT_CONCURRENCY_PER_PERSON).toBeUndefined();
+    expect(() => loadEnv({ MELETE_ATTEMPT_CONCURRENCY_PER_PERSON: '0' })).toThrow();
+  });
+
   test('a conversation from before conversations had their own limits gets them on its next turn', async () => {
     const chat = await createConversation();
     await required(handle)

@@ -495,6 +495,38 @@ describe('what a computer may reach', () => {
   });
 });
 
+describe('model roles and spending caps are checked at start-up', () => {
+  test('only the fallbacks are a list: any other role names one model', () => {
+    for (const name of ['MELETE_MODEL_BACKGROUND', 'MELETE_MODEL_FAST', 'MELETE_MODEL_VISION'])
+      expect(() => loadEnv({ [name]: 'fireworks/a,fireworks/b' })).toThrow(
+        `${name} names one model, written provider/model; only MELETE_MODEL_FALLBACK takes a comma-separated list`,
+      );
+    expect(
+      loadEnv({ MELETE_MODEL_FALLBACK: 'fireworks/a, fireworks/b' }).MELETE_MODEL_FALLBACK,
+    ).toBe('fireworks/a, fireworks/b');
+    expect(loadEnv({ MELETE_MODEL_BACKGROUND: 'fireworks/a' }).MELETE_MODEL_BACKGROUND).toBe(
+      'fireworks/a',
+    );
+  });
+
+  test('a per-person dollar cap is at most what the operator console can show', () => {
+    for (const name of [
+      'MELETE_SPEND_PERSON_DAILY_USD',
+      'MELETE_SPEND_PERSON_MONTHLY_USD',
+      'MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD',
+      'MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD',
+    ] as const) {
+      expect(() => loadEnv({ [name]: '1000000.01' })).toThrow('at most $1,000,000');
+      expect(loadEnv({ [name]: '1000000' })[name]).toBe(1_000_000);
+      expect(loadEnv({ [name]: '' })[name]).toBeUndefined();
+    }
+    // The installation's own caps have no such bound.
+    expect(loadEnv({ MELETE_SPEND_MONTHLY_USD: '5000000' }).MELETE_SPEND_MONTHLY_USD).toBe(
+      5_000_000,
+    );
+  });
+});
+
 describe('internal hosts everyone may reach', () => {
   test('off by default, and Compose and the example leave it empty', () => {
     expect(loadEnv({}).MELETE_PRIVATE_HOSTS).toBe('');

@@ -81,7 +81,7 @@ export const FEATURES = {
     about: 'The agent’s own browser, and the sites it is signed in to.',
     default: true,
     perPerson: true,
-    path: (_method, path) => under(path, '/browser'),
+    path: (_method, path) => under(path, '/browser') || under(path, '/sign-ins'),
     off: 'The agent’s browser is turned off on this server.',
     offForYou: 'The agent’s browser is turned off for your account.',
   },

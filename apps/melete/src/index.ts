@@ -33,6 +33,7 @@ import { mountJobs } from './api/jobs.ts';
 import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountModelSettings } from './api/model-settings.ts';
+import { mountMyUsage } from './api/my-usage.ts';
 import { mountNeedsYouSource } from './api/needs-you-source.ts';
 import { mountOidc, passwordSignInGate } from './api/oidc.ts';
 import { mountOperations } from './api/operations.ts';
@@ -44,6 +45,7 @@ import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountScreenshots } from './api/screenshots.ts';
 import { claimNotice, recordConfiguredCode } from './api/setup-code.ts';
+import { mountSignIns } from './api/sign-ins.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
@@ -96,7 +98,12 @@ import {
   spaceAccessWithdrawal,
   startSecretSweep,
 } from './connectors/revocation.ts';
-import { useEffectsPool } from './connectors/secrets.ts';
+import {
+  PostgresSecretRepository,
+  SealedSecretStore,
+  useEffectsPool,
+} from './connectors/secrets.ts';
+import { SignInVault } from './connectors/sign-in-vault.ts';
 import type { CallVoice } from './connectors/speech-engine.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import {
@@ -122,6 +129,7 @@ import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
 import type { ExperienceService } from './experience/service.ts';
+import { startersFromSetting } from './experience/starters.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import {
   installationFeatures,
@@ -200,6 +208,9 @@ import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { searchMemory } from './memory/search.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { OperatorConsole } from './operator/console.ts';
+import { diskReading } from './operator/disk.ts';
+import { mountOperatorConsole } from './operator/routes.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
 import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
@@ -332,6 +343,8 @@ export type AppDeps = {
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
   browserSessions?: BrowserSessionService;
+  /** Saved sign-ins. Left out, built from `sql` and the master key. */
+  signInVault?: SignInVault;
   /** The desktops in docker sandboxes, to watch and take over. */
   sandboxComputers?: SandboxComputerService;
   /** Previews of servers in agents' computers, and a person's stop and output of their processes. */
@@ -449,26 +462,27 @@ export function createApp(deps: AppDeps) {
         ...(deps.jobs ? { jobs: deps.jobs } : {}),
       })
     : undefined;
+  const accountMail = deps.accountMail ?? accountMailerFromEnv(deps.env);
+  // Computers a new password, "sign out everywhere" or a disabled account
+  // disconnected lose their connection the way a revoke from Settings ends it,
+  // fencing running work.
+  const devicesEnded = devices
+    ? async (principalId: string, deviceIds: string[]) => {
+        for (const id of deviceIds)
+          await devices.revoke(id, principalId).catch((error: unknown) => {
+            process.stderr.write(
+              `a disconnected computer's connection was not closed: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+          });
+      }
+    : undefined;
   // With password sign-in off, its routes are refused before they run.
   app.use(passwordSignInGate(deps.env));
   mountAuth(app, {
     ...deps,
     limits,
-    accountMail: deps.accountMail ?? accountMailerFromEnv(deps.env),
-    // Computers a new password or "sign out everywhere" disconnected lose their
-    // connection the way a revoke from Settings ends it, fencing running work.
-    ...(devices
-      ? {
-          devicesEnded: async (principalId: string, deviceIds: string[]) => {
-            for (const id of deviceIds)
-              await devices.revoke(id, principalId).catch((error: unknown) => {
-                process.stderr.write(
-                  `a disconnected computer's connection was not closed: ${error instanceof Error ? error.message : String(error)}\n`,
-                );
-              });
-          },
-        }
-      : {}),
+    accountMail,
+    ...(devicesEnded ? { devicesEnded } : {}),
   });
   // Sign-in through the installation's identity provider, when one is set.
   mountOidc(app, { db: deps.db, env: deps.env });
@@ -548,6 +562,8 @@ export function createApp(deps: AppDeps) {
       },
       ...(modelSettings ? { roles: (actor) => modelSettings.roles(actor) } : {}),
     });
+  // Each person's own usage, for Settings: never anyone else's, whoever asks.
+  if (deps.spending && deps.sql) mountMyUsage(app, { spending: deps.spending, sql: deps.sql });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -613,6 +629,33 @@ export function createApp(deps: AppDeps) {
   // Taking everything along, and deleting an account.
   if (deps.sql) {
     const sql = deps.sql;
+    const accounts =
+      deps.accountRemovals ??
+      (deps.removals && deps.db && deps.jobs
+        ? new AccountRemovalService({
+            sql,
+            spaces: deps.removals,
+            principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
+            ...(deps.env.MELETE_BROWSER_SPACE
+              ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
+              : {}),
+            removeChats: (ids) =>
+              removeJobs(
+                {
+                  jobs: deps.jobs as JobService,
+                  sql,
+                  runner: deps.runner,
+                  blobs: deps.attachments?.store,
+                  workspaces: {
+                    workRoot: deps.env.MELETE_WORK_DIR,
+                    days: deps.env.MELETE_TRASH_DAYS,
+                    spacesRoot: deps.env.MELETE_SPACES_DIR,
+                  },
+                },
+                ids,
+              ),
+          })
+        : undefined);
     mountAccount(app, {
       sql,
       spacesRoot: deps.env.MELETE_SPACES_DIR,
@@ -630,34 +673,25 @@ export function createApp(deps: AppDeps) {
         );
         return 'content' in file ? file.content : null;
       },
-      accounts:
-        deps.accountRemovals ??
-        (deps.removals && deps.db && deps.jobs
-          ? new AccountRemovalService({
-              sql,
-              spaces: deps.removals,
-              principals: new PrincipalService(deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs),
-              ...(deps.env.MELETE_BROWSER_SPACE
-                ? { browserSpace: deps.env.MELETE_BROWSER_SPACE }
-                : {}),
-              removeChats: (ids) =>
-                removeJobs(
-                  {
-                    jobs: deps.jobs as JobService,
-                    sql,
-                    runner: deps.runner,
-                    blobs: deps.attachments?.store,
-                    workspaces: {
-                      workRoot: deps.env.MELETE_WORK_DIR,
-                      days: deps.env.MELETE_TRASH_DAYS,
-                      spacesRoot: deps.env.MELETE_SPACES_DIR,
-                    },
-                  },
-                  ids,
-                ),
-            })
-          : undefined),
+      ...(accounts ? { accounts } : {}),
     });
+    // The installation's owner runs it from the web app as from the host.
+    mountOperatorConsole(
+      app,
+      new OperatorConsole({
+        sql,
+        env: deps.env,
+        ...(accounts ? { accounts } : {}),
+        ...(deps.spending ? { spending: deps.spending } : {}),
+        ...(accountMail ? { mailer: accountMail } : {}),
+        ...(devicesEnded ? { devicesEnded } : {}),
+        health:
+          deps.healthDetail ??
+          (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql })),
+        disk: () => diskReading(deps.env),
+        version: VERSION,
+      }),
+    );
   }
   const intents =
     deps.intents ??
@@ -776,6 +810,7 @@ export function createApp(deps: AppDeps) {
         spacesRoot: deps.env.MELETE_SPACES_DIR,
       },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
+      starters: startersFromSetting(deps.env.MELETE_STARTERS),
     });
   callExperience = experience || null;
   if (calls) callServices.set(app, calls);
@@ -916,6 +951,19 @@ export function createApp(deps: AppDeps) {
         },
       }),
     );
+  // A person's saved sign-ins, sealed under the installation's key.
+  const signIns =
+    deps.signInVault ??
+    (deps.sql
+      ? new SignInVault(
+          deps.sql,
+          new SealedSecretStore(
+            new PostgresSecretRepository(deps.sql),
+            () => deps.env.MELETE_MASTER_KEY,
+          ),
+        )
+      : undefined);
+  if (signIns && features.browser) mountSignIns(app, signIns);
   if (deps.browserSessions && features.browser) {
     mountBrowserSessions(app, deps.browserSessions);
     mountBrowserLive(app, deps.browserSessions);
@@ -1775,6 +1823,9 @@ export async function bootstrap(
       runner = new AttemptRunner(jobs, preparing(gatedRuntime), {
         key: env.MELETE_CAPABILITY_KEY,
         concurrency: env.MELETE_ATTEMPT_CONCURRENCY,
+        ...(env.MELETE_ATTEMPT_CONCURRENCY_PER_PERSON
+          ? { concurrencyPerPerson: env.MELETE_ATTEMPT_CONCURRENCY_PER_PERSON }
+          : {}),
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,

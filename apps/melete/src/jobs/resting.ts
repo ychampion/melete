@@ -137,11 +137,13 @@ async function record(
   principalId: string,
   restAfterDays: number | undefined,
 ): Promise<boolean> {
+  // A turned-off account is not seen, even when a text from its number still
+  // arrives: its work stays resting until the account is on and used again.
   const [state] = await db.execute(sql`select
       last_seen_at < now() - make_interval(secs => ${SEEN_EVERY_MS / 1000}) as stale,
       (${restAfterDays ?? null}::int is not null
         and last_seen_at < now() - make_interval(days => ${restAfterDays ?? 0})) as away
-    from principal where id = ${principalId}`);
+    from principal where id = ${principalId} and disabled_at is null`);
   const seen = state as { stale?: unknown; away?: unknown } | undefined;
   if (!seen?.stale) return false;
   if (!seen.away) {

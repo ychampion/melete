@@ -8,6 +8,7 @@ import {
 import { and, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { requireStrongPassword } from '../api/password-policy.ts';
+import { forgetSealedSignIns } from '../connectors/sign-in-vault.ts';
 import type { Database } from '../db/client.ts';
 import {
   attempt,
@@ -266,6 +267,7 @@ export class PrincipalService {
       return this.endMembership(tx, jobs, spaceId, memberId, access.space.policyGeneration);
     });
     settled(jobs, result);
+    await this.forgetSignIns(spaceId, result.signInSecrets);
     return { membership: result.membership, policy_generation: result.policy_generation };
   }
 
@@ -295,6 +297,7 @@ export class PrincipalService {
         controls: [] as ContextInvalidated[],
         cancelled: [] as string[],
         policy_generation: policyGeneration,
+        signInSecrets: [] as string[],
       };
     const [updated] = await tx
       .update(spaceMembership)
@@ -334,6 +337,12 @@ export class PrincipalService {
     // What they asked Melete to see through here ends with their place in it.
     await tx.execute(
       sql`delete from intent where space_id = ${spaceId} and principal_id = ${memberId}`,
+    );
+    // So do the sign-ins they saved here, which they could no longer see or
+    // delete. Their sealed secrets go once this commits (`forgetSignIns`).
+    const signIns = await tx.execute<{ secret_ref: string }>(
+      sql`delete from saved_sign_in where space_id = ${spaceId} and principal_id = ${memberId}
+        returning secret_ref`,
     );
     const generation = policyGeneration + 1;
     // The copies of what memory handed the member's own actions, kept to say
@@ -405,7 +414,23 @@ export class PrincipalService {
       controls,
       cancelled,
       policy_generation: generation,
+      signInSecrets: [...signIns].map((row) => row.secret_ref),
     };
+  }
+
+  /**
+   * The sealed secrets of the sign-ins a membership's end deleted, once that
+   * has committed: the secret store may be another database role's, outside
+   * the transaction. One that cannot go now is left to the daily sweep of
+   * sealed secrets nothing points at, and never fails the change.
+   */
+  private async forgetSignIns(spaceId: string, refs: readonly string[]): Promise<void> {
+    if (!refs.length) return;
+    await forgetSealedSignIns(this.db.$client, spaceId, refs).catch((error: unknown) =>
+      process.stderr.write(
+        `membership end: saved sign-in secrets in ${spaceId} were left to the daily sweep (${error instanceof Error ? error.message : String(error)})\n`,
+      ),
+    );
   }
 
   /**
@@ -509,6 +534,7 @@ export class PrincipalService {
         });
       if (!result) continue;
       settled(jobs, result);
+      await this.forgetSignIns(entry.spaceId, result.signInSecrets);
       ended += 1;
     }
     return ended;

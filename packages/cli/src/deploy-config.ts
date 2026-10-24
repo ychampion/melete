@@ -86,6 +86,12 @@ const backup = z.strictObject({
   /** How many backups `dir` keeps; each new one removes the oldest beyond this. */
   keep: z.number().int().min(1).default(3),
   /**
+   * Whether backups run on a schedule (docs/DEPLOYMENT.md, "Backups on a
+   * schedule"). `check` and `status` then fail when the newest backup is more
+   * than 26 hours old, as they do on a hosted installation.
+   */
+  scheduled: z.boolean().optional(),
+  /**
    * The most days a backup in `dir` is kept, whatever `keep` says, so what was
    * forgotten or deleted leaves the backups within this many days of a backup
    * made after it. Null keeps them by `keep` alone.

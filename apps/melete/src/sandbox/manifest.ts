@@ -46,10 +46,30 @@ export class SandboxRefusal extends Error {
   constructor(
     readonly code: RefusalCode,
     message: string,
+    /** For `concurrency_exhausted`: whose limit it was, the person's or the installation's. */
+    readonly scope?: ComputerLimitScope,
   ) {
     super(message);
   }
 }
+
+export type ComputerLimitScope = 'person' | 'installation';
+
+/**
+ * Why no computer could start, as the model reads it and passes on: a
+ * person's own limit, or every computer the installation runs, taken.
+ */
+export function computerLimitReached(scope: ComputerLimitScope, running: number): string {
+  return scope === 'person'
+    ? `the person already has ${running} ${running === 1 ? 'computer' : 'computers'} running for their other tasks, which is as many as they may have at once. Nothing ran. Tell them, in plain words, that their computer is busy with another task and they can ask again once it finishes, or carry on without the computer`
+    : `every computer this installation runs is in use right now (${running}). Nothing ran. Tell the person, in plain words, that the computers are all busy and to try again in a little while, or carry on without the computer`;
+}
+
+/** What the person reads in the conversation when no computer could start. */
+export const COMPUTER_LIMIT_NOTE: Record<ComputerLimitScope, string> = {
+  person: 'Your computer is busy with another task right now. Ask again once that task finishes.',
+  installation: 'Every computer here is busy right now. Try again in a little while.',
+};
 
 /** Session persistence as stored; `ephemeral` is the capability `none`. */
 export type SessionPersistence = 'ephemeral' | 'pause' | 'snapshot';

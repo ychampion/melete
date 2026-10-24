@@ -151,6 +151,7 @@ const LABELS: Record<string, string> = {
   'browser.fill': 'Filled in a field in its browser',
   'browser.select': 'Chose an option in its browser',
   'browser.submit': 'Submitted a form',
+  'browser.sign_in': 'Signed in to a site in its browser',
 };
 /** What an open that left the window where it was reads as. */
 export const NOT_OPENED = 'Tried to open a page in its computer; the window did not change';
@@ -189,6 +190,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'browser.select': ['Choosing an option', 'Chose an option'],
   'browser.read': ['Reading the page', 'Read the page'],
   'browser.submit': ['Submitting a form', 'Submitted a form'],
+  'browser.sign_in': ['Signing in', 'Signed in'],
   'artifact.publish': ['Publishing a file', 'Published a file'],
   'notes.write': ['Noting this for later', 'Noted this for later'],
   'skills.create': ['Saving a skill', 'Saved a skill'],
@@ -343,6 +345,18 @@ export function stepAsk(kind: string, payload: Record<string, unknown>): string 
     case 'browser.submit': {
       const host = hostOf(intent.url);
       return `Submit ${named(intent.name) ?? 'a form'}${host ? ` to ${host}` : ''}`;
+    }
+    case 'browser.sign_in': {
+      // Only what was bound when it was proposed: the site and a masked username.
+      const saved =
+        payload.saved && typeof payload.saved === 'object'
+          ? (payload.saved as Record<string, unknown>)
+          : {};
+      const host = hostOf(saved.origin);
+      const account = typeof saved.account === 'string' ? saved.account.slice(0, 40) : null;
+      return host
+        ? `Sign in to ${host}${account ? ` as ${account}` : ''} in ${AGENT} browser with your saved sign-in`
+        : `Sign in with your saved sign-in in ${AGENT} browser`;
     }
     case 'device.open_url':
       return page('on your computer', payload.url);

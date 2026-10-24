@@ -82,7 +82,23 @@ export async function rollupFinishedDays(
 }
 
 /**
- * Rolls up finished days now and every hour after, while this instance leads.
+ * Removes the running spending totals (`spend_counter`) of periods the
+ * spending caps no longer read: days before yesterday and months before last
+ * month. A call settling just after midnight still finds its own day's row.
+ */
+export async function pruneSpendCounters(sql: Sql, now = new Date()): Promise<number> {
+  const yesterday = utcDay(new Date(now.getTime() - DAY_MS));
+  const lastMonth = utcDay(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)));
+  const rows = await sql`delete from spend_counter
+    where (length(period) = 10 and period < ${yesterday})
+      or (length(period) = 7 and period < ${lastMonth.slice(0, 7)})
+    returning period`;
+  return rows.length;
+}
+
+/**
+ * Rolls up finished days now and every hour after, while this instance leads,
+ * and drops running spending totals no cap reads any more.
  * The first pass looks back five weeks; later ones look only from the day
  * before the last pass, which is all that can have changed since.
  */
@@ -98,6 +114,7 @@ export function startUsageRollup(
         if (!leading) return;
         const now = new Date();
         await rollupFinishedDays(sql, now, since);
+        await pruneSpendCounters(sql, now);
         since = utcDay(new Date(now.getTime() - DAY_MS));
       })
       .catch((error: unknown) =>

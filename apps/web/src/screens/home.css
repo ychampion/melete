@@ -702,3 +702,88 @@ a.suggestion:hover {
   font-size: 13px;
   color: var(--danger);
 }
+
+/* ---------- starter tasks for a new person ---------- */
+
+.starters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+}
+.starters-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.starters-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.starters-hide {
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.starters-hide:hover {
+  color: var(--text);
+}
+.starters-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+.starter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.starter > svg {
+  flex-shrink: 0;
+  color: var(--primary);
+}
+.starter > span {
+  min-width: 0;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+.starter:hover:not(:disabled) {
+  border-color: var(--blue-line);
+}
+.starter:focus-visible,
+.starters-hide:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.starter:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+@media (max-width: 480px) {
+  .starters-list {
+    grid-template-columns: 1fr 1fr;
+  }
+}

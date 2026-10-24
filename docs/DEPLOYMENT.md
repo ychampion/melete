@@ -359,7 +359,7 @@ bun run melete feedback        # problem reports people sent from the app
 
 | Command | What it does |
 |---|---|
-| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). `--project <name> --api-port <port> --web-port <port>` set up [a second installation on this host](#a-second-installation-on-this-host), and `--backup-dir <folder>` where its backups go. A project name that containers or volumes on this engine already use is refused, and so is any name while the engine does not answer, unless `--force`. |
+| `init [configure options]` | Runs `deploy/scripts/configure.ts` with the same options, which writes `deploy/.env`, then writes `deploy/melete.deploy.json` from it. `--public-url https://your.domain` writes `MELETE_PUBLIC_URL` and `MELETE_WEB_ORIGIN` together; adding `--hosted` also writes an operator token, starting cost guards and `"hosted": true` ([Hosting for other people](#hosting-for-other-people)). `--project <name> --api-port <port> --web-port <port>` set up [a second installation on this host](#a-second-installation-on-this-host), and `--backup-dir <folder>` where its backups go. A project name that containers or volumes on this engine already use is refused, and so is any name while the engine does not answer, unless `--force`. |
 | `init --adopt` | Reads the project's containers from the engine (the image the service runs, the overlay files Compose was given, the sandbox profile) and writes `deploy/melete.deploy.json` from them. Only that file is written. It takes `--backup-dir` too. |
 | `check` | Validates `deploy/melete.deploy.json`, `deploy/.env` against the service's own settings schema with the values Compose would pass it, every variable a Compose file requires, the published ports, the image tag and registry, the Compose boundary checks, and what [an installation for other people](#hosting-for-other-people) needs. |
 | `doctor [--offline] [--remove-leftovers]` | Judges the Docker Engine and Compose, free space where Docker keeps its images against `disk.min_free_mb`, the engine's memory, whether each published port is free or already the stack's own, whether each image is present, and whether the registry answers. With an external database it also asks that server for its version and whether the connection is encrypted. `--offline` skips the registry and the database. `docker.address_pools` counts the networks Docker can still make, and `docker.network_pool` those left in `MELETE_NETWORK_POOL` ([Docker address pools](#docker-address-pools)), and `docker.leftover_sandboxes` lists the agents' computers and networks that sandbox projects no installation on this engine uses left behind; `--remove-leftovers` removes those, and is the only time `doctor` changes anything. |
@@ -501,8 +501,40 @@ The logs hold no one's messages, files or secrets
 Mark such an installation with `"hosted": true` in `deploy/melete.deploy.json`.
 `check` and `status` then fail, under `hosted.public_url`, `hosted.web_origin`,
 `hosted.alerts` and `hosted.operator_token`, until each is set. Without the
-mark the same rules only warn. A new installation gets all of it but the alert
-target in one step:
+mark the same rules only warn.
+
+Because the installation's model key pays for everyone, a hosted installation
+also needs its cost guards, and `check` and `status` fail until each is set to
+a positive number:
+
+| Rule | Settings | Starting value |
+|---|---|---|
+| `hosted.spend_person` | `MELETE_SPEND_PERSON_DAILY_USD`, `MELETE_SPEND_PERSON_MONTHLY_USD` | $2 a day, $20 a month |
+| `hosted.spend_background` | `MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD`, `MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD` | $0.50 a day, $5 a month |
+| `hosted.spend_installation` | `MELETE_SPEND_MONTHLY_USD` | $200 a month |
+| `hosted.uploads` | `MELETE_ATTACHMENT_UPLOADS_AT_ONCE`, `MELETE_ATTACHMENT_UPLOADS_PER_WINDOW` | 3 at once, 30 in ten minutes |
+| `hosted.storage` | `MELETE_STORAGE_PER_PERSON_MB` | 2048 MB per person |
+| `hosted.computers` | `MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION` | 1 computer per person |
+| `hosted.spend_alert` | `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` or `MELETE_ALERT_SPEND_PERSON_PERCENT` | an alert at 4 times the usual hour |
+| `hosted.network_pool` | `MELETE_NETWORK_POOL` | the default range; it fails only when set to `off` |
+
+These are starting points: tune them to your price and your people (see
+[Spending caps](#spending-caps), [Attachments](#attachments) and
+[Alerts](#alerts)). The installation's `$200` is used up by ten people at
+their own `$20`, after which model calls stop for everyone until the month
+resets, so raise it as people join; the `spend_cap` alert fires at 80% of it.
+`init --hosted` also writes
+`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON=2`, which is not required: free slots
+are shared between people either way ([Engine limits](#engine-limits)). They apply only to a hosted installation; a self-hosted
+one has no limits unless you set them, and `check` never asks for them.
+
+With a computer limit of one, a person whose computer is busy with another
+task, or anyone when every computer is in use, is told so in their
+conversation in plain words, and can ask again once it is free. Size
+`MELETE_SANDBOX_MAX_CONCURRENT` to the machine: each running computer may use
+up to 2 GB.
+
+A new installation gets all of it but the alert target in one step:
 
 ```bash
 bun run melete init --connect-in-app --public-url https://assistant.example.net --hosted
@@ -511,23 +543,47 @@ bun run melete set --from-env MELETE_ALERT_WEBHOOK_URL && unset MELETE_ALERT_WEB
 ```
 
 For an installation that is already running, set the two addresses together,
-put `"hosted": true` in the deploy file, and give it a token:
+put `"hosted": true` in the deploy file, give it a token, and set the cost
+guards (`check` names each one that is missing, with a starting value):
 
 ```bash
 bun run melete set MELETE_PUBLIC_URL=https://assistant.example.net MELETE_WEB_ORIGIN=https://assistant.example.net
 read -rs MELETE_OPERATOR_TOKEN && export MELETE_OPERATOR_TOKEN   # 24 or more random characters
 bun run melete set --from-env MELETE_OPERATOR_TOKEN && unset MELETE_OPERATOR_TOKEN
+bun run melete set MELETE_SPEND_PERSON_DAILY_USD=2 MELETE_SPEND_PERSON_MONTHLY_USD=20 \
+  MELETE_SPEND_PERSON_BACKGROUND_DAILY_USD=0.5 MELETE_SPEND_PERSON_BACKGROUND_MONTHLY_USD=5 \
+  MELETE_SPEND_MONTHLY_USD=200 MELETE_ATTACHMENT_UPLOADS_AT_ONCE=3 \
+  MELETE_ATTACHMENT_UPLOADS_PER_WINDOW=30 MELETE_STORAGE_PER_PERSON_MB=2048 \
+  MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION=1 MELETE_ALERT_SPEND_HOURLY_MULTIPLE=4
 bun run melete check
 ```
 
+A hosted installation also needs a daily backup that leaves the machine:
+`check` and `status` fail once the newest backup is more than 26 hours old
+([Backups on a schedule](#backups-on-a-schedule)).
+
+People you invite should be able to read your terms and privacy notice and
+reach you for help. Host those pages yourself and name them; each is linked on
+the sign-in page, in setup and in Settings › Account only when it is set:
+
+```bash
+bun run melete set MELETE_TERMS_URL=https://example.net/terms \
+  MELETE_PRIVACY_URL=https://example.net/privacy MELETE_SUPPORT_URL=mailto:help@example.net
+```
+
+Terms and privacy take an `https://` page; support takes an `https://` page or
+a `mailto:` address.
+
 A self-hosted installation limits nobody's storage. One that hosts other
-people should cap how much each person keeps, so one account cannot fill the
-disk or the bucket for everyone: `MELETE_STORAGE_PER_PERSON_MB=2048` is a
-reasonable start. See [How much each person keeps](#how-much-each-person-keeps).
+people caps how much each person keeps (`hosted.storage` above), so one
+account cannot fill the disk or the bucket for everyone:
+`MELETE_STORAGE_PER_PERSON_MB=2048` is a reasonable start. See
+[How much each person keeps](#how-much-each-person-keeps).
 
 Each person's agent computer has a network of its own in `MELETE_NETWORK_POOL`.
 Leave that setting at its default (`10.215.0.0/16`) or another range, not
-`off`: requests the agents make through Melete never enter the pool, whatever
+`off`; a hosted installation fails `hosted.network_pool` while it is `off`.
+Requests the agents make through Melete never enter the pool, whatever
 `MELETE_PRIVATE_HOSTS` lists, so one person's agent can't reach another
 person's computer. With the pool `off`, computers take the engine's own ranges
 instead, and a range listed in `MELETE_PRIVATE_HOSTS` that covers them would
@@ -553,6 +609,31 @@ bun run melete set MELETE_REST_ROUTINES_AFTER_DAYS=14 MELETE_ROUTINES_PER_PERSON
 space may have going at once; one more is refused until one finishes or is
 stopped. It is empty, and so no limit, unless you set it.
 
+### Running it from the web app
+
+The installation's owner also has **Settings › Installation** in the web app,
+which nobody else sees and the service answers to nobody else. It shows the
+month's and the day's spending against the installation's caps, how many
+people are active, invited or turned off, the agent runs and computers going
+now against their limits, the newest backup, free disk, health and the
+version.
+
+Under it is everyone with an account: their status, when they were last
+seen, and what they spent this month and today against their caps. From
+there the owner can invite someone, send a new invite or a password reset,
+turn an account off (which signs them out everywhere) or back on, delete an
+account by typing its email, and give a person caps of their own. Those are
+dollar caps for a day, a month and background work; each stays within the
+installation's caps, and a blank one keeps the `MELETE_SPEND_PERSON_*` value.
+Token caps stay installation-wide.
+
+Every invite and reset link is shown to copy, whether or not account mail is
+set up, so an installation without mail can still bring people in. Every
+change made here, and by `melete account create`, `reset`, `disable` and
+`enable` on the host, is listed under Changes with who made it and when;
+links and codes are never kept there. The newest backup shown is the one
+`melete backup` last noted in the database, so backups taken before this
+release don't appear until the next one runs.
 ### How long call records are kept
 
 Every model call writes a row to `model_usage`, and every message, meeting,
@@ -1504,9 +1585,9 @@ links use `MELETE_PUBLIC_URL`, or the web port on this machine.
 | Command | What it does |
 |---|---|
 | `account list` | Every account: email, owner, person or guest, created, disabled, whether it has a password yet, how many browsers are signed in, and the last sign-in. |
-| `account create <email>` | A new account with a one-time link, valid for seven days, to choose its password. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
+| `account create <email>` | A new account with a one-time link, valid for seven days. The link opens as an invite: the person chooses their password and goes straight on to setting up, already signed in. On an installation with no account yet this is the owner, and setup codes stop working. Its own space is made when it first signs in. |
 | `account reset <email>` | A one-time link (60 minutes) that sets a new password. Using it signs the account out everywhere. |
-| `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept. |
+| `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept, but its work does not run, nor use its saved sign-ins, until it is enabled again. |
 | `account enable <email>` | Lets a disabled account sign in again. |
 | `account link <email>` | For seven days, lets a sign-in through your [identity provider](#sign-in-with-your-identity-provider) with this verified email claim the account even though it has a password (`MELETE_OIDC_EMAIL_LINK=no-password`). Used up by that link. |
 | `account setup-code` | A new [setup code](#claiming-a-new-installation), while no account exists. |
@@ -2641,6 +2722,48 @@ chatting at once; `0` reads on the service's own connections. Postgres's
 `max_connections` (`100` by default) must leave room for both, plus about a dozen
 that the job queue, the effects role and event notifications use.
 
+Slots are shared fairly between people too: within chats, routines and quiet
+work alike, the next free slot goes to the waiting person who is running the
+fewest, and among equals to the one who started something longest ago, so one
+person with many chats or routines cannot keep everyone else waiting.
+`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON` (unset by default, which is no limit of
+its own) also caps how many one person runs at once, even while slots are
+free; `init --hosted` writes `2`. The cap counts everything a person runs on
+one service instance; with several, each counts its own (see
+[Running more than one service instance](#running-more-than-one-service-instance)).
+Their routines and quiet work may use all of it but one slot, which stays free
+for their chats, so their own routines never hold back their chat (with a cap
+of `1`, a chat waits for their running routine). Work held by its person's cap waits
+without taking a queue worker, so other people's work still starts.
+
+## Starter tasks
+
+A new person's Home offers a few one-tap starter tasks once setup is done:
+finding well-reviewed places near them, a reminder in ten minutes, a one-page
+PDF of the day's news, pulling facts out of a file they attach, watching a
+page, and planning a trip. Each works with no apps connected, and none sends a
+message, buys anything or needs a sign-in elsewhere. A tap writes the request
+into the composer to edit; nothing is sent until the person sends it. They go
+away once the person has three chats, or when they choose "Hide these", which
+is kept for their account on every device.
+
+`MELETE_STARTERS` replaces the built-in list with your own, as a JSON array of
+at most six entries:
+
+```json
+[{ "id": "coffee-nearby", "label": "Coffee shops nearby",
+   "text": "Find 3 well-reviewed coffee shops near {city} and put them in a short list.",
+   "icon": "mapPin", "capability": "research" }]
+```
+
+`text` may hold `{city}`, filled with the city of the person's time zone, and
+one `[blank]`, whose words are selected in the composer so the first thing the
+person types replaces them. `icon` is one of `mapPin`, `bell`, `fileText`,
+`upload`, `globe`, `compass`, `sparkles`, `calendar`, `search` or `clock`;
+`capability` one of `research`, `reminders`, `files_out`, `files_in`,
+`monitoring`, `planning` or `other`. A list that does not parse or fit stops
+the service at start with the reason.
+
 ## Spending caps
 
 The engine limits above bound one attempt. Spending caps bound what the whole
@@ -2655,7 +2778,7 @@ again before every new call.
 | Setting | Limit |
 | --- | --- |
 | `MELETE_SPEND_MONTHLY_USD`, `MELETE_SPEND_DAILY_USD` | Dollars the whole installation may spend in a UTC month or day |
-| `MELETE_SPEND_PERSON_MONTHLY_USD`, `MELETE_SPEND_PERSON_DAILY_USD` | Dollars one person may spend |
+| `MELETE_SPEND_PERSON_MONTHLY_USD`, `MELETE_SPEND_PERSON_DAILY_USD` | Dollars one person may spend (at most $1,000,000, like the background caps below) |
 | `MELETE_SPEND_MONTHLY_TOKENS`, `MELETE_SPEND_DAILY_TOKENS` | Input and output tokens for the whole installation |
 | `MELETE_SPEND_PERSON_MONTHLY_TOKENS`, `MELETE_SPEND_PERSON_DAILY_TOKENS` | Tokens for one person |
 | `MELETE_SPEND_NOTICE_PERCENT` | When the person is told a limit is close (default `80`) |
@@ -2673,8 +2796,9 @@ against the person talking, and a companies scan against the person who started
 it.
 
 - At the notice level of any limit, the person sees a quiet line at the top of
-  every page, and Settings › Models shows it beside this month's usage. The
-  service log records `spending: person warning (month)` once per period.
+  every page, and above the composer in a chat with when the limit starts
+  again; Settings › Models shows it beside this month's usage. The service log
+  records `spending: person warning (month)` once per period.
 - At the limit, no new model call is made. The gateway refuses it with
   `402 spending_limit_reached` and a plain sentence: "This month's limit is
   reached; it resets on November 1." A call already answering is never cut
@@ -2707,6 +2831,12 @@ before the built-in table:
 ```bash
 MELETE_MODEL_PRICES='{"fireworks/accounts/fireworks/models/deepseek-v4p1-flash":{"input":0.3,"output":1.2},"anthropic/*sonnet*":{"input":3,"output":15,"cached_input":0.3}}'
 ```
+
+A model that charges more for a long prompt can name that price as
+`long_prompt`, for example
+`{"input":0.1,"output":0.5,"long_prompt":{"above":100000,"input":0.5,"output":2.5}}`:
+a call whose input, cached input included, is above `above` tokens is charged
+at it in full. The built-in table prices Haiku 5.5 this way.
 
 `cached_input` is the price of input read from the provider's cache, and
 `cache_write_input` the price of input written to it. Left out, each is the
@@ -2829,6 +2959,7 @@ Melete pick a better model per call:
 | `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier, the companies scan, conversation summaries, learning from corrections and the first-line acknowledgement |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
+| `MELETE_MODEL_BACKGROUND` | Everyone's scheduled and background work: routines, watches, standing runs and any turn nobody is waiting on. Unset, that work runs on the default model. A person's own messages never run on it |
 | `MELETE_MODEL_TRIAGE` | Sorting new mail and calendar changes for Home's "Needs you" list, or `off`. Unset, the owner's secondary model for scheduled work, else `MELETE_MODEL_FAST`, else the default. See [Sorting what came in](SITUATIONAL-AWARENESS.md#sorting-what-came-in) |
 
 For example:
@@ -2857,6 +2988,13 @@ The rules, in order:
 
 - A model the owner chose in the app always wins for agent turns: those turns
   are never sent to the vision model or a fallback.
+- Background work runs on `MELETE_MODEL_BACKGROUND` when it is set, in every
+  person's spaces, even when the owner chose the primary model in the app; it
+  keeps the vision model and the fallbacks. In the owner's own spaces, their
+  secondary model wins once they move scheduled work to it in Settings ›
+  Models. On a hosted installation a cheaper model here, such as
+  `anthropic/claude-haiku-5-5`, keeps routines from spending at the primary's
+  price, and their cost still counts against the background caps.
 - A model on the owner's own machine or network (the OpenAI-compatible endpoint
   at a local address, or one the owner confirmed is on their device) keeps
   every call: side calls stay on it instead of the fast model, and nothing is
@@ -2940,7 +3078,12 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
   median hour of the week before), or one person accounts for more than
   `MELETE_ALERT_SPEND_PERSON_PERCENT` percent of today's spending while others
   spend too. Neither fires below `MELETE_ALERT_SPEND_MIN_USD` (default `1`)
-  dollars. These checks are `spend_rate` and `spend_share`.
+  dollars. These checks are `spend_rate` and `spend_share`;
+- where `MELETE_SPEND_MONTHLY_USD` is set, the month's model spending reaches
+  `MELETE_SPEND_NOTICE_PERCENT` (default `80`) percent of it (`spend_cap`). At
+  the cap itself model calls are refused for everyone until the month resets,
+  so this is the time to raise it. The starting `$200` that `init --hosted`
+  writes is reached by ten people at their own `$20` cap.
 
 | Setting | What it does |
 | --- | --- |
@@ -3218,6 +3361,12 @@ own.
   serves it. Run one instance, or send every request for a computer to the same
   instance, when people take over the agent's computer; otherwise another
   instance's sweep can suspend a computer while someone is using it.
+- Attempt slots (`MELETE_ATTEMPT_CONCURRENCY`) and a person's own cap
+  (`MELETE_ATTEMPT_CONCURRENCY_PER_PERSON`) are counted by each instance for
+  the attempts it runs, so a person can run up to their cap on every instance,
+  and work one instance holds back for its person's cap can be started by
+  another. Run one instance where that cap must hold exactly. The spending caps
+  and the limits on computers are kept in Postgres and hold across instances.
 
 ## Upgrading
 
@@ -3418,7 +3567,13 @@ beyond the newest `backup.keep` (3 by default), and every one older than
 always stays. Each holds the files, so the disk they take is at most about
 `backup.keep` times what `--estimate` reports. `--to` streams every part to
 another machine over SSH and keeps nothing on this disk, for a host short on
-space; nothing is removed there.
+space. `backup.keep` and `backup.max_age_days` apply in the folder there in the
+same way: the backups in it are listed over SSH, and this installation's beyond
+them are removed there, never another installation's or one that does not say
+whose it is. The listing reads only the files that name a backup's
+installation, and of its `deploy.env` only the `COMPOSE_PROJECT_NAME` line, so
+no service key leaves that machine. When the listing fails, nothing is removed
+that night and the backup warns (`backup.keep`).
 
 **What "online" means for the files.** By default the stack keeps running. The
 database is dumped first and the files are copied after it, so every file the
@@ -3597,6 +3752,58 @@ Each run writes a private directory under `/tmp/melete-compose-restore` containi
 to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
 records a measured run and its evidence.
 
+### Backups on a schedule
+
+A backup that stays on the same disk goes when that disk goes. Run one every
+day, encrypted, to another machine, and have something tell you when a day is
+missed. `deploy/backup-schedule/` holds an example: `melete-backup.sh` takes
+the backup with `--to` and `--encrypt-to`, then calls a check-in address you
+choose; the systemd `melete-backup.timer` runs it every night, and runs a
+missed night as soon as the machine is back. Any monitor that alerts you when
+its pings stop arriving will do.
+
+A finished backup calls the check-in address exactly as you gave it. A backup
+that did not finish calls it as a failure:
+
+- Most monitors (healthchecks.io and those like it) get `/fail` added to the
+  address's path, before any query string: `https://hc-ping.com/abc?rid=1`
+  becomes `https://hc-ping.com/abc/fail?rid=1`.
+- An Uptime Kuma push address (one whose path holds `/api/push/`) signals
+  failure with `status=down`, not `/fail`, so `status` and `msg` in its query
+  are replaced: `https://kuma.example/api/push/T0k3n?status=up&msg=OK&ping=`
+  becomes `https://kuma.example/api/push/T0k3n?ping=&status=down&msg=backup%20failed`.
+
+```bash
+age-keygen -o melete-backup.key   # on another machine; keep this file off the server
+sudo cp deploy/backup-schedule/melete-backup.{service,timer} /etc/systemd/system/
+sudoedit /etc/systemd/system/melete-backup.service   # the account, the paths, the destination, the public key, the check-in address
+sudo systemctl daemon-reload && sudo systemctl enable --now melete-backup.timer
+```
+
+With cron instead, two lines in the installation account's crontab do the same.
+Cron runs with a bare `PATH` that does not include `~/.bun/bin`, so the first
+line names where `bun` is (the same `PATH` the systemd unit sets); without it
+every night's backup fails with `bun: command not found`:
+
+```cron
+PATH=/home/melete/.bun/bin:/usr/local/bin:/usr/bin:/bin
+30 3 * * * cd /home/melete/melete && MELETE_BACKUP_TO=ssh://backup-host:/srv/melete-backups MELETE_BACKUP_RECIPIENT=age1... MELETE_BACKUP_PING_URL=https://monitor.example/ping/your-check deploy/backup-schedule/melete-backup.sh
+```
+
+Then say that backups run on a schedule, in `deploy/melete.deploy.json`:
+
+```json
+"backup": { "dir": "~/melete-backups", "keep": 3, "scheduled": true }
+```
+
+`keep` (and `max_age_days`, 30 by default) hold on the backup host as well, so
+the nightly backups over SSH there never grow past the newest three.
+
+Every backup `melete backup` finishes, here or over SSH, is noted in
+`deploy/.melete/last-backup.json`. With `"scheduled": true`, and always on a
+hosted installation, `check` and `status` fail (`backup.age`) when the newest
+backup is more than 26 hours old, or when there is none yet. They read only the
+newest backup's time, so pruning old backups never changes the answer.
 ### Computers a backup leaves out
 
 `backup` takes the agent computers it can tell are this installation's. The

@@ -322,6 +322,10 @@ function actionInput(row: ActionRow): ToolSummary | null {
       const site = host(payload.url);
       return site ? summary(`On ${site}`) : null;
     }
+    case 'browser.sign_in': {
+      const site = host(object(payload.saved).origin);
+      return site ? summary(`On ${site}`, quote(object(payload.saved).label, 'request')) : null;
+    }
     case 'web.search':
       return typeof payload.query === 'string' && payload.query.trim()
         ? summary('Looked for', quote(payload.query, 'request'))
@@ -567,6 +571,19 @@ export function actionPhrase(row: ActionRow, app: string): Phrase {
       return page
         ? phrase(`Opening ${page} in the browser`, `Opened ${page} in the browser`)
         : base;
+    case 'browser.sign_in': {
+      // The site and a masked username, as bound when it was proposed; never what was typed.
+      const saved = object(payload.saved);
+      const site = host(saved.origin);
+      const account = toolText(detail.account ?? saved.account, 40);
+      if (!site) return phrase('Signing in with a saved sign-in', 'Used a saved sign-in');
+      if (detail.outcome === 'signed_in')
+        return phrase(
+          `Signing in to ${site}`,
+          account ? `Signed in to ${site} as ${account}` : `Signed in to ${site}`,
+        );
+      return phrase(`Signing in to ${site}`, `Tried to sign in to ${site}`);
+    }
     case 'computer.open':
       if (detail.navigated === false)
         return page

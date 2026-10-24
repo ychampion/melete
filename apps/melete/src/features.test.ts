@@ -16,6 +16,7 @@ import {
   featureOfConnectionKind,
   featureOfPath,
   installationFeatures,
+  mountFeatureGate,
   mountPersonFeatureGate,
   personFeatures,
 } from './features.ts';
@@ -91,6 +92,8 @@ describe('routes', () => {
     expect(featureOfPath('POST', '/sms/twilio/conn_1')).toBe('sms');
     expect(featureOfPath('GET', '/connections/conn_1/texts')).toBe('sms');
     expect(featureOfPath('GET', '/browser/sites')).toBe('browser');
+    expect(featureOfPath('GET', '/sign-ins')).toBe('browser');
+    expect(featureOfPath('POST', '/sign-ins/ssi_1/code')).toBe('browser');
     expect(featureOfPath('POST', '/sandbox/sessions/s_1/live')).toBe('computer');
     expect(featureOfPath('POST', '/sandbox/processes/prc_1/stop')).toBe('computer');
     expect(featureOfPath('GET', '/previews/tok_1/index.html')).toBe('computer');
@@ -107,10 +110,53 @@ describe('routes', () => {
       '/spaces/spc_1',
       '/me',
       '/sandboxes',
+      '/sign-ins-extra',
       '/conversations/cnv_1/callers',
       '/conversations/cnv_1/computers',
     ])
       expect([path, featureOfPath('GET', path)]).toEqual([path, null]);
+  });
+
+  test('saved sign-ins refuse browser-off requests before reaching their handlers', async () => {
+    for (const perPerson of [false, true]) {
+      const installation = installationFeatures(perPerson ? {} : { MELETE_FEATURE_BROWSER: 'off' });
+      const app = new Hono();
+      mountFeatureGate(app, installation);
+      app.use('*', async (c, next) => {
+        (c.set as (key: string, value: unknown) => void)('owner', {
+          id: c.req.header('x-person') ?? 'prn_without_browser',
+        });
+        return next();
+      });
+      mountPersonFeatureGate(app, installation, async (id) =>
+        id === 'prn_without_browser' ? { browser: false } : {},
+      );
+      let reached = 0;
+      app.all('*', (c) => {
+        reached += 1;
+        return c.json({ reached: true });
+      });
+      for (const [method, path] of [
+        ['GET', '/sign-ins'],
+        ['POST', '/sign-ins'],
+        ['PATCH', '/sign-ins/ssi_1'],
+        ['DELETE', '/sign-ins/ssi_1'],
+        ['POST', '/sign-ins/ssi_1/code'],
+        ['POST', '/sign-ins/ssi_1/check'],
+      ] as const) {
+        const response = await app.request(path, { method });
+        expect(response.status).toBe(404);
+        expect(await response.json()).toEqual({
+          error: {
+            code: 'not_available',
+            message: perPerson ? FEATURES.browser.offForYou : FEATURES.browser.off,
+          },
+        });
+      }
+      expect(reached).toBe(0);
+      const other = await app.request('/sign-ins', { headers: { 'x-person': 'prn_other' } });
+      expect(other.status).toBe(perPerson ? 200 : 404);
+    }
   });
 
   test('a feature turned off for one person is refused for them alone', async () => {

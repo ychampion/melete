@@ -113,6 +113,12 @@ export type AppContextValue = {
   /** Reads the conversations, the open permissions and the open questions together. */
   refreshConversations: () => void;
   refreshAgents: () => void;
+  /**
+   * This browser is now signed in to a different account (an invite was used):
+   * everything kept for the previous one goes, setup starts over, and the
+   * profile is read again.
+   */
+  accountSwitched: () => void;
   /** Ends the session on the service and returns to sign-in. */
   signOut: () => Promise<void>;
   /**

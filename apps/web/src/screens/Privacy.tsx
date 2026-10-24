@@ -50,7 +50,7 @@ const TOPICS: { value: SensitiveTopic; label: string }[] = [
 const SAMPLE =
   'Pay the $142.17 power bill from checking 000123456789 (routing 021000021) and send the receipt to sam.rivera@example.org.';
 
-function Section({
+export function Section({
   title,
   sub,
   children,

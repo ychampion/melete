@@ -199,6 +199,7 @@ import {
   testModelConnectionRequest,
   testModelConnectionResponse,
 } from './model-settings.ts';
+import { operatorPaths } from './operator-openapi.ts';
 import { pagesPaths } from './pages-openapi.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
@@ -334,6 +335,15 @@ import {
   sandboxViewerResponse,
 } from './sandbox-computer.ts';
 import {
+  savedSignIn,
+  savedSignInCheck,
+  savedSignInCode,
+  savedSignInCreate,
+  savedSignInDeleted,
+  savedSignInList,
+  savedSignInUpdate,
+} from './sign-ins.ts';
+import {
   deadlineResponse,
   documentDeadlineRequest,
   situationList,
@@ -348,7 +358,7 @@ import {
   spaceRemovalReport,
 } from './spaces.ts';
 import { needsYouItemResponse, needsYouList } from './triage.ts';
-import { healthDetailResponse, usageResponse } from './usage.ts';
+import { healthDetailResponse, myUsageResponse, usageResponse } from './usage.ts';
 import {
   callSession,
   voiceAside,
@@ -1448,6 +1458,7 @@ export function buildOpenApiDocument() {
         { name: 'reach' },
         { name: 'assistants' },
         { name: 'feedback' },
+        { name: 'operator' },
       ],
       paths: {
         '/push/public-key': {
@@ -4531,6 +4542,24 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/usage/mine': {
+          get: {
+            tags: ['model-providers'],
+            summary:
+              'This account’s own usage: the month by day and by kind, its limits, and its work',
+            description:
+              'Only the signed-in account’s own model calls, whoever else shares its spaces. ' +
+              '`caps` is null when the installation sets no limit for one person. Each run is a ' +
+              'piece of work this account’s calls went to this month, newest first. Days and ' +
+              'months are UTC.',
+            responses: {
+              '200': jsonResponse('Your usage', myUsageResponse),
+              '401': problem('Not signed in'),
+              '403': problem('A guest account uses only its rooms'),
+            },
+          },
+        },
+
         '/model-settings': {
           get: {
             tags: ['model-providers'],
@@ -4884,6 +4913,110 @@ export function buildOpenApiDocument() {
         ...appsPaths(),
         ...pagesPaths(),
         ...processPreviewPaths(),
+        ...operatorPaths(),
+        '/sign-ins': {
+          get: {
+            tags: ['browser'],
+            summary: 'List your saved sign-ins in this space',
+            description:
+              'Each sign-in you saved for Melete’s browser here: its site, label and username, ' +
+              'with the password always masked. Another person’s sign-ins are never listed, ' +
+              'even in a space you share.',
+            security: [{ session: [] }],
+            responses: {
+              '200': jsonResponse('Your saved sign-ins', savedSignInList),
+              '401': problem('A session is required'),
+              '403': problem('A guest cannot keep sign-ins'),
+            },
+          },
+          post: {
+            tags: ['browser'],
+            summary: 'Save a sign-in',
+            description:
+              'Seals the password, and the one-time code secret when given, under the ' +
+              'installation’s key. Only an https site is accepted. The answer carries the ' +
+              'username and a mask, never what was sealed.',
+            security: [{ session: [] }],
+            requestBody: json(savedSignInCreate),
+            responses: {
+              '201': jsonResponse('Saved', savedSignIn),
+              '400': problem('The site, the code secret or a field is not usable'),
+              '401': problem('A session is required'),
+              '403': problem('A guest cannot keep sign-ins'),
+              '409': problem('A sign-in for this site and username is already saved'),
+              '503': problem('This installation has no key to seal sign-ins with'),
+            },
+          },
+        },
+        '/sign-ins/{id}': {
+          patch: {
+            tags: ['browser'],
+            summary: 'Change a saved sign-in',
+            description:
+              'Changes its label, username, password, code secret or how it may be used. A new ' +
+              'password or code secret is sealed again under the current key. Its site never changes.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            requestBody: json(savedSignInUpdate),
+            responses: {
+              '200': jsonResponse('Changed', savedSignIn),
+              '400': problem('A field is not usable'),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours'),
+              '409': problem(
+                'Another sign-in for this site already has that username, or it cannot be opened under this installation’s key',
+              ),
+              '503': problem('This installation has no key to seal sign-ins with'),
+            },
+          },
+          delete: {
+            tags: ['browser'],
+            summary: 'Delete a saved sign-in',
+            description:
+              'Removes the sign-in and its sealed password and code secret for good, with the ' +
+              'record of its uses. Sites Melete’s browser is already signed in to stay signed in.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            responses: {
+              '200': jsonResponse('Deleted', savedSignInDeleted),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours'),
+            },
+          },
+        },
+        '/sign-ins/{id}/code': {
+          post: {
+            tags: ['browser'],
+            summary: 'Show the one-time code a saved sign-in makes now',
+            description:
+              'The current code and how many seconds it has left. The code secret itself is never sent.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            responses: {
+              '200': jsonResponse('The current code', savedSignInCode),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours, or it has no code'),
+              '409': problem('It cannot be opened under this installation’s key'),
+              '503': problem('This installation has no key to open sign-ins with'),
+            },
+          },
+        },
+        '/sign-ins/{id}/check': {
+          post: {
+            tags: ['browser'],
+            summary: 'Check a saved sign-in is ready to use',
+            description:
+              'Opens it under the installation’s key and checks its site and its code, without ' +
+              'sending anything anywhere. Says what is wrong in plain words.',
+            security: [{ session: [] }],
+            requestParams: idParam('id', 'The saved sign-in’s id'),
+            responses: {
+              '200': jsonResponse('What the checks found', savedSignInCheck),
+              '401': problem('A session is required'),
+              '404': problem('No such sign-in of yours'),
+            },
+          },
+        },
         ...spaceAuditPaths(),
       },
     },

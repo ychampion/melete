@@ -7,7 +7,12 @@ import { attempt, job, principal, space } from '../../src/db/schema.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import { createModelGateway, providersFromEnv } from '../../src/gateway/index.ts';
 import { PriceTable } from '../../src/gateway/prices.ts';
-import { NO_LIMIT, SpendingGuard, type SpendingLimits } from '../../src/gateway/spending.ts';
+import {
+  ACCOUNT_OFF_MESSAGE,
+  NO_LIMIT,
+  SpendingGuard,
+  type SpendingLimits,
+} from '../../src/gateway/spending.ts';
 import type { GatewayPrincipal, GatewaySettlement } from '../../src/gateway/types.ts';
 import { healthDetail } from '../../src/health/monitor.ts';
 import { newId } from '../../src/ids.ts';
@@ -449,6 +454,236 @@ withDb('spending caps', () => {
     await guard.record(first, settlement(5));
     await guard.record(second, settlement(5));
     await guard.admit(servicePrincipal(), call);
+  });
+
+  test("a call's hold is let go only once its cost is in the totals", async () => {
+    const { handle } = fixture();
+    // The insert of a settled call waits at this gate while it is closed.
+    let open: () => void = () => {};
+    let gate: Promise<void> | null = null;
+    const gated = new Proxy(handle.sql, {
+      apply(target, self, args) {
+        const first = args[0] as unknown;
+        const text = Array.isArray(first) && 'raw' in first ? first.join('') : '';
+        const query = Reflect.apply(target, self, args);
+        return gate && text.includes('insert into model_usage') ? gate.then(() => query) : query;
+      },
+    });
+    const guard = new SpendingGuard(
+      gated,
+      limits({ month: { usd: 1, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 60,
+      local: false,
+    };
+    // $0.50 spent this month; a call admitted beside it holds $0.60.
+    await guard.record(servicePrincipal(), settlement(50));
+    const running = servicePrincipal();
+    await guard.admit(running, call);
+    // It settles at $0.50, which reaches the $1 limit. While its spending is
+    // being written, its hold still counts, so the next call is refused.
+    gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const recording = guard.record(running, settlement(50));
+    await Bun.sleep(50);
+    let refused: unknown;
+    await guard.admit(servicePrincipal(), call).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+    gate = null;
+    open();
+    await recording;
+    refused = undefined;
+    await guard.admit(servicePrincipal(), call).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+    expect((await guard.totals(personId, NOW, true)).person?.month.usd).toBeCloseTo(1, 6);
+  });
+
+  test('the totals the caps read stay in step with every call written, changed and removed', async () => {
+    const { handle } = fixture();
+    const other = newId('own');
+    const people = [personId, other, null];
+    const moments = [
+      '2026-10-15T00:00:00.000Z',
+      '2026-10-15T23:59:59.999Z',
+      '2026-10-14T23:59:59.999Z',
+      '2026-10-01T00:00:00.000Z',
+      '2026-09-30T23:59:59.999Z',
+    ];
+    let seed = 12_345;
+    const pick = <T>(list: readonly T[]): T => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return list[seed % list.length] as T;
+    };
+    const ids: string[] = [];
+    for (let step = 0; step < 150; step++) {
+      const action = ids.length
+        ? pick(['insert', 'insert', 'change', 'remove'] as const)
+        : 'insert';
+      const cost = pick([0, 0.000_001, 0.1, 0.25, 3.5]);
+      const tokens = pick([0, 7, 1_000]);
+      if (action === 'insert') {
+        const id = randomUUID();
+        ids.push(id);
+        await handle.sql`insert into model_usage (id, created_at, principal_id, purpose, provider,
+            model, status, input_tokens, output_tokens, cost_usd, class)
+          values (${id}, ${pick(moments)}::timestamptz, ${pick(people)}, 'agent', 'fireworks',
+            ${MODEL}, 'succeeded', ${tokens}, ${pick([0, 40])}, ${cost},
+            ${pick(['interactive', 'background'])})`;
+      } else if (action === 'change') {
+        const id = pick(ids);
+        await handle.sql`update model_usage set cost_usd = ${cost}, input_tokens = ${tokens},
+            created_at = ${pick(moments)}::timestamptz, principal_id = ${pick(people)},
+            class = ${pick(['interactive', 'background'])}
+          where id = ${id}`;
+      } else {
+        const id = pick(ids);
+        ids.splice(ids.indexOf(id), 1);
+        await handle.sql`delete from model_usage where id = ${id}`;
+      }
+    }
+    // The same figures, summed straight from the calls.
+    const calls = await handle.sql<
+      {
+        created_at: Date;
+        principal_id: string | null;
+        class: string;
+        cost_usd: number;
+        tokens: number;
+      }[]
+    >`select created_at, principal_id, class, cost_usd,
+        (input_tokens + output_tokens)::int as tokens from model_usage`;
+    const expected = new Map<string, { usd: number; tokens: number }>();
+    for (const row of calls) {
+      const at = new Date(row.created_at).toISOString();
+      const scopes = ['installation'];
+      if (row.principal_id) scopes.push(`person:${row.principal_id}`);
+      if (row.principal_id && row.class === 'background')
+        scopes.push(`background:${row.principal_id}`);
+      for (const scope of scopes)
+        for (const period of [at.slice(0, 7), at.slice(0, 10)]) {
+          const key = `${period} ${scope}`;
+          const sum = expected.get(key) ?? { usd: 0, tokens: 0 };
+          expected.set(key, {
+            usd: sum.usd + Number(row.cost_usd),
+            tokens: sum.tokens + Number(row.tokens),
+          });
+        }
+    }
+    const counted = await handle.sql<
+      { period: string; scope: string; usd: number; tokens: number }[]
+    >`
+      select period, scope, usd::float8 as usd, tokens::float8 as tokens from spend_counter`;
+    const kept = new Map(
+      counted
+        .filter((row) => Math.abs(Number(row.usd)) > 1e-9 || Number(row.tokens) !== 0)
+        .map((row) => [`${row.period} ${row.scope}`, row]),
+    );
+    const nonzero = [...expected].filter(([, sum]) => Math.abs(sum.usd) > 1e-9 || sum.tokens);
+    expect([...kept.keys()].sort()).toEqual(nonzero.map(([key]) => key).sort());
+    for (const [key, sum] of nonzero) {
+      expect([key, Math.abs(Number(kept.get(key)?.usd) - sum.usd) < 1e-9]).toEqual([key, true]);
+      expect([key, Number(kept.get(key)?.tokens)]).toEqual([key, sum.tokens]);
+    }
+    // What the guard reads for a person is those rows.
+    const guard = new SpendingGuard(handle.sql, limits(), prices, () => NOW);
+    const totals = await guard.totals(personId, NOW, true);
+    const of = (key: string) => expected.get(key) ?? { usd: 0, tokens: 0 };
+    expect(totals.installation.month.usd).toBeCloseTo(of('2026-10 installation').usd, 6);
+    expect(totals.installation.day.tokens).toBe(of('2026-10-15 installation').tokens);
+    expect(totals.person?.month.usd).toBeCloseTo(of(`2026-10 person:${personId}`).usd, 6);
+    expect(totals.person?.day.tokens).toBe(of(`2026-10-15 person:${personId}`).tokens);
+    expect(totals.background?.month.usd).toBeCloseTo(of(`2026-10 background:${personId}`).usd, 6);
+    // Emptying the calls empties the totals.
+    await handle.sql`truncate model_usage`;
+    expect(await handle.sql`select 1 from spend_counter`).toHaveLength(0);
+  });
+
+  test("admitting and recording calls reads the running totals, never the month's calls", async () => {
+    const { handle } = fixture();
+    // Every statement the guard sends, as written: a sum over the month's calls
+    // would run on every model call and grow with the month.
+    const sent: string[] = [];
+    const watched = new Proxy(handle.sql, {
+      apply(target, self, args) {
+        const [strings] = args;
+        if (Array.isArray(strings) && 'raw' in strings) sent.push(strings.join('$'));
+        return Reflect.apply(target, self, args);
+      },
+    });
+    const guard = new SpendingGuard(
+      watched,
+      limits({ month: { usd: 100, tokens: null }, day: { usd: 50, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    const row = await createJob('Read the counters');
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 50,
+      local: false,
+    };
+    for (let index = 0; index < 3; index++) {
+      const principal = jobPrincipal(row.id);
+      await guard.admit(principal, call);
+      await guard.record(principal, settlement(40));
+    }
+    expect(await guard.limitForJob(row.id)).toBeNull();
+    expect((await guard.totals(personId, NOW, true)).person?.month.usd).toBe(1.2);
+    const reads = sent.filter(
+      (text) => /\bmodel_usage\b/.test(text) && !/^\s*insert into model_usage\b/.test(text),
+    );
+    expect(reads).toEqual([]);
+    expect(sent.some((text) => /\bfrom spend_counter\b/.test(text))).toBe(true);
+  });
+
+  test("a turned-off account's work starts nothing and spends nothing", async () => {
+    const { handle } = fixture();
+    const routine = await createJob('Morning digest', 'routine');
+    // No limits are set: only the account being off holds the work back.
+    const open = new SpendingGuard(handle.sql, limits(), prices, () => NOW);
+    expect(await open.limitForJob(routine.id, 'background')).toBeNull();
+    await handle.sql`update principal set disabled_at = now() where id = ${personId}`;
+    const off = new SpendingGuard(handle.sql, limits(), prices, () => NOW);
+    for (const usageClass of ['background', 'interactive'] as const)
+      expect(await off.limitForJob(routine.id, usageClass)).toEqual({
+        message: ACCOUNT_OFF_MESSAGE,
+        resetsAt: new Date('2026-10-16T00:00:00Z'),
+      });
+    // Where limits are set, the gateway refuses the account's calls as well.
+    const capped = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 100, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    let refused: unknown;
+    await capped.admit(jobPrincipal(routine.id)).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached', detail: ACCOUNT_OFF_MESSAGE });
+    // Turned back on, its work runs again.
+    await handle.sql`update principal set disabled_at = null where id = ${personId}`;
+    const back = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 100, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    expect(await back.limitForJob(routine.id, 'background')).toBeNull();
+    await back.admit(jobPrincipal(routine.id));
   });
 
   test('the health detail is ok when healthy and names a stuck job queue', async () => {

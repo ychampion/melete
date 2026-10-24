@@ -62,6 +62,53 @@ describe('GET /setup', () => {
     });
   });
 
+  test("the installation's terms, privacy and support links are given only when set", async () => {
+    const ask = async (settings: Record<string, string>) =>
+      setupStatusResponse.parse(await (await appWith([], settings).request('/setup')).json());
+    const none = await ask({});
+    expect(Object.keys(none)).not.toContain('terms_url');
+    expect(Object.keys(none)).not.toContain('privacy_url');
+    expect(Object.keys(none)).not.toContain('support_url');
+    expect(
+      await ask({
+        MELETE_TERMS_URL: 'https://example.net/terms',
+        MELETE_PRIVACY_URL: 'https://example.net/privacy',
+        MELETE_SUPPORT_URL: 'mailto:help@example.net',
+      }),
+    ).toMatchObject({
+      terms_url: 'https://example.net/terms',
+      privacy_url: 'https://example.net/privacy',
+      support_url: 'mailto:help@example.net',
+    });
+    // One alone is given alone; an empty setting is no setting.
+    const one = await ask({
+      MELETE_PRIVACY_URL: 'https://example.net/privacy',
+      MELETE_TERMS_URL: '',
+    });
+    expect(one.privacy_url).toBe('https://example.net/privacy');
+    expect(one.terms_url).toBeUndefined();
+    // Signed-in installs answer the same.
+    const installed = await appWith([{ id: 'own_01M2000000000000000000000A' }], {
+      MELETE_SUPPORT_URL: 'https://example.net/help',
+    }).request('/setup');
+    expect(setupStatusResponse.parse(await installed.json()).support_url).toBe(
+      'https://example.net/help',
+    );
+  });
+
+  test('a terms or privacy link must be https, and support https or mailto', () => {
+    for (const [name, value] of [
+      ['MELETE_TERMS_URL', 'http://example.net/terms'],
+      ['MELETE_PRIVACY_URL', 'javascript:alert(1)'],
+      ['MELETE_SUPPORT_URL', 'ftp://example.net'],
+      ['MELETE_SUPPORT_URL', 'not a link'],
+    ] as const)
+      expect(() => loadEnv({ [name]: value })).toThrow(name);
+    expect(loadEnv({ MELETE_SUPPORT_URL: 'mailto:help@example.net' }).MELETE_SUPPORT_URL).toBe(
+      'mailto:help@example.net',
+    );
+  });
+
   test('an installation made with a setup code says the first account needs it', async () => {
     const response = await appWith([], { MELETE_SETUP_CODE_HASH: 'a'.repeat(64) }).request(
       '/setup',

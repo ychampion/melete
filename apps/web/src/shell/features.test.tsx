@@ -7,6 +7,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { featureOn } from '../experience/features.ts';
 import { AppContext, type AppContextValue, NO_DECISIONS } from '../experience/hooks.ts';
+import { SettingsScreen } from '../screens/Settings.tsx';
 import { NAV, sidebarNav } from './nav.ts';
 import { Shell } from './Shell.tsx';
 
@@ -30,9 +31,9 @@ afterAll(() => {
   else delete (globalThis as { window?: unknown }).window;
 });
 
-function render(features: Record<string, boolean>) {
+function render(features: Record<string, boolean>, privacy = false) {
   const app = {
-    capabilities: { calendar: false, browser: false, multiplayer: false, features },
+    capabilities: { calendar: false, browser: true, multiplayer: false, features },
     profile: {
       name: 'Sam',
       time_zone: 'Europe/Paris',
@@ -53,14 +54,19 @@ function render(features: Record<string, boolean>) {
     refreshProfile: () => {},
     refreshConversations: () => {},
     refreshAgents: () => {},
+    accountSwitched: () => {},
     signOut: async () => {},
     member: false,
   } as AppContextValue;
   return renderToStaticMarkup(
     <AppContext.Provider value={app}>
-      <Shell title="Home">
-        <p>body</p>
-      </Shell>
+      {privacy ? (
+        <SettingsScreen tab="privacy" />
+      ) : (
+        <Shell title="Home">
+          <p>body</p>
+        </Shell>
+      )}
     </AppContext.Provider>,
   );
 }
@@ -77,4 +83,13 @@ test('Companies leaves the sidebar when the operator turned it off', () => {
   );
   expect(render({}).match(/href="#\/companies"/g)?.length ?? 0).toBeGreaterThan(0);
   expect(render({ companies: false })).not.toContain('href="#/companies"');
+});
+
+test('browser-off privacy settings offer neither saved sign-ins nor signed-in sites', () => {
+  const available = render({}, true);
+  expect(available).toContain('Saved sign-ins');
+  expect(available).toContain('browser is signed in to');
+  const off = render({ browser: false }, true);
+  expect(off).not.toContain('Saved sign-ins');
+  expect(off).not.toContain('browser is signed in to');
 });

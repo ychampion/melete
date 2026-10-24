@@ -946,6 +946,55 @@
       "when": 1789232400114,
       "tag": "0134_event_attempt_index",
       "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "7",
+      "when": 1789232400115,
+      "tag": "0135_person_spend_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 136,
+      "version": "7",
+      "when": 1789232400116,
+      "tag": "0136_sign_in_vault",
+      "breakpoints": true
+    },
+    {
+      "idx": 137,
+      "version": "7",
+      "when": 1789232400117,
+      "tag": "0137_starter_dismissal",
+      "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1789232400118,
+      "tag": "0138_operator_action_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 139,
+      "version": "7",
+      "when": 1789232400119,
+      "tag": "0139_chat_principal_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1789232400120,
+      "tag": "0140_spend_counter",
+      "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1789232400121,
+      "tag": "0141_person_computers_and_indexes",
+      "breakpoints": true
     }
   ]
 }

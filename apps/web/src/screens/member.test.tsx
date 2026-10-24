@@ -35,6 +35,7 @@ function render(node: React.ReactNode, member: boolean) {
     refreshProfile: () => {},
     refreshConversations: () => {},
     refreshAgents: () => {},
+    accountSwitched: () => {},
     signOut: async () => {},
     member,
   } as AppContextValue;

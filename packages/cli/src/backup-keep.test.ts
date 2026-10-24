@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { CommandOutput } from '../../../apps/melete/src/runtime/docker-engine.ts';
-import { runBackup } from './commands/backup.ts';
+import { parseRemoteListing, runBackup } from './commands/backup.ts';
 import { runDeploy } from './commands/deploy.ts';
 import { runRollback } from './commands/rollback.ts';
 import { runUpgrade } from './commands/upgrade.ts';
@@ -251,6 +251,75 @@ describe('which backups keep and max_age_days remove', () => {
     expect(resultOf(rig.context.printed(), 'backup.future_name')).toMatchObject({
       level: 'warn',
       detail: expect.stringContaining('melete-20270201T000000Z'),
+    });
+  });
+
+  // The other machine is played by this one: each ssh script runs here in sh.
+  const overSsh = process.platform === 'win32' ? test.skip : test;
+  overSsh('backups streamed to another machine are kept and aged as they are here', async () => {
+    const backups = backupsDir();
+    mkdirSync(backups, { recursive: true });
+    const theirs = backupSet(backups, 'melete-20260920T000000Z', {
+      ...plainOf('beta'),
+      'deploy.env': 'COMPOSE_PROJECT_NAME=beta\nOPENAI_API_KEY=sk-not-for-the-listing\n',
+    });
+    const unknown = backupSet(backups, 'melete-20260925T000000Z', {
+      'database.dump.age': 'sealed',
+      'master-key.fingerprint': `${masterKeyFingerprint('another key')}\n`,
+    });
+    const old = [
+      backupSet(backups, 'melete-20260923T000000Z', plainOf('alpha')),
+      backupSet(backups, 'melete-20260924T000000Z', {
+        'database.dump.age': 'sealed',
+        'master-key.fingerprint': `${masterKeyFingerprint(OUR_KEY)}\n`,
+      }),
+    ];
+    const recent = backupSet(backups, 'melete-20261001T000000Z', {
+      'database.dump.age': 'sealed',
+      'contents.json': JSON.stringify({ format: 1, project: 'alpha' }),
+    });
+    const listings: string[] = [];
+    const ssh = 'ssh -o BatchMode=yes vault ';
+    const rig = keepRig('alpha', join(backupsDir(), 'unused'), { keep: 2 }, (text) => {
+      if (!text.startsWith(ssh)) return null;
+      const script = text.slice(ssh.length);
+      const ran = Bun.spawnSync(['sh', '-c', script]);
+      const stdout = ran.stdout.toString();
+      if (script.includes('for d in melete-*')) listings.push(stdout);
+      return { code: ran.exitCode, stdout, stderr: ran.stderr.toString() };
+    });
+    expect(await runBackup(rig.context, ['--to', `ssh://vault:${backups}`], true)).toBe(0);
+    for (const dir of old) expect(existsSync(dir)).toBe(false);
+    for (const dir of [theirs, unknown, recent]) expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(backups, 'melete-20261002T100000Z'))).toBe(true);
+    const printed = rig.context.printed();
+    expect(resultOf(printed, 'backup.keep')?.detail).toBe(
+      'Kept the newest 2, none older than 30 days; removed melete-20260923T000000Z, melete-20260924T000000Z.',
+    );
+    expect(resultOf(printed, 'backup.keep_unknown')?.detail).toContain('melete-20260925T000000Z');
+    // Of a deploy.env, only the line naming the project left the machine.
+    const listed = parseRemoteListing(listings[0] ?? '');
+    expect(listed?.find((set) => set.entry === 'melete-20260920T000000Z')?.files).toEqual(
+      new Map([['deploy.env', 'COMPOSE_PROJECT_NAME=beta\n']]),
+    );
+    expect(listings.join('')).not.toContain(Buffer.from('sk-not').toString('base64').slice(0, 6));
+
+    // A listing that fails, or is cut short, removes nothing and says so.
+    expect(parseRemoteListing('set melete-20260920T000000Z 1790000000 3\n')).toBeNull();
+    const later = keepRig('alpha', join(backupsDir(), 'unused'), { keep: 1 }, (text) => {
+      if (!text.startsWith(ssh)) return null;
+      const script = text.slice(ssh.length);
+      if (script.includes('for d in melete-*'))
+        return { code: 255, stdout: '', stderr: 'ssh: connect to host vault: Connection refused' };
+      const ran = Bun.spawnSync(['sh', '-c', script]);
+      return { code: ran.exitCode, stdout: ran.stdout.toString(), stderr: ran.stderr.toString() };
+    });
+    later.context.now = () => new Date('2026-10-03T10:00:00Z');
+    expect(await runBackup(later.context, ['--to', `ssh://vault:${backups}`], true)).toBe(0);
+    expect(existsSync(recent)).toBe(true);
+    expect(resultOf(later.context.printed(), 'backup.keep')).toMatchObject({
+      level: 'warn',
+      detail: expect.stringContaining('could not be listed'),
     });
   });
 });

@@ -319,11 +319,11 @@ export class ModelSettingsService {
    * the OpenAI-compatible endpoint at a local address, as the operator or the
    * owner connected it.
    */
-  async servesLocally(provider: string): Promise<boolean> {
+  async servesLocally(provider: string, db: Runner = this.options.db): Promise<boolean> {
     if (provider !== OPENAI_COMPATIBLE) return false;
     const base =
       this.operatorBaseUrl() ??
-      this.usableRow(provider, await this.keyRows())?.baseUrl ??
+      this.usableRow(provider, await this.keyRows(db))?.baseUrl ??
       undefined;
     return addressIsLocal(base);
   }
@@ -349,9 +349,10 @@ export class ModelSettingsService {
    * agent's screenshots only when it reads pictures itself; a model that reads
    * none gets the screen's text, and no screenshot goes to another model for
    * it. A model the owner chose in the app is used exactly as chosen.
-   * Background work runs on the `background` role when one is filled: an
-   * attempt nobody is waiting on, as its cause says (`jobs/wake-guard.ts`
-   * `attemptCause`), the same reading that meters it as background.
+   * Background work runs on the background model when there is one
+   * (`backgroundModel`): an attempt nobody is waiting on, as its cause says
+   * (`jobs/wake-guard.ts` `attemptCause`), the same reading that meters it as
+   * background.
    */
   async routedChoice(
     routing: ModelRouting,
@@ -360,7 +361,7 @@ export class ModelSettingsService {
   ): Promise<{ provider: string; model: string; vision: boolean; refused?: string }> {
     const background =
       work?.usageClass === 'background'
-        ? (await this.routingFor(work.spaceId, routing, db)).background
+        ? await this.backgroundModel(work.spaceId, routing, db)
         : null;
     const picked = background
       ? {
@@ -848,6 +849,29 @@ export class ModelSettingsService {
       ...(row.sideTasks === 'secondary' ? { fast: choice } : {}),
       ...(row.scheduled === 'secondary' ? { background: choice } : {}),
     };
+  }
+
+  /**
+   * The model background work in this space runs on, or null for the primary:
+   * the owner's secondary when they moved scheduled work to it, else the
+   * operator's (MELETE_MODEL_BACKGROUND). The operator's never replaces a
+   * model the owner chose in the app, never takes work off a model on the
+   * owner's own machine or network, and is passed over while its provider has
+   * no credential, so that work runs on the primary rather than failing.
+   */
+  async backgroundModel(
+    spaceId: string,
+    routing: ModelRouting,
+    db: Runner = this.options.db,
+  ): Promise<ModelChoice | null> {
+    const own = (await this.personRoles(spaceId, db)).background;
+    if (own) return own;
+    const operator = routing.background;
+    if (!operator) return null;
+    const primary = await this.active(await this.chosen(db), db);
+    if (this.ownerChose(primary) || (await this.servesLocally(primary.provider, db))) return null;
+    if (!(await this.connected(operator.provider, await this.keyRows(db), db))) return null;
+    return operator;
   }
 
   /** The operator's routing for work in this space, with the roles the owner's secondary fills. */
