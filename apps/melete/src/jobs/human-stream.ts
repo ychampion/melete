@@ -57,6 +57,15 @@ const ASIDES: ReadonlySet<RuntimeEvent['type']> = new Set([
   'gap',
 ]);
 
+/** The most events recorded in one go. */
+const BATCH = 64;
+/**
+ * Held words recorded together wait for their write once this many events are
+ * queued, so the engine runs only a little ahead of the record: what watches
+ * the recorded words (a reply stuck repeating itself) can still stop it in time.
+ */
+const BACKLOG = 16;
+
 export class HumanStream {
   private text = new HumanText('reply');
   /** The latest delta, waiting for the words the pass still holds. */
@@ -65,9 +74,22 @@ export class HumanStream {
   private behind: RuntimeEvent[] = [];
   private chain: Promise<void> = Promise.resolve();
   private failure: unknown = null;
+  /** Events handed in and not yet recorded, in order, when they are recorded together. */
+  private waiting: { event: RuntimeEvent; done: (failure: { error: unknown } | null) => void }[] =
+    [];
+  private flushing = false;
 
-  /** `pass` records one event; it is called in order, one at a time. */
-  constructor(private readonly pass: (event: RuntimeEvent) => Promise<void>) {}
+  /**
+   * `pass` records one event; it is called in order, one at a time. With
+   * `together`, everything handed in while a recording is under way is
+   * recorded in one go after it, in order, and its result names each event's
+   * failure in its place (null once recorded), so words held while the record
+   * is busy reach it in a few writes rather than one per piece.
+   */
+  constructor(
+    private readonly pass: (event: RuntimeEvent) => Promise<void>,
+    private readonly together?: (events: RuntimeEvent[]) => Promise<({ error: unknown } | null)[]>,
+  ) {}
 
   emit(event: RuntimeEvent): Promise<void> {
     if (this.failure) {
@@ -79,8 +101,12 @@ export class HumanStream {
       const shown = this.text.push(event.text);
       const previous = this.release();
       const delta = { ...event, text: shown };
+      // Nothing held: acknowledged once recorded, so words the engine was told
+      // are kept are still there if the process dies right after.
       if (this.text.idle) return Promise.all([previous, this.record(delta)]).then(() => undefined);
       this.held = delta;
+      // Recorded together, a long queue of writes is waited for first.
+      if (this.together && this.waiting.length >= BACKLOG) return previous;
       // Acknowledged now: the words it waits on come with the next delta.
       void previous.catch((error: unknown) => {
         this.failure ??= error;
@@ -135,8 +161,38 @@ export class HumanStream {
   }
 
   private record(event: RuntimeEvent): Promise<void> {
-    const recorded = this.chain.then(() => this.pass(event));
-    this.chain = recorded.catch(() => undefined);
+    if (!this.together) {
+      const recorded = this.chain.then(() => this.pass(event));
+      this.chain = recorded.catch(() => undefined);
+      return recorded;
+    }
+    const recorded = new Promise<void>((resolve, reject) => {
+      this.waiting.push({
+        event,
+        done: (failure) => (failure ? reject(failure.error) : resolve()),
+      });
+    });
+    if (!this.flushing) {
+      this.flushing = true;
+      // Started after this turn of the loop, so events handed in together go together.
+      this.chain = Promise.resolve().then(() => this.flush());
+    }
     return recorded;
+  }
+
+  /** Records what is waiting, in order, a batch at a time, until nothing is. */
+  private async flush(): Promise<void> {
+    const together = this.together;
+    try {
+      while (together && this.waiting.length) {
+        const batch = this.waiting.splice(0, BATCH);
+        const results = await together(batch.map((entry) => entry.event)).catch((error: unknown) =>
+          batch.map(() => ({ error })),
+        );
+        for (const [index, entry] of batch.entries()) entry.done(results[index] ?? null);
+      }
+    } finally {
+      this.flushing = false;
+    }
   }
 }

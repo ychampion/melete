@@ -1012,6 +1012,43 @@ export class AttemptRunner {
   }
 
   async emit(claims: CapabilityClaims, input: RuntimeEvent): Promise<void> {
+    const value = this.runtimeValue(claims, input);
+    await this.jobs.transaction((tx) => this.record(tx, claims, [value]));
+  }
+
+  /**
+   * Several runtime events of one attempt, in order, recorded in one
+   * transaction: one turn of the event order lock instead of one each. Each
+   * place in the result is that event's failure, or null once it is recorded.
+   * When any of them fails, the shared transaction keeps none of them and each
+   * is recorded again on its own, so each fails or is kept exactly as it would
+   * have been alone.
+   */
+  async emitMany(
+    claims: CapabilityClaims,
+    inputs: readonly RuntimeEvent[],
+  ): Promise<({ error: unknown } | null)[]> {
+    const alone = async (input: RuntimeEvent) =>
+      this.emit(claims, input).then(
+        () => null,
+        (error: unknown) => ({ error }),
+      );
+    if (inputs.length === 1 && inputs[0]) return [await alone(inputs[0])];
+    const answering = this.answering.has(claims.attempt_id);
+    try {
+      const values = inputs.map((input) => this.runtimeValue(claims, input));
+      await this.jobs.transaction((tx) => this.record(tx, claims, values));
+      return inputs.map(() => null);
+    } catch {
+      // Whatever the shared transaction noted went with it.
+      if (!answering) this.answering.delete(claims.attempt_id);
+      const results: ({ error: unknown } | null)[] = [];
+      for (const input of inputs) results.push(await alone(input));
+      return results;
+    }
+  }
+
+  private runtimeValue(claims: CapabilityClaims, input: RuntimeEvent): RuntimeEvent {
     const value = runtimeEvent.parse(input);
     if (
       value.attempt_id !== claims.attempt_id ||
@@ -1022,21 +1059,48 @@ export class AttemptRunner {
         'Runtime event identity does not match this attempt.',
         400,
       );
-    await this.jobs.transaction(async (tx) => {
-      const row = await this.jobs.lock(tx, claims.job_id);
-      const [execution] = await tx.select().from(attempt).where(eq(attempt.id, claims.attempt_id));
-      if (!row || !execution || execution.jobId !== row.id)
-        throw new ServiceError('stale_epoch', 'Attempt not found.');
-      const [duplicate] = await tx.select().from(event).where(eq(event.dedupKey, value.dedup_key));
-      if (duplicate) return;
-      let current = true;
-      try {
-        await requireCurrentAttempt(tx, claims, { settling: true });
-      } catch (error) {
-        if (!(error instanceof ServiceError)) throw error;
-        current = false;
-        if (value.type !== 'tool_result') throw error;
-      }
+    return value;
+  }
+
+  /** Record runtime events of one attempt, in order, in the transaction given. */
+  private async record(
+    tx: Transaction,
+    claims: CapabilityClaims,
+    values: readonly RuntimeEvent[],
+  ): Promise<void> {
+    const row = await this.jobs.lock(tx, claims.job_id);
+    const [execution] = await tx.select().from(attempt).where(eq(attempt.id, claims.attempt_id));
+    if (!row || !execution || execution.jobId !== row.id)
+      throw new ServiceError('stale_epoch', 'Attempt not found.');
+    const recorded = new Set(
+      (
+        await tx
+          .select({ key: event.dedupKey })
+          .from(event)
+          .where(
+            inArray(
+              event.dedupKey,
+              values.map((value) => value.dedup_key),
+            ),
+          )
+      ).map((found) => found.key),
+    );
+    const fresh = values.filter((value) => !recorded.has(value.dedup_key));
+    if (!fresh.length) return;
+    let current = true;
+    let fenced: unknown;
+    try {
+      await requireCurrentAttempt(tx, claims, { settling: true });
+    } catch (error) {
+      if (!(error instanceof ServiceError)) throw error;
+      current = false;
+      fenced = error;
+    }
+    // Where the attempt's stream stands, event by event; saved once, after the last.
+    let cursor = execution.runtimeCursor;
+    let usage: Extract<RuntimeEvent, { type: 'attempt_outcome' }>['usage'];
+    for (const value of fresh) {
+      if (!current && value.type !== 'tool_result') throw fenced;
       let browserCall = false;
       if (value.type === 'tool_result') {
         const proposals = await tx
@@ -1072,16 +1136,13 @@ export class AttemptRunner {
           dedupKey: `${value.dedup_key}:receipt`,
         });
       }
-      if (value.local_seq <= execution.runtimeCursor)
+      if (value.local_seq <= cursor)
         throw new ServiceError('invalid_event', 'Runtime events arrived out of order.', 400);
-      if (value.local_seq > execution.runtimeCursor + 1) {
-        await this.gap(
-          tx,
-          execution.id,
-          row.id,
-          `stream:${execution.runtimeCursor + 1}:${value.local_seq}`,
-          { from_local_seq: execution.runtimeCursor + 1, to_local_seq: value.local_seq - 1 },
-        );
+      if (value.local_seq > cursor + 1) {
+        await this.gap(tx, execution.id, row.id, `stream:${cursor + 1}:${value.local_seq}`, {
+          from_local_seq: cursor + 1,
+          to_local_seq: value.local_seq - 1,
+        });
       }
       if (value.type === 'turn_started' && current) {
         const [counts] = await tx
@@ -1129,14 +1190,13 @@ export class AttemptRunner {
         payload,
         dedupKey: value.dedup_key,
       });
-      await tx
-        .update(attempt)
-        .set({
-          runtimeCursor: value.local_seq,
-          ...(value.type === 'attempt_outcome' && value.usage ? { usage: value.usage } : {}),
-        })
-        .where(eq(attempt.id, execution.id));
-    });
+      cursor = value.local_seq;
+      if (value.type === 'attempt_outcome' && value.usage) usage = value.usage;
+    }
+    await tx
+      .update(attempt)
+      .set({ runtimeCursor: cursor, ...(usage ? { usage } : {}) })
+      .where(eq(attempt.id, execution.id));
   }
 
   /**
@@ -2377,14 +2437,25 @@ export class AttemptRunner {
     const runaway = claim.turn ? runawayWatch() : null;
     // The agent's words reach the record as a person would write them, the
     // same live as saved (`human-stream.ts`).
-    const human = new HumanStream(async (event) => {
-      await this.emit(claims, event);
-      // Stopped only once the words that showed the loop are stored, so
-      // the turn's end, written next, is the last thing said.
+    // Stopped only once the words that showed the loop are stored, so the
+    // turn's end, written next, is the last thing said.
+    const watchRunaway = (event: RuntimeEvent) => {
       const loop = runaway && event.type === 'text_delta' ? runaway.see(event.text) : null;
       if (loop && !controller.signal.aborted)
         controller.abort(new RunawayReply(loop.kept, loop.copies));
-    });
+    };
+    const human = new HumanStream(
+      async (event) => {
+        await this.emit(claims, event);
+        watchRunaway(event);
+      },
+      // What arrives while a write is under way is written together after it.
+      async (events) => {
+        const results = await this.emitMany(claims, events);
+        for (const [index, event] of events.entries()) if (!results[index]) watchRunaway(event);
+        return results;
+      },
+    );
     const firstLine = new FirstLine((event) => human.emit(event), acknowledging, acknowledged);
     const acknowledgement =
       acknowledging && claim.turn
