@@ -315,7 +315,10 @@ export async function createStackJob(options: { title?: string; objective?: stri
     body: JSON.stringify({
       space_id: spaceId,
       title: options.title ?? 'Compose vertical slice',
-      objective: options.objective ?? 'Send the scripted test message once and report its receipt.',
+      // The person holds the send back, so the scripted send waits for an approval.
+      objective:
+        options.objective ??
+        'Get the scripted test message ready and report its receipt. Do not send it until I approve it.',
       budget: STACK_JOB_BUDGET,
     }),
   });
