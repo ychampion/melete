@@ -215,9 +215,13 @@ function secretForms(secret: string): string[] {
     ...(trimmed && trimmed !== secret ? readings(trimmed) : []),
   ]);
   if (wholeOnly(secret)) return [...reads];
+  // Hex, as a script that writes bytes out (`toString(16)`, a TextEncoder's bytes) leaves them.
+  const hex = Buffer.from(secret, 'utf8').toString('hex');
   return [
     ...[...reads].filter((read) => read === secret || read.trim().length >= 4),
     ...base64Forms(secret),
+    hex,
+    hex.toUpperCase(),
   ];
 }
 

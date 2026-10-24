@@ -678,6 +678,14 @@ export class SpendingGuard implements GatewaySpending {
   }
 
   async record(principal: GatewayPrincipal, settlement: GatewaySettlement): Promise<void> {
+    // This call's hold goes once: a later step failing must not take another call's.
+    let released = false;
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      this.release(principal);
+    };
+    let recorded = false;
     try {
       const scope = await this.scopeOf(principal);
       const usage = settlement.usage ?? settlement.spendEstimate ?? null;
@@ -702,19 +710,23 @@ export class SpendingGuard implements GatewaySpending {
           ${scope.usageClass}, ${scope.tier}, ${scope.triggerId}, ${scope.situationId},
           ${usage ? (usage.chargedInputTokens ?? usage.inputTokens) : 0},
           ${usage?.cacheWriteInputTokens ?? 0})`;
+      recorded = true;
       // Every total read before now lacks this call, the installation's in
       // other people's included: none is reused, nor one being read now.
       this.generation += 1;
       this.cached.clear();
       // Only now that the call is in the totals does its hold go, so neither
       // is missing in between from what the next admission reads.
-      this.release(principal);
+      releaseOnce();
       const limits = await this.limitsFor(scope.personId);
       if (anyLimit(limits)) await this.noticeOnce(scope.personId, limits);
     } catch (error) {
-      this.release(principal);
+      releaseOnce();
+      const reason = error instanceof Error ? error.message : 'error';
       process.stderr.write(
-        `spending: a model call was not recorded (${error instanceof Error ? error.message : 'error'})\n`,
+        recorded
+          ? `spending: a model call was recorded, but its spending notice was not checked (${reason})\n`
+          : `spending: a model call was not recorded (${reason})\n`,
       );
     }
   }
