@@ -91,6 +91,8 @@ test('the password is found however a page writes it into an address or a body',
     JSON.stringify(PASSWORD)
       .slice(1, -1)
       .replace(/[^\x20-\x7e]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`),
+    Buffer.from(PASSWORD, 'utf8').toString('hex'),
+    Buffer.from(PASSWORD, 'utf8').toString('hex').toUpperCase(),
   ];
   for (const form of forms) {
     expect([form, carriesSecret(`https://www.example.com/x?a=1&p=${form}#y`, PASSWORD)]).toEqual([
