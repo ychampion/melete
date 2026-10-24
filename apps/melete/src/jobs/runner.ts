@@ -569,10 +569,7 @@ export class AttemptRunner {
   private readonly answering = new Set<string>();
   /** Only record callbacks share a transaction here; none changes authority. */
   private readonly fenceReads = new WeakMap<Transaction, FenceReads>();
-  private readonly eventWrites = new EventWrites(
-    (operation) => this.jobs.transaction(operation),
-    () => (this.active.size > 1 ? 32 : 0),
-  );
+  private readonly eventWrites = new EventWrites((operation) => this.jobs.transaction(operation));
   private workerStarted = false;
   private stopping = false;
   scheduler: FairScheduler;

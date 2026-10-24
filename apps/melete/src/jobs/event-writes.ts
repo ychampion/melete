@@ -12,7 +12,10 @@ const BATCH = 64;
 
 /**
  * Writes that arrive together, or while a write is under way, share the next
- * transaction. A caller is acknowledged only after its transaction commits.
+ * transaction. Nothing waits to collect more: a write with the lock free
+ * starts at once, and a busy process shares commits through what queues
+ * behind the one under way. A caller is acknowledged only after its
+ * transaction commits.
  * A failed shared transaction is retried one caller at a time, so one stale
  * attempt cannot discard another attempt's events.
  */
@@ -22,7 +25,6 @@ export class EventWrites {
 
   constructor(
     private readonly transaction: (operation: (tx: Transaction) => Promise<void>) => Promise<void>,
-    private readonly collectionDelayMs: () => number = () => 0,
   ) {}
 
   write(operation: Write['operation'], rollback: Write['rollback']): Promise<void> {
@@ -38,14 +40,7 @@ export class EventWrites {
 
   private async flush(): Promise<void> {
     try {
-      while (this.waiting.length) {
-        const delay = this.collectionDelayMs();
-        // Concurrent attempts collect before each commit, including writes
-        // arriving during the previous one. A lone attempt starts immediately.
-        if (delay > 0 && this.waiting.length < BATCH)
-          await new Promise<void>((resolve) => setTimeout(resolve, delay));
-        await this.batch(this.waiting.splice(0, BATCH));
-      }
+      while (this.waiting.length) await this.batch(this.waiting.splice(0, BATCH));
     } finally {
       this.flushing = false;
     }

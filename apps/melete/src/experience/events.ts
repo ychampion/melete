@@ -533,9 +533,11 @@ export class ExperienceEvents {
       }
       const work = await this.changedBetween(from, through);
       const changed = work.filter(({ raw, projectable }) => raw && projectable).length;
-      // Concurrent conversations share the next wake's short collection
-      // window. A lone conversation keeps its original streaming cadence.
-      if (changed) this.readGap = EXPERIENCE_READ_GAP_MS * (changed > 1 ? 4 : 1);
+      // Many conversations changing at once share a longer collection window
+      // (up to four read gaps), so a busy service looks less often. A few
+      // keep the streaming cadence, so their words are not held back.
+      if (changed)
+        this.readGap = EXPERIENCE_READ_GAP_MS * Math.min(4, Math.max(1, Math.floor(changed / 2)));
       // Only once the conversations are known, so a failed look is tried again.
       this.through = through;
       for (const { id, spaceId, principalId, raw, projectable } of work) {

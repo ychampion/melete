@@ -39,14 +39,26 @@ function insert(tx: Transaction, value: string): void {
 const unchanged = () => {};
 
 describe('runtime writes sharing a transaction', () => {
-  test('callers ready across adjacent microtasks share the collection window', async () => {
-    const db = database();
-    const writes = new EventWrites(db.transaction, () => 2);
+  test('a write with the lock free commits at once, and writes behind a commit share the next', async () => {
+    const entered = gate();
+    const commit = gate();
+    const db = database({
+      beforeCommit: async (call) => {
+        if (call !== 1) return;
+        entered.resolve();
+        await commit.promise;
+      },
+    });
+    const writes = new EventWrites(db.transaction);
     const first = writes.write(async (tx) => insert(tx, 'a'), unchanged);
-    await Promise.resolve();
+    await entered.promise;
     const second = writes.write(async (tx) => insert(tx, 'b'), unchanged);
-    await Promise.all([first, second]);
-    expect(db.batches).toEqual([['a', 'b']]);
+    const third = writes.write(async (tx) => insert(tx, 'c'), unchanged);
+    commit.resolve();
+    await Promise.all([first, second, third]);
+    expect(db.batches).toEqual([['a'], ['b', 'c']]);
+    await writes.write(async (tx) => insert(tx, 'd'), unchanged);
+    expect(db.batches.at(-1)).toEqual(['d']);
   });
   test('concurrent callers commit together, in order, and are acknowledged only after commit', async () => {
     const entered = gate();
