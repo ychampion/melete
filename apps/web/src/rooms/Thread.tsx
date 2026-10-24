@@ -11,6 +11,7 @@ import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Status, type StatusTone } from '../design/primitives.tsx';
 import { useNow } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import { toast } from '../shell/Shell.tsx';
 import {
   followThread,
@@ -226,7 +227,11 @@ export function Thread({
     }
     const deleted = result.data.message;
     setView((current) => (current ? upsertMessage(current, deleted) : current));
-    toast({ kind: 'ok', title: 'Deleted', sub: 'Nobody reads it now, and Melete forgets it.' });
+    toast({
+      kind: 'ok',
+      title: 'Deleted',
+      sub: `Nobody reads it now, and ${assistantName()} forgets it.`,
+    });
     // The buttons that held focus are gone; the thread keeps it.
     log.current?.focus();
     return true;
@@ -353,7 +358,7 @@ function Message({
       <div className="col room-msg-main">
         <div className="room-msg-head">
           <Who label={message.author.display_name} />
-          {message.via_agent ? <span className="room-msg-tag">via Melete</span> : null}
+          {message.via_agent ? <span className="room-msg-tag">via {assistantName()}</span> : null}
           {message.kind === 'handoff_result' ? (
             <span className="room-msg-tag">Shared from their own setup</span>
           ) : null}
@@ -388,8 +393,8 @@ function Message({
         {confirming ? (
           <fieldset className="room-msg-confirm">
             <legend>
-              Delete this message? Nobody in the room reads it again, and Melete forgets what it
-              learned from it.
+              Delete this message? Nobody in the room reads it again, and {assistantName()} forgets
+              what it learned from it.
             </legend>
             <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
               <Button

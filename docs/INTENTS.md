@@ -142,8 +142,8 @@ model. Every way taken is on the receipt, with the reason.
   deletes something, sends to someone outside or changes who can see
   something, the outcome stays open, the person is handed the browser, and the
   form is never sent again unasked, whatever let it through (`a browser submit whose page doesn't confirm is recorded unclear and
-  is never resubmitted unasked`; `a submit that pays, let through by a standing
-  permission, on a page that does not say, stays unknown and asks`). After any other form, it is recorded as sent
+  is never resubmitted unasked`; `a submit that pays waits for the person even
+  under a standing permission, and on a page that does not say, stays unknown and asks`). After any other form, it is recorded as sent
   and unconfirmed, and the work goes on (`a submit nobody had to answer for, on
   a page that does not say, is recorded unconfirmed and the work goes on`).
 - **Over to you.** What the page is built of decides when the person takes

@@ -26,6 +26,7 @@ import { roomHandoff } from './handoffs.ts';
 import { memoryKey } from './memory.ts';
 import { privacyOperations } from './privacy.ts';
 import { MESSAGE_SPAN_LIMIT, messageId, messageSpan } from './reactions.ts';
+import { replyVoice } from './reply-voice.ts';
 import {
   runCreateRequest,
   runExportResponse,
@@ -269,8 +270,24 @@ export const permissionCard = z.strictObject({
    * shows a message or a file, which is read on its own.
    */
   group: id.optional(),
+  /**
+   * Present when this moves money. Allowing it needs the person to confirm it
+   * is them first (`POST /permissions/{id}/step-up`), and the Allow carries
+   * the token that returns. `available` is false when the signed-in account
+   * has no password to confirm with; `reason` says what to do then.
+   */
+  step_up: z
+    .strictObject({ method: z.literal('password'), available: z.boolean(), reason: text })
+    .optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
+/** The person's own password, to confirm a money move. Never stored or logged. */
+export const permissionStepUpRequest = z.strictObject({ password: z.string().min(1).max(1024) });
+export const permissionStepUpResponse = z.strictObject({
+  /** Spent by the one Allow of this permission, within two minutes. */
+  step_up_token: z.string(),
+  expires_at: date,
+});
 
 /**
  * The action classes a person can let auto-review decide. Anything that
@@ -324,6 +341,109 @@ export const approvalSettingsResponse = z.strictObject({
   /** Whether an independent reviewer is configured; without one, reviewed classes ask. */
   reviewer_available: z.boolean(),
 });
+
+/**
+ * The kinds of task that reach someone outside Melete, each with a level the
+ * person picks once: email, a chat app's message, a calendar invite to other
+ * people, a public post, and anything else sent outside.
+ */
+export const TASK_KINDS = [
+  'email',
+  'chat_message',
+  'calendar_invite',
+  'public_post',
+  'other_send',
+] as const;
+export const taskKind = z.enum(TASK_KINDS).meta({ id: 'TaskKind' });
+export type TaskKind = z.infer<typeof taskKind>;
+/**
+ * `draft`: the agent drafts and the person sends, unless they said to send it.
+ * `when_confident`: it sends when what the person said before makes it
+ * confident, and drafts otherwise. `always`: it sends whenever it does this.
+ * Money, the person's don't-rules, and sends that also delete or carry a
+ * password ask at every level.
+ */
+export const AUTONOMY_LEVELS = ['draft', 'when_confident', 'always'] as const;
+export const autonomyLevel = z.enum(AUTONOMY_LEVELS).meta({ id: 'AutonomyLevel' });
+export type AutonomyLevel = z.infer<typeof autonomyLevel>;
+export const autonomyChoice = z
+  .strictObject({
+    level: autonomyLevel,
+    label: z.string().max(80),
+    /** One plain line on what the level does. */
+    means: z.string().max(300),
+  })
+  .meta({ id: 'AutonomyChoice' });
+/** Each kind of task as a heading. */
+export const TASK_TITLES: Readonly<Record<TaskKind, string>> = {
+  email: 'Email to other people',
+  chat_message: 'Messages to other people (Slack, texts and similar)',
+  calendar_invite: 'Calendar invites to other people',
+  public_post: 'Public posts',
+  other_send: 'Anything else sent outside',
+};
+/** The three levels as the person chooses between them, in order. */
+export const AUTONOMY_CHOICES: ReadonlyArray<z.infer<typeof autonomyChoice>> = [
+  {
+    level: 'draft',
+    label: 'Draft it for me',
+    means: 'It drafts, and you send. It sends on its own only when you say to.',
+  },
+  {
+    level: 'when_confident',
+    label: 'Send when confident',
+    means:
+      'It sends when what you said before makes it confident you want it, and drafts otherwise.',
+  },
+  {
+    level: 'always',
+    label: 'Always send',
+    means: 'It sends whenever it does this, unless one of your don’t-rules says otherwise.',
+  },
+];
+/** The line the card that asks once says under its title. */
+export const AUTONOMY_ASK_EXPLANATION =
+  'Choose how much it does on its own for this kind of task. It goes on with the choice shown until you pick.';
+/**
+ * The card that asks once about a kind of task, the first time the agent is
+ * about to do one. The work goes on at `level` meanwhile; `chosen` is the
+ * person's answer once they give one, here or anywhere else.
+ */
+export const autonomyAsk = z
+  .strictObject({
+    id,
+    task: taskKind,
+    title: z.string().max(120),
+    explanation: z.string().max(300),
+    level: autonomyLevel,
+    chosen: autonomyLevel.nullable(),
+    choices: z.array(autonomyChoice).max(3),
+  })
+  .meta({ id: 'AutonomyAsk' });
+export type AutonomyAsk = z.infer<typeof autonomyAsk>;
+export const taskAutonomy = z
+  .strictObject({
+    task: taskKind,
+    title: z.string().max(120),
+    level: autonomyLevel,
+    /** The level it starts at on this install, until the person chooses. */
+    default_level: autonomyLevel,
+    /** Whether the person chose `level` themselves. */
+    chosen: z.boolean(),
+  })
+  .meta({ id: 'TaskAutonomy' });
+export const taskAutonomyResponse = z.strictObject({
+  tasks: z.array(taskAutonomy).max(TASK_KINDS.length),
+  choices: z.array(autonomyChoice).max(3),
+});
+export const taskAutonomyUpdate = z.strictObject({
+  task: taskKind,
+  level: autonomyLevel,
+  /** Where the person chose it: Settings, or the card that asked. */
+  from: z.enum(['settings', 'card']).default('settings'),
+});
+export type TaskAutonomyResponse = z.infer<typeof taskAutonomyResponse>;
+export type TaskAutonomyUpdate = z.infer<typeof taskAutonomyUpdate>;
 /**
  * The other asks of a card's group the person saw with it, each at the
  * version they saw. The same answer is given to each that is still waiting
@@ -338,6 +458,8 @@ export const permissionDecision = z.discriminatedUnion('option', [
     option: z.literal('allow_once'),
     version: id,
     together: permissionsTogether.optional(),
+    /** For a money move: the token its step-up returned. */
+    step_up_token: z.string().min(16).max(256).optional(),
   }),
   z.strictObject({ option: z.literal('always'), version: id, bounds: standingRuleBounds }),
   z.strictObject({
@@ -601,6 +723,8 @@ export const experienceEvent = z.strictObject({
     z.strictObject({ type: z.literal('receipt'), receipt: experienceReceipt }),
     z.strictObject({ type: z.literal('permission'), permission: permissionCard }),
     z.strictObject({ type: z.literal('question'), question: experienceQuestion }),
+    /** Asks once how much the agent does on its own for a kind of task; never waits. */
+    z.strictObject({ type: z.literal('autonomy'), autonomy: autonomyAsk }),
     z.strictObject({ type: z.literal('decision'), decision: experienceDecision }),
     z.strictObject({ type: z.literal('status'), status: turnStatus, composer: composerState }),
     z.strictObject({ type: z.literal('tool'), tool: toolCall }),
@@ -799,7 +923,60 @@ export function decodeConversationCursor(cursor: string): ConversationCursor | n
   if (extra !== undefined || !updatedAt || !id || !date.safeParse(updatedAt).success) return null;
   return { updated_at: updatedAt, id };
 }
-export const turnList = z.strictObject({ turns: z.array(conversationTurn) });
+/**
+ * A chat's messages. Without `limit` every turn comes back, oldest first. With
+ * `limit`, the newest turns older than `before` come back (all of the newest
+ * when `before` is left out), still oldest first, with `next_cursor` to read
+ * the turns before those. `events=true` adds the events of those turns.
+ */
+export const MESSAGE_PAGE_LIMIT = 200;
+/** Parameters it does not know are left out, as they were before the page parameters came. */
+export const conversationMessagesQuery = z.object({
+  limit: z.coerce.number().int().positive().max(MESSAGE_PAGE_LIMIT).optional(),
+  before: z.string().min(1).max(200).optional(),
+  events: z.enum(['true', 'false']).optional(),
+  /** With `events=true`, only the events after this seq: an `events_cursor` read on from. */
+  events_after: z.coerce.number().int().nonnegative().optional(),
+});
+/** The most events one page of messages carries; `events_cursor` says where the rest continue. */
+export const MESSAGE_PAGE_EVENT_LIMIT = 2000;
+export const turnList = z.strictObject({
+  turns: z.array(conversationTurn),
+  /** Present on a page: where the turns before these continue, or null at the first turn. */
+  next_cursor: z.string().max(200).nullable().optional(),
+  /** Present on a page: how many turns the chat has in all. */
+  total: count.optional(),
+  /**
+   * Present with `events=true`: these turns' events, oldest first. The newest
+   * page also carries events no turn owns from its first event on.
+   */
+  events: z.array(experienceEvent).optional(),
+  /**
+   * Present with `events=true`: when more of these turns' events follow than one
+   * page carries, the seq to ask for the same page again from, as `events_after`.
+   */
+  events_cursor: count.nullable().optional(),
+  /** Present with `events=true`: the chat's newest event when this was read; a stream follows on after it. */
+  last_seq: count.optional(),
+  /**
+   * Present with `events=true`: the job stream (`GET /jobs/{id}/events`) read
+   * after this seq holds these turns' messages and everything since.
+   */
+  messages_after: count.optional(),
+});
+
+/** Where a page of turns ends: the oldest one's time and id, opaque to a client. */
+export type TurnCursor = { created_at: string; id: string };
+export function encodeTurnCursor(position: TurnCursor): string {
+  return Buffer.from(`t|${position.created_at}|${position.id}`, 'utf8').toString('base64url');
+}
+/** Null for anything that is not a cursor a page of turns handed out. */
+export function decodeTurnCursor(cursor: string): TurnCursor | null {
+  const [tag, createdAt, id, extra] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+  if (tag !== 't' || extra !== undefined || !createdAt || !id || !date.safeParse(createdAt).success)
+    return null;
+  return { created_at: createdAt, id };
+}
 
 export const agentInput = z.strictObject({
   name: z.string().min(1).max(40),
@@ -1137,10 +1314,13 @@ export const profileInput = z.strictObject({
   onboarded: z.boolean().optional(),
   /** True when the person chose this time zone, or confirmed it. It is never unset. */
   time_zone_confirmed: z.boolean().optional(),
+  /** How the agent sounds in replies and drafts. Absent, it stays as it was. */
+  voice: replyVoice.optional(),
 });
 export const profileView = profileInput.extend({
   onboarded: z.boolean(),
   time_zone_confirmed: z.boolean(),
+  voice: replyVoice,
   /**
    * The address messages leave from: the connected mailbox that can send, when
    * there is one. It is read from the connection, not set here.
@@ -1414,7 +1594,7 @@ export const experienceOperations = {
     request: conversationSwitchAgent,
     response: conversationResponse,
   },
-  'GET /conversations/{id}/messages': { response: turnList },
+  'GET /conversations/{id}/messages': { query: conversationMessagesQuery, response: turnList },
   'POST /conversations/{id}/messages': {
     request: conversationMessage,
     response: messageAcceptance,
@@ -1451,8 +1631,15 @@ export const experienceOperations = {
     }),
   },
   'POST /permissions/{id}': { request: permissionDecision, response: permissionOutcome },
+  'POST /permissions/{id}/step-up': {
+    request: permissionStepUpRequest,
+    response: permissionStepUpResponse,
+  },
   'GET /approval-settings': { response: approvalSettingsResponse },
   'PUT /approval-settings': { request: approvalSettings, response: approvalSettingsResponse },
+  /** How much the agent does on its own, for each kind of task that reaches other people. */
+  'GET /autonomy': { response: taskAutonomyResponse },
+  'PUT /autonomy': { request: taskAutonomyUpdate, response: taskAutonomyResponse },
   'GET /rules': { response: z.strictObject({ rules: z.array(standingRule) }) },
   'DELETE /rules/{id}': { response: experienceOk },
   'GET /quick-answers': { response: z.strictObject({ questions: z.array(experienceQuestion) }) },

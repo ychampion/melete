@@ -1,0 +1,70 @@
+{
+  "id": "buy-on-its-computer",
+  "title": "Buy the kettle",
+  "summary": "The agent's own computer fills in the checkout and waits for the person to confirm it is them before it pays.",
+  "match": ["buy the kettle", "order the kettle", "checkout on its computer"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "tool",
+      "delay_ms": 600,
+      "name": "computer.open",
+      "title": "Opened the checkout",
+      "active_title": "Opening the checkout",
+      "meta": "shop.example.com",
+      "arguments": { "url": "https://shop.example.com/checkout" },
+      "result": { "opened": true }
+    },
+    {
+      "step": "text",
+      "delay_ms": 400,
+      "text": "The kettle is $24.99 with delivery. Paying needs you to confirm it is you, so it waits on the card."
+    },
+    {
+      "step": "propose",
+      "delay_ms": 500,
+      "ref": "pay",
+      "kind": "computer.click",
+      "connection": "test-destination",
+      "effect_class": "spend",
+      "payload": {
+        "title": "$24.99",
+        "button": "Pay $24.99",
+        "page": "shop.example.com/checkout"
+      }
+    },
+    {
+      "step": "await_approval",
+      "delay_ms": 200,
+      "ref": "pay",
+      "on_denied": "not-paid"
+    },
+    {
+      "step": "dispatch",
+      "delay_ms": 700,
+      "ref": "pay",
+      "outcome": "succeeded",
+      "external_ref": "click_2499",
+      "detail": {}
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Paid $24.99 on shop.example.com."
+    },
+    {
+      "label": "not-paid",
+      "step": "text",
+      "delay_ms": 300,
+      "text": "Nothing was paid."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Nothing was paid."
+    }
+  ]
+}

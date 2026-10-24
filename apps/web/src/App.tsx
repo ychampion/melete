@@ -9,6 +9,8 @@ import { stopPushHere } from './experience/account.ts';
 import { adapter, type Result, SESSION_ENDED_EVENT, servesBrowser } from './experience/adapter.ts';
 import { agentIdsIn, throttled, unknownAgentIds } from './experience/agent-freshness.ts';
 import { setDisplayZone } from './experience/clock.ts';
+import { featureOn } from './experience/features.ts';
+import { forgetEveryConversation } from './experience/history.ts';
 import {
   AppContext,
   type AppContextValue,
@@ -16,9 +18,11 @@ import {
   NO_DECISIONS,
   useLoad,
 } from './experience/hooks.ts';
+import { instanceName, setInstance } from './experience/instance.ts';
 import { latestOnly } from './experience/latest.ts';
 import { onboardedProfile } from './experience/profile.ts';
 import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
+import { useInstance } from './experience/use-instance.ts';
 import { useFocusBeat } from './push-focus.ts';
 import { roomsApi } from './rooms/api.ts';
 import { InviteScreen } from './rooms/InviteScreen.tsx';
@@ -68,7 +72,7 @@ function Unreachable({ error, onRetry }: { error: string; onRetry: () => void })
         }}
       >
         <MeleteMark width={64} />
-        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Couldn’t reach Melete</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Couldn’t reach {instanceName()}</h1>
         <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>{error}</p>
         <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 420 }}>
           It may be starting up or restarting. Try again in a moment.
@@ -144,17 +148,31 @@ export function App() {
     calendar: false,
     browser: false,
     multiplayer: false,
+    features: {},
   });
-  // Whether the server has rooms switched on, read once whoever is signed in.
-  // A room or invite link waits for the answer rather than leaving early.
+  // Whether the server has rooms switched on, and the names the installation
+  // goes by, read again when the signed-in account changes. No screen is
+  // drawn before the answer, so each person starts with their own features.
   const [multiplayerKnown, setMultiplayerKnown] = useState(false);
-  useEffect(() => {
+  const instance = useInstance();
+  const setupRead = useRef(0);
+  const refreshSetupStatus = useCallback(() => {
+    const read = ++setupRead.current;
     void adapter.setupStatus().then((status) => {
+      // An answer begun under the old account cannot restore its features.
+      if (read !== setupRead.current) return;
+      if (status.data) setInstance(status.data);
       const multiplayer = status.data?.multiplayer === true;
-      setCapabilities((c) => ({ ...c, multiplayer }));
+      // What the operator turned off, for whoever is signed in; a surface that is off is left out.
+      const features = status.data?.features ?? {};
+      setCapabilities((c) => ({ ...c, multiplayer, features }));
       setMultiplayerKnown(true);
     });
   }, []);
+  useEffect(refreshSetupStatus, [refreshSetupStatus]);
+  useEffect(() => {
+    document.title = instance.name;
+  }, [instance.name]);
 
   const refreshAgents = useCallback(() => {
     // A list that failed to load keeps what was last read; it never decides setup.
@@ -281,6 +299,8 @@ export function App() {
 
   // What this browser held for the account goes when its sign-in ends.
   const clearSignedIn = useCallback(() => {
+    // Nothing read under this sign-in is drawn under the next one.
+    forgetEveryConversation();
     setAgents([]);
     setAgentsLoaded(false);
     setConversations([]);
@@ -294,6 +314,9 @@ export function App() {
   // An invite used here signed this browser in to another account: what was
   // held for the previous one goes, and the profile is read for the new one.
   const accountSwitched = useCallback(() => {
+    forgetEveryConversation();
+    setMultiplayerKnown(false);
+    refreshSetupStatus();
     setAgents([]);
     setRemovedAgents([]);
     setAgentsLoaded(false);
@@ -303,7 +326,7 @@ export function App() {
     setDecisions(NO_DECISIONS);
     setOnboarded(false);
     profile.reload();
-  }, [setOnboarded, profile.reload]);
+  }, [setOnboarded, profile.reload, refreshSetupStatus]);
 
   const signOut = useCallback(async () => {
     // Notifications stop here first, while the session can still say so.
@@ -338,7 +361,11 @@ export function App() {
 
   const value = useMemo<AppContextValue>(
     () => ({
-      capabilities,
+      // The browser is drawn only where the service has one and the operator left it on.
+      capabilities: {
+        ...capabilities,
+        browser: capabilities.browser && featureOn(capabilities, 'browser'),
+      },
       profile: signedIn ? (profile.data?.profile ?? null) : null,
       onboarded,
       setOnboarded,
@@ -389,7 +416,7 @@ export function App() {
   }
 
   const [head, second] = route.parts;
-  if ((head === 'rooms' || head === 'invite') && !multiplayerKnown) return <BootFrame />;
+  if (!multiplayerKnown) return <BootFrame />;
 
   // A guest gets the rooms they were invited to, and nothing personal: no Home,
   // no chats, no setup. Their sign-in would be refused everywhere else.
@@ -432,7 +459,7 @@ export function App() {
     screen = <PlansScreen selected={second ?? null} />;
   } else if (head === 'rooms' && capabilities.multiplayer) {
     screen = <RoomsRoute parts={route.parts} />;
-  } else if (head === 'companies') {
+  } else if (head === 'companies' && featureOn(capabilities, 'companies')) {
     screen = <CompaniesScreen />;
   } else if (head === 'runs') {
     screen = <WorkScreen key={second ?? 'all'} id={second ?? null} />;

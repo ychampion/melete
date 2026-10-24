@@ -29,6 +29,8 @@ COPY apps/melete/src/connectors/web-search.ts apps/melete/src/connectors/web-sea
 COPY apps/melete/src/connectors/weather.ts apps/melete/src/connectors/weather.ts
 COPY apps/melete/src/connectors/types.ts apps/melete/src/connectors/types.ts
 COPY apps/melete/src/broker/errors.ts apps/melete/src/broker/errors.ts
+# Card numbers on a page are found the same way the broker finds them at payment.
+COPY apps/melete/src/broker/pay-moment.ts apps/melete/src/broker/pay-moment.ts
 
 USER 10003:10003
 

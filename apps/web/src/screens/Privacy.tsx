@@ -18,6 +18,7 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
+import { assistantName, instanceName } from '../experience/instance.ts';
 import { CATEGORY_NAMES, kindOf } from '../experience/privacy.ts';
 import type {
   BrowserSite,
@@ -104,7 +105,7 @@ function Sent({ preview }: { preview: PrivacyPreview }) {
     preview.route === 'local'
       ? 'This would stay on your private model, as written, and not go to a cloud model. Had it gone to one, it would have looked like this:'
       : preview.route === 'ask'
-        ? 'This would stay private. With no private model, Melete asks you before sending the version below.'
+        ? `This would stay private. With no private model, ${assistantName()} asks you before sending the version below.`
         : preview.details.length
           ? `A cloud model would see this, with ${preview.details.length} detail${preview.details.length === 1 ? '' : 's'} swapped.`
           : 'A cloud model would see this as written: nothing here matched.';
@@ -231,9 +232,10 @@ export function PrivacyTab() {
   return (
     <div className="col" style={{ gap: 14 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 620, margin: 0 }}>
-        Before anything goes to a cloud model, Melete swaps these details for placeholders such as
-        ⟦ACCOUNT_1⟧, and puts the real values back only once the answer is back inside Melete. The
-        most private work can run on a private model you connect instead.
+        Before anything goes to a cloud model, {assistantName()} swaps these details for
+        placeholders such as ⟦ACCOUNT_1⟧, and puts the real values back only once the answer is back
+        inside {instanceName()}. The most private work can run on a private model you connect
+        instead.
       </p>
       {settings.model_on_device ? (
         <div className="row" style={{ gap: 8, fontSize: 13, color: 'var(--secondary)' }}>
@@ -305,7 +307,7 @@ export function PrivacyTab() {
       {settings.model_address_local ? (
         <Section
           title="Your model’s address"
-          sub={`Your model is set to ${settings.model_address ?? 'an address'}, which is a private address on the same server or network as Melete. That can be a model you run, or a proxy or gateway that passes requests on to a cloud service, so Melete still swaps details out of what it sends there.`}
+          sub={`Your model is set to ${settings.model_address ?? 'an address'}, which is a private address on the same server or network as ${instanceName()}. That can be a model you run, or a proxy or gateway that passes requests on to a cloud service, so ${assistantName()} still swaps details out of what it sends there.`}
         >
           <SwitchRow
             label="This is a model running on a machine I control"
@@ -318,7 +320,7 @@ export function PrivacyTab() {
 
       <Section
         title="Keep private work on a private model"
-        sub="These conversations stay on your private model. Without one, Melete asks you first and sends only a redacted version if you agree."
+        sub={`These conversations stay on your private model. Without one, ${assistantName()} asks you first and sends only a redacted version if you agree.`}
       >
         <SwitchRow
           label="Everything in this space"
@@ -366,7 +368,7 @@ export function PrivacyTab() {
 
       <Section
         title="Private model"
-        sub="An OpenAI-compatible model server that Melete reaches at a private address, such as Ollama, llama.cpp or vLLM."
+        sub={`An OpenAI-compatible model server that ${instanceName()} reaches at a private address, such as Ollama, llama.cpp or vLLM.`}
       >
         <form
           className="col"
@@ -506,7 +508,7 @@ export function PrivacyTab() {
 
       <Section
         title="Always protect"
-        sub="Names of people close to you, your accounts, your address: listed here, they are swapped wherever they appear. Kept sealed inside Melete."
+        sub={`Names of people close to you, your accounts, your address: listed here, they are swapped wherever they appear. Kept sealed inside ${instanceName()}.`}
       >
         {settings.known_values.length ? (
           <div className="col" style={{ gap: 2 }}>
@@ -627,8 +629,8 @@ export function SignedInSites() {
   const list = sites.data?.sites ?? [];
   return (
     <Section
-      title="Sites Melete’s browser is signed in to"
-      sub="When you sign Melete’s browser in to a site, it stays signed in so it can carry on next time. Sign it out of any you no longer want it to use."
+      title={`Sites ${assistantName()}’s browser is signed in to`}
+      sub={`When you sign ${assistantName()}’s browser in to a site, it stays signed in so it can carry on next time. Sign it out of any you no longer want it to use.`}
     >
       {sites.error ? (
         <LoadError what="the signed-in sites" error={sites.error} onRetry={sites.reload} />
@@ -696,7 +698,7 @@ export function SignedInSites() {
         title={leaving ? `Sign out of ${leaving.label}?` : 'Sign out?'}
         sub={
           leaving
-            ? `Melete’s browser forgets its sign-in and saved data for ${leaving.domain}. You can sign it in again when it next needs the site.`
+            ? `${assistantName()}’s browser forgets its sign-in and saved data for ${leaving.domain}. You can sign it in again when it next needs the site.`
             : undefined
         }
         footer={

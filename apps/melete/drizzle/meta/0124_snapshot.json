@@ -1,5 +1,5 @@
 {
-  "id": "e5a6eda5-2b10-43a1-b09f-b8af389f383f",
+  "id": "5f862243-3304-4f8f-95eb-477ec59290fd",
   "prevId": "5b8a6dfb-59ad-4917-bab7-4790c0f5b995",
   "version": "7",
   "dialect": "postgresql",
@@ -4385,75 +4385,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.person_spend_limit": {
-      "name": "person_spend_limit",
-      "schema": "",
-      "columns": {
-        "principal_id": {
-          "name": "principal_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "day_usd": {
-          "name": "day_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "month_usd": {
-          "name": "month_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "background_day_usd": {
-          "name": "background_day_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "background_month_usd": {
-          "name": "background_month_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "person_spend_limit_principal_id_principal_id_fk": {
-          "name": "person_spend_limit_principal_id_principal_id_fk",
-          "tableFrom": "person_spend_limit",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "person_spend_limit_positive": {
-          "name": "person_spend_limit_positive",
-          "value": "coalesce(\"person_spend_limit\".\"day_usd\", 1) > 0 and coalesce(\"person_spend_limit\".\"month_usd\", 1) > 0\n        and coalesce(\"person_spend_limit\".\"background_day_usd\", 1) > 0 and coalesce(\"person_spend_limit\".\"background_month_usd\", 1) > 0"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.plan_milestone": {
@@ -22134,6 +22065,79 @@
         "stored_file_bytes": {
           "name": "stored_file_bytes",
           "value": "\"stored_file\".\"bytes\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.composio_usage": {
+      "name": "composio_usage",
+      "schema": "",
+      "columns": {
+        "period": {
+          "name": "period",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dimension": {
+          "name": "dimension",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "used": {
+          "name": "used",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "reported": {
+          "name": "reported",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "used_at_report": {
+          "name": "used_at_report",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "composio_usage_period_dimension_pk": {
+          "name": "composio_usage_period_dimension_pk",
+          "columns": [
+            "period",
+            "dimension"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "composio_usage_period_check": {
+          "name": "composio_usage_period_check",
+          "value": "\"composio_usage\".\"period\" ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'"
+        },
+        "composio_usage_dimension_check": {
+          "name": "composio_usage_dimension_check",
+          "value": "\"composio_usage\".\"dimension\" ~ '^[a-z_]{1,40}$'"
+        },
+        "composio_usage_used_check": {
+          "name": "composio_usage_used_check",
+          "value": "\"composio_usage\".\"used\" >= 0"
         }
       },
       "isRLSEnabled": false

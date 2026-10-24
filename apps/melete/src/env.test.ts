@@ -140,6 +140,24 @@ describe('the model defaults', () => {
     }
   });
 
+  test('voice asides, computer awake time and long work are not limited unless the operator sets it', () => {
+    const settings = [
+      'MELETE_VOICE_DAILY_ASIDES',
+      'MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY',
+      'MELETE_RUNS_ACTIVE_PER_SPACE_MAX',
+    ] as const;
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    for (const name of settings) {
+      expect(loadEnv({})[name]).toBeUndefined();
+      expect(loadEnv({ [name]: '' })[name]).toBeUndefined();
+      expect(loadEnv({ [name]: '14' })[name]).toBe(14);
+      for (const value of ['-1', '1.5', 'many']) expect(readEnv({ [name]: value }).ok).toBe(false);
+      // Compose and the example leave it empty too, so an install made from them is not capped.
+      expect(composeServiceEnvironment()[name] ?? '').toBe('');
+      expect(example).toContain(`\n${name}=\n`);
+    }
+  });
+
   test('Compose falls back to the same provider and model as the service and the example', () => {
     // Only a deploy/.env without these lines meets the fallback; it must not
     // select a provider the service then refuses to start with.

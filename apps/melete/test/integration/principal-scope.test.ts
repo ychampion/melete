@@ -848,6 +848,7 @@ withDb('each account acts only inside its own space', () => {
       time_zone_confirmed: true,
       sending_address: null,
       role: 'member',
+      voice: 'teammate',
     });
     expect(profileText).not.toContain('Studio Owner Name');
     expect(profileText).not.toContain('studio-owner@example.test');

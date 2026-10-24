@@ -14,6 +14,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Button, Dialog, Field, Input } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { instanceName } from '../experience/instance.ts';
 import type {
   AccountRemovalPreview,
   AccountSummary,
@@ -335,11 +336,11 @@ function OtherAccounts({ manage }: { manage: boolean }) {
   };
   return (
     <Section
-      title="Accounts on this Melete"
+      title={`Accounts on this ${instanceName()}`}
       sub={
         manage
           ? 'The accounts you made for other people. An admin can add accounts and choose the model, as you can. Deleting an account signs them out and deletes their space and everything in it.'
-          : 'You are an admin here: you can add accounts and choose the model. Only the person who set Melete up makes admins or deletes accounts.'
+          : `You are an admin here: you can add accounts and choose the model. Only the person who set ${instanceName()} up makes admins or deletes accounts.`
       }
     >
       {list.error ? (
@@ -427,7 +428,7 @@ export function AccountData() {
     <div className="col" style={{ gap: 20 }}>
       <Section
         title="Download your data"
-        sub="One zip of everything Melete keeps for you: every chat, your files, memory, automations and settings, in files any program can open. Passwords and connection keys are left out."
+        sub={`One zip of everything ${instanceName()} keeps for you: every chat, your files, memory, automations and settings, in files any program can open. Passwords and connection keys are left out.`}
       >
         <Button
           variant="outline"

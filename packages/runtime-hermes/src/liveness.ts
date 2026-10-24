@@ -78,3 +78,12 @@ export const DELIVER_CONTINUATION =
   'You stopped without telling the person anything. Write your reply to them now: what you ' +
   'found or did, with links to the pages it came from, and anything still open. Do not start ' +
   'new work.';
+
+/**
+ * What an engine that ended without a word is told when an earlier attempt of
+ * the same turn already wrote to the person: only what is new since then.
+ */
+export const SAID_DELIVER_CONTINUATION =
+  'You stopped without writing anything in this attempt. The person already has what you wrote ' +
+  'earlier in this turn, so do not repeat any of it. Write only what is new since then, such as ' +
+  'what the steps you just ran found or changed, and anything still open. Do not start new work.';

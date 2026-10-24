@@ -60,6 +60,9 @@ function routeRefusal(status: number, body: unknown, fallback: string): ToolResu
       : typeof message?.reason === 'string'
         ? message.reason
         : undefined;
+  // A feature the operator turned off says so, for the whole server or this person.
+  const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
+  if (status === 404 && code === 'not_available' && said) return refusal(said);
   // Someone else's record reads as absent, whether the route says missing or not yours.
   if (status === 404 || status === 403) return refusal('Melete has nothing by that id for you.');
   return refusal(said ?? fallback);
@@ -194,6 +197,13 @@ export const TOOL_DEFINITIONS = [
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
 ] as const satisfies ReadonlyArray<{ name: ToolName } & Record<string, unknown>>;
+
+/** The tools that read and chase what companies owe, which the companies feature holds. */
+const COMPANY_TOOLS: ReadonlySet<string> = new Set<ToolName>(['waiting_on', 'handle']);
+
+/** The tools offered where the operator has companies on or off. */
+export const offeredTools = (companies: boolean) =>
+  companies ? TOOL_DEFINITIONS : TOOL_DEFINITIONS.filter((tool) => !COMPANY_TOOLS.has(tool.name));
 
 type LedgerRow = {
   id: string;

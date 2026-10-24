@@ -492,11 +492,18 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /permissions/{id}': (spaceId, c, input) =>
       permissions?.decide(spaceId, c.req.param('id') ?? '', input) ??
       unavailable('Permissions are not connected yet.'),
+    'POST /permissions/{id}/step-up': (spaceId, c, input) =>
+      permissions?.stepUp(spaceId, c.req.param('id') ?? '', input) ??
+      unavailable('Permissions are not connected yet.'),
     'GET /approval-settings': (spaceId) =>
       permissions?.approvalSettings(spaceId) ?? unavailable('Approvals are not connected yet.'),
     'PUT /approval-settings': (spaceId, _c, input) =>
       permissions?.saveApprovalSettings(spaceId, input) ??
       unavailable('Approvals are not connected yet.'),
+    'GET /autonomy': () =>
+      permissions?.autonomy() ?? unavailable('Approvals are not connected yet.'),
+    'PUT /autonomy': (_spaceId, _c, input) =>
+      permissions?.saveAutonomy(input) ?? unavailable('Approvals are not connected yet.'),
     'GET /rules': (spaceId) =>
       permissions?.rules(spaceId) ?? unavailable('Rules are not connected yet.'),
     'DELETE /rules/{id}': (spaceId, c) =>
@@ -709,8 +716,33 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     },
     'PATCH /conversations/{id}/agent': (spaceId, c, input) =>
       service.switchAgent(spaceId, c.req.param('id') ?? '', String(input.agent_id)),
-    'GET /conversations/{id}/messages': (spaceId, c) =>
-      service.messages(spaceId, c.req.param('id') ?? ''),
+    'GET /conversations/{id}/messages': async (spaceId, c) => {
+      const id = c.req.param('id') ?? '';
+      const query = c.req.query();
+      // Where the stream takes over is read before the turns (`cut`), so an
+      // event that lands while this is read is on the stream, never in a gap.
+      // The chat is checked to be the person's first.
+      const until =
+        query.events === 'true'
+          ? await service.requireThread(spaceId, id).then(() => events.cut(spaceId, id))
+          : undefined;
+      const page = await service.messages(spaceId, id, query);
+      if (until === undefined || page.next_cursor === undefined) return page;
+      // The newest page carries the events after it too; an older one only its own.
+      return {
+        ...page,
+        ...(await events.ofTurns(
+          id,
+          page.turns.map((turn) => turn.id),
+          {
+            newest: !query.before,
+            until,
+            from: page.turns[0]?.created_at,
+            after: query.events_after === undefined ? undefined : Number(query.events_after),
+          },
+        )),
+      };
+    },
     'POST /conversations/{id}/messages': (spaceId, c, input) =>
       service.message(spaceId, c.req.param('id') ?? '', input, c.req.header('Idempotency-Key')),
     'POST /conversations/{id}/stop': (spaceId, c) => service.stop(spaceId, c.req.param('id') ?? ''),

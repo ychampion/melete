@@ -7,10 +7,11 @@ import { describe, expect, test } from 'bun:test';
 import type { VoiceAsideRequest } from '@melete/contracts';
 import { Hono } from 'hono';
 import type { Database } from '../db/client.ts';
+import { loadEnv } from '../env.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
 import { MemoryPrivacyStore, PrivacyRouter } from '../privacy/index.ts';
 import { ServiceError } from './errors.ts';
-import { mountVoice, type VoicePrivacy } from './voice.ts';
+import { mountVoice, type VoicePrivacy, voiceLimitsFromEnv } from './voice.ts';
 import {
   CANNOT_FROM_HERE,
   COMPANION_FORMAT,
@@ -420,6 +421,26 @@ describe('the aside route', () => {
       'voice_daily_limit',
     );
     expect(calls).toHaveLength(1);
+  });
+
+  test('the daily allowance is the operator’s setting: unset, none; set, it holds', async () => {
+    let at = Date.parse('2026-10-18T08:00:00Z');
+    // A few seconds apart, so the short-window pace never applies.
+    const now = () => (at += 4_000);
+    const unset = voiceLimitsFromEnv(loadEnv({})).asides;
+    expect(unset).toBe(Number.POSITIVE_INFINITY);
+    const calls: unknown[] = [];
+    const taken: string[] = [];
+    const open = route({ companion: answering(calls), taken, asides: unset, now });
+    // Past the 600 a day there used to be, every aside is answered and still counted.
+    for (let n = 0; n < 601; n++) expect((await open.post(progress)).status).toBe(200);
+    expect(taken).toHaveLength(601);
+    const set = voiceLimitsFromEnv(loadEnv({ MELETE_VOICE_DAILY_ASIDES: '2' })).asides;
+    expect(set).toBe(2);
+    const limited = route({ companion: answering([]), asides: set, now });
+    expect((await limited.post(progress)).status).toBe(200);
+    expect((await limited.post(progress)).status).toBe(200);
+    expect((await limited.post(progress)).status).toBe(429);
   });
 
   test('a refused call is given back; one that never came back stays counted', async () => {

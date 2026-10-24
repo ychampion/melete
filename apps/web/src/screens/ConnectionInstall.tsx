@@ -29,8 +29,9 @@ import type {
   ProviderAccess,
 } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
-import { APP_PASSWORD } from './app-passwords.ts';
+import { appPassword } from './app-passwords.ts';
 import './connections.css';
+import { assistantName, instanceName } from '../experience/instance.ts';
 import { McpServerAdd } from './McpServerAdd.tsx';
 
 /** Where an installation's owner reads how to turn on each sign-in. */
@@ -41,7 +42,7 @@ export const SETUP_DOCS: Record<string, string> = {
   github: 'https://github.com/ychampion/melete/blob/main/docs/CONNECTORS.md#connecting-github',
 };
 /** Said wherever an option is not offered on this Melete. */
-export const NOT_SET_UP = 'Not offered on this Melete yet.';
+export const notSetUp = () => `Not offered on this ${instanceName()} yet.`;
 
 /**
  * Whether the person looking is the one who runs this Melete: the service
@@ -143,7 +144,7 @@ function Control({
 
 /** Why a mail kind asks for an app password, and where to make one. Stated as fact, once. */
 export function AppPasswordExplainer({ kindId }: { kindId: string }) {
-  const note = APP_PASSWORD[kindId];
+  const note = appPassword()[kindId];
   if (!note) return null;
   return (
     <div
@@ -281,8 +282,8 @@ export function KindForm({
       ) : easier && runsThis(easier) && SETUP_DOCS[easier.connect.provider] ? (
         <div className="col connect-easier" role="note">
           <span>
-            Signing in with {easier.title} isn’t set up on this Melete yet, so {kind.title} connects
-            here with an app password.{' '}
+            Signing in with {easier.title} isn’t set up on this {instanceName()} yet, so{' '}
+            {kind.title} connects here with an app password.{' '}
             <a href={SETUP_DOCS[easier.connect.provider]} target="_blank" rel="noreferrer">
               How to set up {easier.title} sign-in
             </a>
@@ -443,8 +444,8 @@ export function AccountSignIn({
     if (!entry.available) return;
     let live = true;
     const starting = managed
-      ? adapter.startManagedSignIn(spaceId)
-      : adapter.startAccountSignIn(provider, spaceId);
+      ? adapter.startManagedSignIn(spaceId, managed.toolkit)
+      : adapter.startAccountSignIn(provider as 'google' | 'microsoft', spaceId);
     void starting.then((r) => {
       if (!live) return;
       setLoading(false);
@@ -468,7 +469,7 @@ export function AccountSignIn({
       }
       const asking = managed
         ? adapter.managedSignInStatus(started.sign_in_id)
-        : adapter.accountSignInStatus(provider, started.sign_in_id);
+        : adapter.accountSignInStatus(provider as 'google' | 'microsoft', started.sign_in_id);
       void asking.then((r) => {
         if (!r.data || r.data.state === 'pending') return;
         window.clearInterval(timer);
@@ -498,7 +499,7 @@ export function AccountSignIn({
       ) : (
         <>
           <span style={{ fontSize: 13, color: 'var(--text)' }}>
-            You sign in at <strong>{issuer}</strong>. Melete asks {entry.title} for:
+            You sign in at <strong>{issuer}</strong>. {instanceName()} asks {entry.title} for:
           </span>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text)' }}>
             {scopes.map((item) => (
@@ -509,7 +510,7 @@ export function AccountSignIn({
       )}
       {!entry.available ? (
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-          {NOT_SET_UP}{' '}
+          {notSetUp()}{' '}
           {runsThis(entry) && SETUP_DOCS[provider] ? (
             <a href={SETUP_DOCS[provider]} target="_blank" rel="noreferrer">
               How to set this up
@@ -588,16 +589,13 @@ function accessOf<T extends { label: string; effect_class: string; asks_first: b
 
 /** Why a catalog sign-in did not finish, by the code the service gave. */
 /** What a disconnection did at the provider, said after it. */
-const DISCONNECTED: Record<ProviderAccess | 'none', string | null> = {
-  withdrawn: 'Melete has deleted its copy, and the provider has withdrawn Melete’s access too.',
-  kept_for_other_connections:
-    'Melete has deleted its copy. Your other connections to the same account still use that sign-in, so the account keeps Melete’s access until you disconnect them too.',
-  not_offered:
-    'Melete has deleted its copy. To cancel the token itself, delete it in that account’s own security settings.',
-  not_confirmed:
-    'Melete has deleted its copy, but the provider didn’t confirm withdrawing Melete’s access. To be sure, remove it in that account’s own security settings.',
+const disconnected = (): Record<ProviderAccess | 'none', string | null> => ({
+  withdrawn: `${instanceName()} has deleted its copy, and the provider has withdrawn ${instanceName()}’s access too.`,
+  kept_for_other_connections: `${instanceName()} has deleted its copy. Your other connections to the same account still use that sign-in, so the account keeps ${instanceName()}’s access until you disconnect them too.`,
+  not_offered: `${instanceName()} has deleted its copy. To cancel the token itself, delete it in that account’s own security settings.`,
+  not_confirmed: `${instanceName()} has deleted its copy, but the provider didn’t confirm withdrawing ${instanceName()}’s access. To be sure, remove it in that account’s own security settings.`,
   none: null,
-};
+});
 
 /** The same, when the answer names the provider's page for cancelling the credential. */
 export function disconnectedNote(
@@ -607,22 +605,22 @@ export function disconnectedNote(
   const at = answer.revoke_at;
   if (at && access === 'not_offered')
     return {
-      sub: `Melete has deleted its copy. To cancel the token itself, delete it at ${at.url}`,
+      sub: `${instanceName()} has deleted its copy. To cancel the token itself, delete it at ${at.url}`,
       link: at,
     };
   if (at && access === 'not_confirmed')
     return {
-      sub: `Melete has deleted its copy, but the provider didn’t confirm withdrawing Melete’s access. To be sure, remove it at ${at.url}`,
+      sub: `${instanceName()} has deleted its copy, but the provider didn’t confirm withdrawing ${instanceName()}’s access. To be sure, remove it at ${at.url}`,
       link: at,
     };
-  return { sub: DISCONNECTED[access] };
+  return { sub: disconnected()[access] };
 }
 
-const SIGN_IN_ENDED: Record<string, string> = {
-  catalog_tools_unavailable: 'You signed in, but the app offers none of the tools Melete uses.',
+const signInEnded = (): Record<string, string> => ({
+  catalog_tools_unavailable: `You signed in, but the app offers none of the tools ${assistantName()} uses.`,
   catalog_tools_unreadable: 'You signed in, but the app did not say what it can do. Try again.',
   sign_in_declined: 'The sign-in was not approved.',
-};
+});
 
 /**
  * Connecting an app from the catalog. Before the browser leaves, the person
@@ -678,7 +676,7 @@ export function AppConnect({
           onInstalled();
           onDone();
         } else if (r.data.state === 'failed')
-          setError(SIGN_IN_ENDED[r.data.error] ?? 'The connection didn’t finish. Try again.');
+          setError(signInEnded()[r.data.error] ?? 'The connection didn’t finish. Try again.');
       });
     }, 2000);
     return () => window.clearInterval(timer);
@@ -733,7 +731,7 @@ export function AppConnect({
       {!entry.available ? (
         <div className="col" style={{ gap: 4 }}>
           <span className="app-connect-note">
-            {entry.unavailable_reason ?? NOT_SET_UP}{' '}
+            {entry.unavailable_reason ?? notSetUp()}{' '}
             {runsThis(entry) && SETUP_DOCS[entry.id] ? (
               <a href={SETUP_DOCS[entry.id]} target="_blank" rel="noreferrer">
                 How to set this up
@@ -846,14 +844,15 @@ export function AddConnection({
 }) {
   const kinds = useLoad(() => adapter.connectionKinds(), []);
   const [chosen, setChosen] = useState<string | null>(null);
-  const [signingIn, setSigningIn] = useState<string | null>(null);
+  // The sign-in being made: a catalog entry, or an app found by searching, which the catalog does not list.
+  const [signingIn, setSigningIn] = useState<SignInEntry | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const list = kinds.data?.kinds ?? [];
   const kind = list.find((item) => item.id === chosen);
   const catalog = kinds.data?.catalog ?? [];
   const accounts = catalog.filter(isSignIn);
   const apps = catalog.filter(isApp);
-  const account = accounts.find((item) => item.id === signingIn);
+  const account = signingIn;
   const app = apps.find((item) => item.id === connecting);
   const easier = (kindId: string) => accounts.find((item) => item.id === SIGN_IN_FOR[kindId]);
   // An instance that does not serve kinds cannot install anything, so nothing is drawn.
@@ -896,7 +895,7 @@ export function AddConnection({
             const entry = easier(kind.id);
             if (!entry) return;
             setChosen(null);
-            setSigningIn(entry.id);
+            setSigningIn(entry);
           }}
           onDone={() => {
             setChosen(null);
@@ -908,7 +907,7 @@ export function AddConnection({
           entries={catalog}
           kinds={list}
           {...(connected ? { connected } : {})}
-          onOpen={(item) => (isApp(item) ? setConnecting(item.id) : setSigningIn(item.id))}
+          onOpen={(item) => (isApp(item) ? setConnecting(item.id) : setSigningIn(item))}
           onChoose={setChosen}
         />
       )}
@@ -941,6 +940,10 @@ export function Catalog({
   ];
   const ready = offered.filter((item) => item.available);
   const later = offered.filter((item) => !item.available);
+  // Apps through Composio: the popular ones are cards, and any other is found by name.
+  const findsApps = ready.some(
+    (item) => item.connect.method === 'managed_sign_in' && item.connect.provider === 'app',
+  );
   const everyday = kinds.filter((item) => EVERYDAY.has(item.kind));
   const builders = kinds.filter((item) => !EVERYDAY.has(item.kind));
   return (
@@ -958,6 +961,9 @@ export function Catalog({
             />
           ))}
         </div>
+      ) : null}
+      {findsApps ? (
+        <AppSearch onOpen={onOpen} known={new Set(offered.map((item) => item.id))} />
       ) : null}
       {everyday.length ? (
         <div className="col" id="connect-mail-calendar" style={{ gap: 8 }}>
@@ -1019,11 +1025,94 @@ export function Catalog({
               ))}
             </div>
             <span className="app-connect-note">
-              Melete reads a server’s tools from its address, after you sign in when it asks, and
-              you choose which to use.
+              {instanceName()} reads a server’s tools from its address, after you sign in when it
+              asks, and you choose which to use.
             </span>
           </div>
         </details>
+      ) : null}
+    </div>
+  );
+}
+
+/** Each app Composio can sign in to, found by name, as a card that connects it. */
+function AppSearch({
+  onOpen,
+  known,
+}: {
+  onOpen: (entry: SignInEntry) => void;
+  /** Catalog ids already shown as cards, left out of the results. */
+  known: ReadonlySet<string>;
+}) {
+  const [query, setQuery] = useState('');
+  const [found, setFound] = useState<SignInEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const search = query.trim();
+    if (search.length < 2) {
+      setFound([]);
+      setError(null);
+      return;
+    }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      void adapter.searchComposioApps(search).then((r) => {
+        if (!live) return;
+        setError(r.data ? null : (r.error ?? 'Couldn’t search apps'));
+        setFound(
+          (r.data?.apps ?? [])
+            .map(
+              (app): SignInEntry => ({
+                id: `app-${app.toolkit.replace(/_/g, '-')}`,
+                title: app.title,
+                description: app.description,
+                covers: ['tools'],
+                connect: {
+                  method: 'managed_sign_in',
+                  provider: 'app',
+                  toolkit: app.toolkit,
+                  via: 'composio',
+                  start: '/managed-sign-ins',
+                  note: `Composio handles this sign-in and keeps the ${app.title} access. The agent finds and runs ${app.title} tools through Composio, and asks before any that change something.`,
+                },
+                available: true,
+              }),
+            )
+            .slice(0, 12),
+        );
+      });
+    }, 300);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
+  const shown = found.filter((entry) => !known.has(entry.id));
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <span className="connect-group">Other apps</span>
+      <Input
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Find an app by name"
+        aria-label="Find an app to connect"
+      />
+      {error ? <span className="app-connect-note">{error}</span> : null}
+      {shown.length ? (
+        <div className="app-grid">
+          {shown.map((item) => (
+            <AppCard
+              key={item.id}
+              title={item.title}
+              description={item.description}
+              available
+              connected={false}
+              onOpen={() => onOpen(item)}
+            />
+          ))}
+        </div>
+      ) : query.trim().length >= 2 && !error && !found.length ? (
+        <span className="app-connect-note">No app by that name connects here.</span>
       ) : null}
     </div>
   );

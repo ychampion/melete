@@ -14,6 +14,7 @@ import type { FeedbackReport } from '../experience/types.ts';
 import { navigate, useRoute } from '../router.ts';
 import { currentRoute, pageContext } from './diagnostics.ts';
 import './feedback.css';
+import { instanceName } from '../experience/instance.ts';
 
 const openListeners = new Set<(draft: string) => void>();
 
@@ -36,7 +37,7 @@ function Sent({ report, onClose }: { report: FeedbackReport; onClose: () => void
       onClose={onClose}
       icon="circleCheck"
       title="We’ve got it"
-      sub="Thanks for telling us. Whoever runs Melete here can see your report now."
+      sub={`Thanks for telling us. Whoever runs ${instanceName()} here can see your report now.`}
       footer={
         <Button variant="primary" onClick={onClose}>
           Done
@@ -72,7 +73,8 @@ export function ForwardingNote({ forwarded }: { forwarded: boolean }) {
   if (!forwarded) return null;
   return (
     <p style={{ fontSize: 12, color: 'var(--muted)' }}>
-      Your report and your email address are also sent to whoever runs Melete here, outside the app.
+      Your report and your email address are also sent to whoever runs {instanceName()} here,
+      outside the app.
     </p>
   );
 }

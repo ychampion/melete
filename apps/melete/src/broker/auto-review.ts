@@ -43,6 +43,7 @@ import {
 } from '@melete/contracts';
 import { isPublicAddress } from '../connectors/web.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
+import { assistantName, instanceName } from '../names.ts';
 import { labelsIn, type RoomAuthority, roomAuthorityOf } from '../rooms/approvals.ts';
 import type { CalendarCheck } from './calendar-check.ts';
 import { SEEKS_CREDENTIALS_REASON, seeksCredentials } from './credential-stores.ts';
@@ -217,10 +218,26 @@ export type RiskClass = 'spend' | 'credentials' | 'delete' | 'outside_send' | 'v
 
 /** Fields that pay or carry card details. */
 const PAYMENT_FIELD =
-  /(?:^|[_-])(?:card|cc|payment|pay|billing|iban|bic|routing|tip|deposit)(?:$|[_-])/i;
+  /(?:^|[_-])(?:card|cc|payment|pay|billing|iban|bic|routing|tip|deposit|cardnumber|ccnumber|ccnum|creditcard|debitcard|cardholder|cvv|cvc|csc|cvv2|card_?number|exp_?month|exp_?year|expiry|expiration)(?:$|[_-])/i;
 /** A form's own button that buys, pays or orders. */
 const PAYING_CONTROL =
-  /\b(?:pay|pay now|buy|buy now|purchase|checkout|check out|place order|order now|donate)\b/i;
+  /\b(?:pay|pay now|payment|buy|buy now|purchase|checkout|check out|place (?:your |my |the )?order|submit (?:your |my |the )?order|complete (?:your |my |the )?(?:order|purchase|payment|booking|reservation)|confirm (?:and pay|(?:your |my |the )?(?:order|purchase|payment|booking|reservation))|order now|book now|reserve now|start (?:my |your )?(?:paid )?(?:subscription|membership)|donate|send money|transfer (?:money|funds))\b/i;
+/** A value that is a card number: 13 to 19 digits, in groups or not, that pass the Luhn check. */
+function cardNumber(value: string): boolean {
+  if (!/^[\d -]{13,23}$/.test(value.trim())) return false;
+  const digits = value.replace(/[ -]/g, '');
+  if (digits.length < 13 || digits.length > 19) return false;
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let digit = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+  }
+  return sum % 10 === 0;
+}
 /** Fields that set who can see something. */
 const VISIBILITY_FIELD =
   /(?:^|[_-])(?:visibility|privacy|public|share|sharing|shared_with|audience|permission|permissions|access|role)(?:$|[_-])/i;
@@ -243,7 +260,20 @@ const RISK_REASON: Record<RiskClass, string> = {
  * let it through. Null for a form that does none of them. A field that only
  * guards the form against forgery (`csrf_token`) is not a credential.
  */
-export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: string } | null {
+/**
+ * Whether a form the agent submits pays: an amount among its fields, a field
+ * that is a way to pay, or a button that buys. Asked on its own, so a checkout
+ * form that also carries a card number counts as paying, not only as one that
+ * carries a payment detail.
+ */
+export function submitPays(payload: JsonObject): boolean {
+  return submitRisk(payload, true)?.risk === 'spend';
+}
+
+export function submitRisk(
+  payload: JsonObject,
+  paysOnly = false,
+): { risk: RiskClass; reason: string } | null {
   const intent =
     payload.intent && typeof payload.intent === 'object' && !Array.isArray(payload.intent)
       ? (payload.intent as JsonObject)
@@ -261,14 +291,16 @@ export function submitRisk(payload: JsonObject): { risk: RiskClass; reason: stri
     );
   const found = (risk: RiskClass) => ({ risk, reason: RISK_REASON[risk] });
   const names = fields.map(([name]) => words(name).toLowerCase());
-  if (names.some((name) => CREDENTIAL_KEY.test(name) && !FORM_GUARD.test(name)))
+  if (!paysOnly && names.some((name) => CREDENTIAL_KEY.test(name) && !FORM_GUARD.test(name)))
     return found('credentials');
   if (
     named('amount') ||
     names.some((name) => PAYMENT_FIELD.test(name)) ||
+    fields.some(([, value]) => cardNumber(String(value))) ||
     PAYING_CONTROL.test(control)
   )
     return found('spend');
+  if (paysOnly) return null;
   const action = `${control} ${typeof intent.url === 'string' ? intent.url : ''}`
     .toLowerCase()
     .replace(/[\s/?=&]+/g, '_');
@@ -354,8 +386,7 @@ export function reviewTier(input: {
     return {
       tier: 'sandbox',
       actionClass: 'sandbox',
-      reason:
-        'Melete made it in this conversation, and it goes to the trash, where Undo puts it back.',
+      reason: `${assistantName()} made it in this conversation, and it goes to the trash, where Undo puts it back.`,
     };
   if (DESTRUCTIVE.test(words(tool.name)) && !ownRemoval)
     return person('It deletes or removes something.');
@@ -365,7 +396,8 @@ export function reviewTier(input: {
     );
   if (provider === APPS_PROVIDER && APP_PUBLISHING.has(tool.name)) {
     const risks = appRisks(payload);
-    if (risks === null) return person('Melete could not check who this app would reach.');
+    if (risks === null)
+      return person(`${assistantName()} could not check who this app would reach.`);
     if (risks.length) return person(risks.join(' '));
     return {
       tier: 'apps',
@@ -409,7 +441,7 @@ export function reviewTier(input: {
       return person(
         typeof input.existingGuests === 'number'
           ? 'It changes a meeting that has guests, and they would be told.'
-          : 'Melete could not check whether this event has guests.',
+          : `${assistantName()} could not check whether this event has guests.`,
       );
     // A calendar that cannot be read for its context leaves the change to the reviewer.
     if (input.calendar === undefined)
@@ -419,21 +451,26 @@ export function reviewTier(input: {
         reason: 'It changes an event on your own calendar, with no guests.',
       };
     if (input.calendar === null)
-      return person('Melete could not read your calendar around that time.');
+      return person(`${assistantName()} could not read your calendar around that time.`);
     if (input.calendar.concern) return person(input.calendar.concern);
     if (!input.calendar.reversible)
-      return person('Melete could not keep a way to undo it, because the event changed since.');
+      return person(
+        `${assistantName()} could not keep a way to undo it, because the event changed since.`,
+      );
     return {
       tier: 'own_calendar',
       actionClass: 'own_calendar',
       reason:
         tool.name === 'calendar.delete'
-          ? 'It removes an event Melete made on your own calendar, touches nothing important, and can be put back.'
+          ? `It removes an event ${assistantName()} made on your own calendar, touches nothing important, and can be put back.`
           : 'It is on your own calendar with no guests, touches nothing important, and can be undone.',
     };
   }
-  return person('It sends or publishes outside Melete and cannot be taken back.');
+  return person(OUTSIDE_SEND_REASON);
 }
+
+/** Why a plain send or publish to someone outside is the person's: nothing else about it asks. */
+export const OUTSIDE_SEND_REASON = `It sends or publishes outside ${instanceName()} and cannot be taken back.`;
 
 /** The fields whose origin decides the tier: who, where and how much. */
 export const deciding = (payload: JsonObject, kind: string) =>
@@ -600,7 +637,7 @@ export async function reviewInput(
         field: field.path,
         value: field.value,
         trust: known?.origin_trust ?? 'unknown',
-        note: known?.description ?? 'Melete cannot say where this value came from.',
+        note: known?.description ?? `${assistantName()} cannot say where this value came from.`,
       };
     }),
   };

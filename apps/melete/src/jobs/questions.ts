@@ -18,10 +18,20 @@ import {
   type SubmissionReceipt,
   TERMINAL_STATES,
 } from '@melete/contracts';
-import { and, desc, eq, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
-import { agent, attempt, event, experienceTurn, job, owner, question } from '../db/schema.ts';
+import { databaseNow } from '../db/clock.ts';
+import {
+  action,
+  agent,
+  attempt,
+  event,
+  experienceTurn,
+  job,
+  owner,
+  question,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -179,7 +189,9 @@ export async function resolveQuestions(
   row: JobRow,
   options: ResolveOptions,
 ): Promise<QuestionResolution> {
-  const at = options.now ?? new Date();
+  // The database's clock, as a step's own times are: whether a question was
+  // raised once a step was out compares the two (`completionFacts`).
+  const at = options.now ?? (await databaseNow(tx));
   const carried = options.carried.map((spec) => questionCandidate(spec, at));
   const derived =
     options.askable && options.fallback?.trim()
@@ -209,6 +221,35 @@ export async function resolveQuestions(
   if (explicit) return { asked: explicit, deferred: pool };
   const [first, ...rest] = rankQuestions(pool);
   return { asked: first ?? null, deferred: rest };
+}
+
+/**
+ * The open question about steps that had not settled, withdrawn once every one
+ * of them has: there is nothing left to ask about them. While any step of the
+ * job is still out, or back with nobody able to say how it went, the question
+ * stays: its answers are what settles them.
+ */
+export async function withdrawSettledQuestion(tx: Transaction, jobId: string): Promise<void> {
+  const [out] = await tx
+    .select({ id: action.id })
+    .from(action)
+    .where(
+      and(eq(action.jobId, jobId), inArray(action.status, ['dispatched', 'unknown', 'unresolved'])),
+    )
+    .limit(1);
+  if (out) return;
+  const [open] = await tx
+    .select({ options: question.options })
+    .from(question)
+    .where(and(eq(question.jobId, jobId), eq(question.state, 'open')))
+    .limit(1);
+  if (open && isUnsettledQuestion((open.options ?? []) as { id: string }[]))
+    await closeOpen(
+      tx,
+      jobId,
+      { state: 'withdrawn', answer: null, answerSubmissionId: null },
+      'steps_settled',
+    );
 }
 
 async function closeOpen(

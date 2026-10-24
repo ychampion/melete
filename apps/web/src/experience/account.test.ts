@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { consumingAsAnotherAccount, passwordPageWords, resetCodeFrom } from './account.ts';
+import { setInstance } from './instance.ts';
 
 const CODE = 'q3Xw9-Lk2_TfRbYp0aZcVdEeFgHhIiJjKkLlMmNnOoP';
 
@@ -22,6 +23,12 @@ test('an invite asks for your password; a reset keeps its own words', () => {
     field: 'New password',
     submit: 'Set the new password',
   });
+  setInstance({ instance_name: 'Riverside Assistant' });
+  try {
+    expect(passwordPageWords(true).title).toBe('Welcome to Riverside Assistant');
+  } finally {
+    setInstance({});
+  }
   // An invite never talks about being signed out or about a reset.
   expect(JSON.stringify(passwordPageWords(true))).not.toMatch(/signed out|reset|new password/i);
 });

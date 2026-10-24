@@ -22,6 +22,60 @@
   line-height: 20px;
   min-width: 0;
 }
+/* Where the work stands: working, quiet for a while, waiting, or stopped. */
+.chat-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 1;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chat-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted);
+}
+.chat-state-pill[data-tone="working"] .chat-state-dot {
+  background: var(--primary);
+}
+.chat-state-pill[data-tone="quiet"] {
+  background: var(--sand);
+  color: var(--sand-ink);
+}
+.chat-state-pill[data-tone="quiet"] .chat-state-dot {
+  background: var(--rating);
+}
+.chat-state-pill[data-tone="waiting"] {
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+}
+.chat-state-pill[data-tone="waiting"] .chat-state-dot {
+  background: var(--blue-ink);
+}
+.chat-state[data-tone="quiet"]:not(.chat-state-pill) {
+  color: var(--sand-ink);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chat-state-pill[data-tone="working"] .chat-state-dot {
+    animation: chat-state-pulse 1.6s ease-in-out infinite;
+  }
+}
+@keyframes chat-state-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
 /* The column sits at the bottom of the sheet, so a short chat reads from the composer up. */
 .chat-scroll {
   display: flex;
@@ -175,6 +229,29 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* A turn's bubble and answer sit as they did straight in the transcript. */
+.turn-slot {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+}
+/* A turn far from the view keeps its height and its words, laid out only when near. */
+.turn-slot[data-drawn="false"] {
+  overflow: hidden;
+  content-visibility: auto;
+}
+.turn-words {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.turn-words p {
+  margin: 0;
 }
 .turn-text {
   display: flex;
@@ -1215,6 +1292,58 @@ a.log-line-link > .log-chevron {
   font-size: 12px;
 }
 
+/* the card that asks once how much the agent does on its own */
+.autonomy-ask {
+  margin: 0;
+  min-width: 0;
+}
+.autonomy-ask-title {
+  float: left;
+  width: 100%;
+  padding: 0 2px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.autonomy-ask-why,
+.autonomy-ask-foot {
+  clear: both;
+  margin: 0;
+  padding: 0 2px 2px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+}
+.autonomy-ask-foot {
+  padding-top: 2px;
+}
+.autonomy-ask-option {
+  align-items: flex-start;
+  cursor: pointer;
+  padding: 10px 12px;
+}
+.autonomy-ask-option .radio {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.autonomy-ask-option:has(.radio:checked) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.autonomy-ask-option:has(.radio:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.autonomy-ask-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.autonomy-ask-means {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+}
 /* questionnaire */
 .question {
   display: flex;

@@ -1,3 +1,4 @@
+import { cardNumber, replaceCardNumbers } from '../../broker/pay-moment.ts';
 import { sensitiveName } from './visible.ts';
 
 export const REDACTED = '[redacted]';
@@ -60,7 +61,9 @@ function evenGroups(run: string): boolean {
 }
 
 function patterns(line: string): string {
-  return line
+  // A card's number, whole or grouped, in any script's digits: a field with no
+  // card's name of its own still shows it as its value.
+  return replaceCardNumbers(line, cardNumber, () => REDACTED)
     .replace(TOKEN, REDACTED)
     .replace(BASE32_SEED, REDACTED)
     .replace(MIXED_SEED, REDACTED)
@@ -71,8 +74,9 @@ function patterns(line: string): string {
 
 /**
  * What a page still shows, with the shapes of a secret blanked: a line that names one loses its
- * value, and grouped codes, authenticator seeds, tokens and standalone runs of six to ten digits
- * go wherever they appear. Build and tracking numbers are deliberately kept. This is a fixed
+ * value, and card numbers, grouped codes, authenticator seeds, tokens and standalone runs of six
+ * to ten digits go wherever they appear. Build and tracking numbers are deliberately kept, but
+ * for the few that read as a card network's number. This is a fixed
  * rule rather than a judgement about a page.
  */
 export function redactSecretText(text: string): string {

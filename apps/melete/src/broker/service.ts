@@ -15,10 +15,12 @@ import {
   executionIntent,
   findTool,
   hashOriginWarnings,
+  humanText,
   INTENT_CAPTURE_TOOL,
   intentKey,
   isTrustGatedEffect,
   type JsonObject,
+  type JsonValue,
   jobConstraints,
   MEMORY_SEARCH_TOOL,
   type OriginWarning,
@@ -58,11 +60,13 @@ import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import { isEgressTool } from '../egress/adapters/types.ts';
 import { agentAccess, computerTool, directSend } from '../experience/access.ts';
 import { plainText, tooLongToAsk } from '../experience/projectors.ts';
-import { appendToolTrace, heldSearchCall } from '../experience/tools.ts';
+import { appendToolTrace, heldSearchCall, suggestedStepCall } from '../experience/tools.ts';
+import { turnSpoke } from '../gateway/turn-notes.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { UNSETTLED_OPTIONS } from '../jobs/unsettled.ts';
 import { OUTDATED_NOTE } from '../jobs/withdraw.ts';
+import { assistantName, instanceName } from '../names.ts';
 import { PathRefusal, routeEffect, unsettledBefore } from '../paths/gate.ts';
 import { recordPathOutcome, taskKindOf } from '../paths/registry.ts';
 import { jobVisibleTo } from '../principals/authority.ts';
@@ -96,6 +100,7 @@ import {
   deciding,
   escalationReason,
   loadApprovalSettings,
+  OUTSIDE_SEND_REASON,
   reachesOnlyPublisher,
   recordReview,
   reviewerApproves,
@@ -105,6 +110,22 @@ import {
   submitRisk,
   type TierDecision,
 } from './auto-review.ts';
+import {
+  type AutonomyLevel,
+  askOnce,
+  defaultLevels,
+  draftKindOf,
+  keepSaidLevels,
+  LEVEL_NAMES,
+  levelsFor,
+  personOf,
+  roomWork,
+  sendKindOf,
+  sendsFromChat,
+  TASK_NAMES,
+  type TaskKind,
+  type TaskLevel,
+} from './autonomy.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import {
   type CalendarCheck,
@@ -123,8 +144,33 @@ import {
 import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
+import { actionKinds, type DontMatch, dontRulesFor, matchDontRule } from './dont-rules.ts';
 import { BrokerFault, inputProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
+import { humanPayload, typedInConversation } from './human-payload.ts';
+import { type MoneyMove, moneyMove } from './money.ts';
+import {
+  browserPays,
+  type ComputerStep,
+  holdsCardNumber,
+  PAGE_STEPS,
+  type PayKind,
+  payMoment,
+  screenOf,
+  shellPays,
+  siteOf,
+  stepsOnPage,
+} from './pay-moment.ts';
+import {
+  actionWords,
+  type Confidence,
+  gatherEvidence,
+  judge,
+  type MessagesToOthers,
+  PROACTIVE_DEFAULT_THRESHOLD,
+  proactiveAttempt,
+  reaches,
+} from './proactive.ts';
 import {
   actionFromRow,
   appendEvent,
@@ -138,9 +184,44 @@ import {
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
 import { RESUME_ACTION_TOOL } from './resume.ts';
 import { eventBefore, heldKind, heldUntil, reversibleProposal } from './reversals.ts';
+import { toldToSend } from './told.ts';
+
+/** Why a message went without a card: the person's own words in this turn. */
+const TOLD_TO_SEND = 'You said to send it in your message.';
+
+/** Which level for a kind of task applied, in one sentence for its receipt. */
+function levelLine(level: TaskLevel): string {
+  const name = `“${LEVEL_NAMES[level.level].short}”`;
+  return level.chosen
+    ? `Your setting for ${TASK_NAMES[level.kind].said}: ${name}.`
+    : `The default for ${TASK_NAMES[level.kind].said}: ${name}.`;
+}
+
+/** A judgement whose reason also says which level applied. */
+const withSetting = (confidence: Confidence, setting: string): Confidence => ({
+  ...confidence,
+  reason: `${confidence.reason} ${setting}`,
+});
+
+/** Steps of the agent's own computer that can enter a card or press the button that pays. */
+const COMPUTER_PAY_STEPS = new Set([
+  'computer.click',
+  'computer.type',
+  'computer.key',
+  'computer.batch',
+]);
+
+/** How many of the computer's steps are read back at once, looking for where the page began. */
+const PAGE_BATCH = 40;
+/** How long a step-up for entering a card covers the rest of that checkout (`checkoutCover`). */
+const CHECKOUT_COVER_MS = 5 * 60_000;
+/** A step that pays, and whether it enters a card or sends one, and on which origin. */
+type PaidStep = MoneyMove & { kind: PayKind; origin: string | null };
+
 import { type ReviewInput, type ReviewVerdict, reviewWithin } from './reviewer.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import { OWN_COMPUTER_PICTURE_TOOLS, readScreenshot, SCREENSHOT_TOOLS } from './screenshots.ts';
+import { STEP_UP_NEEDED, spendStepUp, stepUpHolds } from './step-up.ts';
 import {
   collectOriginFields,
   createTableTrustResolver,
@@ -251,6 +332,17 @@ export type BrokerOptions = {
    * `MELETE_SEND_HOLD_SECONDS`.
    */
   sendHoldMs?: number;
+  /**
+   * Work nobody is waiting on that would reach someone outside Melete goes
+   * ahead on its own from this confidence (0 to 1) and is otherwise left as a
+   * suggestion (`proactive.ts`). `MELETE_PROACTIVE_CONFIDENCE`, 0.6 by default.
+   */
+  proactiveThreshold?: number;
+  /**
+   * Whether such work may send a chat app's message to others on that
+   * confidence, or keeps it a suggestion always. `MELETE_MESSAGES_TO_OTHERS`.
+   */
+  messagesToOthers?: MessagesToOthers;
 };
 
 export type StandingGrantInput = {
@@ -284,7 +376,46 @@ type Admissibility = {
    * the action asks nobody anyway.
    */
   auto: { tier: TierDecision; outcome: 'policy_approved' | 'review' | 'person' } | null;
+  /**
+   * Why the action moves money, or null. A money move always asks, nothing
+   * covers it, and its Allow counts only with the person's step-up.
+   */
+  money: MoneyMove | null;
+  /** The person's own don't-rule this action goes against, which its card quotes. */
+  dont: DontMatch | null;
+  /**
+   * For work nobody is waiting on that reaches someone outside Melete: how
+   * likely the person wants it, from what they said before, and whether that
+   * lets it go. Null for anything else.
+   */
+  proactive: Confidence | null;
+  /**
+   * For a plain send to someone outside: its kind of task and the person's
+   * level for it, which decided whether it went on its own (`autonomy.ts`).
+   */
+  task: (TaskLevel & { personId: string | null }) | null;
 };
+
+/** The first-time card for a kind of task, when this proposal should ask it. */
+type TaskAsk = { personId: string | null; kind: TaskKind; level: AutonomyLevel };
+
+/**
+ * Proactive work that is not likely enough to be wanted: nothing is sent, no
+ * card is put in front of the person, and the conversation keeps it as a
+ * quiet suggestion.
+ */
+export class ProactiveHold extends BrokerFault {
+  constructor(
+    readonly confidence: Confidence,
+    /** The kind of task, to ask the person about once if they have not chosen. */
+    readonly ask: TaskAsk | null = null,
+  ) {
+    super(
+      'scope_denied',
+      `Not done: nobody asked for this now, and what the person said before does not make it likely they want it (confidence ${confidence.score.toFixed(2)}; it goes ahead on its own from ${confidence.threshold.toFixed(2)}). It is left for them as a suggestion. Do not try it another way.`,
+    );
+  }
+}
 
 /** A review to run once the proposal's transaction has committed. */
 type PendingReview = {
@@ -295,8 +426,7 @@ type PendingReview = {
   input: ReviewInput;
 };
 
-const question =
-  'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
+const question = `${assistantName()} cannot confirm whether this was sent. Check the destination, then mark it.`;
 /** What resuming an approved change from the command line says instead of sending it. */
 export const EGRESS_RERUN =
   'Approved. This change is made by a command in your computer, not resent from here: run the same command again, unchanged, and it goes through once.';
@@ -397,7 +527,7 @@ const needsApproval = (tool: ConnectorTool) =>
   tool.requires_approval || tool.effect_class === 'write_external' || tool.effect_class === 'spend';
 
 const untrustedOrigin = (warnings: OriginWarning[]) =>
-  `This effect uses ${warnings.length === 1 ? 'a value' : 'values'} Melete cannot vouch for: ` +
+  `This effect uses ${warnings.length === 1 ? 'a value' : 'values'} ${assistantName()} cannot vouch for: ` +
   `${warnings.map((warning) => `${warning.field} (${warning.origin_trust})`).join(', ')}. ` +
   'It needs your approval with that in front of you, whatever was agreed before.';
 
@@ -422,7 +552,7 @@ export function dispositionMessage(
   const already = repeated ? 'already ' : '';
   switch (action.status) {
     case 'proposed':
-      return 'Proposed. Nothing has left Melete yet.';
+      return `Proposed. Nothing has left ${instanceName()} yet.`;
     case 'needs_approval':
       return `This effect is ${already}waiting for your approval. Nothing has been sent.`;
     case 'approved':
@@ -432,7 +562,7 @@ export function dispositionMessage(
     case 'admitted':
       // A message waits a few seconds before it goes, so the person can cancel it.
       if (held)
-        return `This message is ${already}held and sends at ${action.retry_after_at} unless the person cancels it first. Nothing has left Melete yet; do not send it again.`;
+        return `This message is ${already}held and sends at ${action.retry_after_at} unless the person cancels it first. Nothing has left ${instanceName()} yet; do not send it again.`;
       return `This effect is ${already}admitted and has not been dispatched yet.`;
     case 'dispatched':
       return `This effect was ${already}dispatched and the result has not come back yet.`;
@@ -500,6 +630,7 @@ export class BrokerService implements BrokerOperations {
         ...(options.memorySearch ? [MEMORY_SEARCH_TOOL] : []),
       ],
       ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
+      taskLevels: (tx, jobId) => this.taskLevels(tx, jobId),
     });
     if (options.composeExecutor) {
       this.compose = new ComposeService({
@@ -825,7 +956,8 @@ export class BrokerService implements BrokerOperations {
         })
       : null;
     if (!next) throw new BrokerFault('unknown_tool', 'This chase has no follow-up to send.');
-    return this.propose(claims, next);
+    // The follow-up is the approved message, word for word (`chase-scope.ts`).
+    return this.propose(claims, next, false, true);
   }
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
@@ -984,9 +1116,32 @@ export class BrokerService implements BrokerOperations {
   ): Promise<Admissibility> {
     const access = await agentAccess(tx, job.id);
     const settings = this.options.autoReview ? await loadApprovalSettings(tx, job.space_id) : null;
+    // The agent's own computer and browser pay at the moment they enter a card
+    // or press the button that buys, read from the step and the screen before it.
+    const declared = this.moneyOf(action, tool);
+    const paid = declared ? null : await this.payMomentOf(tx, action, tool);
+    // One step-up for one checkout: the person's step-up for entering a card
+    // here also covers the rest of that checkout on the same site.
+    const covered = paid ? await this.checkoutCover(tx, job, action, tool, paid, phase) : null;
+    const money = declared ?? (covered ? null : paid);
+    // A message the person said to send in this turn goes out on its own, held
+    // for undo and with a receipt. Anything else that sends stays with them.
+    const told = !money && directSend(tool.name) && (await toldToSend(tx, action.attempt_id));
     const changes =
       tool.effect_class !== 'read' && tool.name !== 'email.draft' && tool.name !== 'email.discard';
     const agentAsks = Boolean(access.agentId && access.asksBeforeActing);
+    // The person's own don't-rule, from their memory, the agent's instructions
+    // or this conversation: the one thing besides money a card is asked for.
+    const said = changes ? await dontRulesFor(tx, job, action.attempt_id) : null;
+    const dont = said
+      ? matchDontRule({
+          rules: said.rules,
+          kind: tool.name,
+          payload: action.canonical_payload,
+          movesMoney: money !== null,
+          current: said.current,
+        })
+      : null;
     const provider = this.options.connectors.get(action.connection_id)?.manifest.provider ?? '';
     // A hand-off from a room puts a task in front of a person, who reads it
     // whole and runs or declines it: their answer is the approval, so the
@@ -1001,6 +1156,7 @@ export class BrokerService implements BrokerOperations {
     // space is everyone's in it, so a new file there goes by the room's rule.
     const inSpace =
       !connectorAsks &&
+      !money &&
       this.options.connectors.get(action.connection_id)?.staysInSpace?.(action, job.space_id) ===
         true &&
       (await personalSpace(tx, job.space_id));
@@ -1027,6 +1183,8 @@ export class BrokerService implements BrokerOperations {
     // A conversation that read responses to an app asks before changing a file an app shows.
     const afterResponses = changes && (await asksAfterResponses(tx, job.id, action));
     const requiresApproval =
+      money !== null ||
+      dont !== null ||
       toolAsks ||
       connectorAsks ||
       afterResponses ||
@@ -1072,18 +1230,28 @@ export class BrokerService implements BrokerOperations {
     // A room's work is answered by the people its rule names, each time: no
     // standing rule or scope, made by anyone for their own work, answers for it.
     const roomWork = requiresApproval && (await roomAuthorityOf(tx, job.id)) !== null;
+    // A money move is never covered by anything but the person's own step-up.
     const authorizedBy =
-      requiresApproval && !roomWork && warnings.length > 0 && this.options.resolveScopedGrant
+      requiresApproval &&
+      !money &&
+      !dont &&
+      !roomWork &&
+      warnings.length > 0 &&
+      this.options.resolveScopedGrant
         ? await this.options.resolveScopedGrant(tx, input)
         : null;
     const granted =
       authorizedBy !== null ||
       (requiresApproval &&
+        !money &&
+        !dont &&
         !roomWork &&
         warnings.length === 0 &&
         this.options.resolveStandingGrant !== undefined &&
         (await this.options.resolveStandingGrant(tx, input)));
     let auto: Admissibility['auto'] = null;
+    let proactive: Confidence | null = null;
+    let task: Admissibility['task'] = null;
     if (settings?.mode === 'auto_review' && requiresApproval && !granted) {
       // Silence about an origin is `unknown`, which keeps the action with the person.
       const doubts = await resolveOriginWarnings(
@@ -1110,11 +1278,116 @@ export class BrokerService implements BrokerOperations {
           ? (guests.guests.get(guestKey(action.connection_id, action.canonical_payload)) ?? null)
           : null;
       const checked = changeKey(action.connection_id, action.canonical_payload);
-      const tier = tierOf(
+      const base = tierOf(
         [...doubts, ...warnings],
         existingGuests,
         guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
       );
+      // Asked for in so many words, to people whose addresses Melete can vouch
+      // for: a recipient planted in something the agent read still asks. Being
+      // told to send settles only the send itself: a send that also deletes,
+      // carries a password or invites guests asks as it did before.
+      const sendsAsTold =
+        told &&
+        !dont &&
+        !connectorAsks &&
+        !afterResponses &&
+        !roomWork &&
+        doubts.length === 0 &&
+        warnings.length === 0 &&
+        (base.tier !== 'person' || base.reason === OUTSIDE_SEND_REASON);
+      // A plain send or post to someone outside Melete goes by the person's
+      // level for its kind of task (`autonomy.ts`). Only what would otherwise
+      // wait for them as a plain send is judged so: one that also deletes or
+      // carries a password, a don't-rule, a connector's own question, room
+      // work and an agent set to ask before acting stay as they were. Doubts
+      // about a recipient are weighed below, so the send is read without them.
+      const plain =
+        doubts.length + warnings.length > 0
+          ? tierOf(
+              [],
+              existingGuests,
+              guests.calendar.has(checked) ? guests.calendar.get(checked) : undefined,
+            )
+          : base;
+      // Set when the person's level lets this go on its own: why, for the receipt.
+      let onItsOwn: string | null = null;
+      if (
+        tool.effect_class === 'write_external' &&
+        !money &&
+        !dont &&
+        !connectorAsks &&
+        !afterResponses &&
+        !roomWork &&
+        !agentAsks &&
+        plain.tier === 'person' &&
+        plain.reason === OUTSIDE_SEND_REASON
+      ) {
+        const kind = sendKindOf(tool.name);
+        const personId = await personOf(tx, job.id);
+        const level = (
+          await levelsFor(tx, personId, defaultLevels(this.options.messagesToOthers))
+        ).get(kind) as TaskLevel;
+        task = { ...level, personId };
+        if (!sendsAsTold) {
+          const doubted = doubts.length > 0 || warnings.length > 0;
+          // Work nobody is waiting on is never asked about by default: when it
+          // does not go on its own, it is left as a suggestion.
+          const woke = await proactiveAttempt(tx, action.attempt_id);
+          const setting = levelLine(level);
+          const threshold = this.options.proactiveThreshold ?? PROACTIVE_DEFAULT_THRESHOLD;
+          if (level.level === 'always') {
+            if (!doubted) onItsOwn = `Sent on its own. ${setting}`;
+            // A recipient Melete cannot vouch for is never sent to on its own.
+            else if (woke)
+              proactive = withSetting(judge([], { threshold, doubted: true }), setting);
+          } else if (
+            level.level === 'when_confident' ||
+            // An invite kept as a draft is asked about as before, whatever a routine says.
+            (woke && kind !== 'calendar_invite')
+          ) {
+            const evidence = await gatherEvidence(tx, {
+              job,
+              action,
+              words: actionWords(tool.name, actionKinds(tool.name, false)),
+            });
+            // Choosing "when confident" is not itself evidence: the score is
+            // what the person said and did before, the same as by default, so
+            // confirming the default on the card changes nothing.
+            const confidence = withSetting(
+              judge(evidence, {
+                threshold,
+                doubted,
+                // The operator's older `draft_only` keeps chat apps' messages
+                // out of proactive work, as before, until the person chooses.
+                draftOnly:
+                  kind === 'chat_message' &&
+                  !level.chosen &&
+                  this.options.messagesToOthers === 'draft_only',
+                ...(level.level === 'draft'
+                  ? {
+                      needsInstruction: `${TASK_NAMES[kind].one} goes out on its own only when your routine or its instructions say to send it`,
+                    }
+                  : {}),
+              }),
+              setting,
+            );
+            if (woke) proactive = confidence;
+            else if (confidence.act) onItsOwn = confidence.reason;
+          }
+        }
+      }
+      const tier: TierDecision = dont
+        ? { tier: 'person', actionClass: null, reason: dont.reason }
+        : money
+          ? { tier: 'person', actionClass: null, reason: money.reason }
+          : sendsAsTold
+            ? { tier: 'person', actionClass: null, reason: TOLD_TO_SEND }
+            : proactive
+              ? { tier: 'person', actionClass: null, reason: proactive.reason }
+              : onItsOwn
+                ? { tier: 'person', actionClass: null, reason: onItsOwn }
+                : base;
       const allowed = tier.actionClass !== null && settings.classes[tier.actionClass];
       auto = {
         tier,
@@ -1124,33 +1397,37 @@ export class BrokerService implements BrokerOperations {
         // the reviewer or a publishing policy; work in the room's own workspace
         // stays under the sandbox rule, as it does for a person.
         outcome:
-          connectorAsks || afterResponses
+          money || dont || connectorAsks || afterResponses
             ? 'person'
-            : tier.tier === 'sandbox' && allowed && !toolAsks
+            : sendsAsTold || proactive?.act || onItsOwn
               ? 'policy_approved'
-              : // Publishing an app that reaches nobody new. An agent set to ask before
-                // acting promises that publishes to other people wait; an app only the
-                // person can open reaches nobody, so it goes ahead. A conversation that
-                // read an app's responses asks before changing what an app shows.
-                tier.tier === 'apps' &&
-                  allowed &&
-                  (!agentAsks || reachesOnlyPublisher(tool.name, action.canonical_payload)) &&
-                  !afterResponses &&
-                  !roomWork
-                ? 'policy_approved'
-                : // An event on the person's own calendar that touches nothing important
-                  // and can be undone. An agent set to ask before acting still asks.
-                  tier.tier === 'own_calendar' && allowed && !agentAsks && !roomWork
+              : proactive
+                ? 'person'
+                : tier.tier === 'sandbox' && allowed && !toolAsks
                   ? 'policy_approved'
-                  : // An agent set to ask before acting promises that sends, bookings and payments
-                    // wait for the person, so its calendar changes do. A reversible app change is
-                    // none of those, and the person switched that class on themselves.
-                    tier.tier === 'reviewable' &&
+                  : // Publishing an app that reaches nobody new. An agent set to ask before
+                    // acting promises that publishes to other people wait; an app only the
+                    // person can open reaches nobody, so it goes ahead. A conversation that
+                    // read an app's responses asks before changing what an app shows.
+                    tier.tier === 'apps' &&
                       allowed &&
-                      !roomWork &&
-                      (!agentAsks || tier.actionClass === 'app_changes')
-                    ? 'review'
-                    : 'person',
+                      (!agentAsks || reachesOnlyPublisher(tool.name, action.canonical_payload)) &&
+                      !afterResponses &&
+                      !roomWork
+                    ? 'policy_approved'
+                    : // An event on the person's own calendar that touches nothing important
+                      // and can be undone. An agent set to ask before acting still asks.
+                      tier.tier === 'own_calendar' && allowed && !agentAsks && !roomWork
+                      ? 'policy_approved'
+                      : // An agent set to ask before acting promises that sends, bookings and payments
+                        // wait for the person, so its calendar changes do. A reversible app change is
+                        // none of those, and the person switched that class on themselves.
+                        tier.tier === 'reviewable' &&
+                          allowed &&
+                          !roomWork &&
+                          (!agentAsks || tier.actionClass === 'app_changes')
+                        ? 'review'
+                        : 'person',
       };
     }
     const policyApproved = auto?.outcome === 'policy_approved';
@@ -1161,7 +1438,294 @@ export class BrokerService implements BrokerOperations {
       requires_approval: requiresApproval && !granted && !policyApproved,
       authorized_by: authorizedBy,
       auto,
+      money,
+      dont,
+      proactive,
+      task,
     };
+  }
+
+  /**
+   * The first-time card for this action's kind of task, when the person has
+   * not chosen a level for it and has not been asked yet. Recorded with the
+   * proposal, so a proposal refused for another reason asks nothing.
+   */
+  private taskAsk(classified: Admissibility): TaskAsk | null {
+    const task = classified.task;
+    return task && !task.chosen && !task.asked
+      ? { personId: task.personId, kind: task.kind, level: task.level }
+      : null;
+  }
+
+  /**
+   * The first-time card for a draft of a send, when its kind of task is not
+   * chosen and not asked about yet: in a conversation a drafted kind is
+   * drafted, never sent, so this is the first time it comes up.
+   */
+  private async draftAsk(tx: Query, jobId: string, toolName: string): Promise<TaskAsk | null> {
+    const kind = draftKindOf(toolName);
+    if (!kind) return null;
+    const level = (await this.taskLevels(tx, jobId)).get(kind);
+    return level && !level.chosen && !level.asked
+      ? { personId: await personOf(tx, jobId), kind, level: level.level }
+      : null;
+  }
+
+  /**
+   * Whether a chat may send this directly now: the person said to send in the
+   * turn being answered, or their level for its kind of task is not a draft.
+   * Each send is still judged on its own (`classify`).
+   */
+  private async sendsFromChatNow(
+    tx: Query,
+    jobId: string,
+    attemptId: string | null | undefined,
+    kind: string,
+  ): Promise<boolean> {
+    if (await toldToSend(tx, attemptId)) return true;
+    // A room's work keeps its own rule: only what the person said to send.
+    if (await roomWork(tx, jobId)) return false;
+    const levels = await levelsFor(
+      tx,
+      await personOf(tx, jobId),
+      defaultLevels(this.options.messagesToOthers),
+    );
+    return sendsFromChat(kind, false, levels);
+  }
+
+  /** The levels a job's person chose, with the operator's defaults, for the tool catalog. */
+  async taskLevels(tx: Query, jobId: string) {
+    return levelsFor(tx, await personOf(tx, jobId), this.taskDefaults());
+  }
+
+  /** The level each kind of task starts at on this install. */
+  taskDefaults() {
+    return defaultLevels(this.options.messagesToOthers);
+  }
+
+  /** Whether an action moves money, judged on its connector's tool as it stands now. */
+  async movesMoneyNow(action: Action): Promise<boolean> {
+    const connector = this.options.connectors.get(action.connection_id);
+    const tool = connector && findTool(connector.manifest, action.kind);
+    // A tool that cannot be found any more cannot be shown not to move money.
+    if (!tool) return true;
+    return (
+      this.moneyOf(action, tool) !== null ||
+      (await this.payMomentOf(this.sql, action, tool)) !== null
+    );
+  }
+
+  /**
+   * Where a money move pays and how much, for its card: the page the agent's
+   * own browser or computer is paying on, or the form it submits. Null for a
+   * money move that is not a page's checkout.
+   */
+  async payingAt(action: Action): Promise<{ site: string | null; amount: string | null } | null> {
+    const connector = this.options.connectors.get(action.connection_id);
+    const tool = connector && findTool(connector.manifest, action.kind);
+    if (!tool) return null;
+    if (tool.name === 'browser.submit') {
+      const intent = (action.canonical_payload as JsonObject).intent as JsonObject | undefined;
+      return this.moneyOf(action, tool)
+        ? { site: siteOf(typeof intent?.url === 'string' ? intent.url : null), amount: null }
+        : null;
+    }
+    const moment = await this.payMomentOf(this.sql, action, tool);
+    return moment ? { site: moment.site ?? null, amount: moment.amount ?? null } : null;
+  }
+
+  /**
+   * Whether a step of the agent's own computer or browser pays (`pay-moment.ts`),
+   * read from the steps before it in this work on the same connection and the
+   * screen each left. Only steps proposed before this one count, so the
+   * answer is the same at every phase.
+   */
+  private async payMomentOf(
+    tx: Query,
+    action: Pick<Action, 'id' | 'job_id' | 'connection_id' | 'kind' | 'canonical_payload'>,
+    tool: ConnectorTool,
+  ): Promise<PaidStep | null> {
+    if (tool.name.startsWith('browser.')) {
+      const reason = browserPays(tool.name, action.canonical_payload as JsonObject);
+      if (!reason) return null;
+      const [page] = await tx`select receipt->'detail'->'observation'->>'url' as url from action
+        where job_id = ${action.job_id} and connection_id = ${action.connection_id}
+          and status = 'succeeded' and kind like 'browser.%' and id <> ${action.id}
+          and receipt->'detail'->'observation'->>'url' is not null
+        order by created_at desc, id desc limit 1`;
+      return {
+        reason,
+        by: 'screen',
+        site: siteOf(typeof page?.url === 'string' ? page.url : null),
+        amount: null,
+        kind: tool.name === 'browser.click' ? 'submit' : 'entry',
+        origin: null,
+      };
+    }
+    const shell = shellPays(tool.name, action.canonical_payload as JsonObject);
+    if (shell)
+      return {
+        reason: shell,
+        by: 'arguments',
+        site: null,
+        amount: null,
+        kind: 'entry',
+        origin: null,
+      };
+    if (!COMPUTER_PAY_STEPS.has(tool.name)) return null;
+    // Every step on the page the screen shows now, back to the one that opened
+    // it, read a batch at a time: a number typed slowly, or between other
+    // steps, is read whole.
+    const newestFirst: ComputerStep[] = [];
+    for (let offset = 0; offset < PAGE_STEPS; offset += PAGE_BATCH) {
+      const rows = await tx`select kind, canonical_payload,
+          receipt->'detail'->'screen_text' as screen
+        from action where job_id = ${action.job_id} and connection_id = ${action.connection_id}
+          and kind like 'computer.%' and status = 'succeeded' and id <> ${action.id}
+          and created_at <= coalesce((select created_at from action where id = ${action.id}), now())
+        order by created_at desc, id desc limit ${PAGE_BATCH} offset ${offset}`;
+      for (const row of rows)
+        newestFirst.push({
+          kind: String(row.kind),
+          payload: (row.canonical_payload ?? {}) as JsonObject,
+          after: screenOf(row.screen as JsonValue),
+        });
+      if (rows.length < PAGE_BATCH || stepsOnPage(newestFirst).length < newestFirst.length) break;
+    }
+    const moment = payMoment(stepsOnPage(newestFirst), {
+      kind: tool.name,
+      payload: action.canonical_payload as JsonObject,
+    });
+    return moment
+      ? {
+          reason: moment.reason,
+          by: 'screen',
+          site: moment.site,
+          amount: moment.amount,
+          kind: moment.kind,
+          origin: moment.origin,
+        }
+      : null;
+  }
+
+  /**
+   * Whether the person's step-up for entering a card on a page also covers
+   * this step of the same checkout. One step-up pays for one checkout: the
+   * latest step of the agent's computer in this work that the person allowed
+   * with a step-up entered a card on this origin, within `CHECKOUT_COVER_MS`,
+   * in the same computer session; this step enters more of that card on the
+   * same origin, or is the first step since that sends it. The cover is
+   * claimed once, as a notice keyed by the step-up, when the step is proposed:
+   * the send is claimed by one step only, so a second purchase, another site,
+   * a later step or a replay asks again. Returns the step-up's id, or null.
+   */
+  private async checkoutCover(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    tool: ConnectorTool,
+    moment: PaidStep,
+    phase: StandingGrantInput['phase'],
+  ): Promise<string | null> {
+    if (!moment.origin || !COMPUTER_PAY_STEPS.has(tool.name)) return null;
+    const [anchor] = await tx`select a.id, a.job_id, a.connection_id, a.kind, a.canonical_payload,
+        a.status, s.id as step_up_id,
+        s.used_at > clock_timestamp() - make_interval(secs => ${CHECKOUT_COVER_MS / 1000}) as fresh,
+        a.receipt->'detail'->>'session_id' as session_id,
+        a.receipt->'detail'->>'sandbox_id' as sandbox_id,
+        a.receipt->'detail'->>'display' as display
+      from action a
+        join approval p on p.action_id = a.id and p.decision = 'approved'
+          and p.payload_hash = a.payload_hash
+        join step_up s on s.id = p.step_up_id and s.approval_id = p.id and s.action_id = a.id
+          and s.payload_hash = a.payload_hash and s.principal_id = p.decided_by
+          and s.used_at is not null
+      where a.job_id = ${job.id} and a.connection_id = ${action.connection_id}
+        and a.kind like 'computer.%' and a.id <> ${action.id}
+        and a.created_at <= coalesce((select created_at from action where id = ${action.id}), now())
+      order by a.created_at desc, a.id desc limit 1`;
+    // The latest step the person allowed with a step-up, and it ran.
+    if (anchor?.status !== 'succeeded') return null;
+    const stepUp = String(anchor.step_up_id);
+    const sends = moment.kind === 'submit';
+    const key = sends
+      ? `checkout_cover:${stepUp}:submit`
+      : `checkout_cover:${stepUp}:entry:${action.id}`;
+    const claimed = async () => {
+      const [row] = await tx`select payload->>'action_id' as action_id from event
+        where dedup_key = ${key}`;
+      return row ? String(row.action_id) : null;
+    };
+    const holder = await claimed();
+    if (holder !== null) return holder === action.id ? stepUp : null;
+    // Claimed only when the step is proposed; later phases find that claim.
+    if (phase !== 'proposal' || anchor.fresh !== true) return null;
+    // Once the checkout is sent, it is over: more card entry is a new purchase.
+    const [sent] =
+      await tx`select 1 from event where dedup_key = ${`checkout_cover:${stepUp}:submit`}`;
+    if (sent) return null;
+    // A whole card number typed again may be another card: the step-up was for the one entered.
+    if (!sends && holdsCardNumber(JSON.stringify(action.canonical_payload))) return null;
+    // The same computer session and display as the step that was allowed.
+    const [latest] = await tx`select receipt->'detail'->>'session_id' as session_id,
+        receipt->'detail'->>'sandbox_id' as sandbox_id, receipt->'detail'->>'display' as display
+      from action where job_id = ${job.id} and connection_id = ${action.connection_id}
+        and kind like 'computer.%' and status = 'succeeded' and id <> ${action.id}
+        and created_at <= coalesce((select created_at from action where id = ${action.id}), now())
+      order by created_at desc, id desc limit 1`;
+    if (
+      !latest ||
+      !anchor.session_id ||
+      latest.session_id !== anchor.session_id ||
+      latest.sandbox_id !== anchor.sandbox_id ||
+      latest.display !== anchor.display
+    )
+      return null;
+    // The allowed step itself entered a card, on this same origin.
+    const entered = await this.payMomentOf(
+      tx,
+      {
+        id: String(anchor.id),
+        job_id: String(anchor.job_id),
+        connection_id: String(anchor.connection_id),
+        kind: String(anchor.kind),
+        canonical_payload: anchor.canonical_payload as Action['canonical_payload'],
+      },
+      { ...tool, name: String(anchor.kind) },
+    );
+    if (entered?.kind !== 'entry' || entered.origin !== moment.origin) return null;
+    await appendEvent(
+      tx,
+      job.id,
+      action.attempt_id,
+      'notice',
+      {
+        phase: 'checkout_cover',
+        action_id: action.id,
+        step_up_id: stepUp,
+        covers: sends ? 'submit' : 'entry',
+        site: moment.site ?? null,
+      },
+      key,
+    );
+    return (await claimed()) === action.id ? stepUp : null;
+  }
+
+  /** Why this action moves money, or null (`money.ts`), judged on its own connector's declaration. */
+  private moneyOf(
+    action: Pick<Action, 'connection_id' | 'canonical_payload'>,
+    tool: ConnectorTool,
+  ) {
+    const connector = this.options.connectors.get(action.connection_id);
+    const rawName = connector?.rawToolName?.(tool.name);
+    return moneyMove({
+      tool,
+      provider: connector?.manifest.provider ?? '',
+      payload: action.canonical_payload,
+      metered: connector?.capability?.kind === tool.name,
+      ...(rawName ? { rawName } : {}),
+      page: connector?.personPaysPage?.(tool.name) ?? null,
+    });
   }
 
   /**
@@ -1247,7 +1811,8 @@ export class BrokerService implements BrokerOperations {
         action.kind === 'calendar.create' ? null : await eventBefore(this.sql, spaceId, action);
       const spans = spansOf(action.kind, action.canonical_payload, before);
       const window = windowOf(spans);
-      if (!window) return { concern: 'Melete could not tell when this event is.', reversible };
+      if (!window)
+        return { concern: `${assistantName()} could not tell when this event is.`, reversible };
       // Every calendar the person has connected here, not only the one written:
       // a clash on another calendar matters as much. One that cannot be read
       // leaves the change with the person.
@@ -1329,7 +1894,12 @@ export class BrokerService implements BrokerOperations {
         if (!job) return null;
         await checkAttempt(tx, job, claims);
         const access = await agentAccess(tx, job.id);
-        if (access.chat && directSend(request.kind)) return null;
+        if (
+          access.chat &&
+          directSend(request.kind) &&
+          !(await this.sendsFromChatNow(tx, job.id, claims.attempt_id, request.kind))
+        )
+          return null;
         return { job, ...(await this.tool(tx, job, claims, request.connection_id, request.kind)) };
       });
     } catch {
@@ -1453,9 +2023,9 @@ export class BrokerService implements BrokerOperations {
       const expiresAt = (stored.tuple.expires_at ?? null) as string | null;
       const approvalId = recordId('apr');
       const [row] = await tx`insert into approval
-        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
+        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings, step_up_required)
         values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
-          ${expiresAt}, ${warnings}::jsonb) returning *`;
+          ${expiresAt}, ${warnings}::jsonb, ${classified.money !== null}) returning *`;
       if (!row) throw new Error('Approval insert returned no record');
       if (action.status !== 'needs_approval') await this.setStatus(tx, action, 'needs_approval');
       await this.askOwner(tx, job, action, approvalId, classified);
@@ -1537,6 +2107,22 @@ export class BrokerService implements BrokerOperations {
   ): Promise<string | undefined> {
     const options = this.options.autoReview;
     const { job, action } = context;
+    // The person's own rule, quoted on the card with where it came from.
+    if (classified.dont) {
+      await recordReview(tx, {
+        action_id: action.id,
+        job_id: job.id,
+        space_id: job.space_id,
+        attempt_id: context.claims.attempt_id,
+        tier: 'person',
+        action_class: null,
+        decided_by: 'policy',
+        outcome: 'escalated',
+        risk: null,
+        reason: classified.dont.reason,
+      });
+      return classified.dont.reason;
+    }
     // A change on the person's own calendar that touches something important
     // says what, on its card, so they know why they are asked.
     if (
@@ -1627,11 +2213,11 @@ export class BrokerService implements BrokerOperations {
       const stored = await loadBinding(tx, action);
       const approvalId = recordId('apr');
       await tx`insert into approval
-        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings,
+        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings, step_up_required,
           decision, decided_at, decided_by)
         values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
           ${(stored.tuple.expires_at ?? null) as string | null},
-          ${JSON.stringify(classified.warnings)}::jsonb,
+          ${JSON.stringify(classified.warnings)}::jsonb, ${classified.money !== null},
           ${approved ? 'approved' : null}, ${approved ? new Date().toISOString() : null},
           ${approved ? 'auto_review' : null})`;
       await recordReview(tx, {
@@ -1733,6 +2319,8 @@ export class BrokerService implements BrokerOperations {
     claims: CapabilityClaims,
     request: ProposeActionRequest,
     readOnly = false,
+    /** The service wrote this payload from words the person approved: no pass rewrites it. */
+    verbatim = false,
   ): Promise<EffectProposalResponse> {
     // Nothing is read from a destination for a proposal that is not authorized.
     // Only a connector that reads ahead needs the checks made early.
@@ -1751,8 +2339,14 @@ export class BrokerService implements BrokerOperations {
       .begin(async (tx) => {
         const job = await lockJob(tx, claims.job_id);
         await checkAttempt(tx, job, claims);
+        // A level the person set in the message being answered counts from here.
+        await keepSaidLevels(tx, claims.attempt_id);
         const access = await agentAccess(tx, job.id);
-        if (access.chat && directSend(request.kind))
+        if (
+          access.chat &&
+          directSend(request.kind) &&
+          !(await this.sendsFromChatNow(tx, job.id, claims.attempt_id, request.kind))
+        )
           throw new BrokerFault(
             'scope_denied',
             'In a chat the person sends a draft from its draft card. Say the draft is ready.',
@@ -1772,6 +2366,22 @@ export class BrokerService implements BrokerOperations {
         // A presentation alias binds one granted account; the durable intent and
         // connector dispatch keep the original verb, including after a restart.
         request = { ...request, kind: tool.name };
+        // A draft or message the model wrote reads as the person would write
+        // it, before it is hashed, so what is approved is what is sent
+        // (`human-payload.ts`). An owner command, and a follow-up made of words
+        // the person approved, carry someone's exact words and go as they are.
+        if (!verbatim && !job.experience_command_key) {
+          const passed = humanPayload(tool.name, request.payload);
+          if (passed !== request.payload)
+            request = {
+              ...request,
+              payload: humanPayload(
+                tool.name,
+                request.payload,
+                await typedInConversation(tx, job.id),
+              ),
+            };
+        }
         let canonical = canonicalizePayload(request.payload);
         this.validatePayload(tool, canonical.canonical);
         const proposing: ConnectorContext = {
@@ -1928,6 +2538,10 @@ export class BrokerService implements BrokerOperations {
         if (!row) throw new Error('Action insert returned no record');
         const created = actionFromRow(row);
         const classified = await this.classify(tx, job, created, tool, 'proposal', guests);
+        // Proactive work not likely enough to be wanted: nothing is recorded or
+        // sent, no card is raised, and it is left as a suggestion (below).
+        if (classified.proactive && !classified.proactive.act)
+          throw new ProactiveHold(classified.proactive, this.taskAsk(classified));
         // What the person approves is shown to them whole: a command too long
         // for its card is refused here, and nothing of it is recorded.
         const hidden = classified.requires_approval
@@ -1951,6 +2565,10 @@ export class BrokerService implements BrokerOperations {
           { action_id: id, kind: request.kind, payload_hash: canonical.hash, intent_key: key },
           ref ?? undefined,
         );
+        // The first task of a kind the person has not chosen for asks them once,
+        // beside the work, which goes on at the default meanwhile.
+        const asking = this.taskAsk(classified) ?? (await this.draftAsk(tx, job.id, tool.name));
+        if (asking) await askOnce(tx, { ...asking, jobId: job.id, attemptId: claims.attempt_id });
         const review = { job, action: created, tool, claims };
         if (classified.requires_approval) {
           // A reviewable action waits as `proposed`, with no card, while the
@@ -1959,9 +2577,9 @@ export class BrokerService implements BrokerOperations {
           if (pending) return { action: await loadAction(tx, id), key, repeated: false, pending };
           const approvalId = recordId('apr');
           await tx`insert into approval
-          (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
+          (id, action_id, job_revision, payload_hash, expires_at, origin_warnings, step_up_required)
           values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash}, ${expiresAt},
-            ${JSON.stringify(classified.warnings)}::jsonb)`;
+            ${JSON.stringify(classified.warnings)}::jsonb, ${classified.money !== null})`;
           await this.setStatus(tx, created, 'needs_approval');
           const escalated = await this.recordPolicyEscalation(tx, review, classified);
           await this.askOwner(tx, job, created, approvalId, classified, escalated);
@@ -1997,6 +2615,7 @@ export class BrokerService implements BrokerOperations {
           request.kind === 'web.search'
         )
           await this.traceHeldSearch(claims, request.payload, error.message);
+        if (error instanceof ProactiveHold) await this.leaveSuggestion(claims, request, error);
         if (error instanceof BrokerFault) await this.traceRefusal(claims, request.kind, error);
         throw error;
       });
@@ -2046,6 +2665,56 @@ export class BrokerService implements BrokerOperations {
    * worth more than the refusal: if it cannot be written, the model still hears
    * why the search did not run.
    */
+  /**
+   * Proactive work left as a suggestion: a quiet entry in the conversation
+   * saying what was not done and why, and the evidence behind the score. Never
+   * a card and never a notification. Like the other traces, writing it is
+   * never worth more than the refusal itself.
+   */
+  private async leaveSuggestion(
+    claims: CapabilityClaims,
+    request: Pick<ProposeActionRequest, 'kind' | 'payload'>,
+    hold: ProactiveHold,
+  ) {
+    const { confidence } = hold;
+    try {
+      await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, claims.job_id);
+        await checkAttempt(tx, job, claims);
+        const payload = canonicalizePayload(request.payload);
+        await appendToolTrace(
+          tx,
+          job.id,
+          claims.attempt_id,
+          suggestedStepCall({
+            attemptId: claims.attempt_id,
+            kind: request.kind,
+            payloadHash: payload.hash,
+            to: reaches(payload.canonical, request.kind),
+            why: confidence.reason,
+            at: new Date(),
+          }),
+        );
+        await appendEvent(tx, job.id, claims.attempt_id, 'notice', {
+          phase: 'proactive_suggestion',
+          kind: request.kind,
+          payload_hash: payload.hash,
+          confidence: confidence.score,
+          threshold: confidence.threshold,
+          evidence: confidence.evidence,
+          missing: confidence.missing,
+        });
+        // The first time a kind of task comes up, it is asked about here too.
+        if (hold.ask)
+          await askOnce(tx, { ...hold.ask, jobId: job.id, attemptId: claims.attempt_id });
+      });
+    } catch (error) {
+      process.stderr.write(
+        `broker: could not leave a suggestion: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
   private async traceHeldSearch(claims: CapabilityClaims, payload: unknown, reason: string) {
     const query = (payload as { query?: unknown } | null)?.query;
     try {
@@ -2086,7 +2755,11 @@ export class BrokerService implements BrokerOperations {
       const stored = await loadAction(tx, id);
       if (stored.job_id !== job.id) throw new BrokerFault('action_not_found');
       const access = await agentAccess(tx, job.id);
-      if (access.chat && directSend(stored.kind))
+      if (
+        access.chat &&
+        directSend(stored.kind) &&
+        !(await this.sendsFromChatNow(tx, job.id, claims.attempt_id, stored.kind))
+      )
         throw new BrokerFault(
           'scope_denied',
           'In a chat the person sends a draft from its draft card. Say the draft is ready.',
@@ -2129,6 +2802,8 @@ export class BrokerService implements BrokerOperations {
       (safe.match(/[.!?](?:\s|$)/g)?.length ?? 0) > 2
     )
       throw new BrokerFault('payload_invalid', 'Use one or two plain first-person sentences.');
+    // A line the person reads mid-turn reads like the reply around it.
+    const said = humanText(safe);
     await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
@@ -2137,10 +2812,12 @@ export class BrokerService implements BrokerOperations {
         job.id,
         claims.attempt_id,
         'notice',
-        { kind: 'experience_say', text: safe },
+        { kind: 'experience_say', text: said },
         `say:${claims.attempt_id}:${createHash('sha256').update(ref).digest('hex')}`,
       );
     });
+    // The person was told something: a later quiet stretch is counted from now.
+    turnSpoke(claims.attempt_id);
   }
 
   /**
@@ -2265,9 +2942,25 @@ export class BrokerService implements BrokerOperations {
         };
       }
       if (action.status !== 'needs_approval') throw new BrokerFault('action_not_admissible');
+      // A money move is allowed only with the person's own step-up, made for
+      // this approval and these bytes and spent here, once.
+      let stepUp: string | null = null;
+      if (
+        request.decision === 'approved' &&
+        (approval.step_up_required === true || (await this.movesMoneyNow(action)))
+      ) {
+        stepUp = await spendStepUp(tx, {
+          token: request.step_up_token,
+          principalId: decider,
+          approvalId: String(approval.id),
+          actionId: id,
+          payloadHash: action.payload_hash,
+        });
+        if (!stepUp) throw new BrokerFault('approval_required', STEP_UP_NEEDED);
+      }
       const decidedAt = new Date().toISOString();
       await tx`update approval set decision = ${request.decision}, decided_at = ${decidedAt},
-        decided_by = ${decider} where id = ${approval.id}`;
+        decided_by = ${decider}, step_up_id = ${stepUp} where id = ${approval.id}`;
       await this.setStatus(tx, action, request.decision);
       await appendEvent(tx, job.id, action.attempt_id, 'approval_decided', {
         action_id: id,
@@ -2414,6 +3107,12 @@ export class BrokerService implements BrokerOperations {
         if (classified.requires_approval) {
           const [row] = await tx`select * from approval where action_id = ${id}
             and payload_hash = ${action.payload_hash} for update`;
+          // Proactive work that was likely enough when proposed but is not now
+          // ends here, with no card, as it would have at proposal.
+          if (!row && classified.proactive && !classified.proactive.act) {
+            await this.rejectDispatch(tx, job, action, 'proactive_hold');
+            throw new ProactiveHold(classified.proactive);
+          }
           let approval = await this.holdApproval(tx, job, action, row, classified);
           if (
             approval.decided_by === 'auto_review' &&
@@ -2441,6 +3140,10 @@ export class BrokerService implements BrokerOperations {
           if (approval.job_revision !== job.revision) throw new BrokerFault('revision_mismatch');
           if (approval.expires_at && new Date(approval.expires_at).getTime() <= Date.now())
             throw new BrokerFault('approval_required', 'Approval expired');
+          // Checked here as well as when the person answered: an Allow written
+          // any way but with their step-up moves no money.
+          if (classified.money && !(await stepUpHolds(tx, approval.id, action)))
+            throw new BrokerFault('approval_required', STEP_UP_NEEDED);
           authorization = approval.id;
           expiresAt = approval.expires_at ? new Date(approval.expires_at).toISOString() : null;
         } else {
@@ -2461,7 +3164,10 @@ export class BrokerService implements BrokerOperations {
         const binding = bindEffect(action, job, authority, expiresAt);
         requireMatchingBinding(await loadBinding(tx, action), binding);
         const requests: ReservationRequest[] = [{ kind: 'calls', amount: 1 }];
-        if (tool.effect_class === 'spend') {
+        // A metered capability reserves what it costs the installation. A money
+        // move is the person's own transaction, authorized by their step-up,
+        // and has no installation cost to reserve.
+        if (tool.effect_class === 'spend' && !classified.money) {
           const cost = this.options.estimateSpend?.(action);
           if (cost === undefined || !Number.isFinite(cost) || cost < 0)
             throw new BrokerFault('budget_exceeded', 'Trusted spend estimate required');
@@ -2635,13 +3341,17 @@ export class BrokerService implements BrokerOperations {
   ): Promise<string | null> {
     // The agent binding: a paused conversation, a persona
     // whose allowed connections exclude this one, a missing persona, or a chat
-    // turn without an agent sends nothing; a chat never sends directly.
+    // turn without an agent sends nothing; a chat sends directly only when the
+    // person said to send in the turn being answered.
     const access = await agentAccess(tx, job.id);
     if (
       access.paused ||
       (access.allowed && !access.allowed.includes(action.connection_id)) ||
       access.missingAgent ||
-      (access.chat && (!access.agentId || directSend(action.kind)))
+      (access.chat &&
+        (!access.agentId ||
+          (directSend(action.kind) &&
+            !(await this.sendsFromChatNow(tx, job.id, action.attempt_id, action.kind)))))
     )
       throw new BrokerFault('scope_denied');
     const [connection] =
@@ -2690,6 +3400,9 @@ export class BrokerService implements BrokerOperations {
         'approval_required',
         'The standing permission no longer covers this action.',
       );
+    // Every send of a money move, a retry included, rests on the person's step-up.
+    if (classified.money && !(await stepUpHolds(tx, action.authorization_ref, action)))
+      throw new BrokerFault('approval_required', STEP_UP_NEEDED);
     const [authorizing] = action.authorization_ref
       ? await tx`select origin_warnings, action_id from approval where id = ${action.authorization_ref}`
       : [];
@@ -3197,10 +3910,10 @@ export class BrokerService implements BrokerOperations {
     const reconnect = run.disposition === 'needs_reconnect';
     const uncertain = run.disposition === 'needs_reconciliation';
     const text = reconnect
-      ? 'This connection no longer permits the send. Reconnect it and Melete will carry on from here.'
+      ? `This connection no longer permits the send. Reconnect it and ${assistantName()} will carry on from here.`
       : uncertain
         ? (run.question as string)
-        : `Melete could not finish this and stopped rather than guess. ${run.question}`;
+        : `${assistantName()} could not finish this and stopped rather than guess. ${run.question}`;
     const because = [
       `${action.kind} stopped at ${run.disposition.replace(/_/g, ' ')} after ${run.executions} ${
         run.executions === 1 ? 'attempt' : 'attempts'

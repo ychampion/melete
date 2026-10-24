@@ -30,6 +30,8 @@ export type MockOptions = {
   voice?: boolean | 'private';
   /** Off, conversations have no browser or sandbox, as on a fresh install. */
   computer?: boolean;
+  /** `link`: each chat has a desktop shown through its provider's own viewer. */
+  desktop?: 'none' | 'link';
   /** `shared` makes the session's space a shared one the person owns, with two others in it. */
   space?: 'personal' | 'shared';
   /**
@@ -51,6 +53,13 @@ export type MockOptions = {
    * overrides the seed, setup, connection and "Needs you" options.
    */
   firstRun?: boolean;
+  /** `both` adds an identity provider's button; `oidc` makes it the only way in. */
+  signIn?: 'password' | 'both' | 'oidc';
+  /** Features turned off, as `MELETE_FEATURE_<NAME>=off` does on the service. */
+  featuresOff?: string[];
+  /** What the installation and its assistant are called; Melete when left out. */
+  instanceName?: string;
+  assistantName?: string;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -79,12 +88,17 @@ export function createMock(given: MockOptions = {}) {
     setupNeeded: options.setupNeeded ?? false,
     voice: options.voice ?? true,
     computer: options.computer ?? true,
+    desktop: options.desktop ?? 'none',
     space: options.space ?? 'personal',
     needsYou: options.needsYou !== 'none',
     reach: options.reach ?? true,
     multiplayer: options.multiplayer ?? false,
     composio: options.composio ?? false,
     firstRun: options.firstRun ?? false,
+    signIn: options.signIn ?? 'password',
+    featuresOff: options.featuresOff ?? [],
+    ...(options.instanceName ? { instanceName: options.instanceName } : {}),
+    ...(options.assistantName ? { assistantName: options.assistantName } : {}),
   });
   if (options.connections === 'none') store.connections.clear();
   if (options.connections === 'apps') {
@@ -102,11 +116,23 @@ if (import.meta.main) {
     experience: { seed: process.env.MOCK_SEED !== 'off' },
     setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
     computer: process.env.MELETE_MOCK_COMPUTER !== 'off',
+    desktop: process.env.MELETE_MOCK_DESKTOP === 'link' ? 'link' : 'none',
     reach: process.env.MELETE_MOCK_REACH !== 'off',
     multiplayer: process.env.MELETE_MOCK_MULTIPLAYER === 'on',
     composio: process.env.MELETE_MOCK_COMPOSIO === 'on',
     firstRun: process.env.MELETE_MOCK_FIRST_RUN === 'on',
+    featuresOff: (process.env.MELETE_MOCK_FEATURES_OFF ?? '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean),
+    // The same settings the service reads, so a named installation can be tried against the mock.
+    instanceName: process.env.MELETE_INSTANCE_NAME?.trim() || undefined,
+    assistantName: process.env.MELETE_ASSISTANT_NAME?.trim() || undefined,
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
+    signIn:
+      process.env.MELETE_MOCK_SIGNIN === 'both' || process.env.MELETE_MOCK_SIGNIN === 'oidc'
+        ? process.env.MELETE_MOCK_SIGNIN
+        : 'password',
     connections:
       process.env.MELETE_MOCK_CONNECTIONS === 'none'
         ? 'none'

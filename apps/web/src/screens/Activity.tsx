@@ -9,6 +9,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Button } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import { toast } from '../shell/Shell.tsx';
 
 const when = (iso: string) =>
@@ -58,9 +59,9 @@ export function ActivityTab() {
   return (
     <div className="col" style={{ gap: 12 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        What Melete did for you in chats and plans you have since deleted: what it was, where it
-        went and when. What the messages said is not kept here. A chat you still have keeps this in
-        its own work log.
+        What {assistantName()} did for you in chats and plans you have since deleted: what it was,
+        where it went and when. What the messages said is not kept here. A chat you still have keeps
+        this in its own work log.
       </p>
       {activity.error ? (
         <LoadError what="your activity" error={activity.error} onRetry={activity.reload} />

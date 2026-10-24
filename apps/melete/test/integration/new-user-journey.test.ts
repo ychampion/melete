@@ -144,8 +144,12 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
       expect(await (await call('/setup')).json()).toEqual({
         needed: true,
         multiplayer: false,
+        features: expect.any(Object),
         code_required: false,
         email_sign_in: false,
+        instance_name: 'Melete',
+        assistant_name: 'Melete',
+        signin: { password: true, oidc: null },
       });
       const setup = await call('/setup', 'POST', {
         email: 'new@example.test',
@@ -161,8 +165,12 @@ const ANSWER = 'I drafted the email to Alex for you to review.';
       expect(await (await call('/setup')).json()).toEqual({
         needed: false,
         multiplayer: false,
+        features: expect.any(Object),
         code_required: false,
         email_sign_in: false,
+        instance_name: 'Melete',
+        assistant_name: 'Melete',
+        signin: { password: true, oidc: null },
       });
 
       // The first onboarding question is answered into memory, on a space no job has touched.

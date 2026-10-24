@@ -410,6 +410,21 @@ withDb('a reminder the agent set', () => {
     expect((flagged as unknown as Array<{ n: number }>)[0]?.n).toBe(1);
   });
 
+  test('a time-zone difference already told is not told again after its chat is deleted', async () => {
+    const who = await person({ timeZone: 'Asia/Kolkata', confirmed: false });
+    const { chat, first } = await reminderSet(who, 'America/Los_Angeles');
+    expect(required(first.bundle.local_now).zone_mismatch).not.toBeNull();
+    expect((await who.request(`/conversations/${chat.id}`, 'DELETE')).status).toBe(200);
+    expect((await who.request(`/conversations/${chat.id}`)).status).toBe(404);
+
+    const { first: next } = await reminderSet(who, 'America/Los_Angeles');
+    expect(required(next.bundle.local_now)).toMatchObject({
+      time_zone: 'America/Los_Angeles',
+      zone_mismatch: null,
+    });
+    expect(renderInput(next.bundle)).not.toContain('Mention the difference once');
+  });
+
   test('a confirmed profile zone wins over the device, and the difference is still told', async () => {
     const who = await person({ timeZone: 'America/Los_Angeles', confirmed: true });
     const { first } = await reminderSet(who, 'Asia/Kolkata');

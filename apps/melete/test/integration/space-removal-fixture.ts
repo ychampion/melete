@@ -219,6 +219,11 @@ export async function seedSpace(
   await sql`insert into action_review (id, action_id, job_id, space_id, tier, decided_by, outcome, reason)
     values (${newId('rvw')}, ${actionId}, ${jobId}, ${spaceId}, 'sandbox', 'policy', 'approved',
       'Runs inside the agent workspace.')`;
+  // A page a connection's server showed in one of its chats.
+  await sql`insert into connection_page (id, job_id, action_id, connection_id, space_id,
+      resource_uri, html, server_origin, expires_at)
+    values (${newId('cpg')}, ${jobId}, ${actionId}, ${connectionId}, ${spaceId},
+      'ui://desk/form.html', '<p>Form</p>', 'https://desk.example.test', now() + interval '30 minutes')`;
   await sql`insert into activity_record (id, space_id, action_id, kind, effect_class, connection_label, provider, outcome, source, happened_at)
     values (${newId('act')}, ${spaceId}, ${newId('act')}, 'email.send', 'write_external', 'Mail', 'imap',
       'succeeded', 'A deleted chat', now())`;

@@ -124,6 +124,8 @@ export type AppDeps = {
   voice?: boolean | 'private';
   /** The agent's browser and sandbox. On unless a demonstration of a fresh install turns it off. */
   computer?: boolean;
+  /** `link` gives each chat a desktop shown through its provider's own viewer (`MELETE_MOCK_DESKTOP=link`). */
+  desktop?: 'none' | 'link';
   /** A shared space the person owns, with others in it (`MELETE_MOCK_SPACE=shared`). */
   space?: 'personal' | 'shared';
   /** Texts and calls to the person's own number; off shows an installation without a provider. */
@@ -139,7 +141,31 @@ export type AppDeps = {
   composio?: boolean;
   /** A person's very first visit: Melete is the only agent (`MELETE_MOCK_FIRST_RUN=on`). */
   firstRun?: boolean;
+  /**
+   * How people sign in (`MELETE_MOCK_SIGNIN`): `password` alone, as by default;
+   * `both`, a password or an identity provider; `oidc`, the provider alone.
+   */
+  signIn?: 'password' | 'both' | 'oidc';
+  /**
+   * Features turned off, as `MELETE_FEATURE_<NAME>=off` does on the service
+   * (`MELETE_MOCK_FEATURES_OFF=voice,companies`). The setup status says so.
+   */
+  featuresOff?: string[];
+  /** What the installation and its assistant are called, as MELETE_INSTANCE_NAME and MELETE_ASSISTANT_NAME set them. */
+  instanceName?: string;
+  assistantName?: string;
 };
+
+/** The features the service lists in features.ts, each on unless turned off; multiplayer follows its own switch. */
+export const MOCK_FEATURES = [
+  'multiplayer',
+  'voice',
+  'phone',
+  'sms',
+  'browser',
+  'computer',
+  'companies',
+];
 
 /** The routes the multiplayer switch covers, as the service lists them in rooms/preview.ts. */
 export function multiplayerPath(method: string, path: string): boolean {
@@ -234,6 +260,7 @@ export function createMockApp(deps: AppDeps) {
   mountAppsMock(app, deps);
   mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
+  experience.computer.desktop = deps.desktop ?? 'none';
   experience.computer.mount(app);
   mountAttachmentsMock(app, experience);
   mountIntentsMock(app, { seeded: Boolean(deps.seedExperience) });
@@ -339,6 +366,7 @@ export function createMockApp(deps: AppDeps) {
     account.password = next;
     return true;
   };
+  experience.checkPassword = (password) => Boolean(account && password === account.password);
   const owned = (row: NonNullable<typeof account>) => ({
     owner: { id: row.id, email: row.email, created_at: row.created_at },
   });
@@ -348,10 +376,42 @@ export function createMockApp(deps: AppDeps) {
     send(setupStatusResponse, {
       needed: account === null,
       multiplayer,
+      features: Object.fromEntries(
+        MOCK_FEATURES.map((name) => [
+          name,
+          (name === 'multiplayer' ? multiplayer : true) && !deps.featuresOff?.includes(name),
+        ]),
+      ),
       code_required: false,
       email_sign_in: false,
+      instance_name: deps.instanceName ?? 'Melete',
+      // As the service does: the assistant takes the installation's name when only that is set.
+      assistant_name: deps.assistantName ?? deps.instanceName ?? 'Melete',
+      signin: {
+        password: deps.signIn !== 'oidc',
+        oidc: deps.signIn === 'both' || deps.signIn === 'oidc' ? { label: 'Example ID' } : null,
+      },
     }),
   );
+
+  // Stands in for the identity provider approving at once: signs the account
+  // in and goes back to the app the browser came from.
+  app.get('/signin/oidc/start', (c) => {
+    if (deps.signIn !== 'both' && deps.signIn !== 'oidc')
+      return c.json(
+        fail('not_available', 'This installation has no identity provider set up.'),
+        404,
+      );
+    let back = 'http://localhost:5173';
+    try {
+      back = new URL(c.req.header('Referer') ?? back).origin;
+    } catch {}
+    const path = c.req.query('return');
+    if (!account) return c.redirect(`${back}/#/welcome?signin_error=setup_required`, 302);
+    roomsMock.signOutGuest();
+    experience.signedOut = false;
+    return c.redirect(`${back}/#${path && /^\/(?![/\\])/.test(path) ? path : '/'}`, 302);
+  });
 
   app.post('/setup', async (c) => {
     if (account) return c.json(fail('already_setup', 'The owner is already set up.'), 409);

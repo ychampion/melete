@@ -47,7 +47,11 @@ export type ProcessLimits = {
   defaultTtlMinutes: number;
   maxTtlMinutes: number;
   outputMaxBytes: number;
-  awakeSecondsPerDay: number;
+  /**
+   * How long a space's processes may keep its computers running in one UTC
+   * day. Undefined is no daily limit; the time is recorded either way.
+   */
+  awakeSecondsPerDay: number | undefined;
 };
 
 export const LIVE_STATES: readonly ProcessState[] = ['starting', 'running'];
@@ -274,11 +278,14 @@ export class SandboxProcesses {
           'space_full',
           `This space is already running ${this.limits.maxPerSpace} processes across its computers. Nothing was started. Stop one first, or tell the person`,
         );
-      const used = await this.awakeSecondsToday(request.spaceId, tx as unknown as Sql);
-      if (used >= this.limits.awakeSecondsPerDay)
+      const allowance = this.limits.awakeSecondsPerDay;
+      if (
+        allowance !== undefined &&
+        (await this.awakeSecondsToday(request.spaceId, tx as unknown as Sql)) >= allowance
+      )
         throw new ProcessRefusal(
           'awake_allowance_used',
-          `This space's awake time for today is used up (${hours(this.limits.awakeSecondsPerDay)} of ${hours(this.limits.awakeSecondsPerDay)}). Nothing was started. It resets at midnight UTC; tell the person`,
+          `This space's awake time for today is used up (${hours(allowance)} of ${hours(allowance)}). Nothing was started. It resets at midnight UTC; tell the person`,
         );
       const ttl = this.ttlMinutes(request.ttlMinutes);
       const [row] = await tx`insert into sandbox_process
@@ -558,9 +565,10 @@ export class SandboxProcesses {
       computers.set(key, [...(computers.get(key) ?? []), each]);
     }
     const overAllowance = new Set<string>();
-    for (const spaceId of new Set(live.map((each) => each.row.spaceId)))
-      if ((await this.awakeSecondsToday(spaceId)) >= this.limits.awakeSecondsPerDay)
-        overAllowance.add(spaceId);
+    const allowance = this.limits.awakeSecondsPerDay;
+    if (allowance !== undefined)
+      for (const spaceId of new Set(live.map((each) => each.row.spaceId)))
+        if ((await this.awakeSecondsToday(spaceId)) >= allowance) overAllowance.add(spaceId);
 
     for (const members of computers.values()) {
       const first = members[0];
@@ -683,7 +691,7 @@ export class SandboxProcesses {
         {
           kind: 'processes_stopped',
           reason: 'awake_allowance_used',
-          allowance_seconds: this.limits.awakeSecondsPerDay,
+          allowance_seconds: this.limits.awakeSecondsPerDay ?? null,
           stopped_at: at.toISOString(),
           processes: stopped.map((row) => ({ process_id: row.id, name: row.name })),
         },

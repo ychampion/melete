@@ -89,10 +89,12 @@ import {
   ComputerOpenFailed,
   ComputerPayloadRefusal,
   challengeShown,
+  computerToolsOf,
   HumanControlRefusal,
   MAX_BATCH_ACTIONS,
   runComputerAction,
 } from './sandbox-computer.ts';
+import { desktopOf, noDesktop } from './sandbox-desktop.ts';
 import {
   createProcessTools,
   PROCESS_TOOL_NAMES,
@@ -391,18 +393,27 @@ export const sandboxExecManifest: ConnectorManifest = {
 };
 
 /** What one provider's sandboxes can do: a desktop only where the adapter has one. */
-export const sandboxManifestFor = (provider: SandboxProvider): ConnectorManifest =>
-  isDesktopProvider(provider) ? sandboxExecManifest : sandboxTerminalManifest;
+export function sandboxManifestFor(provider: SandboxProvider): ConnectorManifest {
+  const desktop = desktopOf(provider);
+  if (!desktop) return sandboxTerminalManifest;
+  if (isDesktopProvider(provider)) return sandboxExecManifest;
+  return {
+    ...sandboxExecManifest,
+    tools: [...sandboxTerminalManifest.tools, ...computerToolsOf(desktop)],
+  };
+}
 
 /**
- * Why nothing ran, as the model reads it: a full computer, or no computer free
- * for this person or anyone, is said in plain words, and is not tried again by
- * itself.
+ * Why nothing ran, as the model reads it: a full computer, no computer free,
+ * or a provider at the operator's cap is said in plain words and is not tried
+ * again by itself.
  */
 function refusedBefore(error: unknown) {
   if (
     error instanceof SandboxRefusal &&
-    (error.code === 'computer_full' || error.code === 'concurrency_exhausted')
+    (error.code === 'computer_full' ||
+      error.code === 'concurrency_exhausted' ||
+      error.code === 'provider_capacity')
   )
     return { outcome: 'failed' as const, reason: error.message, retryable: false };
   return {
@@ -929,10 +940,11 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
 
   /** A computer action: the same session as the terminal, the desktop instead of a command. */
   const computer = async (action: Action, ctx: ConnectorContext, signal: AbortSignal) => {
-    if (!isDesktopProvider(provider))
+    const desktop = desktopOf(provider);
+    if (!desktop)
       return {
         outcome: 'failed' as const,
-        reason: `the ${provider.capabilities.adapter} adapter has no desktop`,
+        reason: noDesktop(provider.capabilities.adapter),
         retryable: false,
       };
     let session: SessionRow;
@@ -943,8 +955,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       if (!renewed) throw new Error('the sandbox session ended before the action was sent');
       session = renewed;
       // A workspace's computer is shared, one display per chat or run; a
-      // computer of one attempt alone keeps its single screen.
-      if (session.agentId) {
+      // computer of one attempt alone keeps its single screen, as does a
+      // computer whose provider shows one screen to everyone.
+      if (session.agentId && isDesktopProvider(provider)) {
         const owner = await ownerJobOf(sql, ctx.job_id);
         const current = session;
         display = await sql.begin((tx) =>
@@ -968,7 +981,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         jobId: ctx.job_id,
         workRoot: options.workRoot,
         session,
-        provider,
+        provider: desktop,
         controls: sessions.controls,
         signal,
         display: display ? { number: display.display, id: display.id } : null,

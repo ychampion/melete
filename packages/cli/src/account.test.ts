@@ -23,8 +23,25 @@ describe('melete account: arguments', () => {
       ['create', 'not-an-address'],
       ['reset', 'a@example.com', 'b@example.com'],
       ['drop', 'a@example.com'],
+      ['grant', 'a@example.com'],
+      ['grant', 'a@example.com', 'Verified!'],
+      ['revoke', 'not-an-address', 'verified'],
+      ['grant', 'a@example.com', 'verified', 'more'],
     ])
       expect(typeof accountArguments(refused)).toBe('string');
+  });
+
+  test('entitlements are listed, granted and taken away by email and name', () => {
+    expect(accountArguments(['entitlements', 'sam@example.com'])).toEqual([
+      'entitlements',
+      'sam@example.com',
+    ]);
+    for (const command of ['grant', 'revoke'])
+      expect(accountArguments([command, 'sam@example.com', 'verified'])).toEqual([
+        command,
+        'sam@example.com',
+        'verified',
+      ]);
   });
 
   test('feedback lists, filters and shows one report', () => {

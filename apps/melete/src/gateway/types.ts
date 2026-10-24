@@ -228,10 +228,19 @@ export interface GatewayProvider {
   /** The in-process fake provider never opens a connection, so its URL is not checked. */
   fake?: boolean;
   /**
-   * Plain HTTP is accepted. Set only for the endpoint the operator names in
-   * OPENAI_COMPAT_BASE_URL, which may be a model server on their own network.
+   * Plain HTTP is accepted. Set only for an address the operator or owner
+   * chose: the OpenAI-compatible endpoint, and Anthropic's ANTHROPIC_BASE_URL.
+   * It says nothing about whose model answers there.
    */
   allowHttp?: boolean;
+  /**
+   * The address may be a model server on the person's own machine or network.
+   * Set only for the OpenAI-compatible endpoint the operator or owner chose. A
+   * named cloud provider reached through a gateway never has it, whatever the
+   * gateway's address, so its calls are priced, cached, rerouted and redacted
+   * as that provider's (see `providerIsLocal`).
+   */
+  mayBeLocal?: boolean;
   /**
    * Set for the OpenAI-compatible endpoint the owner chose in the app: each
    * call resolves the address, checks every answer against this reach (their

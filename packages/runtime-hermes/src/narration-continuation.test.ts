@@ -2,6 +2,9 @@
 import { expect, test } from 'bun:test';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
 import { HermesRuntimeAdapter } from './adapter.ts';
+import { ANSWERED_QUESTION, SAID_THEN_WROTE } from './instructions.ts';
+import { DELIVER_CONTINUATION, SAID_DELIVER_CONTINUATION } from './liveness.ts';
+import { answersAlready } from './narration.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
 const bundle: AttemptBundle = {
@@ -66,4 +69,123 @@ test('a reply with its answer is not asked again', async () => {
   const { adapter, inputs } = engine(['Let me check… It will rain after 4 PM.']);
   await adapter.start(bundle, { emit: async () => {} }, new AbortController().signal);
   expect(inputs).toHaveLength(1);
+});
+
+const ANSWER = 'It will rain after 4 PM. Take an umbrella if you head out.';
+const at = '2026-10-18T12:00:00.000Z';
+const run = (given: AttemptBundle, outputs: string[]) => {
+  const { adapter, inputs } = engine(outputs);
+  return adapter
+    .start(given, { emit: async () => {} }, new AbortController().signal)
+    .then((outcome) => ({ outcome, inputs }));
+};
+const withSaid = (said: string, inputs: Partial<AttemptBundle['inputs']> = {}): AttemptBundle => ({
+  ...bundle,
+  inputs: { ...bundle.inputs, ...inputs, said_this_turn: said },
+});
+
+test('a turn whose answer the person already has is not asked to say it again', async () => {
+  const { inputs } = await run(withSaid(ANSWER), ['Let me check the forecast…', ANSWER]);
+  expect(inputs).toHaveLength(1);
+  // It is shown the words it already sent, once, after its instructions.
+  expect(inputs[0]).toContain('## Already said in this turn');
+  expect(inputs[0]).toContain(`<already_said>\n${ANSWER}\n</already_said>`);
+  expect(inputs[0]).not.toContain(SAID_THEN_WROTE);
+});
+
+test('a turn that only said what it was about to do is still asked for the answer', async () => {
+  const { outcome, inputs } = await run(withSaid('Let me look that up.'), [
+    'Let me check the forecast…',
+    'It will rain after 4 PM.',
+  ]);
+  expect(inputs).toHaveLength(2);
+  expect(outcome).toMatchObject({ kind: 'completed', summary: 'It will rain after 4 PM.' });
+});
+
+test('a plan line the narration filter does not know is not taken for the answer', async () => {
+  // Said by a real model before a step; the filter keeps it, since it names no "let me".
+  const { inputs } = await run(withSaid('Checking what I know about your book club.'), [
+    'Let me check your notes…',
+    'Your book club meets on Thursdays.',
+  ]);
+  expect(inputs).toHaveLength(2);
+  // The one ask knows what the person already has.
+  expect(inputs[1]).toBe(SAID_DELIVER_CONTINUATION);
+});
+
+test('a short answer already sent leaves one ask, for only what is new', async () => {
+  const { inputs } = await run(withSaid('It will rain after 4 PM.'), [
+    'Let me check the radar…',
+    'The radar shows it starting closer to 5.',
+  ]);
+  expect(inputs).toHaveLength(2);
+  expect(inputs[1]).toBe(SAID_DELIVER_CONTINUATION);
+  expect(inputs[1]).not.toBe(DELIVER_CONTINUATION);
+});
+
+test('a message the person sent after the answer still gets its reply', async () => {
+  const message = { role: 'user' as const, content: 'And tomorrow?', at };
+  const { outcome, inputs } = await run(withSaid(ANSWER, { new_user_messages: [message] }), [
+    'Let me look that up…',
+    'Tomorrow stays dry.',
+  ]);
+  // Told the earlier words do not answer it, and asked once if it goes quiet.
+  expect(inputs[0]).toContain(SAID_THEN_WROTE);
+  expect(inputs).toHaveLength(2);
+  expect(outcome).toMatchObject({ kind: 'completed', summary: 'Tomorrow stays dry.' });
+});
+
+test('an answer to the question the last turn ended on is shown what the person has', async () => {
+  const message = { role: 'user' as const, content: 'Go ahead, your call.', at };
+  const answered = {
+    question: 'Should I wait for the radar, or go with this?',
+    said: ANSWER,
+  };
+  const { inputs } = await run(
+    {
+      ...bundle,
+      inputs: { ...bundle.inputs, new_user_messages: [message], answered_question: answered },
+    },
+    ['The radar agrees: rain after 4 PM.'],
+  );
+  const input = inputs[0] ?? '';
+  expect(input).toContain(ANSWERED_QUESTION);
+  expect(input).toContain(`<question>\n${answered.question}\n</question>`);
+  expect(input).toContain(`<already_said>\n${ANSWER}\n</already_said>`);
+  // Shown before the answer it explains, which stays last.
+  expect(input.indexOf(ANSWERED_QUESTION)).toBeLessThan(input.indexOf('## From the person'));
+  expect(input.trimEnd().endsWith(message.content)).toBe(true);
+  // A turn that answers no question is told nothing about one.
+  const plain = await run(
+    { ...bundle, inputs: { ...bundle.inputs, new_user_messages: [message] } },
+    ['Rain after 4 PM.'],
+  );
+  expect(plain.inputs[0]).not.toContain(ANSWERED_QUESTION);
+});
+
+test('an event in the wake leaves the ask in place', async () => {
+  const { inputs } = await run(
+    withSaid(ANSWER, { trigger_events: [{ kind: 'timer_fired', wake_at: at }] }),
+    ['Let me look at the radar…', 'Still rain after 4 PM.'],
+  );
+  expect(inputs).toHaveLength(2);
+});
+
+test('words that answer are told from words that announce', () => {
+  for (const said of [
+    ANSWER,
+    'Dear Hiring Manager,\n\nHere is the letter.\n\nSincerely,\nRiya Sharma',
+    `Here is the plan. ${'Day one is the old town and the castle. '.repeat(4)}`,
+  ])
+    expect(answersAlready(said)).toBe(true);
+  for (const said of [
+    'Pulling up your calendar now.',
+    'Looking into it.',
+    "I'll check the weather. One moment.",
+    "I'm going to draft the letter and then count the words.",
+    // Short answers count as a line: the cost is one ask for what is new, never an early end.
+    'Yes.',
+    'It will rain after 4 PM.',
+  ])
+    expect(answersAlready(said)).toBe(false);
 });

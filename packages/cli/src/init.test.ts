@@ -58,6 +58,7 @@ describe('melete init --adopt', () => {
       images: { registry: 'ghcr.io/ychampion', tag: '34a9140', channel: 'main' },
       profiles: [],
       overlays: ['browser'],
+      compose_files: [],
       disk: { min_free_mb: 600, pull_margin_mb: 200 },
       backup: { dir: '~/melete-backups', keep: 3, max_age_days: 30 },
       public_ports: false,
@@ -75,6 +76,57 @@ describe('melete init --adopt', () => {
     expect(readFileSync(join(deployDir, '.env'), 'utf8')).toBe(env);
     expect(changingCalls(context.docker.calls)).toEqual([]);
     expect(context.attached).toEqual([]);
+  });
+
+  test('Compose files of the installation’s own are recorded as compose_files', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir, { MELETE_IMAGE_TAG: '34a9140' });
+    writeFileSync(join(deployDir, 'docker-compose.brand.yml'), 'services: {}\n');
+    mkdirSync(join(deployDir, '..', 'private'), { recursive: true });
+    writeFileSync(join(deployDir, '..', 'private', 'compose.extra.yml'), 'services: {}\n');
+    const started = [
+      join(deployDir, 'docker-compose.yml'),
+      join(deployDir, 'docker-compose.browser.yml'),
+      join(deployDir, 'docker-compose.brand.yml'),
+      join(deployDir, '..', 'private', 'compose.extra.yml'),
+    ];
+    const stack = running.map((row) => ({
+      ...row,
+      Config: {
+        ...row.Config,
+        Labels: {
+          ...row.Config.Labels,
+          'com.docker.compose.project.config_files': started.join(','),
+        },
+      },
+    }));
+    expect(await runInit(testContext(deployDir, engine(stack)), ['--adopt'])).toBe(0);
+    const written = JSON.parse(readFileSync(join(deployDir, DEPLOY_FILE), 'utf8'));
+    expect(written.overlays).toEqual(['browser']);
+    expect(written.compose_files).toEqual([
+      'docker-compose.brand.yml',
+      '../private/compose.extra.yml',
+    ]);
+  });
+
+  test('a Compose file the contract cannot name is refused, and nothing is written', async () => {
+    const deployDir = temporaryDeployDir();
+    writeEnv(deployDir, { MELETE_IMAGE_TAG: '34a9140' });
+    const odd = join(deployDir, 'my overlay.yml');
+    const stack = running.map((row) => ({
+      ...row,
+      Config: {
+        ...row.Config,
+        Labels: {
+          ...row.Config.Labels,
+          'com.docker.compose.project.config_files': [...files, odd].join(','),
+        },
+      },
+    }));
+    const context = testContext(deployDir, engine(stack));
+    expect(await runInit(context, ['--adopt'])).not.toBe(0);
+    expect(existsSync(join(deployDir, DEPLOY_FILE))).toBe(false);
+    expect(context.errors()).toContain('my overlay.yml');
   });
 
   test('the sandbox profile is adopted when its image holder exists', async () => {

@@ -20,6 +20,7 @@ import {
 } from '@melete/contracts/attachments';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
+import { assistantName, instanceName } from '../experience/instance.ts';
 
 export type PendingFile = {
   /** This box's own name for the file, stable while it uploads. */
@@ -35,8 +36,8 @@ export type PendingFile = {
   error: string | null;
 };
 
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
-const TRYING_AGAIN = 'Couldn’t reach Melete. Trying again…';
+const offline = () => `Couldn’t reach ${instanceName()}. Check that the service is running.`;
+const tryingAgain = () => `Couldn’t reach ${instanceName()}. Trying again…`;
 
 /**
  * How long an upload that could not reach the service waits before each new
@@ -61,7 +62,7 @@ export function refusal(
     return `A message can carry up to ${limits.per_message} files.`;
   if (!attachmentKindFor(file.name, file.type)) {
     const extension = /\.([A-Za-z0-9]{1,10})$/.exec(file.name)?.[1];
-    return `${extension ? `Melete can't read .${extension.toLowerCase()} files.` : `Melete can't read ${file.name || 'that file'}.`} ${ATTACHMENT_TYPES_SENTENCE}`;
+    return `${extension ? `${assistantName()} can't read .${extension.toLowerCase()} files.` : `${assistantName()} can't read ${file.name || 'that file'}.`} ${ATTACHMENT_TYPES_SENTENCE}`;
   }
   if (file.size === 0) return `${file.name} is empty.`;
   if (file.size > limits.file_bytes)
@@ -206,7 +207,7 @@ export function uploadResult(status: number | null, body: UploadAnswer): Result<
     return { data: body.attachment, error: null, unavailable: null };
   if (status !== null && status < 500 && body?.error?.message)
     return { data: null, error: body.error.message, unavailable: null };
-  return { data: null, error: null, unavailable: body?.error?.message || OFFLINE };
+  return { data: null, error: null, unavailable: body?.error?.message || offline() };
 }
 
 /** How long to wait before trying an upload again after `tried` tries; undefined to stop. */
@@ -222,7 +223,7 @@ export function afterFailedTry(
   const wait = nextUploadTry(result, tried);
   return wait === undefined
     ? { state: 'failed', error: result.error ?? result.unavailable, wait }
-    : { state: 'retrying', error: TRYING_AGAIN, wait };
+    : { state: 'retrying', error: tryingAgain(), wait };
 }
 
 /** The line under the box about its files; null when there is nothing to say. */

@@ -134,7 +134,7 @@ export const icsConnectionConfig = z
   .strict();
 export type IcsConnectionConfig = z.infer<typeof icsConnectionConfig>;
 
-export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal', 'docker'] as const;
+export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal', 'docker', 'maritime'] as const;
 export const sandboxAdapter = z.enum(SANDBOX_ADAPTERS);
 export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
 
@@ -144,8 +144,22 @@ export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
  */
 export const sandboxAdapterTakesKey = (adapter: SandboxAdapter): boolean => adapter !== 'docker';
 
+/**
+ * Whether each adapter's computers have a desktop for the `computer.*` tools
+ * and for a person to take over. Every adapter says so here, so a new one
+ * cannot be added without deciding.
+ */
+export const SANDBOX_ADAPTER_DESKTOP: Readonly<Record<SandboxAdapter, boolean>> = {
+  docker: true,
+  maritime: true,
+  e2b: false,
+  daytona: false,
+  modal: false,
+};
+
 /** The adapters whose sandboxes have a desktop for the `computer.*` tools. */
-export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean => adapter === 'docker';
+export const sandboxAdapterHasDesktop = (adapter: SandboxAdapter): boolean =>
+  SANDBOX_ADAPTER_DESKTOP[adapter] === true;
 
 /**
  * `connected_hosts_only` lets out the hosts the operator lists in
@@ -216,6 +230,7 @@ export function modalTokenParts(key: string): { token_id: string; token_secret: 
 export const SANDBOX_CREDENTIAL_FORMAT: Record<SandboxAdapter, string> = {
   e2b: 'the API key on its own, which has no colon in it',
   daytona: 'the API key on its own, which has no colon in it',
+  maritime: 'an API key with the computers scope, on its own, which has no colon in it',
   modal: 'the token id and the token secret as one value, `token_id:token_secret`',
   docker: "nothing: it runs on this service's own Docker engine and takes no key",
 };
@@ -234,7 +249,7 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
   const wrong =
     adapter === 'modal'
       ? !modalTokenParts(key)
-      : // An E2B or Daytona key carries no colon. One here is a Modal token in
+      : // An E2B, Daytona or Maritime key carries no colon. One here is a Modal token in
         // the wrong connection, and the provider would be handed it as a key.
         key.includes(':');
   return wrong
@@ -829,14 +844,27 @@ export const accountSignInStart = z.object({
  * consent. One sign-in connects Gmail and Google Calendar, one consent page
  * each; with `documents`, Google Drive alone.
  */
-export const managedSignInRequest = z
-  .object({
-    provider: z.literal('google'),
-    /** Left out, the space of the signed-in session. */
-    space_id: prefixedId(ID_PREFIXES.space).optional(),
-    documents: z.boolean().optional(),
-  })
-  .strict();
+/** A toolkit's slug at Composio, such as `slack`. */
+export const composioToolkit = z.string().regex(/^[a-z0-9][a-z0-9_]{0,63}$/);
+
+export const managedSignInRequest = z.discriminatedUnion('provider', [
+  z
+    .object({
+      provider: z.literal('google'),
+      /** Left out, the space of the signed-in session. */
+      space_id: prefixedId(ID_PREFIXES.space).optional(),
+      documents: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      /** Another app Composio signs in to, named by its toolkit. */
+      provider: z.literal('app'),
+      toolkit: composioToolkit,
+      space_id: prefixedId(ID_PREFIXES.space).optional(),
+    })
+    .strict(),
+]);
 export type ManagedSignInRequest = z.infer<typeof managedSignInRequest>;
 
 export const managedSignInStart = z.object({
@@ -847,9 +875,23 @@ export const managedSignInStart = z.object({
   /** Where the person signs in. */
   issuer: z.url(),
   via: z.literal('composio'),
-  /** What the sign-in connects, one consent page each, in order. */
-  connects: z.array(z.enum(['mail', 'calendar', 'documents'])),
+  /** What the sign-in connects, one consent page each, in order; `tools` for an app. */
+  connects: z.array(z.enum(['mail', 'calendar', 'documents', 'tools'])),
 });
+
+/** One app that can be connected through Composio. */
+export const composioApp = z
+  .object({
+    toolkit: composioToolkit,
+    title: z.string(),
+    description: z.string(),
+    logo: z.url().nullable(),
+    categories: z.array(z.string()),
+  })
+  .meta({ id: 'ComposioApp' });
+
+export const composioAppSearchResponse = z.object({ apps: z.array(composioApp) });
+export type ComposioAppSearchResponse = z.infer<typeof composioAppSearchResponse>;
 
 export const accountSignInStatus = z.discriminatedUnion('state', [
   z.object({ state: z.literal('pending'), expires_at: timestamp }),
@@ -957,10 +999,12 @@ export const connectionCatalogEntry = z
       }),
       z.object({
         method: z.literal('managed_sign_in'),
-        provider: z.enum(['google']),
+        provider: z.enum(['google', 'app']),
+        /** For an app, its toolkit, sent back in the request that starts the sign-in. */
+        toolkit: composioToolkit.optional(),
         /** Who handles the sign-in and keeps the account's tokens. */
         via: z.literal('composio'),
-        /** `POST` here with `{ provider }` to start; the answer is the address to open. */
+        /** `POST` here with `{ provider }` (and `toolkit` for an app) to start; the answer is the address to open. */
         start: z.string(),
         /** What the person reads about who signs them in, in plain words. */
         note: z.string(),
@@ -1468,19 +1512,20 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           { value: 'e2b', label: 'E2B' },
           { value: 'daytona', label: 'Daytona' },
           { value: 'modal', label: 'Modal' },
+          { value: 'maritime', label: 'Maritime computers' },
           { value: 'docker', label: 'This server (Docker)' },
         ],
         default: 'e2b',
       }),
       text('sandbox.image', 'Image or template', {
         placeholder: 'base',
-        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal, an image on this server for Docker.',
+        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal, linux or linux-arm64 on Maritime, an image on this server for Docker.',
       }),
       text('credentials.api_key', 'Provider key', {
         input: 'password',
         secret: true,
         required: false,
-        help: `E2B or Daytona: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}. Docker: leave it empty.`,
+        help: `E2B, Daytona or Maritime: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}. Docker: leave it empty.`,
       }),
       text('sandbox.egress', 'What the sandbox may reach', {
         input: 'select',

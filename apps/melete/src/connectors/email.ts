@@ -8,6 +8,7 @@ import type {
   VerifyResult,
 } from '@melete/contracts';
 import { z } from 'zod';
+import { type MailInstance, passwordResetMail, signInMail } from '../experience/account-mail.ts';
 import type { SignalSource } from '../signals/types.ts';
 import {
   credentialRefused,
@@ -335,15 +336,21 @@ export class EmailConnector implements Connector {
   }
 
   /** Authentication mail is fixed-purpose and cannot be called through the action catalog. */
-  async sendSignInLink(spaceId: string, email: string, url: string): Promise<void> {
+  async sendSignInLink(
+    spaceId: string,
+    email: string,
+    url: string,
+    instance?: MailInstance,
+  ): Promise<void> {
     if (!this.canSendSignIn(spaceId, email)) throw new Error('Sign-in mailbox mismatch');
+    const mail = signInMail(email, url, instance);
     await this.use((transport) =>
       transport.send({
         to: [email],
         cc: [],
         bcc: [],
-        subject: 'Melete sign-in link',
-        body: `Use this link to sign in to Melete. It expires in ten minutes and can be used once.\n\n${url}\n\nIf you did not request this link, ignore this email.`,
+        subject: mail.subject,
+        body: mail.text,
         messageId: `<signin.${randomUUID()}@melete.local>`,
       }),
     );
@@ -355,15 +362,17 @@ export class EmailConnector implements Connector {
     email: string,
     url: string,
     minutes: number,
+    instance?: MailInstance,
   ): Promise<void> {
     if (!this.canSendSignIn(spaceId, email)) throw new Error('Sign-in mailbox mismatch');
+    const mail = passwordResetMail(email, url, minutes, instance);
     await this.use((transport) =>
       transport.send({
         to: [email],
         cc: [],
         bcc: [],
-        subject: 'Reset your Melete password',
-        body: `Use this link to choose a new Melete password. It expires in ${minutes} minutes and can be used once. Choosing a new password signs you out everywhere.\n\n${url}\n\nIf you did not ask for this, ignore this email; your password stays as it is.`,
+        subject: mail.subject,
+        body: mail.text,
         messageId: `<reset.${randomUUID()}@melete.local>`,
       }),
     );

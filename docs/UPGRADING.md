@@ -10,7 +10,8 @@ does the steps below for you: it fetches the tag if this clone lacks it, takes
 the release's own `upgrade.ts` out of the tag with `git archive`, and runs that
 copy with every overlay file and profile named in `deploy/melete.deploy.json`
 (the browser and tailnet files, the sandbox profile, an external database and
-an S3 blob store), under the deployment lock. It records the run in
+an S3 blob store, then the installation's own `compose_files`), under the
+deployment lock. It records the run in
 `deploy/.melete/history.jsonl` and removes the copy afterwards. An installation that runs the published images
 updates with `bun run melete deploy` ([DEPLOYMENT.md](DEPLOYMENT.md#update)).
 
@@ -57,6 +58,27 @@ holds the node's key. Keeping it is optional: nothing you have written is in it,
 and an installation that loses it authenticates the node again with a fresh auth
 key and comes back at the same address. Keep it if you would rather not repeat
 that step.
+
+### Folders an engine made before the upgrade
+
+Engines keep the group's write bit on what they make under `/work`, so the
+service, which shares their group, can move and remove it. Folders an engine
+made before an upgrade that brought this keep mode 755. When the service finds
+one in a job workspace it has to put back, it starts without that folder and
+logs `workspace_restore_failed job=<id> directory=<name> error=EACCES`, and it
+does not hand that job's workspace to a spare engine. To give every such folder
+the group's write bit, run this as the runtime's user, which owns them, then
+restart the service:
+
+```sh
+docker compose -f deploy/docker-compose.yml run --rm --no-deps --user 10001:10001 \
+  --entrypoint find melete /work -user 10001 -type d -exec chmod g+w {} +
+```
+
+The next start puts the folder back. A line with `error=EEXIST` means the job
+has written a newer entry of the same name since: the older one stays in the
+set-aside directory the line names, in the `work` volume, for you to move back
+by hand.
 
 ### Agents and their connections
 

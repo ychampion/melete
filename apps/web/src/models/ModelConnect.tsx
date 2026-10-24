@@ -27,6 +27,7 @@ import {
 } from './api.ts';
 import { UsageThisMonth } from './Usage.tsx';
 import './models.css';
+import { instanceName } from '../experience/instance.ts';
 
 /** Where each provider hands out keys, in the words its own console uses. */
 const KEY_HINT: Partial<Record<ModelProvider, string>> = {
@@ -104,6 +105,8 @@ export function statusLine(
     return { text: 'Set by the operator', tone: 'ok' };
   if (!status.connected && serverDefault)
     return { text: 'Server default · needs a key', tone: 'attention' };
+  if (status.key.state === 'other_address')
+    return { text: 'Saved key is for another address', tone: 'attention' };
   if (status.key.state === 'set')
     return { text: `Key ••••${status.key.last_four ?? ''}`, tone: 'ok' };
   return { text: 'Not connected', tone: 'muted' };
@@ -121,10 +124,10 @@ export function visionLine(active: ModelSettings['active']): { text: string; hin
       : active.vision_source === 'operator'
         ? 'Set in the server’s configuration.'
         : active.vision
-          ? 'This model reads images, by Melete’s list.'
+          ? `This model reads images, by ${instanceName()}’s list.`
           : active.provider_vision
             ? 'Your provider says this model can read images. Turn this on to send it screenshots as pictures.'
-            : 'Melete doesn’t know this model to read images. If it does, turn this on.';
+            : `${instanceName()} doesn’t know this model to read images. If it does, turn this on.`;
   return { text, hint: `${now} ${why}` };
 }
 
@@ -170,9 +173,9 @@ function VisionSetting({
             variant="ghost"
             disabled={busy}
             style={{ alignSelf: 'flex-start' }}
-            onClick={() => save(null, 'Back to Melete’s list for this model')}
+            onClick={() => save(null, `Back to ${instanceName()}’s list for this model`)}
           >
-            Use Melete’s list
+            Use {instanceName()}’s list
           </Button>
         ) : null}
       </div>
@@ -442,6 +445,7 @@ function KeyPanel({
   const operator = status.key.state === 'operator';
   const compatible = status.provider === 'openai-compatible';
   const operatorAddress = status.base_url_source === 'operator';
+  const savedElsewhere = status.key.state === 'other_address';
   const current = targetModel(settings, target);
   const inUse = current?.provider === status.provider;
   const [key, setKey] = useState('');
@@ -533,6 +537,10 @@ function KeyPanel({
             />
           </Field>
         )
+      ) : operatorAddress ? (
+        <ReadOnly label="Address">
+          <span className="models-id">{status.base_url}</span> · set by the operator
+        </ReadOnly>
       ) : null}
       {operator ? (
         <ReadOnly label="API key">
@@ -550,7 +558,9 @@ function KeyPanel({
           hint={
             status.key.state === 'set'
               ? `A key ending in ${status.key.last_four} is saved. Paste a new one to replace it.`
-              : 'Stored encrypted on this server. It is never shown again, only its last four characters.'
+              : savedElsewhere
+                ? `The saved key${status.key.last_four ? ` ending in ${status.key.last_four}` : ''} is for another address, so it isn’t sent to ${status.base_url ?? 'the address in use'}. Paste a key for this address.`
+                : 'Stored encrypted on this server. It is never shown again, only its last four characters.'
           }
         >
           <Input
@@ -579,7 +589,7 @@ function KeyPanel({
         >
           Test connection
         </Button>
-        {status.key.state === 'set' ? (
+        {status.key.state === 'set' || savedElsewhere ? (
           <Button
             variant="ghost"
             icon="trash"
@@ -745,8 +755,8 @@ function SignInPanel({
       <div className="col" style={{ gap: 4 }}>
         <span className="models-panel-title">{status.label}</span>
         <span className="models-hint">
-          Use the models in your ChatGPT plan by signing in once. Melete keeps the sign-in sealed on
-          this server and renews it.
+          Use the models in your ChatGPT plan by signing in once. {instanceName()} keeps the sign-in
+          sealed on this server and renews it.
         </span>
       </div>
       {signIn.error ? <span className="models-readonly">{signIn.error}</span> : null}

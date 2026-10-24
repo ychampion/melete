@@ -24,6 +24,7 @@ import {
 import { adapter } from '../experience/adapter.ts';
 import { clockTime } from '../experience/clock.ts';
 import { defaultAgentOf, useApp, useLoad } from '../experience/hooks.ts';
+import { instanceName } from '../experience/instance.ts';
 import { pastDay } from '../experience/past-day.ts';
 import { plainRunReason, plainSchedule } from '../experience/plain.ts';
 import type { Automation, AutomationRun, Run } from '../experience/types.ts';
@@ -237,7 +238,7 @@ export function RoutineCard({
       toast({
         kind: 'info',
         title: `${automation.title} is deleted`,
-        sub: 'It will not run again. Its thread and results are gone; what it did outside Melete stays in Activity.',
+        sub: `It will not run again. Its thread and results are gone; what it did outside ${instanceName()} stays in Activity.`,
       });
     });
   };
@@ -323,8 +324,8 @@ export function RoutineCard({
               id={`delete-${automation.id}`}
               style={{ fontSize: 13, color: 'var(--secondary)' }}
             >
-              This also deletes its thread and every result in it. What it did outside Melete stays
-              in Activity.
+              This also deletes its thread and every result in it. What it did outside{' '}
+              {instanceName()} stays in Activity.
             </span>
             <Button
               size="sm"

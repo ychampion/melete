@@ -12,6 +12,7 @@ import { Icon } from '../design/icons.tsx';
 import { Button, Status, type StatusTone } from '../design/primitives.tsx';
 import type { Result } from '../experience/adapter.ts';
 import { call } from '../experience/call.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { IntentCancelled, IntentItem, Intents } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -90,7 +91,10 @@ export function ReadBack({ item }: { item: IntentItem }) {
         <span key={part.path}>
           {index ? ', ' : ''}
           {part.origin === 'inferred' ? (
-            <span className="intent-guess" title="Melete’s guess: you didn’t say this">
+            <span
+              className="intent-guess"
+              title={`${assistantName()}’s guess: you didn’t say this`}
+            >
               {part.text}
               <span className="intent-guess-mark"> (my guess)</span>
             </span>
@@ -138,7 +142,7 @@ function EditForm({
         const at = new Date(now);
         const year = at.getFullYear();
         if (Number.isNaN(at.getTime()) || year < 2000 || year > 2200) {
-          setProblem(`${field.label}: that isn’t a time Melete can read.`);
+          setProblem(`${field.label}: that isn’t a time ${assistantName()} can read.`);
           return;
         }
         changed[path] = at.toISOString();

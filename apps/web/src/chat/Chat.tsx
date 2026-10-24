@@ -8,7 +8,15 @@
 
 import type { AttachmentView } from '@melete/contracts/attachments';
 import { mentionedAgent } from '@melete/contracts/mention';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { amountWords } from '../companies/format.ts';
 import { Icon } from '../design/icons.tsx';
 import { LoadError } from '../design/LoadError.tsx';
@@ -26,6 +34,7 @@ import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { dayWords } from '../experience/clock.ts';
 import { useInFlight, useTapOnce } from '../experience/decide.ts';
+import { featureOn } from '../experience/features.ts';
 import {
   agentById,
   defaultAgentOf,
@@ -64,14 +73,18 @@ import { ChatCapBanner } from '../models/Usage.tsx';
 import { NEW_CHAT_AGAIN, navigate, useRoute } from '../router.ts';
 import { RunChatCards } from '../runs/RunCards.tsx';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { AutonomyAskCard } from './AutonomyAsk.tsx';
 import { useAttachments } from './attachments.ts';
 import { shownBlocks } from './blocks.ts';
+import { CallPanel } from './CallPanel.tsx';
 import { CasePanel, useCase } from './CasePanel.tsx';
 import { ChatActions } from './ChatActions.tsx';
 import { Composer } from './Composer.tsx';
 import { ComputerPanel, useComputer } from './ComputerPanel.tsx';
+import { headState } from './head-state.ts';
 import { runningTurn, workerName } from './live-card.ts';
 import { Markdown } from './Markdown.tsx';
+import { ConnectionPages } from './PageCard.tsx';
 import { PrivateTopic } from './PrivateTopic.tsx';
 import { Protected } from './Protected.tsx';
 import {
@@ -87,6 +100,8 @@ import {
 } from './parts.tsx';
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
+import { useStepUp } from './step-up.tsx';
+import { OlderTurns, TurnSlot, WINDOW_FROM } from './TranscriptWindow.tsx';
 import { takeOverFromCard } from './take-over.ts';
 import { joinsRunningTurn, waitsForTurn } from './turn-wait.ts';
 import { VoicePanel } from './VoiceMode.tsx';
@@ -212,7 +227,7 @@ function AgentChip({
         aria-expanded={open}
       >
         <AgentAvatar agent={agent} size={20} />
-        {agent?.name ?? 'Melete'}
+        {agent?.name ?? assistantName()}
         <Icon name="chevronDown" size={13} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
@@ -431,6 +446,8 @@ function TurnView({
             }
           />
         );
+      case 'autonomy':
+        return <AutonomyAskCard ask={block.autonomy} />;
       default:
         return null;
     }
@@ -472,7 +489,10 @@ function TurnView({
               finished={layout.finished}
               renderBlock={renderBlock}
               computer={
-                onOpenComputer && { agentName: agent?.name ?? 'Melete', open: onOpenComputer }
+                onOpenComputer && {
+                  agentName: agent?.name ?? assistantName(),
+                  open: onOpenComputer,
+                }
               }
             />
             {layout.answer ? <Answer text={layout.answer} /> : null}
@@ -526,8 +546,11 @@ function Answer({ text }: { text: string }) {
   );
 }
 
+const NO_REACTIONS: Reaction[] = [];
+
 /** The transcript reaches the turn views through a tiny context, to keep props short. */
 import { createContext, useContext } from 'react';
+import { assistantName } from '../experience/instance.ts';
 import type { Transcript } from '../experience/reduce.ts';
 
 const TranscriptContext = createContext<{ transcript: Transcript } | null>(null);
@@ -572,7 +595,7 @@ function useTranscript() {
 let voiceOnArrival: string | null = null;
 
 export function ChatScreen({ id }: { id: string | null }) {
-  const { agents, removedAgents, refreshConversations } = useApp();
+  const { agents, removedAgents, refreshConversations, capabilities } = useApp();
   const route = useRoute();
   const conversationId = id && id !== 'new' ? id : null;
   // A new chat started from an agent (Home, the sidebar) begins with that agent.
@@ -613,6 +636,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
   const flight = useInFlight();
+  const stepUp = useStepUp();
   // A message that failed to send keeps its request, so Retry resends that message once.
   const outbox = useRef<Outbox | null>(null);
   /**
@@ -676,6 +700,62 @@ export function ChatScreen({ id }: { id: string | null }) {
   useEffect(() => setShowAll(false), [conversationId]);
   const folded = foldedTurns(transcript.turns);
   const hidden = showAll ? 0 : folded.count;
+  const older = state.older;
+  // Turns not read yet count among the earlier messages: a person's message and an answer each.
+  const unread = older.more && older.total !== null ? older.total - transcript.turns.length : 0;
+  const earlierCount = folded.messages + 2 * Math.max(0, unread);
+  // A long transcript draws only the turns near what is on screen.
+  const windowed = transcript.turns.length - hidden > WINDOW_FROM;
+  // Older turns go in above the first one shown, and the view is held on that
+  // turn: where it stood from the top of the view when they were asked for, or
+  // when the person last scrolled while they were read. Held on the turn rather
+  // than on the scroll height, an answer still growing below does not move it.
+  const prepending = useRef<{ first: string; offset: number } | null>(null);
+  const offsetOf = useCallback((turnId: string): number | null => {
+    const node = scrollRef.current;
+    const slot = node?.querySelector<HTMLElement>(`[data-slot="${CSS.escape(turnId)}"]`);
+    if (!node || !slot) return null;
+    return slot.getBoundingClientRect().top - node.getBoundingClientRect().top;
+  }, []);
+  const loadEarlier = useCallback(() => {
+    const first = transcript.turns[0]?.id;
+    const offset = first ? offsetOf(first) : null;
+    prepending.current = first && offset !== null ? { first, offset } : null;
+    void older.load();
+  }, [older, transcript.turns, offsetOf]);
+  // The turns that just went in above, drawn at once so the view is held against
+  // their real height; the window lets go of the far ones once they are measured.
+  const shownFirst = useRef(transcript.turns[0]?.id);
+  const wentInAbove = (() => {
+    const was = shownFirst.current;
+    if (!was || transcript.turns[0]?.id === was) return 0;
+    return Math.max(
+      0,
+      transcript.turns.findIndex((turn) => turn.id === was),
+    );
+  })();
+  useLayoutEffect(() => {
+    shownFirst.current = transcript.turns[0]?.id;
+    const was = prepending.current;
+    if (!was || transcript.turns[0]?.id === was.first) return;
+    prepending.current = null;
+    const node = scrollRef.current;
+    const now = offsetOf(was.first);
+    // At once: the transcript scrolls smoothly, and a glide here would show the jump it hides.
+    if (node && now !== null)
+      node.scrollTo({ top: node.scrollTop + now - was.offset, behavior: 'instant' });
+  }, [transcript.turns, offsetOf]);
+  const reactionsByTurn = useMemo(() => {
+    const by = new Map<number, Reaction[]>();
+    for (const reaction of reactions) {
+      const index = turnIndexForReaction(transcript, reaction);
+      if (index < 0) continue;
+      const list = by.get(index);
+      if (list) list.push(reaction);
+      else by.set(index, [reaction]);
+    }
+    return by;
+  }, [reactions, transcript]);
   const composerState = transcript.composer;
   // A spent quick edit comes free once the conversation moves on.
   useEffect(() => quick.settle(composerState), [quick, composerState]);
@@ -696,6 +776,8 @@ export function ChatScreen({ id }: { id: string | null }) {
     ),
   );
   const now = useNow(Boolean(last && WORKING.includes(last.status)) || holding);
+  // Where the work stands, for the header, from the conversation and its stream.
+  const head = headState(conversation, state.lastEventAt, now, state.live);
 
   useEffect(() => {
     setAgentId(conversation?.agent_id ?? fallback?.id ?? null);
@@ -797,7 +879,14 @@ export function ChatScreen({ id }: { id: string | null }) {
   useEffect(() => {
     if (!focusTurn || focusedTurn.current === focusTurn) return;
     const index = transcript.turns.findIndex((turn) => turn.id === focusTurn);
-    if (index < 0) return;
+    if (index < 0) {
+      // Not among the turns read yet: read further back until it is, or there is no more.
+      if (older.more && !older.loading && !older.error) {
+        setShowAll(true);
+        void older.load();
+      }
+      return;
+    }
     if (index < hidden) {
       setShowAll(true);
       return;
@@ -809,12 +898,16 @@ export function ChatScreen({ id }: { id: string | null }) {
     focusedTurn.current = focusTurn;
     setStuck(false);
     node.scrollIntoView({ block: 'start' });
-  }, [focusTurn, transcript, hidden]);
+  }, [focusTurn, transcript, hidden, older]);
 
   const onScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
     setStuck(node.scrollHeight - node.scrollTop - node.clientHeight < 80);
+    // Scrolled while older turns are read: the view is held where the person left it.
+    const holding = prepending.current;
+    const offset = holding ? offsetOf(holding.first) : null;
+    if (holding && offset !== null) holding.offset = offset;
   };
 
   const send = useCallback(
@@ -971,6 +1064,15 @@ export function ChatScreen({ id }: { id: string | null }) {
     together: Seen[] = [],
   ) =>
     void flight.run(id, async () => {
+      // A money move's Allow needs the person's password first; closing that asks nothing.
+      const card =
+        option === 'allow_once'
+          ? transcript.turns
+              .flatMap((turn) => turn.blocks)
+              .find((block) => block.type === 'permission' && block.permission.id === id)
+          : undefined;
+      const token = card?.type === 'permission' ? await stepUp.confirm(card.permission) : undefined;
+      if (token === null) return;
       const result =
         option === 'always' && bounds
           ? await adapter.decideAlways(id, version, bounds)
@@ -979,6 +1081,7 @@ export function ChatScreen({ id }: { id: string | null }) {
               option === 'always' ? 'allow_once' : option,
               version,
               together,
+              token,
             );
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
@@ -1137,11 +1240,26 @@ export function ChatScreen({ id }: { id: string | null }) {
   const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
+  // A call where the installation can take one; voice mode where it cannot.
+  const calling = Boolean(voice?.call);
+  const voiceLabel = calling ? 'Call' : 'Voice mode';
+  // Opened before the voice status is read (a new voice chat), the panel waits for it, so a call
+  // never begins as voice mode first, and the composer stays until a panel takes its place.
+  const voiceShown =
+    voiceOpen && conversationId !== null && Boolean(voice?.call || voice?.voice_mode);
+  const endVoice = () => {
+    setVoiceOpen(false);
+    setVoiceMin(false);
+    // Back to the control that opened it, for a keyboard user.
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[aria-label="${voiceLabel}"]`)?.focus(),
+    );
+  };
   const voiceButton = (size: number) =>
-    voice?.voice_mode ? (
+    voice?.call || voice?.voice_mode ? (
       <IconButton
-        name="voice"
-        label={voiceOpen ? 'End voice mode' : 'Voice mode'}
+        name={calling ? 'phone' : 'voice'}
+        label={voiceOpen ? (calling ? 'Hang up' : 'End voice mode') : voiceLabel}
         size={size}
         iconSize={size > 32 ? 20 : 16}
         on={voiceOpen}
@@ -1162,17 +1280,19 @@ export function ChatScreen({ id }: { id: string | null }) {
   const atWorkTurn = runningTurn(transcript.turns);
   // Every turn in the chat, a mentioned agent's too, works on the chat agent's computer.
   const chatAgentId = conversation?.agent_id ?? agentId;
+  // Watching the agent's computer is left out where the operator turned it off.
+  const computerShown = featureOn(capabilities, 'computer');
   const computer = useComputer(
     conversationId,
-    computerOpen && Boolean(conversationId),
+    computerShown && computerOpen && Boolean(conversationId),
     toolPulse,
     chatAgentId,
   );
-  const showComputer = computerOpen && Boolean(conversationId);
-  const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? 'Melete'}’s computer`;
+  const showComputer = computerShown && computerOpen && Boolean(conversationId);
+  const computerLabel = `${showComputer ? 'Hide' : 'Show'} ${agent?.name ?? assistantName()}’s computer`;
   const openComputer = () => setComputerOpen(true);
   const computerToggle = (size?: number) =>
-    conversationId ? (
+    conversationId && computerShown ? (
       <IconButton
         name="monitor"
         label={computerLabel}
@@ -1206,6 +1326,12 @@ export function ChatScreen({ id }: { id: string | null }) {
             {amount
               ? ` · ${amount.figure} ${found?.item.status === 'settled' ? 'settled' : amount.direction}`
               : ''}
+            {head ? (
+              <span className="chat-state" data-tone={head.tone}>
+                {' · '}
+                {head.words}
+              </span>
+            ) : null}
           </>
         ) : undefined
       }
@@ -1228,7 +1354,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             onClose={() => setComputerOpen(false)}
             onChanged={() => void computer.refresh()}
           />
-        ) : found && caseOpen ? (
+        ) : found && caseOpen && featureOn(capabilities, 'companies') ? (
           <CasePanel
             found={found}
             transcript={transcript}
@@ -1253,6 +1379,12 @@ export function ChatScreen({ id }: { id: string | null }) {
           <div className="chat-head">
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
+            {head ? (
+              <span className="chat-state chat-state-pill clamp1" data-tone={head.tone}>
+                <span className="chat-state-dot" aria-hidden="true" />
+                {head.words}
+              </span>
+            ) : null}
             <div className="grow" />
             {touch ? null : voiceButton(32)}
             {computerToggle()}
@@ -1312,16 +1444,31 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <span style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 420 }}>
                     {agent
                       ? agent.standing_instruction || agent.tone
-                      : 'Say it once. Melete checks what it needs, does the steps, and comes back for the moments that need you.'}
+                      : `Say it once. ${assistantName()} checks what it needs, does the steps, and comes back for the moments that need you.`}
                   </span>
                 </div>
               ) : null}
               {folded.count > 0 && !showAll ? (
                 <EarlierMessages
                   summarised={folded.summarised > 0}
-                  messages={folded.messages}
+                  messages={earlierCount}
                   open={false}
-                  onToggle={() => setShowAll(true)}
+                  onToggle={() => {
+                    setShowAll(true);
+                    // The fold gives way to the line that reads earlier turns; the focus goes there.
+                    requestAnimationFrame(() =>
+                      scrollRef.current
+                        ?.querySelector<HTMLElement>('button.previous-messages')
+                        ?.focus({ preventScroll: true }),
+                    );
+                  }}
+                />
+              ) : older.more && (showAll || folded.count === 0) ? (
+                <OlderTurns
+                  root={scrollRef}
+                  loading={older.loading}
+                  error={older.error}
+                  onLoad={loadEarlier}
                 />
               ) : null}
               {transcript.turns.map((turn, index) =>
@@ -1330,44 +1477,51 @@ export function ChatScreen({ id }: { id: string | null }) {
                     {index > hidden && index === folded.summarised ? (
                       <EarlierMessages
                         summarised
-                        messages={folded.messages}
+                        messages={earlierCount}
                         open
                         onToggle={folded.count > 0 ? () => setShowAll(false) : undefined}
                       />
                     ) : null}
-                    <TurnView
-                      turn={turn}
-                      now={now}
-                      touch={touch}
-                      latest={turn.id === lastId}
-                      waitingUntil={
-                        turn.id === lastId ? (conversation?.waiting_until ?? null) : null
-                      }
-                      onDecide={decide}
-                      onSendDraft={sendDraft}
-                      onUndo={undo}
-                      onTakeOver={takeOver}
-                      onOpenComputer={openComputer}
-                      onAnswer={answer}
-                      onOwn={(own) => void send(own)}
-                      unknown={turn.id === lastId ? unknown : undefined}
-                      onResolve={resolve}
-                      busy={(id) => flight.has(id)}
-                      onRetry={retry}
-                      conversationAgentId={conversation?.agent_id ?? null}
-                      reactions={reactions.filter(
-                        (r) => turnIndexForReaction(transcript, r) === index,
-                      )}
-                      onReact={
-                        reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
-                          ? (emoji) => react(turn, emoji)
-                          : undefined
-                      }
-                    />
+                    <TurnSlot
+                      turnId={turn.id}
+                      words={{ asked: turn.turn.text, answered: finalText(turn) }}
+                      root={scrollRef}
+                      windowed={windowed}
+                      near={index >= transcript.turns.length - WINDOW_FROM || index < wentInAbove}
+                    >
+                      <TurnView
+                        turn={turn}
+                        now={now}
+                        touch={touch}
+                        latest={turn.id === lastId}
+                        waitingUntil={
+                          turn.id === lastId ? (conversation?.waiting_until ?? null) : null
+                        }
+                        onDecide={decide}
+                        onSendDraft={sendDraft}
+                        onUndo={undo}
+                        onTakeOver={takeOver}
+                        onOpenComputer={openComputer}
+                        onAnswer={answer}
+                        onOwn={(own) => void send(own)}
+                        unknown={turn.id === lastId ? unknown : undefined}
+                        onResolve={resolve}
+                        busy={(id) => flight.has(id)}
+                        onRetry={retry}
+                        conversationAgentId={conversation?.agent_id ?? null}
+                        reactions={reactionsByTurn.get(index) ?? NO_REACTIONS}
+                        onReact={
+                          reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
+                            ? (emoji) => react(turn, emoji)
+                            : undefined
+                        }
+                      />
+                    </TurnSlot>
                   </Fragment>
                 ),
               )}
               <RunChatCards conversationId={conversationId} refresh={transcript.status} />
+              <ConnectionPages conversationId={conversationId} refresh={transcript.status} />
               {transcript.gaps.map((gap) => (
                 <div key={`gap-${gap.after}`} className="marker" role="status">
                   <Icon name="info" size={14} />
@@ -1377,38 +1531,45 @@ export function ChatScreen({ id }: { id: string | null }) {
               ))}
             </div>
           </div>
-          {voiceOpen && conversationId ? (
+          {voiceShown && conversationId ? (
             <div className="chat-foot" data-call={voiceMin ? 'minimised' : 'open'}>
               <div className="chat-foot-inner">
-                <VoicePanel
-                  conversationId={conversationId}
-                  transcript={transcript}
-                  agentName={agent?.name?.trim() || 'Melete'}
-                  avatar={<AgentAvatar agent={agent} size={28} />}
-                  minimised={voiceMin}
-                  onMinimise={setVoiceMin}
-                  onSend={send}
-                  onDraft={(words) =>
-                    changeDraft((current) =>
-                      current.trim()
-                        ? `${current.trimEnd()}
+                {calling ? (
+                  <CallPanel
+                    conversationId={conversationId}
+                    transcript={transcript}
+                    agentName={agent?.name?.trim() || assistantName()}
+                    avatar={<AgentAvatar agent={agent} size={28} />}
+                    minimised={voiceMin}
+                    onMinimise={setVoiceMin}
+                    onEnd={endVoice}
+                    onShowDecision={showDecision}
+                  />
+                ) : (
+                  <VoicePanel
+                    conversationId={conversationId}
+                    transcript={transcript}
+                    agentName={agent?.name?.trim() || assistantName()}
+                    avatar={<AgentAvatar agent={agent} size={28} />}
+                    minimised={voiceMin}
+                    onMinimise={setVoiceMin}
+                    onSend={send}
+                    onDraft={(words) =>
+                      changeDraft((current) =>
+                        current.trim()
+                          ? `${current.trimEnd()}
 ${words}`
-                        : words,
-                    )
-                  }
-                  onEnd={() => {
-                    setVoiceOpen(false);
-                    setVoiceMin(false);
-                    // Back to the control that opened it, for a keyboard user.
-                    requestAnimationFrame(() =>
-                      document.querySelector<HTMLElement>('[aria-label="Voice mode"]')?.focus(),
-                    );
-                  }}
-                  onShowDecision={showDecision}
-                />
+                          : words,
+                      )
+                    }
+                    onEnd={endVoice}
+                    onShowDecision={showDecision}
+                  />
+                )}
               </div>
             </div>
           ) : null}
+          {stepUp.dialog}
           {pending ? (
             <div className="decide-bar">
               <span className="decide-caption">
@@ -1454,7 +1615,7 @@ ${words}`
               ) : null}
             </div>
           ) : null}
-          <div className="chat-foot" hidden={Boolean(pending) || (voiceOpen && !voiceMin)}>
+          <div className="chat-foot" hidden={Boolean(pending) || (voiceShown && !voiceMin)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button
@@ -1522,12 +1683,12 @@ ${words}`
                     // A turn handed to another agent with @Name is that agent's while it works.
                     (working ? agentById(agents, last?.turn.agent_id) : null)?.name ??
                     agent?.name ??
-                    'Melete'
+                    assistantName()
                   }
                   placeholder={
                     agents.length > 1
-                      ? `Message ${agent?.name ?? 'Melete'}, or @name`
-                      : `Message ${agent?.name ?? 'Melete'}`
+                      ? `Message ${agent?.name ?? assistantName()}, or @name`
+                      : `Message ${agent?.name ?? assistantName()}`
                   }
                   state={conversationId ? composerState : 'send'}
                   working={working}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseFrame, readSse } from './sse.ts';
+import { parseFrame, readSse, SseIdleError } from './sse.ts';
 
 const stream = (chunks: string[]): ReadableStream<Uint8Array> => {
   const encoder = new TextEncoder();
@@ -90,5 +90,58 @@ describe('readSse', () => {
     const frames = [];
     for await (const frame of readSse(stream(['data: last\r']))) frames.push(frame);
     expect(frames.map((f) => f.data)).toEqual(['last']);
+  });
+});
+
+describe('readSse idle limit', () => {
+  /** A stream that sends `chunks` and then stays open, sending nothing. */
+  const hanging = (chunks: string[]): ReadableStream<Uint8Array> => {
+    const encoder = new TextEncoder();
+    return new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      },
+    });
+  };
+
+  test('a stream that goes silent ends in an idle error after the limit', async () => {
+    const seen: string[] = [];
+    const started = Date.now();
+    let failure: unknown = null;
+    try {
+      for await (const frame of readSse(hanging(['data: one\n\n']), { idleMs: 60 }))
+        seen.push(frame.data);
+    } catch (error) {
+      failure = error;
+    }
+    expect(seen).toEqual(['one']);
+    expect(failure).toBeInstanceOf(SseIdleError);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+  });
+
+  test('keepalives keep a quiet stream alive', async () => {
+    const encoder = new TextEncoder();
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        sent += 1;
+        controller.enqueue(encoder.encode(sent < 5 ? ': keepalive\n\n' : 'data: done\n\n'));
+        if (sent >= 5) controller.close();
+      },
+    });
+    const frames: string[] = [];
+    for await (const frame of readSse(body, { idleMs: 80 }))
+      frames.push(frame.comment ? 'keepalive' : frame.data);
+    expect(frames).toEqual(['keepalive', 'keepalive', 'keepalive', 'keepalive', 'done']);
+  });
+
+  test('without a limit a quiet stream is simply waited on', async () => {
+    const reading = readSse(hanging([]))[Symbol.asyncIterator]().next();
+    const outcome = await Promise.race([
+      reading.then(() => 'ended'),
+      new Promise((resolve) => setTimeout(() => resolve('waiting'), 100)),
+    ]);
+    expect(outcome).toBe('waiting');
   });
 });

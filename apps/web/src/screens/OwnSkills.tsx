@@ -10,6 +10,7 @@ import { Icon } from '../design/icons.tsx';
 import { Button, Field, Input } from '../design/primitives.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { OwnSkill } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -187,7 +188,7 @@ export function OwnSkillRow({
                 background: 'var(--soft)',
               }}
             >
-              <span>Melete stops using this skill. Deleting it can’t be undone.</span>
+              <span>{assistantName()} stops using this skill. Deleting it can’t be undone.</span>
               <span className="row" style={{ gap: 8 }}>
                 <Button
                   size="sm"
@@ -270,7 +271,7 @@ export function OwnSkills() {
       toast({
         kind: 'ok',
         title: `Saved “${skill.name}”`,
-        sub: 'Melete uses your words from now on.',
+        sub: `${assistantName()} uses your words from now on.`,
       });
       return true;
     } finally {
@@ -305,7 +306,8 @@ export function OwnSkills() {
           Your skills
         </h3>
         <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-          Skills you asked Melete to make. Read one whole, change its words, or delete it.
+          Skills you asked {assistantName()} to make. Read one whole, change its words, or delete
+          it.
         </p>
       </div>
       {loaded.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{loaded.error}</p> : null}
@@ -330,7 +332,7 @@ export function OwnSkills() {
               style={{ alignItems: 'center', gap: 8, padding: '32px 24px', textAlign: 'center' }}
             >
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-                No skills yet. Ask Melete to “make a skill” for something you do often.
+                No skills yet. Ask {assistantName()} to “make a skill” for something you do often.
               </span>
             </div>
           ) : null}

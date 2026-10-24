@@ -125,11 +125,18 @@ export function mountVoiceMock(
       voiceStatus.parse({
         push_to_talk: deps.enabled,
         voice_mode: deps.enabled,
+        // A call needs the real speech service to connect back to a public address.
+        call: false,
         max_recording_seconds: VOICE_LIMITS.recording_seconds,
         max_recording_bytes: VOICE_LIMITS.recording_bytes,
         off_reason: deps.enabled && deps.private ? PRIVATE_HERE : null,
       }),
     );
+  });
+
+  app.post('/conversations/:id/call', (c) => {
+    if (!signedIn(c)) return fail(c, 401, 'unauthorized', 'A session is required.');
+    return fail(c, 404, 'voice_unavailable', 'Calls are not set up on this installation.');
   });
 
   app.post('/voice/transcriptions', async (c) => {

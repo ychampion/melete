@@ -45,6 +45,8 @@ export type SpaceMember = SpaceMembers['members'][number];
 export type SpaceRulesView = Ok<paths['/spaces/{id}/policy'], 'get'>;
 export type SpaceRulesChange = Body<paths['/spaces/{id}/policy'], 'put'>;
 export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
+/** A page of a chat's turns: `next_cursor` is absent when the service sent every turn. */
+export type TurnPage = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>;
 export type DeliveryState = NonNullable<Turn['delivery']>;
 export type MessageAcceptance = Success<Ok<paths['/conversations/{id}/messages'], 'post'>>;
 export type ExperienceEvent = Success<
@@ -122,6 +124,13 @@ export type PersonFileDeleted = Ok<paths['/files/{id}'], 'delete'>;
 export type OwnSkill = Ok<paths['/own-skills'], 'get'>['skills'][number];
 export type OwnSkillEdit = Body<paths['/own-skills/{name}/edit'], 'post'>;
 export type Question = Success<Ok<paths['/quick-answers'], 'get'>>['questions'][number];
+/** How much the agent does on its own for each kind of task that reaches other people. */
+export type TaskAutonomyList = Success<Ok<paths['/autonomy'], 'get'>>;
+export type TaskAutonomyUpdate = Body<paths['/autonomy'], 'put'>;
+export type AutonomyLevel = TaskAutonomyList['tasks'][number]['level'];
+export type TaskKind = TaskAutonomyList['tasks'][number]['task'];
+/** The card that asks once about a kind of task. */
+export type AutonomyAsk = Extract<ExperienceEvent['item'], { type: 'autonomy' }>['autonomy'];
 
 /* ---------- agents, memory ---------- */
 
@@ -184,6 +193,7 @@ export type AccountSignInStart = Ok<paths['/google-sign-ins'], 'post'>;
 export type AccountSignInStatus = Ok<paths['/google-sign-ins/{id}'], 'get'>;
 /** Signing in to Google through Composio, one consent page per part. */
 export type ManagedSignInStart = Ok<paths['/managed-sign-ins'], 'post'>;
+export type ComposioAppSearchResponse = Ok<paths['/composio/apps'], 'get'>;
 /** Signing in to a remote MCP server, for a connection that is already installed. */
 export type McpSignInStart = Ok<paths['/mcp-sign-ins'], 'post'>;
 export type McpSignInStatus = Ok<paths['/mcp-sign-ins/{id}'], 'get'>;
@@ -230,6 +240,9 @@ export type ComputerCommand = AgentComputer['terminal'][number];
 /** One background process in the agent's computer, as the person may see it. */
 export type ComputerProcess = AgentComputer['processes'][number];
 export type ProcessPreview = Ok<paths['/sandbox/processes/{id}/previews'], 'post'>;
+export type ConnectionPageList = Ok<paths['/conversations/{id}/pages'], 'get'>;
+export type ConnectionPage = ConnectionPageList['pages'][number];
+export type ConnectionPageView = Ok<paths['/pages/{id}/views'], 'post'>;
 export type ProcessOutput = Ok<paths['/sandbox/processes/{id}/output'], 'get'>;
 export type ProcessStopped = Ok<paths['/sandbox/processes/{id}/stop'], 'post'>;
 export type BrowserControl = Ok<paths['/browser/sessions/{id}/takeover'], 'post'>;
@@ -239,6 +252,7 @@ export type LiveInput = LiveUp['events'][number];
 /** The desktop in a job's sandbox, with who is driving it. */
 export type SandboxComputer = Ok<paths['/sandbox/computers'], 'get'>['computers'][number];
 export type SandboxControl = Ok<paths['/sandbox/sessions/{id}/takeover'], 'post'>;
+export type SandboxViewer = Ok<paths['/sandbox/sessions/{id}/viewer'], 'post'>;
 export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
 /**
  * An entry in the broker's action ledger. The interface reads it only for
@@ -265,6 +279,11 @@ export type Capabilities = {
   browser: boolean;
   /** Rooms, shared spaces, guests and hand-offs, as the server's switch has them. */
   multiplayer: boolean;
+  /**
+   * The features the operator can turn on or off, as the setup status names
+   * them for whoever is signed in; read through `featureOn` (features.ts).
+   */
+  features: Record<string, boolean>;
 };
 
 export type TourStage = 'calendar' | 'drafting' | 'browser' | 'plans' | 'memory';
@@ -324,6 +343,8 @@ export type FeedbackForwarding = Ok<paths['/feedback/forwarding'], 'get'>;
 export type VoiceStatus = Ok<paths['/voice'], 'get'>;
 export type VoiceTranscription = Ok<paths['/voice/transcriptions'], 'post'>;
 export type VoiceSession = Ok<paths['/conversations/{id}/voice/session'], 'post'>;
+/** A call's short-lived token, for the speech service's browser client. */
+export type CallSession = Ok<paths['/conversations/{id}/call'], 'post'>;
 export type VoiceAside = Ok<paths['/conversations/{id}/voice/aside'], 'post'>;
 export type VoiceAsideRequest = Body<paths['/conversations/{id}/voice/aside'], 'post'>;
 export type VoiceActivity = VoiceAsideRequest['activity'];

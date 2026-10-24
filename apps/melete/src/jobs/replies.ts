@@ -16,6 +16,7 @@ import { attempt, event, notification, replyObligation } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { assistantName } from '../names.ts';
 import { requestPrincipal, requireJobAccess, visibleJob } from '../principals/authority.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import type { AttemptRunner } from './runner.ts';
@@ -87,7 +88,7 @@ function responseContent(
       job_id: row.id,
       attempt_id: attemptId,
       kind: 'status',
-      text: 'Melete cannot confirm the outcome of an external action. This responsibility needs reconciliation.',
+      text: `${assistantName()} cannot confirm the outcome of an external action. This responsibility needs reconciliation.`,
     };
   let text: string;
   let kind: ReplyContent['kind'] = 'status';

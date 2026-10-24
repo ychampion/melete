@@ -58,6 +58,42 @@ describe('testing a model connection', () => {
     expect(google).toMatchObject({ ok: true, models: ['gemini-fixture'] });
   });
 
+  test('Anthropic’s test and model list go through the gateway ANTHROPIC_BASE_URL names', async () => {
+    const seen: Request[] = [];
+    const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:4610', ANTHROPIC_API_KEY: 'operator-key' };
+    const settings = new ModelSettingsService({
+      db: emptyDb,
+      env: loadEnv({ NODE_ENV: 'test', ...env }),
+      fetch: async (request) => {
+        seen.push(request);
+        return Response.json({ data: [{ id: 'claude-fixture' }] });
+      },
+      // The operator's address goes as it is, like OPENAI_COMPAT_BASE_URL: it is
+      // never resolved and pinned as an address chosen in the app would be.
+      resolve: async () => {
+        throw new Error('the operator’s address is not resolved here');
+      },
+    });
+    expect(await settings.test({ provider: 'anthropic' })).toMatchObject({
+      ok: true,
+      models: ['claude-fixture'],
+    });
+    expect(seen.map((request) => request.url)).toEqual(['http://127.0.0.1:4610/v1/models']);
+    expect(seen[0]?.headers.get('x-api-key')).toBe('operator-key');
+    // A typed address is only ever the OpenAI-compatible endpoint's.
+    await settings.test({
+      provider: 'anthropic',
+      api_key: 'sk-ant-typed',
+      base_url: 'https://elsewhere.example.net',
+    });
+    expect(seen[1]?.url).toBe('http://127.0.0.1:4610/v1/models');
+    // The privacy checks and the gateway are told the same address.
+    expect(await settings.providerAddress('anthropic')).toBe('http://127.0.0.1:4610/v1/');
+    expect(await service(async () => Response.json({})).providerAddress('anthropic')).toBe(
+      'https://api.anthropic.com/v1/',
+    );
+  });
+
   test('each refusal answers with its own plain sentence and the provider’s status', async () => {
     const cases: [number, string, RegExp][] = [
       [401, 'key_refused', /did not accept this key \(HTTP 401\)/],
@@ -315,6 +351,178 @@ describe('the gateway reads its providers per call', () => {
   });
 });
 
+describe('an Anthropic key saved in the app', () => {
+  const servers: Server[] = [];
+  afterEach(async () => {
+    await Promise.all(
+      servers
+        .splice(0)
+        .map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    );
+  });
+  const MASTER = 'ab'.repeat(32);
+  const GATEWAY = 'http://127.0.0.1:4610';
+  /** The table of saved keys, kept in memory and shared by the services below. */
+  function keyTable() {
+    const stored: Record<string, unknown>[] = [];
+    const db = {
+      insert: () => ({
+        values: (row: Record<string, unknown>) => ({
+          onConflictDoUpdate: async () => {
+            stored.splice(0, stored.length, row);
+          },
+        }),
+      }),
+      delete: () => ({ where: async () => {} }),
+      select: () => ({
+        from: () => Object.assign(Promise.resolve(stored), { where: async () => [] }),
+      }),
+    } as unknown as Database;
+    return { db, stored };
+  }
+  function atAddress(db: Database, env: Record<string, string> = {}) {
+    const seen: Request[] = [];
+    const settings = new ModelSettingsService({
+      db,
+      env: loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: MASTER, ...env }),
+      fetch: async (request) => {
+        seen.push(request);
+        return Response.json({ data: [{ id: 'claude-fixture' }] });
+      },
+    });
+    const anthropic = async () =>
+      (await settings.providers(providersFromEnv(env))).find(
+        (provider) => provider.name === 'anthropic',
+      );
+    return { settings, seen, anthropic };
+  }
+
+  /** One agent turn on Anthropic, through a gateway that reads the saved keys. */
+  async function turn(settings: ModelSettingsService, env: Record<string, string>) {
+    const sent: { url: string; key: string | null }[] = [];
+    const server = createModelGateway({
+      authenticate: async () => ({
+        jobId: 'job',
+        attemptId: 'att',
+        privacy: { kind: 'job' as const },
+        epoch: 1,
+        revision: 1,
+        maxRequests: 5,
+        maxTokens: 5000,
+        allowedModels: [{ provider: 'anthropic', model: 'claude-fixture' }],
+      }),
+      budget: { reserve: async () => ({ id: 'r' }), settle: async () => {} },
+      privacy: defaultPrivacyRouter(),
+      providers: providersFromEnv(env),
+      currentProviders: (configured) => settings.providers(configured),
+      fetch: async (request) => {
+        sent.push({ url: request.url, key: request.headers.get('x-api-key') });
+        return Response.json({
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-fixture',
+          content: [{ type: 'text', text: 'hi' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 3, output_tokens: 2 },
+        });
+      },
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const response = await fetch(`http://127.0.0.1:${port}/providers/anthropic/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': 'melete-surrogate-test',
+        'x-melete-capability': 'cap',
+      },
+      body: JSON.stringify({
+        model: 'claude-fixture',
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    });
+    await response.body?.cancel();
+    return { status: response.status, sent };
+  }
+
+  test('never goes to a gateway it was not saved for', async () => {
+    const { db } = keyTable();
+    await atAddress(db).settings.saveKey('anthropic', 'owner', {
+      api_key: 'sk-ant-saved-direct-1111',
+    });
+    // The operator later routes Anthropic through a gateway.
+    const later = atAddress(db, { ANTHROPIC_BASE_URL: GATEWAY });
+    expect((await later.anthropic())?.signedIn).toBeUndefined();
+    const call = await turn(later.settings, { ANTHROPIC_BASE_URL: GATEWAY });
+    expect(call.status).toBe(503);
+    expect(call.sent).toEqual([]);
+    expect(await later.settings.test({ provider: 'anthropic' })).toMatchObject({
+      ok: false,
+      code: 'no_key',
+    });
+    expect(later.seen).toEqual([]);
+    // Settings says the saved key is for another address, and which one is in use.
+    const view = await later.settings.view(true);
+    expect(view.providers.find((status) => status.provider === 'anthropic')).toMatchObject({
+      key: { state: 'other_address', last_four: '1111' },
+      base_url: `${GATEWAY}/v1/`,
+      base_url_source: 'operator',
+      connected: false,
+    });
+    // The operator's own key is what calls through the gateway carry.
+    const operator = { ANTHROPIC_BASE_URL: GATEWAY, ANTHROPIC_API_KEY: 'operator-anthropic-key' };
+    const withKey = atAddress(db, operator);
+    expect(await withKey.anthropic()).toMatchObject({ apiKey: 'operator-anthropic-key' });
+    expect((await withKey.anthropic())?.signedIn).toBeUndefined();
+    expect((await turn(withKey.settings, operator)).sent).toEqual([
+      { url: `${GATEWAY}/v1/messages`, key: 'operator-anthropic-key' },
+    ]);
+  });
+
+  test('a key saved while the gateway is set goes to it, and only to it', async () => {
+    const { db, stored } = keyTable();
+    const gateway = atAddress(db, { ANTHROPIC_BASE_URL: GATEWAY });
+    await gateway.settings.saveKey('anthropic', 'owner', { api_key: 'sk-ant-gateway-2222' });
+    expect(stored[0]?.baseUrl).toBe(`${GATEWAY}/v1/`);
+    expect((await turn(gateway.settings, { ANTHROPIC_BASE_URL: GATEWAY })).sent).toEqual([
+      { url: `${GATEWAY}/v1/messages`, key: 'sk-ant-gateway-2222' },
+    ]);
+    expect(await gateway.settings.test({ provider: 'anthropic' })).toMatchObject({ ok: true });
+    expect(gateway.seen.map((request) => request.url)).toEqual([`${GATEWAY}/v1/models`]);
+    expect(gateway.seen[0]?.headers.get('x-api-key')).toBe('sk-ant-gateway-2222');
+    // With the gateway gone, it is not sent to Anthropic directly either.
+    const direct = atAddress(db);
+    expect((await turn(direct.settings, {})).sent).toEqual([]);
+    expect(await direct.settings.test({ provider: 'anthropic' })).toMatchObject({
+      code: 'no_key',
+    });
+  });
+
+  test('a key saved before keys were bound stays with Anthropic itself', async () => {
+    const { db, stored } = keyTable();
+    await atAddress(db).settings.saveKey('anthropic', 'owner', { api_key: 'sk-ant-legacy-3333' });
+    // A row written before this change carries no address.
+    if (stored[0]) stored[0].baseUrl = null;
+    const direct = atAddress(db);
+    expect((await turn(direct.settings, {})).sent).toEqual([
+      { url: 'https://api.anthropic.com/v1/messages', key: 'sk-ant-legacy-3333' },
+    ]);
+    expect(await direct.settings.test({ provider: 'anthropic' })).toMatchObject({ ok: true });
+    expect(direct.seen[0]?.url).toBe('https://api.anthropic.com/v1/models');
+    const view = await direct.settings.view(true);
+    expect(view.providers.find((status) => status.provider === 'anthropic')).toMatchObject({
+      key: { state: 'set', last_four: '3333' },
+      base_url: null,
+      connected: true,
+    });
+    const gateway = atAddress(db, { ANTHROPIC_BASE_URL: GATEWAY });
+    expect((await turn(gateway.settings, { ANTHROPIC_BASE_URL: GATEWAY })).sent).toEqual([]);
+  });
+});
+
 describe('an endpoint the owner connects in the app', () => {
   const NAMES: Record<string, { address: string; family: 4 | 6 }[]> = {
     'models.inside.test': [{ address: '10.0.0.7', family: 4 }],
@@ -409,6 +617,7 @@ describe('an endpoint the owner connects in the app', () => {
           apiKey: 'owner-key-1234',
           protocols: ['chat/completions'],
           allowHttp: true,
+          mayBeLocal: true,
           reach: 'installation',
         },
       ],

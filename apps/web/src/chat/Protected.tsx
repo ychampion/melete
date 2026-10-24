@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { instanceName } from '../experience/instance.ts';
 import { CATEGORY_NAMES } from '../experience/privacy.ts';
 import type { ConversationPrivacy, PrivacyReveal } from '../experience/types.ts';
 
@@ -97,7 +98,7 @@ export function Protected({ conversationId, turnId }: { conversationId: string; 
           }}
         >
           <span style={{ color: 'var(--muted)' }}>
-            The cloud model saw placeholders. Shown here only, from your own Melete.
+            The cloud model saw placeholders. Shown here only, from your own {instanceName()}.
           </span>
           {revealed.map((item) => (
             <div key={item.placeholder} className="row" style={{ gap: 8, flexWrap: 'wrap' }}>

@@ -40,6 +40,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
 import { workQuiet } from '../jobs/quiet.ts';
+import { assistantName } from '../names.ts';
 import {
   type DayWindow,
   type IntentKind,
@@ -157,7 +158,7 @@ export async function recordSettled(
   await tx.execute(sql`
     insert into push_intent (id, principal_id, kind, title, body, because, url, dedup_key)
     select ${newId('pint')}, ${item.principalId}, 'settled', 'A chase settled',
-           ${clip(item.summary, 300)}, 'Because you asked Melete to chase this.',
+           ${clip(item.summary, 300)}, ${`Because you asked ${assistantName()} to chase this.`},
            ${item.jobId ? `/#/chat/${item.jobId}` : '/#/companies'}, ${`settled:${item.id}`}
     where exists (select 1 from push_subscription s where s.principal_id = ${item.principalId})
       and coalesce((select p.settled from push_setting p where p.principal_id = ${item.principalId}), true)

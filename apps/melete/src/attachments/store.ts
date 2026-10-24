@@ -289,10 +289,21 @@ export class AttachmentService {
     return (await this.deleteUnsent(rows.map((row) => row.id))).length;
   }
 
-  /** The files sent in these chats' turns, by turn, in the order they were sent. */
-  async forTurns(jobId: string): Promise<Map<string, AttachmentView[]>> {
-    const rows = await this.sql<AttachmentRecord[]>`select * from attachment
-      where job_id = ${jobId} and turn_id is not null order by turn_id, position, id`;
+  /**
+   * The files sent in these chats' turns, by turn, in the order they were sent:
+   * of every turn, or of `turnIds` alone.
+   */
+  async forTurns(
+    jobId: string,
+    turnIds?: readonly string[],
+  ): Promise<Map<string, AttachmentView[]>> {
+    if (turnIds && !turnIds.length) return new Map();
+    const rows = turnIds
+      ? await this.sql<AttachmentRecord[]>`select * from attachment
+          where job_id = ${jobId} and turn_id = any(${[...turnIds]})
+          order by turn_id, position, id`
+      : await this.sql<AttachmentRecord[]>`select * from attachment
+          where job_id = ${jobId} and turn_id is not null order by turn_id, position, id`;
     const byTurn = new Map<string, AttachmentView[]>();
     for (const record of rows) {
       const row = fromRecord(record);
@@ -395,16 +406,25 @@ export async function attachTurn(
     .where(and(eq(attachment.jobId, jobId), inArray(attachment.id, [...ids])));
 }
 
-/** What the next attempt's prompt is built from: each sent file's text, by id. */
+/**
+ * What the next attempt's prompt is built from: each sent file's text, by id.
+ * Only the files named, when `ids` names them.
+ */
 export async function attachmentTexts(
   tx: Transaction,
   jobIds: readonly string[],
+  ids?: readonly string[],
 ): Promise<Map<string, AttachmentRow>> {
-  if (!jobIds.length) return new Map();
+  if (!jobIds.length || ids?.length === 0) return new Map();
   const rows = await tx
     .select()
     .from(attachment)
-    .where(inArray(attachment.jobId, [...jobIds]))
+    .where(
+      and(
+        inArray(attachment.jobId, [...jobIds]),
+        ids ? inArray(attachment.id, [...ids]) : undefined,
+      ),
+    )
     .orderBy(asc(attachment.createdAt));
   return new Map(rows.map((row) => [row.id, row]));
 }

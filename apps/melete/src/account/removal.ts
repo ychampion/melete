@@ -63,7 +63,10 @@ export const SETUP_OWNER_KEPT =
 const ACCOUNT_RECORDS = [
   'session',
   'principal_identity',
+  'oidc_identity',
   'password_reset',
+  'step_up',
+  'task_autonomy',
   'mcp_authorization',
   'mcp_token',
   'push_subscription',
@@ -93,6 +96,7 @@ const LEFTOVER_RECORDS = [
   'company',
   'ledger_item',
   'voice_usage',
+  'call_usage',
   'managed_call',
   'person_spend_limit',
   'starter_dismissal',
@@ -362,6 +366,7 @@ export class AccountRemovalService {
     if (sealed) return false;
     await sql`delete from feedback where principal_id = ${principalId}`;
     await sql`delete from voice_usage where principal_id = ${principalId}`;
+    await sql`delete from call_usage where principal_id = ${principalId}`;
     await sql`delete from managed_call where principal_id = ${principalId}`;
     await sql`delete from space_membership where principal_id = ${principalId}
       and revoked_at is not null`;

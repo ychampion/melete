@@ -8,18 +8,30 @@
  *   reset <email>          a one-time link that sets a new password
  *   disable <email>        stops the account signing in and ends all its access
  *   enable <email>         lets a disabled account sign in again
+ *   link <email>           lets the identity provider claim an account that has a password
  *   setup-code             a new one-time code for creating the first account
+ *   entitlements <email>   what the operator granted the account
+ *   grant <email> <name>   grants an entitlement (`verified`)
+ *   revoke <email> <name>  takes one away
  *
  * `--web-url <url>` is the address links open at when MELETE_PUBLIC_URL is not
  * set; `--json` prints one JSON object instead of sentences. Exit codes: 0
  * done, 1 refused (an unknown account, an owner that already exists), 2 usage.
+ * With MELETE_PASSWORD_SIGNIN=off, no password link is printed: `reset` is
+ * refused, and `create` makes an account that signs in through the provider.
  */
+import { ENTITLEMENT_KEYS, entitlementKey } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
 import { endAccess } from '../api/account-access.ts';
 import { issuePasswordReset, principalByEmail, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { issueSetupCode, SETUP_CODE_HOURS, setupLink } from '../api/setup-code.ts';
 import { newId } from '../ids.ts';
 import { recordOperatorAction } from '../operator/audit.ts';
+import {
+  grantEntitlement,
+  listEntitlements,
+  revokeEntitlement,
+} from '../principals/entitlements.ts';
 import { isRemovedEmail } from './removal.ts';
 import { describeReset, operatorReset } from './reset-password.ts';
 
@@ -29,8 +41,21 @@ export const ACCOUNT_USAGE = `Usage: bun run melete account <command> [--json]
   reset <email>        A one-time link that sets a new password and signs the account out everywhere
   disable <email>      Stop the account signing in, and end its sessions, devices and connected apps
   enable <email>       Let a disabled account sign in again
+  link <email>         Let the identity provider claim an account that has a password, once, within a week
   setup-code           A new one-time code for creating the first account
+  entitlements <email> What the operator granted the account
+  grant <email> <name> Grant an entitlement the installation's connections can require (verified)
+  revoke <email> <name> Take an entitlement away; calls not yet made are refused
 `;
+
+/** What the commands need to know about how this installation signs people in. */
+export type AccountSettings = {
+  /** MELETE_PASSWORD_SIGNIN: false when passwords and their links are refused. */
+  passwordSignIn?: boolean;
+};
+
+const PASSWORDS_OFF =
+  'Password sign-in is off here (MELETE_PASSWORD_SIGNIN=off), so a password link would not work.';
 
 export type AccountOutcome = { ok: boolean; text: string; json: Record<string, unknown> };
 
@@ -139,19 +164,45 @@ export async function createAccount(
   sql: Sql,
   email: string,
   webUrl: string | undefined,
+  settings: AccountSettings = {},
 ): Promise<AccountOutcome> {
-  const made = await inviteAccount(sql, email);
-  if (!made.ok) return refused(made.message);
-  const address = made.email;
+  const address = email.trim().toLowerCase();
+  if (!EMAIL.test(address)) return refused(`${email} is not an email address.`);
+  const passwords = settings.passwordSignIn !== false;
+  const made = await sql.begin(async (tx) => {
+    const [taken] = await tx`select 1 from principal where email = ${address}`;
+    if (taken) return null;
+    const [installed] = await tx`select id from owner limit 1 for update`;
+    const id = newId('own');
+    // The first account is the installation's owner; its personal space is
+    // made, and furnished, when it first signs in.
+    if (!installed) await tx`insert into owner (id, email) values (${id}, ${address})`;
+    await tx`insert into principal (id, email) values (${id}, ${address})`;
+    // Setup is done once the owner exists: codes issued for it are spent.
+    if (!installed) await tx`update setup_code set used_at = now() where used_at is null`;
+    const issued = passwords ? await issuePasswordReset(tx, id, 'invite') : null;
+    return { id, owner: !installed, token: issued?.token ?? null };
+  });
+  if (!made) return refused(`An account already signs in as ${address}.`);
   await recordOperatorAction(sql, {
     actor: null,
     action: 'invited',
     target: { id: made.id, email: address },
-    detail: made.owner ? 'As the owner of this installation' : 'With a one-time link',
+    detail: made.owner
+      ? 'As the owner of this installation'
+      : passwords
+        ? 'With a one-time link'
+        : 'Through the identity provider',
   });
+  const role = made.owner ? 'the owner of this installation' : 'a new account';
+  if (made.token === null)
+    return {
+      ok: true,
+      text: `Created ${address} as ${role}. Password sign-in is off here, so they sign in through the identity provider with this email.\n`,
+      json: { ok: true, email: address, owner: made.owner, link: null },
+    };
   const link = webUrl ? resetUrl(webUrl, made.token) : null;
   const days = INVITE_MINUTES / 1440;
-  const role = made.owner ? 'the owner of this installation' : 'a new account';
   const open = link
     ? `Send ${address} this link. It opens Melete, where they choose a password and go straight on to setting up:\n\n  ${link}\n`
     : `No web address is known, so there is no link. On the sign-in page, choose “Forgot your password?” and enter this code:\n\n  ${made.token}\n`;
@@ -166,7 +217,12 @@ export async function resetAccount(
   sql: Sql,
   email: string,
   webUrl: string | undefined,
+  settings: AccountSettings = {},
 ): Promise<AccountOutcome> {
+  if (settings.passwordSignIn === false)
+    return refused(
+      `${PASSWORDS_OFF} ${email.trim()} signs in through the identity provider. To let passwords in again, set MELETE_PASSWORD_SIGNIN=on and restart the service.`,
+    );
   const result = await operatorReset(sql, email, webUrl);
   if (result.ok) {
     const account = await principalByEmail(sql, result.email);
@@ -231,6 +287,37 @@ export async function setDisabled(
   };
 }
 
+/**
+ * Opens an account that has a password to one link through the identity
+ * provider, for a week: under MELETE_OIDC_EMAIL_LINK=no-password, the next
+ * sign-in through the provider with this verified email links it, and the
+ * opening is used up.
+ */
+export async function openProviderLink(sql: Sql, email: string): Promise<AccountOutcome> {
+  const account = await principalByEmail(sql, email.trim());
+  if (!account) return refused(`No account signs in as ${email.trim()}.`);
+  if (isRemovedEmail(account.id, account.email))
+    return refused(`${account.email} is what is left of a deleted account. It cannot sign in.`);
+  const [opened] = await sql`update principal
+    set oidc_link_until = now() + make_interval(mins => ${INVITE_MINUTES})
+    where id = ${account.id} and kind = 'person'
+    returning oidc_link_until`;
+  if (!opened)
+    return refused(
+      `${account.email} is a guest account; guests sign in the way they were invited.`,
+    );
+  const days = INVITE_MINUTES / 1440;
+  return {
+    ok: true,
+    text: `For the next ${days} days, the first sign-in through the identity provider with the verified email ${account.email} links that provider account to it. After that it signs in through the link.\n`,
+    json: {
+      ok: true,
+      email: account.email,
+      until: new Date(String(opened.oidc_link_until)).toISOString(),
+    },
+  };
+}
+
 export async function newSetupCodeFor(
   sql: Sql,
   webUrl: string | undefined,
@@ -246,6 +333,37 @@ export async function newSetupCodeFor(
     ok: true,
     text: `${link ? `Open this link to create the first account:\n\n  ${link}\n\nOr enter the code` : 'On the web page, enter the setup code'}:\n\n  ${issued.code}\n\nIt works once and expires in ${SETUP_CODE_HOURS} hours. Earlier setup codes no longer work.\n`,
     json: { ok: true, code: issued.code, link, expires_at: issued.expiresAt.toISOString() },
+  };
+}
+
+/** The operator's grants on one account, from the host. */
+export async function entitlementCommand(
+  sql: Sql,
+  command: 'entitlements' | 'grant' | 'revoke',
+  email: string,
+  key: string | undefined,
+): Promise<AccountOutcome> {
+  const person = await principalByEmail(sql, email.trim().toLowerCase());
+  if (!person) return refused(`No account signs in as ${email}.`);
+  if (command !== 'entitlements') {
+    const name = entitlementKey.safeParse(key);
+    if (!name.success)
+      return refused(
+        `${key ?? 'That'} is not an entitlement. Known: ${ENTITLEMENT_KEYS.join(', ')}.`,
+      );
+    if (command === 'grant') {
+      if (!(await grantEntitlement(sql, person.id, name.data, 'operator')))
+        return refused(`${email} is not a person's account.`);
+    } else await revokeEntitlement(sql, person.id, name.data);
+  }
+  const list = await listEntitlements(sql, person.id);
+  const held = list.entitlements.map((grant) => grant.key);
+  return {
+    ok: true,
+    text: held.length
+      ? `${email} holds: ${held.join(', ')}.\n`
+      : `${email} holds no entitlements.\n`,
+    json: { ok: true, email, entitlements: list.entitlements },
   };
 }
 
@@ -270,12 +388,23 @@ export async function runAccount(
   publicUrl: string | undefined,
   /** MELETE_SETUP_CODE_HASH: the code `melete init` printed, which a new setup code cancels too. */
   configuredHash?: string,
+  settings: AccountSettings = {},
 ): Promise<{ code: number; out: string }> {
   const parsed = parseAccountArgs(argv);
   const webUrl = publicUrl ?? parsed.webUrl;
-  const needsEmail = ['create', 'reset', 'disable', 'enable'].includes(parsed.command);
+  const needsEmail = [
+    'create',
+    'reset',
+    'disable',
+    'enable',
+    'link',
+    'entitlements',
+    'grant',
+    'revoke',
+  ].includes(parsed.command);
+  const needsName = ['grant', 'revoke'].includes(parsed.command);
   const usage = { code: 2, out: ACCOUNT_USAGE };
-  if (parsed.extra.length) return usage;
+  if (parsed.extra.length !== (needsName ? 1 : 0)) return usage;
   if (needsEmail && !parsed.target?.includes('@')) return usage;
   if (!needsEmail && parsed.target !== undefined) return usage;
   let outcome: AccountOutcome;
@@ -284,10 +413,13 @@ export async function runAccount(
       outcome = await listAccounts(sql);
       break;
     case 'create':
-      outcome = await createAccount(sql, parsed.target ?? '', webUrl);
+      outcome = await createAccount(sql, parsed.target ?? '', webUrl, settings);
       break;
     case 'reset':
-      outcome = await resetAccount(sql, parsed.target ?? '', webUrl);
+      outcome = await resetAccount(sql, parsed.target ?? '', webUrl, settings);
+      break;
+    case 'link':
+      outcome = await openProviderLink(sql, parsed.target ?? '');
       break;
     case 'disable':
     case 'enable':
@@ -295,6 +427,11 @@ export async function runAccount(
       break;
     case 'setup-code':
       outcome = await newSetupCodeFor(sql, webUrl, configuredHash);
+      break;
+    case 'entitlements':
+    case 'grant':
+    case 'revoke':
+      outcome = await entitlementCommand(sql, parsed.command, parsed.target ?? '', parsed.extra[0]);
       break;
     default:
       return usage;
@@ -321,6 +458,7 @@ if (import.meta.main) {
       process.argv.slice(2),
       process.env.MELETE_PUBLIC_URL?.trim() || undefined,
       settings.MELETE_SETUP_CODE_HASH?.trim() || undefined,
+      { passwordSignIn: settings.MELETE_PASSWORD_SIGNIN?.trim() !== 'off' },
     );
     (result.code === 0 ? process.stdout : process.stderr).write(result.out);
     process.exitCode = result.code;

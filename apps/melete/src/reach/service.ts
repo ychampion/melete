@@ -27,6 +27,7 @@ import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { workQuiet } from '../jobs/quiet.ts';
+import { assistantName } from '../names.ts';
 import { type DayWindow, localTime } from '../push/policy.ts';
 import {
   agreedWording,
@@ -234,11 +235,15 @@ export class ReachService {
         503,
       );
     if (number === provider.from)
-      throw new ServiceError('reach_number_refused', 'That is Melete’s own number.', 400);
+      throw new ServiceError(
+        'reach_number_refused',
+        `That is ${assistantName()}’s own number.`,
+        400,
+      );
     if (!codeAllowed(number, this.deps.config.codePrefixes))
       throw new ServiceError(
         'reach_country_refused',
-        'Melete can’t text numbers in that country from this installation.',
+        `${assistantName()} can’t text numbers in that country from this installation.`,
         400,
       );
     const contactId = newId('rch');
@@ -255,7 +260,7 @@ export class ReachService {
       if ((hour?.n ?? 0) >= this.deps.config.codesPerHour)
         throw new ServiceError(
           'reach_code_limit',
-          'Melete is sending too many codes right now. Try again in an hour.',
+          `${assistantName()} is sending too many codes right now. Try again in an hour.`,
           429,
         );
       const [taken] = rows<{ principal_id: string }>(
@@ -278,7 +283,7 @@ export class ReachService {
       if ((counts?.mine ?? 0) >= CODE_RULES.perDay || (counts?.theirs ?? 0) >= CODE_RULES.perDay)
         throw new ServiceError(
           'reach_code_limit',
-          'That’s as many codes as Melete sends in a day. Try again tomorrow.',
+          `That’s as many codes as ${assistantName()} sends in a day. Try again tomorrow.`,
           429,
         );
       await tx.execute(sql`insert into reach_number (principal_id, pending_number, code_hash,
@@ -300,7 +305,7 @@ export class ReachService {
     if (outcome === 'opted_out')
       throw new ServiceError(
         'reach_opted_out',
-        `That number replied STOP to Melete. Text START to ${provider.from} from it, then ask for a code again.`,
+        `That number replied STOP to ${assistantName()}. Text START to ${provider.from} from it, then ask for a code again.`,
         409,
       );
     if (outcome === 'refused')
@@ -361,7 +366,7 @@ export class ReachService {
       if (row.opted_out_at)
         throw new ServiceError(
           'reach_opted_out',
-          `You replied STOP. Text START to ${this.deps.config.provider?.from ?? 'Melete’s number'} first, then turn this on again.`,
+          `You replied STOP. Text START to ${this.deps.config.provider?.from ?? `${assistantName()}’s number`} first, then turn this on again.`,
           409,
         );
       await this.endConsent(tx, principalId, 'settings');
@@ -602,7 +607,7 @@ export class ReachService {
       await tx.execute(sql`update reach_contact set state = 'failed', sent_at = null,
           reason = ${
             outcome === 'opted_out'
-              ? 'You replied STOP to this number, so Melete stopped texting and calling it.'
+              ? `You replied STOP to this number, so ${assistantName()} stopped texting and calling it.`
               : 'The provider turned it down, so nothing was sent.'
           }, updated_at = now()
         where id = ${contactId}`);
@@ -840,14 +845,14 @@ export class ReachService {
       await this.db.transaction((tx) => this.optOut(tx, contact.principal_id, 'keypress'));
       if (contact.situation_id)
         await this.acknowledgeClimbing(contact.principal_id, contact.situation_id);
-      return 'Melete won’t text or call you again until you turn it on in Settings. Goodbye.';
+      return `${assistantName()} won’t text or call you again until you turn it on in Settings. Goodbye.`;
     }
     if (digit === '1') {
       if (contact.situation_id)
         await this.acknowledgeClimbing(contact.principal_id, contact.situation_id);
-      return 'Thanks. Melete has marked it as seen. Goodbye.';
+      return `Thanks. ${assistantName()} has marked it as seen. Goodbye.`;
     }
-    return 'Melete won’t call again about this. Goodbye.';
+    return `${assistantName()} won’t call again about this. Goodbye.`;
   }
 
   // ------------------------------------------------------------------------

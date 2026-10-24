@@ -19,11 +19,12 @@ const profile = (role: 'owner' | 'member'): Profile => ({
   time_zone_confirmed: true,
   sending_address: null,
   role,
+  voice: 'teammate',
 });
 
 function render(node: React.ReactNode, member: boolean) {
   const app = {
-    capabilities: { calendar: false, browser: false, multiplayer: true },
+    capabilities: { calendar: false, browser: false, multiplayer: true, features: {} },
     profile: profile(member ? 'member' : 'owner'),
     onboarded: true,
     setOnboarded: () => {},
@@ -88,4 +89,13 @@ test('a member reads the space’s time zone but does not change it', () => {
   const owner = render(<AccountSettings />, false);
   expect(owner).not.toContain('The space’s owner sets it.');
   expect(owner).toContain('Routines such as the morning brief run on this clock');
+});
+
+test('an owner picks the voice; a member reads it', () => {
+  const member = render(<AccountSettings />, true);
+  expect(member).toContain('Voice');
+  expect(member).toContain('Teammate');
+  expect(member).not.toContain('Drafts to people you don’t know well');
+  const owner = render(<AccountSettings />, false);
+  expect(owner).toContain('Drafts to people you don’t know well sound professional either way.');
 });

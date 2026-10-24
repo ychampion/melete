@@ -5,8 +5,9 @@
  * with no `not_available` arm to unwrap.
  */
 import { API_BASE_URL, client, type Result } from './adapter.ts';
+import { instanceName } from './instance.ts';
 
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+const offline = () => `Couldn’t reach ${instanceName()}. Check that the service is running.`;
 
 type Failure = { error?: { message?: string; code?: string } };
 
@@ -29,13 +30,13 @@ export async function call<T>(
       const failure = (body as Failure | null)?.error;
       return {
         data: null,
-        error: failure?.message ?? OFFLINE,
+        error: failure?.message ?? offline(),
         unavailable: null,
         ...(failure?.code ? { code: failure.code } : {}),
       };
     }
     return { data: body as T, error: null, unavailable: null };
   } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
+    return { data: null, error: offline(), unavailable: null };
   }
 }

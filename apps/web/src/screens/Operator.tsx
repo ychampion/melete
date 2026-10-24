@@ -13,6 +13,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Badge, type BadgeTone, Button, Dialog, Field, Input } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useLoad } from '../experience/hooks.ts';
+import { instanceName } from '../experience/instance.ts';
 import type {
   AccountRemovalPreview,
   OperatorAuditEntry,
@@ -723,8 +724,8 @@ export function OperatorTab() {
   return (
     <div className="col" style={{ gap: 24 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560, margin: 0 }}>
-        You run this Melete. Here is how it is doing, everyone who has an account, and every change
-        made to their accounts. Only you see this page.
+        You run {instanceName()}. Here is how it is doing, everyone who has an account, and every
+        change made to their accounts. Only you see this page.
       </p>
 
       {overview.error ? (

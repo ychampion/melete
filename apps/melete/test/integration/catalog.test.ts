@@ -11,6 +11,7 @@ import { BrokerService } from '../../src/broker/service.ts';
 import { REACT_TOOL } from '../../src/connectors/catalog.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { Connector } from '../../src/connectors/types.ts';
+import { skillsDone, skillsGiven, skillsSent } from '../../src/gateway/given-skills.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -497,6 +498,120 @@ dbTest('skills.read reads an indexed skill by name, once per read, with a tool e
   ]);
 });
 
+dbTest('a skill given in full is not offered again as its own tool', async () => {
+  const skill = (name: string): Skill => ({
+    path: `${name}/SKILL.md`,
+    body: `The ${name} procedure.`,
+    frontmatter: {
+      name,
+      tools: [],
+      description: `Find a ${name} procedure`,
+      triggers: [name],
+      max_tokens: 400,
+    },
+  });
+  const s = await setup({ skills: [skill('receipts'), skill('refunds')] });
+  // The attempt started with "receipts" in its instructions, as the runner records it.
+  await s.sql`insert into learning_attempt (attempt_id, versions) values (${s.claims.attempt_id},
+    ${JSON.stringify({ attempt_id: s.claims.attempt_id, skills: [{ name: 'receipts', version: 'sha256:x' }] })}::jsonb)
+    on conflict (attempt_id) do update set versions = excluded.versions`;
+  await s.sql`delete from attempt_tool_context where attempt_id = ${s.claims.attempt_id}`;
+  const offered = (await s.broker.discovery.search(s.claims, 'procedure')).map((tool) => tool.name);
+  // Calling it would only read the same words again, a round trip before any work.
+  expect(offered).not.toContain('skills.receipts');
+  expect(offered).toContain('skills.refunds');
+  expect(
+    await rejectionOf(s.broker.discovery.callSkill(s.claims, 'skills.receipts', {})),
+  ).toMatchObject({ code: 'unknown_tool' });
+  // The agent's latest request still carries it in full.
+  const attemptId = s.claims.attempt_id;
+  const request = (content: string) => ({
+    tools: [{ type: 'function', function: { name: 'skills.read' } }],
+    messages: [{ role: 'user', content }],
+  });
+  skillsGiven(attemptId, [{ name: 'receipts', body: 'The receipts procedure.' }]);
+  skillsSent(
+    attemptId,
+    request('## How to do this kind of work\n\n### receipts\n\nThe receipts procedure.'),
+  );
+  // Read by name anyway, it answers with a pointer, not the same words again,
+  // and adds no second "Used the skill" entry; a skill not given still reads.
+  const again = await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts' });
+  expect(again.name).toBe('receipts');
+  expect(String(again.body)).not.toContain('The receipts procedure.');
+  expect(String(again.body)).toContain('already in your instructions');
+  expect(await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'refunds' })).toEqual({
+    name: 'refunds',
+    body: 'The refunds procedure.',
+  });
+  const traced = await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id}
+    and type = 'notice' and payload->>'kind' = 'tool_trace'`;
+  expect(traced.map((row) => row.payload.call.id)).toEqual([
+    `skill-read:${s.claims.attempt_id}:refunds`,
+  ]);
+  const read = () => s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts' });
+  try {
+    // The engine compacted the turn and its summary left the skill out: the
+    // agent no longer has it, so it is read in full.
+    skillsSent(attemptId, request('Summary of the work so far.'));
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+    // Only part of it in the request is not having it.
+    skillsSent(attemptId, request('### receipts\n\nThe receipts'));
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+    // The skill changed since the attempt was given it: the agent holds an
+    // older version, so the current one is read in full.
+    skillsGiven(attemptId, [{ name: 'receipts', body: 'The older receipts procedure.' }]);
+    skillsSent(attemptId, request('### receipts\n\nThe older receipts procedure.'));
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+    // An attempt this service is not following gets the skill in full.
+    skillsDone(attemptId);
+    expect(await read()).toEqual({ name: 'receipts', body: 'The receipts procedure.' });
+  } finally {
+    skillsDone(attemptId);
+  }
+});
+
+dbTest('the skills a turn is given in full leave the load_tool index as it was', async () => {
+  // The tool definitions lead a Claude request's cached prefix, ahead of the
+  // system prompt: an index that changed with the turn's skills had every
+  // turn write the whole prompt to the cache again.
+  const skill = (name: string): Skill => ({
+    path: `${name}/SKILL.md`,
+    body: `The ${name} procedure.`,
+    frontmatter: {
+      name,
+      tools: [],
+      description: `Find a ${name} procedure`,
+      triggers: [name],
+      max_tokens: 400,
+    },
+  });
+  const s = await setup({ skills: [skill('receipts'), skill('refunds')] });
+  const loaderGiven = async (given: string[]) => {
+    await s.sql`insert into learning_attempt (attempt_id, versions) values (${s.claims.attempt_id},
+      ${JSON.stringify({ attempt_id: s.claims.attempt_id, skills: given.map((name) => ({ name, version: 'sha256:x' })) })}::jsonb)
+      on conflict (attempt_id) do update set versions = excluded.versions`;
+    await s.sql`delete from attempt_tool_context where attempt_id = ${s.claims.attempt_id}`;
+    return (await s.broker.catalog(s.claims)).find((tool) => tool.name === 'load_tool')
+      ?.description;
+  };
+  const none = await loaderGiven([]);
+  expect(none).toContain('skills.receipts');
+  expect(none).toContain('skills.refunds');
+  expect(await loaderGiven(['receipts'])).toBe(none);
+  expect(await loaderGiven(['refunds'])).toBe(none);
+  // Named, but there is nothing to load for a skill already in the instructions.
+  expect(await rejectionOf(s.broker.discovery.load(s.claims, 'skills.refunds'))).toMatchObject({
+    code: 'unknown_tool',
+    message: expect.stringContaining('given in full'),
+  });
+  // A long turn's compaction can drop it from the instructions; the reader the
+  // refusal points to still has it then.
+  expect(
+    await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'refunds' }),
+  ).toMatchObject({ name: 'refunds', body: 'The refunds procedure.' });
+});
+
 dbTest('a private space skill is read only by the space’s own owner', async () => {
   const s = await setup({
     skills: [
@@ -771,6 +886,21 @@ dbTest(
       'job.wait',
     ]);
     expect(later.map((entry) => entry.name)).toContain('test.send');
+    // A new message that names neither verb leaves the catalog as the last
+    // attempts had it, rather than handing beta's room to the first by name:
+    // the tools lead the cached prompt.
+    const third = recordId('att');
+    await db.sql`update attempt set outcome = 'completed', ended_at = now(),
+      input_cursor = (select max(seq) from event) where id = ${next}`;
+    await db.sql`insert into event (job_id, type, payload, dedup_key)
+      values (${seed.claims.job_id}, 'notice',
+        ${JSON.stringify({ kind: 'user_message', text: 'Thanks!' })}::jsonb,
+        ${`${seed.claims.job_id}:thanks`})`;
+    await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${third}, ${seed.claims.job_id}, 3, 'fake', 'fake', 'scripted')`;
+    await db.sql`update job set lease_epoch = 3 where id = ${seed.claims.job_id}`;
+    const thanked = await broker.catalog({ ...seed.claims, attempt_id: third, epoch: 3 });
+    expect(thanked.map((entry) => entry.name)).toEqual(core.map((entry) => entry.name));
   },
 );
 

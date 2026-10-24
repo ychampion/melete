@@ -8,7 +8,7 @@ import {
   type RuntimeEvent,
   type WaitSpec,
 } from '@melete/contracts';
-import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
+import { HERMES_PINNED_COMMIT, renderSoul, SOUL_ENV } from '@melete/runtime-hermes';
 import type { InstanceView } from '../ops/instance.ts';
 import { type DockerApi, DockerError, DockerHermesRuntimeAdapter } from './docker.ts';
 import { attemptEnvironment } from './supervisor.ts';
@@ -280,6 +280,17 @@ describe('Docker attempt supervision', () => {
     expect(environment).toContain('HTTP_PROXY=http://melete:9100');
     expect(environment).toContain('HTTPS_PROXY=http://melete:9100');
     expect(environment.filter((entry) => entry.includes(':8788'))).toEqual([]);
+  });
+
+  test("an attempt container is handed the installation's identity for its SOUL.md", async () => {
+    const f = await setup();
+    await f.runtime.start(bundle(), f.sink, new AbortController().signal);
+    const entry = (f.daemon.created[0]?.Env ?? []).find((value) =>
+      value.startsWith(`${SOUL_ENV}=`),
+    );
+    expect(entry).toBeDefined();
+    const soul = Buffer.from(entry?.slice(SOUL_ENV.length + 1) ?? '', 'base64').toString('utf8');
+    expect(soul).toBe(renderSoul());
   });
 
   test('every attempt container is told the protocol its provider speaks', async () => {

@@ -400,7 +400,11 @@ function actionOutput(
         ? 'You declined this.'
         : failure === 'refused'
           ? (REFUSALS[refusal ?? ''] ?? REFUSED)
-          : 'This did not go through.',
+          : // A read that never answered is settled as failed and never asked
+            // about: the person sees here that the check did not finish.
+            row.effectClass === 'read'
+            ? 'This check did not finish, so it gave no result.'
+            : 'This did not go through.',
     );
   }
   const detail = object(object(row.receipt).detail);
@@ -1087,6 +1091,41 @@ export function heldSearchCall(input: {
           ? `Nothing was sent to a search service. ${reason}`
           : 'Nothing was sent to a search service.'),
     ),
+    detail: null,
+    parent: null,
+  });
+}
+
+/**
+ * A step the agent took on by itself and left as a suggestion: nothing was
+ * sent, and nobody was asked. A quiet row with what it would have done and
+ * why it did not; the person can ask for it in the chat if they want it.
+ */
+export function suggestedStepCall(input: {
+  attemptId: string;
+  /** The tool it would have used. */
+  kind: string;
+  payloadHash: string;
+  /** Whom or where it would have reached. */
+  to: readonly string[];
+  why: string;
+  at: Date;
+}): ToolCall {
+  const at = input.at.toISOString();
+  const to = input.to.length ? ` to ${input.to.slice(0, 3).join(', ')}` : '';
+  return toolCall.parse({
+    id: toolId('suggested', input.attemptId, input.payloadHash.slice(0, 16)),
+    kind: 'connector',
+    title: plainText(
+      `Left as a suggestion: ${input.kind}${to}`,
+      'Left as a suggestion',
+      TOOL_TITLE_LIMIT,
+    ),
+    status: 'done',
+    started_at: at,
+    ended_at: at,
+    input_summary: null,
+    output_summary: summary(plainText(input.why, 'Nothing was sent.', TOOL_SUMMARY_LIMIT)),
     detail: null,
     parent: null,
   });

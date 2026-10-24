@@ -73,9 +73,56 @@ export const principal = pgTable(
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
     /** When the person's routines last came back on after resting while they were away. */
     routinesResumedAt: timestamp('routines_resumed_at', { withTimezone: true }),
+    /**
+     * The id a system outside Melete knows this person by, such as a directory
+     * or customer number. Melete never reads it; whoever runs the installation
+     * sets it.
+     */
+    externalId: text('external_id').unique(),
+    /**
+     * Until when a sign-in through the identity provider may claim this account
+     * by its verified email although it has a password, under
+     * MELETE_OIDC_EMAIL_LINK=no-password. The operator sets it with
+     * `melete account link`; the link it allows clears it.
+     */
+    oidcLinkUntil: timestamp('oidc_link_until', { withTimezone: true }),
   },
   (t) => [check('principal_kind', sql`${t.kind} in ('person', 'guest', 'room')`)],
 );
+
+/**
+ * A person's account at the installation's OpenID Connect identity provider:
+ * the provider's issuer and its subject for them, which stays the same when
+ * their email changes. Made at their first sign-in through the provider.
+ */
+export const oidcIdentity = pgTable(
+  'oidc_identity',
+  {
+    issuer: text('issuer').notNull(),
+    subject: text('subject').notNull(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    createdAt: created(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.issuer, t.subject] }),
+    // One account at a provider per person: a second subject never takes over the first's account.
+    uniqueIndex('oidc_identity_principal_issuer_idx').on(t.principalId, t.issuer),
+    check('oidc_identity_subject', sql`length(${t.subject}) between 1 and 255`),
+  ],
+);
+
+/**
+ * Sign-ins through the identity provider that have come back, by a digest of
+ * their state, and back-channel logout tokens received, by a digest of their
+ * id, so neither is ever used twice. Rows past their expiry are removed as new
+ * ones arrive.
+ */
+export const oidcSpentState = pgTable('oidc_spent_state', {
+  stateHash: text('state_hash').primaryKey(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
 
 export const space = pgTable('space', {
   id: text('id').primaryKey(),
@@ -698,10 +745,88 @@ export const approval = pgTable(
     // The doubts the person was shown. A decision is bound to this set, so an
     // approval given before an origin was known cannot be spent after.
     originWarnings: jsonb('origin_warnings').notNull().default([]),
+    /**
+     * The action moves money, so an Allow counts only with the person's own
+     * confirmation given for it (`step_up`), at the moment they answered.
+     */
+    stepUpRequired: boolean('step_up_required').notNull().default(false),
+    /** The confirmation an Allow of a money move was given with. */
+    stepUpId: text('step_up_id'),
   },
   // One live approval per action and payload: re-asking for the same bytes
   // reuses the record instead of stacking duplicates in the inbox.
   (t) => [uniqueIndex('approval_action_hash_idx').on(t.actionId, t.payloadHash)],
+);
+
+/**
+ * The person confirming it is them, with their own password, for one money
+ * move: one approval, one action, one exact payload. Its token is kept only
+ * as a hash, lasts two minutes and is spent by the one Allow it was made for.
+ */
+export const stepUp = pgTable(
+  'step_up',
+  {
+    id: text('id').primaryKey(),
+    tokenHash: text('token_hash').notNull().unique(),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    approvalId: text('approval_id')
+      .notNull()
+      .references(() => approval.id, { onDelete: 'cascade' }),
+    actionId: text('action_id')
+      .notNull()
+      .references(() => action.id, { onDelete: 'cascade' }),
+    payloadHash: text('payload_hash').notNull(),
+    /** How the person confirmed: `password` now; a passkey later. */
+    method: text('method').notNull(),
+    createdAt: created(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('step_up_approval_idx').on(t.approvalId),
+    check('step_up_method', sql`${t.method} in ('password', 'passkey', 'oidc')`),
+  ],
+);
+
+/**
+ * How much the agent does on its own for one kind of task, as one person chose
+ * (`broker/autonomy.ts`). A row with no level was asked about once, in the
+ * conversation named here, and not answered yet: the default applies and it is
+ * not asked again. The person is a principal, or the owner of a single-person
+ * install, so there is no reference to either table.
+ */
+export const taskAutonomy = pgTable(
+  'task_autonomy',
+  {
+    principalId: text('principal_id').notNull(),
+    kind: text('kind').notNull(),
+    level: text('level'),
+    /** Where it was chosen: Settings, the card that asked, or the person's own message. */
+    setBy: text('set_by'),
+    /** The message that set it, when it was said in one. */
+    turnId: text('turn_id'),
+    askId: text('ask_id'),
+    askedJobId: text('asked_job_id'),
+    askedAt: timestamp('asked_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.principalId, t.kind] }),
+    check(
+      'task_autonomy_kind',
+      sql`${t.kind} in ('email', 'chat_message', 'calendar_invite', 'public_post', 'other_send')`,
+    ),
+    check(
+      'task_autonomy_level',
+      sql`${t.level} is null or ${t.level} in ('draft', 'when_confident', 'always')`,
+    ),
+    check(
+      'task_autonomy_set_by',
+      sql`${t.setBy} is null or ${t.setBy} in ('settings', 'card', 'chat')`,
+    ),
+  ],
 );
 
 export const event = pgTable(
@@ -721,6 +846,10 @@ export const event = pgTable(
   (t) => [
     uniqueIndex('event_dedup_idx').on(t.dedupKey),
     index('event_job_seq_idx').on(t.jobId, t.seq),
+    // A page of a chat's messages reads the events of its turns alone.
+    index('event_experience_turn_idx')
+      .on(t.jobId, sql`(${t.payload}->>'turn_id')`, t.seq)
+      .where(sql`${t.payload}->>'kind' = 'experience'`),
     // What a connection reported and no job owns, found by its connection when
     // the connection is revoked or its space removed.
     index('event_connector_observation_idx')
@@ -1156,23 +1285,28 @@ export const eventRetention = pgTable('event_retention', {
   retainedAfter: bigint('retained_after', { mode: 'number' }).notNull().default(0),
 });
 
-export const experienceTurn = pgTable('experience_turn', {
-  id: text('id').primaryKey(),
-  jobId: text('job_id')
-    .notNull()
-    .references(() => job.id, { onDelete: 'cascade' }),
-  agentId: text('agent_id')
-    .notNull()
-    .references(() => agent.id),
-  submissionId: text('submission_id').notNull().unique(),
-  /** Who said this turn's words. Null on turns recorded before authors were. */
-  authorPrincipalId: text('author_principal_id').references(() => principal.id),
-  text: text('text').notNull(),
-  answer: text('answer').notNull().default(''),
-  status: text('status').notNull().default('queued'),
-  createdAt: created(),
-  finishedAt: timestamp('finished_at', { withTimezone: true }),
-});
+export const experienceTurn = pgTable(
+  'experience_turn',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agent.id),
+    submissionId: text('submission_id').notNull().unique(),
+    /** Who said this turn's words. Null on turns recorded before authors were. */
+    authorPrincipalId: text('author_principal_id').references(() => principal.id),
+    text: text('text').notNull(),
+    answer: text('answer').notNull().default(''),
+    status: text('status').notNull().default('queued'),
+    createdAt: created(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  // A chat's turns, newest first, a page at a time.
+  (t) => [index('experience_turn_job_created_idx').on(t.jobId, t.createdAt, t.id)],
+);
 
 export const experienceProfile = pgTable('experience_profile', {
   spaceId: text('space_id')
@@ -1186,6 +1320,8 @@ export const experienceProfile = pgTable('experience_profile', {
   onboardedAt: timestamp('onboarded_at', { withTimezone: true }),
   /** When the person chose or confirmed their time zone; until then it is only a default. */
   timeZoneConfirmedAt: timestamp('time_zone_confirmed_at', { withTimezone: true }),
+  /** How the agent sounds in replies and drafts: `teammate` or `professional`. */
+  voice: text('voice').notNull().default('teammate'),
 });
 
 export const task = pgTable('task', {
@@ -1368,6 +1504,28 @@ export const voiceUsage = pgTable(
     index('voice_usage_principal').on(t.principalId, t.kind, t.createdAt),
     check('voice_usage_kind', sql`${t.kind} in ('transcribe', 'speech', 'session', 'aside')`),
     check('voice_usage_amount', sql`${t.amount} > 0`),
+  ],
+);
+
+/**
+ * One row per call: who was on it and for how long, so an operator's monthly
+ * cap on call minutes can hold. No words and no audio are kept here; what was
+ * said is in the conversation. Rows older than the month are cleared as new
+ * calls start.
+ */
+export const callUsage = pgTable(
+  'call_usage',
+  {
+    id: text('id').primaryKey(),
+    principalId: text('principal_id').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Seconds on the call, written as it goes on and when it ends. */
+    seconds: integer('seconds').notNull().default(0),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('call_usage_principal').on(t.principalId, t.startedAt),
+    check('call_usage_seconds', sql`${t.seconds} >= 0`),
   ],
 );
 
@@ -1668,4 +1826,79 @@ export const personSpendLimit = pgTable(
         and coalesce(${t.backgroundDayUsd}, 1) > 0 and coalesce(${t.backgroundMonthUsd}, 1) > 0`,
     ),
   ],
+);
+
+/**
+ * A page a connection's server showed in a conversation (MCP Apps), and what
+ * its server reported about it. The document is kept as the server gave it,
+ * and served only framed, with the policy in `csp`. The report key is never
+ * kept: it is derived from the installation's key and the page's id.
+ */
+export const connectionPage = pgTable(
+  'connection_page',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    actionId: text('action_id')
+      .notNull()
+      .references(() => action.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** The person the page is for: the job's person, or who asked a room. */
+    principalId: text('principal_id'),
+    triggerId: text('trigger_id'),
+    resourceUri: text('resource_uri').notNull(),
+    html: text('html').notNull(),
+    /** Domains the page may use, after the connection's allow-list: connect, resource, frame. */
+    domains: jsonb('domains').$type<Record<string, string[]>>().notNull().default({}),
+    /** Origins the page may ask to open in a new tab. */
+    openOrigins: jsonb('open_origins').$type<string[]>().notNull().default([]),
+    serverOrigin: text('server_origin').notNull(),
+    toolInput: jsonb('tool_input').$type<Record<string, unknown>>().notNull().default({}),
+    toolResult: jsonb('tool_result').$type<Record<string, unknown>>().notNull().default({}),
+    state: text('state').notNull().default('open'),
+    summary: text('summary'),
+    reportData: jsonb('report_data').$type<Record<string, unknown>>(),
+    reportId: text('report_id'),
+    createdAt: created(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('connection_page_job_idx').on(t.jobId),
+    uniqueIndex('connection_page_action_idx').on(t.actionId),
+    check(
+      'connection_page_state_check',
+      sql`${t.state} in ('open', 'completed', 'failed', 'cancelled', 'expired')`,
+    ),
+  ],
+);
+
+/**
+ * What an operator granted a person's account, by name (`verified`). Written
+ * only by the operator's routes and the host's command line; no route a person
+ * or an agent reaches writes it. A connection's tool can require one, and the
+ * person's identity assertion carries those they hold. A grant past
+ * `expires_at` counts for nothing.
+ */
+export const personEntitlement = pgTable(
+  'person_entitlement',
+  {
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    /** What the operator recorded with it (`method`, `level`); opaque to Melete. */
+    value: jsonb('value').$type<Record<string, string>>().notNull().default({}),
+    grantedBy: text('granted_by').notNull(),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.principalId, t.key] })],
 );

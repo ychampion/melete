@@ -10,6 +10,7 @@ import { Button, Field, Input, Select } from '../design/primitives.tsx';
 import { keepingPushHere, NEW_PASSWORD_MIN } from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import { zoneName } from '../experience/plain.ts';
 import { givenName, UNNAMED } from '../experience/profile.ts';
 import { browserTimeZone, timeZoneChoices } from '../experience/timezone.ts';
@@ -83,6 +84,68 @@ function TimeZoneField() {
   );
 }
 
+const VOICES = [
+  {
+    value: 'teammate',
+    label: 'Teammate',
+    hint: 'Plain, warm and direct, like a colleague in chat.',
+  },
+  {
+    value: 'professional',
+    label: 'Professional',
+    hint: 'Courteous and precise, in full sentences.',
+  },
+] as const;
+type Voice = (typeof VOICES)[number]['value'];
+
+function VoiceField() {
+  const { profile, refreshProfile, member } = useApp();
+  if (!profile) return null;
+  const current = VOICES.find((voice) => voice.value === profile.voice) ?? VOICES[0];
+  const note =
+    'Drafts to people you don’t know well sound professional either way. Ask for another tone on any draft.';
+  if (member)
+    return (
+      <Field label="Voice" hint="The space’s owner sets it.">
+        <span style={{ fontSize: 14 }}>{current.label}</span>
+      </Field>
+    );
+  const save = async (voice: Voice) => {
+    const saved = await adapter.saveProfile({
+      name: profile.name,
+      time_zone: profile.time_zone,
+      day_hours: profile.day_hours,
+      voice,
+    });
+    if (!saved.data) {
+      toast({
+        kind: 'err',
+        title: 'Couldn’t change the voice',
+        sub: saved.error ?? saved.unavailable ?? '',
+      });
+      return;
+    }
+    refreshProfile();
+    toast({ kind: 'ok', title: `Voice set to ${VOICES.find((v) => v.value === voice)?.label}` });
+  };
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <Field label="Voice">
+        <Select
+          label="Voice"
+          value={current.value}
+          onChange={(voice) => void save(voice as Voice)}
+          width="min(100%, 320px)"
+          options={VOICES.map(({ value, label }) => ({ value, label }))}
+        />
+      </Field>
+      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+        {current.hint} {note}
+      </span>
+    </div>
+  );
+}
+
 function NameField() {
   const { profile, refreshProfile, member } = useApp();
   const [draft, setDraft] = useState<string | null>(null);
@@ -123,7 +186,7 @@ function NameField() {
         });
       }}
     >
-      <Field label="Your name" hint="Melete greets you by it.">
+      <Field label="Your name" hint={`${assistantName()} greets you by it.`}>
         <Input
           value={value}
           onChange={(event) => setDraft(event.target.value)}
@@ -230,6 +293,7 @@ export function AccountSettings() {
     <div className="col" style={{ gap: 20 }}>
       <NameField />
       <TimeZoneField />
+      <VoiceField />
       <div className="col" style={{ gap: 8 }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>Password</span>
         <span style={{ fontSize: 12, color: 'var(--muted)' }}>

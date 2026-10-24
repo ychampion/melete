@@ -81,6 +81,8 @@ type Proposal = {
   decision: 'allow_once' | 'always' | 'deny' | null;
   onDenied: string | null;
   permissionId: string | null;
+  /** A spend: allowed only with the person's own confirmation. */
+  money?: boolean;
   /** The connection the effect goes through; the ledger action names it. */
   connectionId: string;
 };
@@ -120,6 +122,13 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
   },
   'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
   'tasks.create': { what: 'Add a task', where: 'Tasks', reversible: true },
+  'payments.pay': { what: 'Pay a bill', where: 'your card', reversible: false },
+  // The agent's own computer pressing Pay, as the service words its card.
+  'computer.click': {
+    what: 'Your agent is about to pay on shop.example.com',
+    where: 'its own computer',
+    reversible: false,
+  },
 };
 
 /** A run the mock keeps no thread for. */
@@ -174,6 +183,9 @@ export class ExperienceMock {
   readonly unwatched = new Set<string>();
   /** Settings → Approvals, as the person last saved them. */
   approvalSettings: C.ApprovalSettings = structuredClone(C.DEFAULT_APPROVAL_SETTINGS);
+  /** The level the person chose for each kind of task, and the card that asked about each. */
+  readonly autonomy = new Map<C.TaskKind, C.AutonomyLevel>();
+  readonly autonomyAsks = new Map<C.TaskKind, { chatId: string; id: string }>();
   readonly questions = new Map<string, Question>();
   readonly plans = new Map<string, Plan>();
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
@@ -223,6 +235,10 @@ export class ExperienceMock {
   readonly activity: C.ActivityEntry[] = [];
   /** Checks and replaces the account's password; set by the account routes. */
   changePassword: ((current: string, next: string) => boolean) | null = null;
+  /** Checks the account's password for a money move's confirmation; set by the account routes. */
+  checkPassword: ((password: string) => boolean) | null = null;
+  /** Confirmations handed out for money moves: token to permission, spent once. */
+  readonly stepUps = new Map<string, { permissionId: string; expires: number }>();
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
     this.computer = new ComputerMock(deps.store, deps.spaceId, deps.computer ?? true, () =>
       this.now(),
@@ -235,6 +251,8 @@ export class ExperienceMock {
     ] as const) {
       const agent = C.experienceAgent.parse({
         ...made,
+        // The agent every space has goes by the assistant's name, as on the service.
+        ...(isDefault && deps.assistantName ? { name: deps.assistantName } : {}),
         id: newId('agent'),
         space_id: deps.spaceId,
         is_default: isDefault,
@@ -355,6 +373,18 @@ export class ExperienceMock {
     const proposal = chat.proposals.get(link.ref);
     const permission = required(this.permissions, id);
     if (!proposal) return null;
+    if (permission.step_up && input.option !== 'deny') {
+      // The confirmation counts once, for this card, while it is fresh.
+      const token = input.option === 'allow_once' ? input.step_up_token : undefined;
+      const held = token ? this.stepUps.get(token) : undefined;
+      if (token) this.stepUps.delete(token);
+      if (!held || held.permissionId !== id || held.expires <= Date.now())
+        throw new MockExperienceError(
+          403,
+          'This moves money, so it needs you to confirm it is you, with your password, when you allow it.',
+          'step_up_required',
+        );
+    }
     let rule: C.StandingRule | null = null;
     if (input.option === 'always') {
       if (Date.parse(input.bounds.expires_at) <= Date.now())
@@ -629,6 +659,43 @@ export class ExperienceMock {
    * its seq is a message id the reaction routes accept and the two streams
    * share one seq space. Streamed text keeps its type; the rest are notices.
    */
+  /** The level each kind of task starts at in the mock: messages on confidence, the rest drafted. */
+  private autonomyLevel(task: C.TaskKind): C.AutonomyLevel {
+    return this.autonomy.get(task) ?? (task === 'chat_message' ? 'when_confident' : 'draft');
+  }
+
+  private autonomyCard(task: C.TaskKind, id: string): C.AutonomyAsk {
+    return {
+      id,
+      task,
+      title: C.TASK_TITLES[task],
+      explanation: C.AUTONOMY_ASK_EXPLANATION,
+      level: this.autonomyLevel(task),
+      chosen: this.autonomy.get(task) ?? null,
+      choices: [...C.AUTONOMY_CHOICES],
+    };
+  }
+
+  private askAutonomy(chat: Chat, task: C.TaskKind) {
+    if (this.autonomy.has(task) || this.autonomyAsks.has(task)) return;
+    const id = newId('ask');
+    this.autonomyAsks.set(task, { chatId: chat.view.id, id });
+    this.event(chat, { type: 'autonomy', autonomy: this.autonomyCard(task, id) });
+  }
+
+  private autonomyList() {
+    return {
+      tasks: C.TASK_KINDS.map((task) => ({
+        task,
+        title: C.TASK_TITLES[task],
+        level: this.autonomyLevel(task),
+        default_level: (task === 'chat_message' ? 'when_confident' : 'draft') as C.AutonomyLevel,
+        chosen: this.autonomy.has(task),
+      })),
+      choices: [...C.AUTONOMY_CHOICES],
+    };
+  }
+
   event(chat: Chat, item: C.ExperienceEvent['item']) {
     const mirrored = this.deps.store.append({
       type: item.type === 'text_delta' ? 'text_delta' : 'notice',
@@ -978,6 +1045,8 @@ export class ExperienceMock {
       });
       chat.cards.push(card);
       this.event(chat, { type: 'card', card });
+      // The first message to someone asks once how much the agent sends on its own.
+      this.askAutonomy(chat, 'chat_message');
     } else if (step.step === 'ask') {
       this.flush(chat);
       const question = C.experienceQuestion.parse({
@@ -1021,6 +1090,7 @@ export class ExperienceMock {
         ref: step.ref,
         kind: step.kind,
         payload: step.payload,
+        money: step.effect_class === 'spend',
         what: title ? `${words.what}: ${title}` : words.what,
         where: words.where,
         decision: null,
@@ -1040,8 +1110,23 @@ export class ExperienceMock {
           id: newId('permission'),
           conversation_id: chat.view.id,
           what: proposal.what,
-          why: detail.length ? detail : ['You asked for this.'],
-          options: ['allow_once', 'always', 'deny'],
+          // A money move: the person confirms it is them when they allow it,
+          // and it is never allowed for good.
+          why: proposal.money
+            ? ['This moves money, so you confirm it is you before it happens.', ...detail]
+            : detail.length
+              ? detail
+              : ['You asked for this.'],
+          options: proposal.money ? ['allow_once', 'deny'] : ['allow_once', 'always', 'deny'],
+          ...(proposal.money
+            ? {
+                step_up: {
+                  method: 'password',
+                  available: Boolean(this.checkPassword),
+                  reason: 'Enter your password to confirm it is you.',
+                },
+              }
+            : {}),
           version: newId('v'),
           preview: chat.lastCard,
           ...(step.auto_review
@@ -1781,6 +1866,7 @@ export class ExperienceMock {
   profileView() {
     return {
       ...this.profile,
+      voice: this.profile.voice ?? C.DEFAULT_REPLY_VOICE,
       onboarded: this.onboarded || [...this.agents.values()].some((agent) => !agent.is_default),
       time_zone_confirmed: this.timeZoneConfirmed,
       sending_address: this.sendingAddress,
@@ -2021,10 +2107,37 @@ export class ExperienceMock {
         return { permissions: [...this.permissions.values()], handoffs: this.handoffsWaiting() };
       case 'POST /permissions/{id}':
         return this.decide(id, input);
+      case 'POST /permissions/{id}/step-up': {
+        const permission = required(this.permissions, id);
+        const { password } = C.permissionStepUpRequest.parse(input);
+        if (!permission.step_up)
+          throw new MockExperienceError(409, 'This does not need you to confirm it is you.');
+        if (!this.checkPassword?.(password))
+          throw new MockExperienceError(400, 'That password is not right.', 'wrong_password');
+        const token = newId('stepup') + newId('t');
+        const expires = Date.now() + 2 * 60_000;
+        this.stepUps.set(token, { permissionId: id, expires });
+        return { step_up_token: token, expires_at: new Date(expires).toISOString() };
+      }
       case 'GET /rules':
         return { rules: [...this.rules.values()] };
       case 'GET /approval-settings':
         return { settings: this.approvalSettings, reviewer_available: true };
+      case 'GET /autonomy':
+        return this.autonomyList();
+      case 'PUT /autonomy': {
+        const update = C.taskAutonomyUpdate.parse(input);
+        this.autonomy.set(update.task, update.level);
+        // The card that asked shows the choice, wherever it was made.
+        const asked = this.autonomyAsks.get(update.task);
+        const chat = asked ? this.chats.get(asked.chatId) : undefined;
+        if (asked && chat)
+          this.event(chat, {
+            type: 'autonomy',
+            autonomy: this.autonomyCard(update.task, asked.id),
+          });
+        return this.autonomyList();
+      }
       case 'PUT /approval-settings':
         this.approvalSettings = C.approvalSettings.parse(input);
         return { settings: this.approvalSettings, reviewer_available: true };
@@ -2145,6 +2258,7 @@ export class ExperienceMock {
           name: next.name,
           time_zone: next.time_zone,
           day_hours: next.day_hours,
+          voice: next.voice ?? this.profile.voice,
         });
         return { profile: this.profileView() };
       }

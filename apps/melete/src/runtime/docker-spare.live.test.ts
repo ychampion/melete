@@ -154,6 +154,12 @@ describe.skipIf(!live)('the runtime image on a real engine', () => {
     const config = await docker(['exec', spareName, 'cat', '/var/lib/hermes/config.yaml']);
     expect(config).toContain('x-melete-capability: live-capability-S1');
     expect(await logs(spareName, 'all')).not.toContain('melete-spare:unusable');
+    // What either engine makes under /work keeps the group's write bit, so the
+    // service, in that group, can move and remove it.
+    for (const name of [coldName, spareName])
+      expect(await docker(['exec', name, 'grep', '^Umask:', '/proc/1/status'])).toMatch(
+        /^Umask:\s+0002$/,
+      );
     process.stdout.write(
       `engine ready: started with its attempt ${coldMs} ms; spare loaded in ${loadMs} ms, ` +
         `then ready ${handoffMs} ms after its handoff\n`,

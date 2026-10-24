@@ -20,6 +20,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
+  callSession,
   VOICE_LIMITS,
   voiceAside,
   voiceAsideRequest,
@@ -33,6 +34,7 @@ import {
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
+import type { CallService } from '../call/service.ts';
 import {
   type LiveVoice,
   REALTIME_SAMPLE_RATE,
@@ -45,6 +47,7 @@ import { agent, connection, experienceTurn, job, question } from '../db/schema.t
 import type { Env } from '../env.ts';
 import { answerStream, answerText } from '../experience/answer-filter.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import { assistantName } from '../names.ts';
 import { ownJob } from '../principals/authority.ts';
 import { requireSessionSpace } from '../principals/session-space.ts';
 import type { PrivacyRouter } from '../privacy/router.ts';
@@ -112,9 +115,6 @@ export type VoiceLimits = {
   asides: number;
 };
 
-/** Asides one person may have in a day: a long working day of calls, never an open tap. */
-export const DAILY_ASIDES = 600;
-
 /** Why voice may not be used here, or null when it may. */
 export type VoicePrivacyReason = 'private' | 'sensitive' | null;
 
@@ -146,7 +146,7 @@ const CLOUD =
 const OFF_HERE: Record<'private' | 'sensitive' | 'unchecked', string> = {
   private: `Voice is off here because this space or its agent is marked private. ${CLOUD}`,
   sensitive: `Voice is off in this conversation because it looks like it is about a sensitive topic. ${CLOUD}`,
-  unchecked: `Voice is off for now because Melete could not check this conversation’s privacy settings. ${CLOUD}`,
+  unchecked: `Voice is off for now because ${assistantName()} could not check this conversation’s privacy settings. ${CLOUD}`,
 };
 
 export function voiceProvidersFromEnv(env: Env): VoiceProviders {
@@ -164,11 +164,15 @@ export function voiceProvidersFromEnv(env: Env): VoiceProviders {
   return { transcription: configured.transcription, live: configured.live };
 }
 
+/**
+ * The operator's daily caps. One left unset is no cap: use is still counted,
+ * so a cap set later holds from the first day.
+ */
 export const voiceLimitsFromEnv = (env: Env): VoiceLimits => ({
-  seconds: env.MELETE_VOICE_DAILY_SECONDS,
-  characters: env.MELETE_VOICE_DAILY_CHARACTERS,
-  sessions: env.MELETE_VOICE_DAILY_SESSIONS,
-  asides: DAILY_ASIDES,
+  seconds: env.MELETE_VOICE_DAILY_SECONDS ?? Number.POSITIVE_INFINITY,
+  characters: env.MELETE_VOICE_DAILY_CHARACTERS ?? Number.POSITIVE_INFINITY,
+  sessions: env.MELETE_VOICE_DAILY_SESSIONS ?? Number.POSITIVE_INFINITY,
+  asides: env.MELETE_VOICE_DAILY_ASIDES ?? Number.POSITIVE_INFINITY,
 });
 
 /** The recording types push-to-talk reads, and the file name the provider is given. */
@@ -192,8 +196,7 @@ const DAILY: Record<VoiceUsageKind, string> = {
   transcribe: 'You have used today’s allowance for voice messages. It frees up over the next day.',
   speech: 'You have used today’s allowance for replies read aloud. It frees up over the next day.',
   session: 'You have used today’s allowance of voice conversations. It frees up over the next day.',
-  aside:
-    'You have used today’s allowance for talking while Melete works. It frees up over the next day.',
+  aside: `You have used today’s allowance for talking while ${assistantName()} works. It frees up over the next day.`,
 };
 
 const providerFailed = (what: string) =>
@@ -318,6 +321,8 @@ export function mountVoice(
     now?: () => number;
     /** Whether the speech connections are working. Left out, read from the database. */
     speechHealth?: SpeechHealth;
+    /** Calls through ElevenLabs Speech Engine. Left out, calls are not offered. */
+    call?: CallService | null;
   },
 ): void {
   const { db, allowance, providers, limits, privacy } = deps;
@@ -430,20 +435,54 @@ export function mountVoice(
     // Offered only while it works: a speech service that refused its last check
     // would fail as soon as it was pressed.
     const healthy =
-      pushToTalk || voiceMode
+      pushToTalk || voiceMode || deps.call
         ? await speechHealth(spaceId).catch(() => ({ speech: true, transcription: true }))
         : { speech: false, transcription: false };
     const talk = pushToTalk && healthy.transcription;
     const mode = voiceMode && healthy.speech;
+    const calls = Boolean(deps.call) && healthy.speech;
     return c.json(
       voiceStatus.parse({
         push_to_talk: talk,
         voice_mode: mode,
+        call: calls,
         max_recording_seconds: VOICE_LIMITS.recording_seconds,
         max_recording_bytes: VOICE_LIMITS.recording_bytes,
-        off_reason: talk || mode ? await offReason({ spaceId, ...at }) : null,
+        off_reason: talk || mode || calls ? await offReason({ spaceId, ...at }) : null,
       }),
     );
+  });
+
+  app.post('/conversations/:id/call', async (c) => {
+    const calls = deps.call;
+    if (!calls)
+      throw new ServiceError(
+        'voice_unavailable',
+        'Calls are not set up on this installation.',
+        404,
+      );
+    const { principalId, ...scope } = await conversation(c);
+    await refuseWhenPrivate(scope);
+    try {
+      const started = await calls.start(
+        {
+          spaceId: scope.spaceId,
+          principalId,
+          conversationId: scope.conversationId,
+          agentId: scope.agentId,
+        },
+        c.req.raw.signal,
+      );
+      await markSpeechWorking(db, 'speech');
+      return c.json(callSession.parse(started), 201);
+    } catch (error) {
+      if (!(error instanceof VoiceProviderError)) throw error;
+      // The operator reads why; the person is told only that it failed.
+      process.stderr.write(`voice: call failed to start: ${error.message}\n`);
+      if (error.keyRefused) await markSpeechFailing(db);
+      if (providerBusy(error)) throw busy();
+      throw providerFailed('start a call');
+    }
   });
 
   app.post('/voice/transcriptions', async (c) => {
@@ -474,7 +513,7 @@ export function mountVoice(
     if (!filename)
       throw new ServiceError(
         'recording_unreadable',
-        'That recording is not in a format Melete can read.',
+        `That recording is not in a format ${assistantName()} can read.`,
         400,
       );
     const limitMs = VOICE_LIMITS.recording_seconds * 1000;
@@ -525,7 +564,7 @@ export function mountVoice(
     if (!providers.live || !allowance || !companion)
       throw new ServiceError(
         'voice_unavailable',
-        'Talking while Melete works is not set up here.',
+        `Talking while ${assistantName()} works is not set up here.`,
         404,
       );
     // The same refusal as every voice route: a private place's words go nowhere.
@@ -563,7 +602,11 @@ export function mountVoice(
       // The person hears when the limit resets, not a general failure.
       if (result.failed === 'limit')
         throw new ServiceError('spending_limit_reached', result.message, 402);
-      throw new ServiceError('voice_aside_failed', 'Melete could not answer that just now.', 502);
+      throw new ServiceError(
+        'voice_aside_failed',
+        `${assistantName()} could not answer that just now.`,
+        502,
+      );
     }
     return c.json(voiceAside.parse(pointToQuestion(parsed.data, known, result.answer)));
   });
@@ -600,7 +643,7 @@ const ASIDE_WINDOW_MS = 60_000;
  * What the companion is shown: the agent's name and the conversation's latest
  * turns, as the chat shows them. The last is the turn that is running.
  */
-async function conversationContext(
+export async function conversationContext(
   db: Database,
   conversationId: string,
   agentId: string | null,
@@ -620,7 +663,7 @@ async function conversationContext(
     .where(and(eq(question.jobId, conversationId), eq(question.state, 'open')))
     .limit(1);
   return {
-    agentName: named?.name?.trim() || 'Melete',
+    agentName: named?.name?.trim() || assistantName(),
     asking: open !== undefined,
     turns: rows.reverse().map((row) => ({
       said: row.text,

@@ -74,7 +74,7 @@ stays in the gateway. `gpt-6-astra` is served over the Responses protocol, which
 Each scan opens a gateway of its own, allowed at most fifty calls, one per
 message it can read, and closes it when the scan ends. Across all their spaces,
 one person's scans may make `MELETE_COMPANIES_DAILY_CALLS` model calls in any 24
-hours (500 when unset); a message past that is counted as
+hours (no limit when unset); a message past that is counted as
 `daily_allowance_reached` and read on a later scan. The allowance is each
 person's own.
 

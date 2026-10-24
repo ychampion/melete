@@ -1,0 +1,1 @@
+ALTER TABLE "experience_profile" ADD COLUMN "voice" text DEFAULT 'teammate' NOT NULL;

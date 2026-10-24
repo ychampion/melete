@@ -1,42 +1,50 @@
 /**
- * Signing in with Google through Composio: Composio's own verified Google app
+ * Signing in through Composio: Composio's own verified app for each service
  * asks the person for consent, and Composio keeps the tokens. Melete keeps
  * only which Composio account each connection acts for.
  *
  * Gmail, Google Calendar and Google Drive are separate toolkits at Composio,
- * each with its own connected account, so one sign-in walks through the parts
- * it connects one consent page at a time: the browser comes back after each,
- * that part is checked and connected, and the browser goes on to the next.
+ * each with its own connected account, so one Google sign-in walks through
+ * the parts it connects one consent page at a time: the browser comes back
+ * after each, that part is checked and connected, and the browser goes on to
+ * the next. Any other app (Slack, Notion, GitHub, ...) is one part of its own.
  *
  * The browser's return is never trusted. Each step's state is single use and
  * bound to the person who started it, the returned account must be the one
  * this step's link made, and the account is read again from Composio here:
  * it must belong to this person's Composio user, be of the toolkit asked for,
- * and be active. Its address is read through the account itself.
+ * and be active. A Google account's address is read through the account
+ * itself, with one tool call.
+ *
+ * A link makes an account at Composio, so it is made only while the
+ * operator's limit on connected accounts leaves room for one more.
  */
 import { randomState } from '../gateway/oauth.ts';
 import { MemorySignInStore, type SignInStore } from '../ops/signin-store.ts';
+import { ComposioCapReached } from '../signals/managed-calls.ts';
 import {
   CALENDAR_GRANTS,
   DOCUMENT_GRANTS,
   MAIL_READ_GRANTS,
   SignInFailure,
 } from './account-sign-in.ts';
-import { type ComposioClient, ComposioFault, type ComposioToolkit } from './composio.ts';
+import { type ComposioClient, ComposioFault, TOOLKIT_SLUG } from './composio.ts';
+import { appToolNames } from './composio-app.ts';
+import type { ComposioRunner } from './composio-sessions.ts';
 
-export type ManagedPart = 'mail' | 'calendar' | 'documents';
+export type ManagedPart = 'mail' | 'calendar' | 'documents' | 'tools';
 
 type PartSpec = {
-  toolkit: ComposioToolkit;
-  kind: 'gmail' | 'google_calendar' | 'google_drive';
-  provider: 'imap' | 'caldav' | 'drive';
+  toolkit: string;
+  kind: 'gmail' | 'google_calendar' | 'google_drive' | 'composio_app';
+  provider: 'imap' | 'caldav' | 'drive' | 'composio';
   grants: string[];
   label: (account: string) => string;
-  /** Where the account's own address is read, and the field that holds it. */
-  address: { endpoint: string; query?: Record<string, string>; read: (data: unknown) => unknown };
+  /** The tool that reads the account's own address, and the field that holds it. */
+  address?: { tool: string; args: Record<string, unknown>; read: (data: unknown) => unknown };
 };
 
-export const MANAGED_PARTS: Record<ManagedPart, PartSpec> = {
+export const MANAGED_PARTS: Record<Exclude<ManagedPart, 'tools'>, PartSpec> = {
   mail: {
     toolkit: 'gmail',
     kind: 'gmail',
@@ -45,7 +53,8 @@ export const MANAGED_PARTS: Record<ManagedPart, PartSpec> = {
     grants: [...MAIL_READ_GRANTS, 'email.send'],
     label: (account) => `Gmail (${account})`,
     address: {
-      endpoint: 'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+      tool: 'GMAIL_GET_PROFILE',
+      args: { user_id: 'me' },
       read: (data) => (data as { emailAddress?: unknown } | null)?.emailAddress,
     },
   },
@@ -57,8 +66,12 @@ export const MANAGED_PARTS: Record<ManagedPart, PartSpec> = {
     label: (account) => `Google Calendar (${account})`,
     // The primary calendar's id is its owner's address.
     address: {
-      endpoint: 'https://www.googleapis.com/calendar/v3/calendars/primary',
-      read: (data) => (data as { id?: unknown } | null)?.id,
+      tool: 'GOOGLECALENDAR_GET_CALENDAR',
+      args: { calendar_id: 'primary' },
+      read: (data) => {
+        const found = data as { calendar_data?: { id?: unknown }; id?: unknown } | null;
+        return found?.calendar_data?.id ?? found?.id;
+      },
     },
   },
   documents: {
@@ -68,21 +81,38 @@ export const MANAGED_PARTS: Record<ManagedPart, PartSpec> = {
     grants: DOCUMENT_GRANTS,
     label: (account) => `Google Drive (${account})`,
     address: {
-      endpoint: 'https://www.googleapis.com/drive/v3/about',
-      query: { fields: 'user(emailAddress)' },
+      tool: 'GOOGLEDRIVE_GET_ABOUT',
+      args: { fields: 'user(emailAddress)' },
       read: (data) => (data as { user?: { emailAddress?: unknown } } | null)?.user?.emailAddress,
     },
   },
 };
 
+/** The part an app connects: its three tools, named by its toolkit. */
+export function appPart(toolkit: string, title: string): PartSpec {
+  return {
+    toolkit,
+    kind: 'composio_app',
+    provider: 'composio',
+    grants: Object.values(appToolNames(toolkit)),
+    label: () => title,
+  };
+}
 const ADDRESS = /^[^\s@<>"(),;:]{1,64}@[^\s@<>"(),;:/\\]{1,253}\.[^\s@<>"(),;:/\\]{1,63}$/;
 
-export type ManagedSignInRequest = {
-  provider: 'google';
-  space_id?: string;
-  /** Connect only Google Drive, as the step a person takes when first keeping a deadline on a file. */
-  documents?: boolean;
-};
+export type ManagedSignInRequest =
+  | {
+      provider: 'google';
+      space_id?: string;
+      /** Connect only Google Drive, as the step a person takes when first keeping a deadline on a file. */
+      documents?: boolean;
+    }
+  | {
+      provider: 'app';
+      /** The app's toolkit at Composio, such as `slack`. */
+      toolkit: string;
+      space_id?: string;
+    };
 
 /** One part a step of the sign-in connected. */
 export type ManagedGrant = {
@@ -90,7 +120,9 @@ export type ManagedGrant = {
   part: ManagedPart;
   kind: PartSpec['kind'];
   provider: PartSpec['provider'];
-  toolkit: ComposioToolkit;
+  toolkit: string;
+  /** An app's name, as its connection is called; left out for a Google part. */
+  title?: string;
   account: string;
   connectedAccountId: string;
   label: string;
@@ -107,7 +139,20 @@ export type ManagedSignInHooks<Installed> = {
   /** Left out when the operator has set no Composio key. */
   composio?: ComposioClient;
   /** The auth config each toolkit signs in with. */
-  authConfig(toolkit: ComposioToolkit): Promise<string>;
+  authConfig(toolkit: string): Promise<string>;
+  /**
+   * An app's name when it may be connected here (Composio signs in to it, or
+   * the operator set a config for it); null otherwise.
+   */
+  appTitle?(toolkit: string): Promise<string | null>;
+  /** Runs the one tool call that reads a Google account's address. */
+  runner?: ComposioRunner;
+  /**
+   * Runs `make`, which makes an account at Composio, only while the
+   * operator's limit on connected accounts leaves room; throws
+   * `ComposioCapReached` otherwise.
+   */
+  accountSlot?<T>(make: () => Promise<T>): Promise<T>;
   /** This person's Composio user: stable, and never shown. */
   userId(actor: string): Promise<string>;
   /** Settles authority over the space before anything else happens, and names it. */
@@ -115,8 +160,6 @@ export type ManagedSignInHooks<Installed> = {
   /** Connects one part; throws `SignInFailure('account_already_connected')` for a duplicate. */
   install(actor: string, grant: ManagedGrant): Promise<Installed[]>;
   connectionId(installed: Installed): string;
-  /** Counts a call made through Composio for a space. */
-  charge?(spaceId: string): Promise<void>;
   /**
    * Queue an account a link made to be removed at Composio from `due` on,
    * unless it is settled first: a sign-in left unfinished leaves nothing behind.
@@ -139,6 +182,8 @@ type Pending = {
   spaceId: string;
   userId: string;
   parts: ManagedPart[];
+  /** The app the `tools` part connects. */
+  app?: { toolkit: string; title: string };
   /** The part this step connects. */
   index: number;
   state: string;
@@ -185,27 +230,42 @@ export class ManagedSignIns<Installed> {
     return { composio, redirectUri };
   }
 
+  /** What the step at `index` connects. */
+  private spec(entry: Pick<Pending, 'parts' | 'index' | 'app'>): PartSpec {
+    const part = entry.parts[entry.index] ?? 'mail';
+    if (part !== 'tools') return MANAGED_PARTS[part];
+    if (!entry.app) throw new SignInFailure('sign_in_not_found');
+    return appPart(entry.app.toolkit, entry.app.title);
+  }
+
   /** A link for one part, with a fresh single-use state on the way back. */
   private async link(entry: Omit<Pending, 'state' | 'connectedAccountId' | 'until'>) {
     const { composio, redirectUri } = this.client();
-    const part = MANAGED_PARTS[entry.parts[entry.index] ?? 'mail'];
+    const part = this.spec(entry);
     const state = randomState();
     const callback = new URL(redirectUri);
     callback.searchParams.set('state', state);
-    let linked: Awaited<ReturnType<ComposioClient['link']>>;
-    try {
-      linked = await composio.link({
+    const until = this.now() + PENDING_TTL_MS;
+    // A link makes an account at Composio: only while the limit leaves room,
+    // and queued for removal at once, so it is counted until it is kept or gone.
+    const make = async () => {
+      const made = await composio.link({
         authConfigId: await this.hooks.authConfig(part.toolkit),
         userId: entry.userId,
         callbackUrl: callback.href,
       });
+      // Removed once this step has expired, unless the step keeps it first.
+      await this.hooks.queueRemoval?.(made.connectedAccountId, until + UNUSED_ACCOUNT_GRACE_MS);
+      return made;
+    };
+    let linked: Awaited<ReturnType<ComposioClient['link']>>;
+    try {
+      linked = this.hooks.accountSlot ? await this.hooks.accountSlot(make) : await make();
     } catch (error) {
+      if (error instanceof ComposioCapReached) throw new SignInFailure('accounts_limit_reached');
       if (error instanceof ComposioFault) throw new SignInFailure('provider_unreachable');
       throw error;
     }
-    const until = this.now() + PENDING_TTL_MS;
-    // Removed once this step has expired, unless the step keeps it first.
-    await this.hooks.queueRemoval?.(linked.connectedAccountId, until + UNUSED_ACCOUNT_GRACE_MS);
     const pending: Pending = {
       ...entry,
       state,
@@ -230,7 +290,24 @@ export class ManagedSignIns<Installed> {
   }> {
     const spaceId = await this.hooks.authorize(actor, request.space_id);
     this.client();
-    const parts: ManagedPart[] = request.documents ? ['documents'] : ['mail', 'calendar'];
+    let app: { toolkit: string; title: string } | undefined;
+    if (request.provider === 'app') {
+      if (!TOOLKIT_SLUG.test(request.toolkit)) throw new SignInFailure('app_unavailable');
+      let title: string | null = null;
+      try {
+        title = (await this.hooks.appTitle?.(request.toolkit)) ?? null;
+      } catch (error) {
+        if (error instanceof ComposioFault) throw new SignInFailure('provider_unreachable');
+        throw error;
+      }
+      if (!title) throw new SignInFailure('app_unavailable');
+      app = { toolkit: request.toolkit, title };
+    }
+    const parts: ManagedPart[] = app
+      ? ['tools']
+      : request.provider === 'google' && request.documents
+        ? ['documents']
+        : ['mail', 'calendar'];
     const id = `msi_${randomState().slice(0, 24)}`;
     const { pending, redirectUrl } = await this.link({
       id,
@@ -238,6 +315,7 @@ export class ManagedSignIns<Installed> {
       spaceId,
       userId: await this.hooks.userId(actor),
       parts,
+      ...(app ? { app } : {}),
       index: 0,
       connectionIds: [],
     });
@@ -251,28 +329,30 @@ export class ManagedSignIns<Installed> {
     };
   }
 
-  /** The address a connected account signs in as, read through the account itself. */
-  private async address(spaceId: string, part: PartSpec, accountId: string): Promise<string> {
-    const { composio } = this.client();
-    await this.hooks.charge?.(spaceId).catch(() => {});
-    let answer: Awaited<ReturnType<ComposioClient['proxy']>>;
+  /**
+   * The address a Google account signs in as, read through the account itself
+   * with one counted tool call. An app has none: its connection is named by
+   * the app, one to a space.
+   */
+  private async address(part: PartSpec, accountId: string): Promise<string> {
+    if (!part.address) return part.toolkit;
+    const runner = this.hooks.runner;
+    if (!runner) throw new SignInFailure('provider_not_configured');
+    let answer: Awaited<ReturnType<ComposioRunner['run']>>;
     try {
-      answer = await composio.proxy({
+      answer = await runner.run({
         connectedAccountId: accountId,
-        endpoint: part.address.endpoint,
-        method: 'GET',
-        parameters: Object.entries(part.address.query ?? {}).map(([name, value]) => ({
-          name,
-          value,
-          type: 'query' as const,
-        })),
+        toolkit: part.toolkit,
+        tool: part.address.tool,
+        args: part.address.args,
       });
     } catch (error) {
+      if (error instanceof ComposioCapReached) throw new SignInFailure('calls_limit_reached');
       if (error instanceof ComposioFault) throw new SignInFailure('provider_unreachable');
       throw error;
     }
-    const address = part.address.read(answer.data);
-    if (answer.status !== 200 || typeof address !== 'string' || !ADDRESS.test(address))
+    const address = answer.ok ? part.address.read(answer.data) : null;
+    if (typeof address !== 'string' || !ADDRESS.test(address))
       throw new SignInFailure('account_unverified');
     return address.toLowerCase();
   }
@@ -307,10 +387,10 @@ export class ManagedSignIns<Installed> {
     if (!(await this.store.take<Pending>(this.kind, entry.id, now)))
       throw new SignInFailure('sign_in_not_found');
     await this.store.delete(`${this.kind}:state`, entry.state);
-    const part = MANAGED_PARTS[entry.parts[entry.index] ?? 'mail'];
     let kept = false;
     let connectionIds = entry.connectionIds;
     try {
+      const part = this.spec(entry);
       if (query.get('status') !== 'success') throw new SignInFailure('sign_in_declined');
       // The account named on the way back must be the one this step's link made.
       if (query.get('connected_account_id') !== entry.connectedAccountId)
@@ -330,13 +410,14 @@ export class ManagedSignIns<Installed> {
         throw new SignInFailure('account_foreign');
       if (account.status !== 'ACTIVE' || account.disabled)
         throw new SignInFailure('account_inactive');
-      const address = await this.address(entry.spaceId, part, account.id);
+      const address = await this.address(part, account.id);
       const installed = await this.hooks.install(actor, {
         spaceId: entry.spaceId,
         part: entry.parts[entry.index] ?? 'mail',
         kind: part.kind,
         provider: part.provider,
         toolkit: part.toolkit,
+        ...(entry.app ? { title: entry.app.title } : {}),
         account: address,
         connectedAccountId: account.id,
         label: part.label(address),
@@ -352,6 +433,7 @@ export class ManagedSignIns<Installed> {
           spaceId: entry.spaceId,
           userId: entry.userId,
           parts: entry.parts,
+          ...(entry.app ? { app: entry.app } : {}),
           index: entry.index + 1,
           connectionIds,
         });

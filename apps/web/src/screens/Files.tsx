@@ -16,6 +16,7 @@ import type { PersonFile, PersonStorage } from '../experience/types.ts';
 import { href } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import './files.css';
+import { assistantName } from '../experience/instance.ts';
 
 type Filter = 'all' | PersonFile['place'];
 
@@ -288,7 +289,8 @@ export function FilesScreen() {
           <div className="col" style={{ gap: 4 }}>
             <h1>Files</h1>
             <p style={{ fontSize: 14, color: 'var(--muted)' }}>
-              What Melete saved for you, what it made in your chats, and what you sent it.
+              What {assistantName()} saved for you, what it made in your chats, and what you sent
+              it.
             </p>
           </div>
           <div className="row" style={{ gap: 8 }}>
@@ -327,7 +329,8 @@ export function FilesScreen() {
             </span>
             <span className="files-empty-title">No files yet</span>
             <span className="files-empty-sub">
-              When Melete saves something for you, or you send it a file in chat, it shows up here.
+              When {assistantName()} saves something for you, or you send it a file in chat, it
+              shows up here.
             </span>
           </div>
         ) : loaded.data ? (

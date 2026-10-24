@@ -14,7 +14,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
-import { API_SERVER_HINT, HERMES_PINNED_COMMIT, renderSoul } from '@melete/runtime-hermes';
+import {
+  API_SERVER_HINT,
+  HERMES_PINNED_COMMIT,
+  renderSoul,
+  SOUL_ENV,
+} from '@melete/runtime-hermes';
 import { parse } from 'yaml';
 import { EngineRegistry, type ProcessTable, systemProcesses } from './engines.ts';
 import { resolvePython } from './python.ts';
@@ -319,6 +324,38 @@ server.serve_forever()
     );
     expect(commands.some((args) => args[0] === 'run')).toBe(false);
     await supervisor.close();
+  });
+  test("a Docker engine is handed the identity the service renders, not the image's copy", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-soul-'));
+    let run: string[] = [];
+    let given: NodeJS.ProcessEnv = {};
+    const supervisor = new DockerRuntimeSupervisor(
+      { ...options, workRoot: root },
+      async (args, environment) => {
+        if (args[0] === 'network') return JSON.stringify([{ Internal: true }]);
+        if (args[0] === 'image')
+          return JSON.stringify([
+            { Config: { Labels: { 'com.melete.hermes.commit': HERMES_PINNED_COMMIT } } },
+          ]);
+        if (args[0] === 'run') {
+          run = args;
+          given = environment;
+          throw new Error('stopped before the container starts');
+        }
+        return '';
+      },
+    );
+    try {
+      await expect(supervisor.launch(bundle, new AbortController().signal)).rejects.toThrow(
+        'stopped before the container starts',
+      );
+      // By name on the command line; the value travels in the environment.
+      expect(run.join(' ')).toContain(`--env ${SOUL_ENV}`);
+      expect(Buffer.from(given[SOUL_ENV] ?? '', 'base64').toString('utf8')).toBe(renderSoul());
+    } finally {
+      await supervisor.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
   test('an unpinned process checkout is rejected before spawning', async () => {
     const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-pin-'));

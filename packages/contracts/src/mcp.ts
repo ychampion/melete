@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { effectClass } from './broker.ts';
+import { entitlementKey, pageOrigin } from './connection-pages.ts';
 
 export const mcpHttpUrl = z.url().refine((value) => {
   // The format check has already refused what is not an address.
@@ -34,11 +35,35 @@ export const mcpOperatorPolicy = z
               .max(80),
             required_scopes: z.array(scope).min(1).max(32),
             effect_class: effectClass.default('write_external'),
+            /**
+             * Entitlements the person must hold for this tool to be called at all.
+             * Without one, the call is refused before anything reaches the server.
+             */
+            requires_entitlements: z.array(entitlementKey).max(8).optional(),
           })
           .strict(),
       )
       .min(1)
       .max(256),
+    /**
+     * Pages this server may show in a conversation (MCP Apps). `origins` are
+     * the places a page may load from, connect to, frame, or ask to open in a
+     * new tab, beside the server's own origin, which is always allowed.
+     * `report_base_url` is where the server reaches Melete to report what
+     * happened on a page, when that is not the installation's public address.
+     */
+    pages: z
+      .object({
+        origins: z.array(pageOrigin).max(16).default([]),
+        report_base_url: z.url().optional(),
+      })
+      .strict()
+      .optional(),
+    /**
+     * Send the server a signed identity assertion for the person with each call,
+     * in the `Melete-Identity` header. Remote servers only.
+     */
+    identity: z.boolean().optional(),
   })
   .strict()
   .superRefine((config, ctx) => {

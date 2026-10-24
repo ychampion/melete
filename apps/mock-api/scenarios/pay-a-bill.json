@@ -1,0 +1,71 @@
+{
+  "id": "pay-a-bill",
+  "title": "Pay the water bill",
+  "summary": "The job finds the bill, prepares the payment, and waits for the person to confirm it is them before any money moves.",
+  "match": ["pay the bill", "pay my bill", "pay the water bill", "pay the invoice"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "tool",
+      "delay_ms": 600,
+      "name": "email.search",
+      "title": "Found the water bill",
+      "active_title": "Looking for the water bill",
+      "meta": "due 24 October",
+      "arguments": { "query": "water bill", "connection": "inbox" },
+      "result": { "matches": 1 }
+    },
+    {
+      "step": "text",
+      "delay_ms": 400,
+      "text": "The bill is $42.18, due 24 October. Payments need you to confirm it is you, so it waits on the card."
+    },
+    {
+      "step": "propose",
+      "delay_ms": 500,
+      "ref": "bill",
+      "kind": "payments.pay",
+      "connection": "test-destination",
+      "effect_class": "spend",
+      "payload": {
+        "title": "Water bill, October",
+        "payee": "City Water",
+        "amount": "$42.18",
+        "from": "Card ending 4242"
+      }
+    },
+    {
+      "step": "await_approval",
+      "delay_ms": 200,
+      "ref": "bill",
+      "on_denied": "not-paid"
+    },
+    {
+      "step": "dispatch",
+      "delay_ms": 700,
+      "ref": "bill",
+      "outcome": "succeeded",
+      "external_ref": "pay_7731",
+      "detail": {}
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Paid $42.18 to City Water."
+    },
+    {
+      "label": "not-paid",
+      "step": "text",
+      "delay_ms": 300,
+      "text": "Nothing was paid."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Nothing was paid."
+    }
+  ]
+}

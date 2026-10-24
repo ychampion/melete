@@ -289,7 +289,7 @@ Limits, each set in the service's environment:
 | `MELETE_PROCESS_DEFAULT_TTL_MINUTES` | 120 | a process's time limit when none is given |
 | `MELETE_PROCESS_MAX_TTL_MINUTES` | 720 | the longest time limit, at start or extended |
 | `MELETE_PROCESS_OUTPUT_MAX_BYTES` | 8388608 | the output ring of one process |
-| `MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY` | 21600 | how long a space's processes may keep its computers running each day (UTC) |
+| `MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY` | no limit | how long a space's processes may keep its computers running each day (UTC); for example `21600` for six hours |
 
 When a conversation's turn ends with processes still running in the agent's
 computer, the computer is not suspended: the processes keep it running, and
@@ -298,15 +298,16 @@ in it. Once the last one ends, the computer is suspended as usual. A computer
 kept running this way counts toward `MELETE_SANDBOX_MAX_CONCURRENT`, like one a
 conversation is using.
 
-The awake allowance counts only that time: how long a space's computers were
-kept running by their processes alone, after the turns that used them ended,
-added up over its computers for the day (UTC). Time a conversation is using
-the computer does not count.
+The awake time counts only that time: how long a space's computers were kept
+running by their processes alone, after the turns that used them ended, added
+up over its computers for the day (UTC). Time a conversation is using the
+computer does not count. It is always counted; it limits anything only when
+`MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY` is set.
 
 Every minute the service checks each computer with running processes. It
 stops a process past its time limit, stops a space's processes once the day's
-allowance is used, and records a process as lost when its container restarted
-or stopped, since that ends every process in it. When the allowance stops
+allowance (when one is set) is used, and records a process as lost when its
+container restarted or stopped, since that ends every process in it. When the allowance stops
 processes, the conversation that started them says so: "Your computer's awake
 time for today is used up (6 of 6 hours). Processes stopped at 14:02 UTC." A
 start over a limit is refused with the reason, which the agent passes on: "This

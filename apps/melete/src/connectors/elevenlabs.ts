@@ -160,7 +160,8 @@ const scribeReply = z.object({
 
 const tokenReply = z.object({ token: z.string().min(1).max(4096) });
 
-function client(options: ElevenLabsOptions) {
+/** A request to ElevenLabs with the operator's key, refused with a `VoiceProviderError`. */
+export function client(options: ElevenLabsOptions) {
   const base = (options.baseUrl ?? ELEVENLABS_API).replace(/\/*$/, '/');
   const call = options.fetch ?? fetch;
   return async (path: string, init: RequestInit): Promise<Response> => {

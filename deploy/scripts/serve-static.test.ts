@@ -12,16 +12,24 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { CLIENT_ADDRESS_HEADER as API_CLIENT_ADDRESS_HEADER } from '../../apps/melete/src/api/listener.ts';
 import { isIsolated, viewHeaders } from '../../apps/melete/src/viewer/headers.ts';
 import {
+  BRAND_CSS_MAX_BYTES,
+  BRAND_FILE_MAX_BYTES,
+  BRAND_TOKENS,
+  brandCssIssues,
+  brandFile,
   CLIENT_ADDRESS_HEADER,
   createStaticServer,
   defaultGateway,
+  readBrandFile,
+  renderIndex,
   resolveInside,
 } from './serve-static.ts';
 
@@ -949,4 +957,360 @@ describe('the configured public origin', () => {
     });
     web.stop(true);
   });
+});
+
+describe("an installation's brand folder", () => {
+  const BRAND_SENTINEL = 'brand-folder-file-7d1e';
+  const PAGE =
+    '<!doctype html><html><head><title>Melete</title>' +
+    '<meta name="apple-mobile-web-app-title" content="Melete" />' +
+    '<link rel="stylesheet" href="/assets/app.css"></head><body><div id="root"></div></body></html>';
+  const TOKENS_ONLY =
+    '/* Riverside colours */\n:root { --primary: #0b6e4f; --radius-card: 6px; }\n' +
+    '@media (prefers-color-scheme: dark) {\n  :root:not([data-theme="light"]) { --primary: #6fd3a8; }\n}\n' +
+    ":root[data-theme='dark'] { --primary: #6fd3a8 }\n";
+  let dir = '';
+  let brand = '';
+  let web: ReturnType<typeof createStaticServer> | null = null;
+
+  /** One request line, verbatim, as `raw` sends it, to this server. */
+  const ask = (path: string): Promise<{ status: number; head: string; body: string }> =>
+    new Promise((settle, fail) => {
+      const socket = connect(web?.port ?? 0, '127.0.0.1', () => {
+        socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`);
+      });
+      let text = '';
+      socket.setTimeout(5000, () => {
+        socket.destroy();
+        fail(new Error(`no answer for ${path}`));
+      });
+      socket.on('data', (chunk) => {
+        text += chunk.toString('utf8');
+      });
+      socket.on('error', fail);
+      socket.on('end', () => {
+        const split = text.indexOf('\r\n\r\n');
+        const head = split === -1 ? text : text.slice(0, split);
+        settle({
+          status: Number(head.split(' ')[1] ?? 0),
+          head: head.toLowerCase(),
+          body: split === -1 ? '' : text.slice(split + 4),
+        });
+      });
+    });
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'melete-brand-'));
+    await mkdir(join(dir, 'dist', 'icons'), { recursive: true });
+    await writeFile(join(dir, 'dist', 'index.html'), PAGE, 'utf8');
+    await writeFile(join(dir, 'dist', 'favicon.svg'), '<svg>bundle</svg>', 'utf8');
+    await writeFile(join(dir, 'dist', 'manifest.webmanifest'), '{"name":"bundle"}', 'utf8');
+    await writeFile(join(dir, 'dist', 'melete-logo.png'), 'bundle-logo', 'utf8');
+    await writeFile(join(dir, 'dist', 'icons', 'icon-192.png'), 'bundle-icon', 'utf8');
+    brand = join(dir, 'brand');
+    await mkdir(join(brand, 'icons'), { recursive: true });
+    await writeFile(join(brand, 'favicon.svg'), `<svg>${BRAND_SENTINEL}</svg>`, 'utf8');
+    await writeFile(join(brand, 'logo.png'), `logo-${BRAND_SENTINEL}`, 'utf8');
+    await writeFile(join(brand, 'icons', 'icon-192.png'), `icon-${BRAND_SENTINEL}`, 'utf8');
+    await writeFile(join(brand, 'manifest.webmanifest'), '{"name":"Riverside"}', 'utf8');
+    await writeFile(join(brand, 'brand.css'), TOKENS_ONLY, 'utf8');
+    // In the folder, but not a file a brand may replace.
+    await writeFile(join(brand, 'index.html'), BRAND_SENTINEL, 'utf8');
+    await writeFile(join(brand, 'notes.txt'), BRAND_SENTINEL, 'utf8');
+    await writeFile(join(brand, 'icons', 'run.js'), BRAND_SENTINEL, 'utf8');
+    await writeFile(join(dir, 'outside.png'), SENTINEL, 'utf8');
+    web = createStaticServer({
+      root: join(dir, 'dist'),
+      brandDir: brand,
+      instanceName: 'Riverside <Assistant>',
+      port: 0,
+      hostname: '127.0.0.1',
+    });
+  });
+
+  afterAll(async () => {
+    web?.stop(true);
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  test('the allowed files are read from the brand folder before the bundle', async () => {
+    const favicon = await ask('/favicon.svg');
+    expect(favicon.status).toBe(200);
+    expect(favicon.body).toContain(BRAND_SENTINEL);
+    expect(favicon.head).toContain('content-type: image/svg+xml');
+    expect(favicon.head).toContain("script-src 'none'");
+    expect((await ask('/icons/icon-192.png')).body).toBe(`icon-${BRAND_SENTINEL}`);
+    const manifest = await ask('/manifest.webmanifest');
+    expect(manifest.body).toBe('{"name":"Riverside"}');
+    expect(manifest.head).toContain('content-type: application/manifest+json');
+    // The mark the app draws is the brand's logo.
+    expect((await ask('/melete-logo.png')).body).toBe(`logo-${BRAND_SENTINEL}`);
+    expect((await ask('/logo.png')).body).toBe(`logo-${BRAND_SENTINEL}`);
+    const css = await ask('/brand.css');
+    expect(css.status).toBe(200);
+    expect(css.head).toContain('content-type: text/css');
+  });
+
+  test('a file the brand folder does not replace still comes from the bundle', async () => {
+    await rm(join(brand, 'icons', 'icon-192.png'));
+    try {
+      expect((await ask('/icons/icon-192.png')).body).toBe('bundle-icon');
+    } finally {
+      await writeFile(join(brand, 'icons', 'icon-192.png'), `icon-${BRAND_SENTINEL}`, 'utf8');
+    }
+  });
+
+  test('nothing outside the allow-list is read from the brand folder', async () => {
+    for (const path of ['/notes.txt', '/icons/run.js', '/index.html', '/brand/notes.txt']) {
+      const response = await ask(path);
+      expect(response.body, path).not.toContain(BRAND_SENTINEL);
+    }
+    // The page is the bundle's, never the brand folder's.
+    expect((await ask('/index.html')).body).toContain('id="root"');
+  });
+
+  test('traversal out of the brand folder is refused', async () => {
+    for (const path of [
+      '/icons/../../outside.png',
+      '/icons/%2e%2e/%2e%2e/outside.png',
+      '/icons/..%2f..%2foutside.png',
+      '/icons%2f..%2f..%2foutside.png',
+      '/icons/..\\..\\outside.png',
+      '/favicon.svg%00.png',
+    ]) {
+      const response = await ask(path);
+      expect(response.body, path).not.toContain(SENTINEL);
+      expect(response.body, path).not.toContain(BRAND_SENTINEL);
+    }
+  });
+
+  test('a symbolic link that leaves the brand folder is refused', async () => {
+    const outside = join(dir, 'outside-icons');
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'icon-512.png'), SENTINEL, 'utf8');
+    const linkedDir = join(brand, 'icons-linked');
+    // A directory junction needs no privilege on Windows; a file link may.
+    await symlink(outside, linkedDir, 'junction');
+    await rm(join(brand, 'icons'), { recursive: true, force: true });
+    await symlink(outside, join(brand, 'icons'), 'junction');
+    let fileLink = true;
+    try {
+      await symlink(join(dir, 'outside.png'), join(brand, 'logo.svg'));
+    } catch {
+      fileLink = false;
+    }
+    try {
+      const response = await ask('/icons/icon-512.png');
+      expect(response.body).not.toContain(SENTINEL);
+      expect(await brandFile(realpathSync(brand), '/icons/icon-512.png')).toBeNull();
+      if (fileLink) {
+        expect((await ask('/logo.svg')).body).not.toContain(SENTINEL);
+        expect(await brandFile(realpathSync(brand), '/logo.svg')).toBeNull();
+      }
+      // A link that stays inside the folder is fine.
+      if (fileLink) {
+        await symlink(join(brand, 'favicon.svg'), join(brand, 'favicon.png'));
+        expect(await brandFile(realpathSync(brand), '/favicon.png')).not.toBeNull();
+      }
+    } finally {
+      await rm(join(brand, 'icons'), { recursive: true, force: true });
+      await rm(linkedDir, { recursive: true, force: true });
+      await rm(join(brand, 'logo.svg'), { force: true });
+      await rm(join(brand, 'favicon.png'), { force: true });
+      await mkdir(join(brand, 'icons'), { recursive: true });
+      await writeFile(join(brand, 'icons', 'icon-192.png'), `icon-${BRAND_SENTINEL}`, 'utf8');
+    }
+  });
+
+  test('the page carries the installation name and links brand.css after the bundle', async () => {
+    const page = (await ask('/')).body;
+    expect(page).toContain('<title>Riverside &lt;Assistant&gt;</title>');
+    expect(page).toContain('content="Riverside &lt;Assistant&gt;"');
+    expect(page).not.toContain('Melete');
+    expect(page.indexOf('/brand.css')).toBeGreaterThan(page.indexOf('/assets/app.css'));
+    expect(page.indexOf('/brand.css')).toBeLessThan(page.indexOf('</head>'));
+    // A deep link is the same page.
+    expect((await ask('/somewhere/deep')).body).toBe(page);
+  });
+
+  test('a brand.css that sets anything but design tokens is neither linked nor served', async () => {
+    for (const css of [
+      'body { display: none; }',
+      ':root { color: red; }',
+      ':root { --not-a-token: 1px; }',
+      ":root { --font-body: 'X'; } @import url(https://elsewhere.test/x.css);",
+      ':root { --canvas: url(https://elsewhere.test/pixel.png); }',
+      ':root { --canvas: \\75 rl(x); }',
+      '@media print { :root { --canvas: #fff; } }',
+      ':root { --canvas: #fff; } }',
+    ]) {
+      expect(brandCssIssues(css).length, css).toBeGreaterThan(0);
+      await writeFile(join(brand, 'brand.css'), css, 'utf8');
+      expect((await ask('/brand.css')).status, css).toBe(404);
+      expect((await ask('/')).body, css).not.toContain('/brand.css');
+    }
+    await writeFile(join(brand, 'brand.css'), TOKENS_ONLY, 'utf8');
+    expect(brandCssIssues(TOKENS_ONLY)).toEqual([]);
+    expect((await ask('/')).body).toContain('/brand.css');
+  });
+
+  test('the tokens brand.css may set are exactly the ones the web client declares', async () => {
+    const tokens = await readFile(
+      join(import.meta.dir, '..', '..', 'apps', 'web', 'src', 'design', 'tokens.css'),
+      'utf8',
+    );
+    const declared = new Set(
+      [...tokens.matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map((match) => match[1] ?? ''),
+    );
+    expect([...BRAND_TOKENS].sort()).toEqual([...declared].sort());
+  });
+
+  test('without a brand folder the page keeps the default name and links no brand.css', async () => {
+    const plain = createStaticServer({ root: join(dir, 'dist'), port: 0, hostname: '127.0.0.1' });
+    try {
+      const page = await (await fetch(`http://127.0.0.1:${plain.port}/`)).text();
+      expect(page).toBe(PAGE);
+      expect(await (await fetch(`http://127.0.0.1:${plain.port}/favicon.svg`)).text()).toBe(
+        '<svg>bundle</svg>',
+      );
+    } finally {
+      plain.stop(true);
+    }
+    expect(renderIndex(PAGE, 'Melete', false)).toBe(PAGE);
+    expect(() => createStaticServer({ root: dir, port: 0, instanceName: 'a\nb' })).toThrow(
+      'MELETE_INSTANCE_NAME',
+    );
+  });
+
+  test('a comment opener inside a string does not hide a rule from the check', () => {
+    // A browser reads "/*" as two characters of a string, so the rule between
+    // the two strings below is one it applies.
+    for (const css of [
+      ':root { --font-body: "/*"; } body { display: none } :root { --font-head: "*/"; }',
+      ":root{--font-body:'/*'}*{visibility:hidden}:root{--font-head:'*/'}",
+      ':root{--font-body:"/*\n"} body{display:none} :root{--font-head:"*/"}',
+    ]) {
+      expect(brandCssIssues(css).length, css).toBeGreaterThan(0);
+    }
+    // Comments are still comments, and a string that holds "/*" is still a value.
+    expect(brandCssIssues('/* a } b { */ :root { --primary: #0b6e4f; } /* end')).toEqual([]);
+    expect(brandCssIssues(':root { --font-body: "/* not a comment */", serif; }')).toEqual([]);
+  });
+
+  test('the check reads a long brand.css in time proportional to its length', () => {
+    // Each of these took seconds while the selector pattern and the space
+    // before it competed for the same whitespace.
+    for (const css of [
+      `${' '.repeat(60_000)}x`,
+      `:root{--primary:red}${' '.repeat(60_000)}a`,
+      `@media (prefers-color-scheme: dark) {${' '.repeat(60_000)}`,
+    ]) {
+      const started = performance.now();
+      expect(brandCssIssues(css).length).toBeGreaterThan(0);
+      expect(performance.now() - started).toBeLessThan(500);
+    }
+    expect(brandCssIssues(`:root{--primary:red}/*${'x'.repeat(BRAND_CSS_MAX_BYTES)}*/`)).toEqual([
+      `it is over ${BRAND_CSS_MAX_BYTES / 1024} KiB`,
+    ]);
+  });
+
+  test('brand.css spelt another way is still checked before it is served', async () => {
+    await writeFile(join(brand, 'brand.css'), 'body { display: none; }', 'utf8');
+    try {
+      for (const path of ['/brand.css/', '//brand.css', '/brand.css%2f', '/./brand.css']) {
+        const response = await ask(path);
+        expect(response.body, path).not.toContain('display: none');
+      }
+    } finally {
+      await writeFile(join(brand, 'brand.css'), TOKENS_ONLY, 'utf8');
+    }
+    const served = await ask('//brand.css');
+    expect(served.status).toBe(200);
+    expect(served.body).toBe(TOKENS_ONLY);
+  });
+
+  test('brand files carry nosniff and revalidate, and an SVG runs and loads nothing', async () => {
+    const css = await ask('/brand.css');
+    expect(css.head).toContain('x-content-type-options: nosniff');
+    expect(css.head).toContain('cache-control: no-cache');
+    const favicon = await ask('/favicon.svg');
+    expect(favicon.head).toContain('x-content-type-options: nosniff');
+    expect(favicon.head).toContain('cache-control: no-cache');
+    const policy = /content-security-policy: ([^\r\n]*)/.exec(favicon.head)?.[1] ?? '';
+    for (const directive of [
+      "default-src 'none'",
+      "script-src 'none'",
+      "frame-ancestors 'self'",
+      'sandbox',
+    ]) {
+      expect(
+        policy.split(';').map((part) => part.trim()),
+        directive,
+      ).toContain(directive);
+    }
+    // Only an SVG is a document of its own.
+    expect((await ask('/logo.png')).head).not.toContain('sandbox');
+  });
+
+  test('a brand file over its size limit is not served, and the log says why', async () => {
+    const lines: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await writeFile(join(brand, 'icons', 'icon-192.png'), Buffer.alloc(BRAND_FILE_MAX_BYTES + 1));
+      expect((await ask('/icons/icon-192.png')).body).toBe('bundle-icon');
+      await writeFile(
+        join(brand, 'brand.css'),
+        `${TOKENS_ONLY}/*${' '.repeat(BRAND_CSS_MAX_BYTES)}*/`,
+      );
+      expect((await ask('/brand.css')).status).toBe(404);
+      expect((await ask('/')).body).not.toContain('/brand.css');
+      await writeFile(join(brand, 'brand.css'), ':root { color: red; }');
+      await ask('/');
+      await ask('/');
+    } finally {
+      process.stderr.write = write;
+      await writeFile(join(brand, 'icons', 'icon-192.png'), `icon-${BRAND_SENTINEL}`, 'utf8');
+      await writeFile(join(brand, 'brand.css'), TOKENS_ONLY, 'utf8');
+    }
+    const log = lines.join('');
+    expect(log).toContain('brand icons/icon-192.png is not served: it is over 2048 KiB');
+    expect(log).toContain('brand brand.css is not served: it is over 64 KiB');
+    // Said once, however many pages load.
+    expect(log.split('color is not a design token').length - 1).toBe(1);
+  });
+
+  test('a folder swapped for a link after the path was checked is not read', async () => {
+    const root = realpathSync(brand);
+    const outside = join(dir, 'swapped-icons');
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'icon-192.png'), SENTINEL, 'utf8');
+    const checked = brandFile(root, '/icons/icon-192.png');
+    expect(checked).not.toBeNull();
+    // Between the check and the read, icons/ becomes a link out of the folder.
+    await rm(join(brand, 'icons'), { recursive: true, force: true });
+    await symlink(outside, join(brand, 'icons'), 'junction');
+    try {
+      const read = readBrandFile(root, checked as string, BRAND_FILE_MAX_BYTES);
+      expect('bytes' in read ? read.bytes.toString() : '').not.toContain(SENTINEL);
+    } finally {
+      await rm(join(brand, 'icons'), { recursive: true, force: true });
+      await mkdir(join(brand, 'icons'), { recursive: true });
+      await writeFile(join(brand, 'icons', 'icon-192.png'), `icon-${BRAND_SENTINEL}`, 'utf8');
+    }
+    const read = readBrandFile(root, checked as string, BRAND_FILE_MAX_BYTES);
+    expect('bytes' in read ? read.bytes.toString() : '').toBe(`icon-${BRAND_SENTINEL}`);
+  });
+});
+
+test('the page description opens with the installation name, and is unchanged by default', () => {
+  const page =
+    '<title>Melete</title>\n<meta name="description" content="Melete: the assistant that actually does it." />';
+  expect(renderIndex(page, 'Melete', false)).toBe(page);
+  const named = renderIndex(page, 'Riverside Assistant', false);
+  expect(named).toContain('content="Riverside Assistant: the assistant that actually does it."');
+  expect(named).not.toContain('Melete');
 });

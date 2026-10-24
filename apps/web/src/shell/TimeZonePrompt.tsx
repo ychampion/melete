@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Button, Dialog } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import { browserTimeZone, zoneLabel } from '../experience/timezone.ts';
 import { toast } from './Shell.tsx';
 
@@ -42,7 +43,7 @@ export function TimeZonePrompt() {
       open
       onClose={() => setAnswered(true)}
       title="Which time zone are you in?"
-      sub={`Melete is using ${zoneLabel(profile.time_zone)}, but this browser is in ${zoneLabel(here)}. Routines such as the morning brief run on this clock.`}
+      sub={`${assistantName()} is using ${zoneLabel(profile.time_zone)}, but this browser is in ${zoneLabel(here)}. Routines such as the morning brief run on this clock.`}
       footer={
         <>
           <Button

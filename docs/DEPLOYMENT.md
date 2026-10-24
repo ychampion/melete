@@ -423,6 +423,7 @@ complete file, and `init` writes each one out:
   "images": { "registry": "ghcr.io/ychampion", "tag": "main", "channel": "main" },
   "profiles": [],
   "overlays": [],
+  "compose_files": [],
   "disk": { "min_free_mb": 4096, "pull_margin_mb": 512 },
   "backup": { "dir": "~/melete-backups", "keep": 3, "max_age_days": 30 },
   "public_ports": false,
@@ -441,6 +442,17 @@ complete file, and `init` writes each one out:
 - `profiles` takes `sandbox`; `overlays` takes `browser`, `tailscale` and
   `tailscale-kernel` (with `tailscale`), which add their `docker-compose.*.yml`
   files to every Compose command in that order.
+- `compose_files` lists Compose files of your own, as paths relative to
+  `deploy/` with `/` between folders, such as `"../private/compose.extra.yml"`
+  or `"docker-compose.brand.yml"`. Every Compose command reads them after all
+  the files the other keys add, in the order listed, so they can add services
+  beside the stack or change one of its settings. Each must exist: a missing one
+  makes the file invalid, so `deploy` and `upgrade` refuse to run and `status`,
+  `doctor` and `check` fail until it is there. Those three name the files on the
+  contract line. Each path is written one way (no `./`, `//` or `folder/..`),
+  and a file the other keys already choose, or one already listed, cannot be
+  listed again, however the path reaches it. See
+  [Building on Melete](../FORKING.md).
 - `disk.min_free_mb` is the free space, in MB, below which `doctor` and
   `status` report the machine short of disk. A small host sets its own, below
   1 GB if it must. `pull_margin_mb` is the room an update keeps beyond the
@@ -593,6 +605,10 @@ days and `20` routines are a good start:
 bun run melete set MELETE_REST_ROUTINES_AFTER_DAYS=14 MELETE_ROUTINES_PER_PERSON_MAX=20
 ```
 
+`MELETE_RUNS_ACTIVE_PER_SPACE_MAX` is how many pieces of long work (runs) one
+space may have going at once; one more is refused until one finishes or is
+stopped. It is empty, and so no limit, unless you set it.
+
 ### Running it from the web app
 
 The installation's owner also has **Settings › Installation** in the web app,
@@ -618,7 +634,6 @@ change made here, and by `melete account create`, `reset`, `disable` and
 links and codes are never kept there. The newest backup shown is the one
 `melete backup` last noted in the database, so backups taken before this
 release don't appear until the next one runs.
-
 ### How long call records are kept
 
 Every model call writes a row to `model_usage`, and every message, meeting,
@@ -1195,6 +1210,58 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate melete
 Turning it off again keeps every room and message; their routes answer 404
 until it is back on. [Rooms](ROOMS.md#turning-rooms-on) lists what it covers.
 
+### Turn features on or off
+
+Operators can turn whole features on or off, for example on an installation
+for a family or a school that has no use for phone texts or the company list.
+Each feature has one setting in `deploy/.env`, `on` or `off`; left empty, it
+keeps its default, so an installation that sets nothing works as before.
+
+| Setting | Default | What it covers |
+| --- | --- | --- |
+| `MELETE_FEATURE_MULTIPLAYER` | `MELETE_PREVIEW_MULTIPLAYER` (off) | Rooms, shared spaces, guests, hand-offs and linked chat platform accounts |
+| `MELETE_FEATURE_VOICE` | on | Push-to-talk, voice mode, calls and replies read aloud |
+| `MELETE_FEATURE_PHONE` | on | Texts and calls to a person's own verified number |
+| `MELETE_FEATURE_SMS` | on | Texting the agent through a connected phone number |
+| `MELETE_FEATURE_BROWSER` | on | The agent's own browser and the sites it is signed in to |
+| `MELETE_FEATURE_COMPUTER` | on | The agent's own computer: its desktop, terminal and programs, and watching it and taking it over |
+| `MELETE_FEATURE_COMPANIES` | on | Companies: money and paperwork found in mail, and the replies a person waits on |
+
+```dotenv
+MELETE_FEATURE_PHONE=off
+MELETE_FEATURE_COMPANIES=off
+```
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --force-recreate melete
+```
+
+A feature that is off is refused by the service, not only hidden. Its routes
+answer 404 `not_available` with a sentence such as "Voice is turned off on this
+server.", including a provider's webhook (a text Twilio delivers is refused and
+not kept), and the parts behind it are not started (the agent has no browser
+with `MELETE_FEATURE_BROWSER=off`, no texts are sent with
+`MELETE_FEATURE_PHONE=off`). The agent is not given its tools either: with
+`MELETE_FEATURE_SMS=off` it cannot send a text, and with
+`MELETE_FEATURE_COMPUTER=off` it has no computer, though sandboxes it already
+had are still stopped when idle. Texting and sandbox connections are not offered
+in Settings, and the company tools are not listed to other assistants over MCP
+with `MELETE_FEATURE_COMPANIES=off`. The app leaves its screens and buttons out.
+`GET /setup` lists every feature
+under `features` with whether it is on for whoever asks. Nothing stored is
+removed: turning a feature on again brings back what was there.
+
+`MELETE_FEATURE_MULTIPLAYER` wins over `MELETE_PREVIEW_MULTIPLAYER` when both
+are set, so either name works.
+
+A feature can also be turned off for one person alone, by code that supplies
+each person's values to the service (`personFeatures` in
+`apps/melete/src/features.ts`). A person's value can only turn a feature off:
+where the installation has it off, it stays off for everyone. Multiplayer is
+switched for the whole installation only. A person's value refuses the
+feature's routes for them; the agent's tools and background work follow the
+installation's setting.
+
 ## Tailscale
 
 Reach your installation from your own devices over your tailnet, with no
@@ -1522,6 +1589,7 @@ links use `MELETE_PUBLIC_URL`, or the web port on this machine.
 | `account reset <email>` | A one-time link (60 minutes) that sets a new password. Using it signs the account out everywhere. |
 | `account disable <email>` | The account can no longer sign in, and its browsers, paired computers, connected assistants, notifications and linked chat accounts are signed out. Its data and routines are kept, but its work does not run, nor use its saved sign-ins, until it is enabled again. |
 | `account enable <email>` | Lets a disabled account sign in again. |
+| `account link <email>` | For seven days, lets a sign-in through your [identity provider](#sign-in-with-your-identity-provider) with this verified email claim the account even though it has a password (`MELETE_OIDC_EMAIL_LINK=no-password`). Used up by that link. |
 | `account setup-code` | A new [setup code](#claiming-a-new-installation), while no account exists. |
 
 The exit code is 0 when it was done, 2 when it was refused (no such account,
@@ -1537,6 +1605,101 @@ owner makes admins, deletes other people's accounts and sets the secondary
 model, and nobody can change the setup owner, who is always an admin. Only a
 person's account that can sign in holds admin; a disabled one administers
 nothing.
+
+## Sign-in with your identity provider
+
+People can sign in with your own identity provider: any OpenID Connect issuer,
+such as Google, Microsoft Entra ID, Okta, Authentik or Keycloak. The sign-in
+page then shows a "Continue with …" button, and you can make it the only way in.
+
+1. At the provider, register a web application (a confidential client) whose
+   redirect URI is `<MELETE_PUBLIC_URL>/api/signin/oidc/callback`, for example
+   `https://melete.example.com/api/signin/oidc/callback`.
+2. Put its details in `deploy/.env` and restart the service:
+
+| Setting | What it is |
+|---|---|
+| `MELETE_OIDC_ISSUER` | The issuer URL, exactly as the provider's `/.well-known/openid-configuration` names it, such as `https://accounts.google.com`. HTTPS, or plain HTTP on this machine only. |
+| `MELETE_OIDC_CLIENT_ID`, `MELETE_OIDC_CLIENT_SECRET` | The client the provider issued. All three settings are needed, or none, and so is `MELETE_PUBLIC_URL`. |
+| `MELETE_OIDC_LABEL` | What the button says after "Continue with", such as `Google`. Default `single sign-on`. |
+| `MELETE_OIDC_SCOPES` | The scopes asked for. Default `openid email profile`; `openid` is always included. |
+| `MELETE_OIDC_ACCOUNTS` | `existing` (the default) signs in only accounts that already exist here. `create` also makes a person account the first time someone signs in. |
+| `MELETE_OIDC_EMAIL_LINK` | Which existing accounts a verified email may claim at a first sign-in. `any` (the default): every person account with that email. `no-password`: only accounts without a password, such as those made with `account create`, plus an account with a password you open with `account link <email>`. |
+| `MELETE_OIDC_REQUIRE_CLAIM` | `name=value`: a claim the ID token must carry, such as `melete_access=true`, or `groups=melete` for a list of groups. A dotted name such as `realm_access.roles=melete` reaches into a nested claim. When it is set, an ID token without that claim is refused. |
+| `MELETE_PASSWORD_SIGNIN` | `off` makes the provider the only way in: passwords, emailed sign-in links and password resets are refused, and `account reset` prints no link. Default `on`. |
+
+How someone is matched to an account. The first time they sign in, Melete
+looks for the provider account they used, then for a person account with the
+email the provider gives. That email has to be verified at the provider
+(`email_verified`); otherwise the sign-in is refused. The provider account is
+then linked to that Melete account, and later sign-ins follow the link even if
+the email changes at the provider. Another provider account with the same email
+does not take over an account that is already linked. Guest accounts from room
+invites keep signing in the way they were invited. The email has to be a plain
+ASCII address, as for every other way in.
+
+Which provider to trust with email matching. With a provider you run yourself
+(Okta, Authentik, Keycloak, a company's Entra tenant), a verified email is as
+good as the account it names. With a public provider such as Google, it says
+only that someone once proved the address: a personal account made with a
+work email stays verified after its owner leaves, and so does one made on a
+domain that later lapsed and was bought by someone else. With a public
+provider, set `MELETE_OIDC_EMAIL_LINK=no-password`, so an account that has a
+password is claimed only after you run `account link <email>` for it.
+
+What is checked. The browser leaves with PKCE, a state and a nonce, kept in a
+sealed cookie for ten minutes. On the way back, the state has to match that
+cookie and can be used only once. The ID token has to be signed with one of the
+provider's published keys, using an asymmetric algorithm, and has to name the
+provider as issuer and this client as audience. It also has to be unexpired and
+carry the nonce. The cookie is sealed with a key derived from
+`MELETE_MASTER_KEY`. Without a master key, a sign-in has to come back to the
+same service process that started it.
+
+The first account. Sign-in through the provider needs an installation that
+already has its first account. Make it in the usual way
+([Claiming a new installation](#claiming-a-new-installation)), or with
+`bun run melete account create <email>` on the host. Use the email you have at
+the provider, then sign in with the button. With `MELETE_PASSWORD_SIGNIN=off`,
+that first account still has to be created this way. Under
+`MELETE_OIDC_EMAIL_LINK=no-password`, an owner made on the setup page has a
+password, so run `account link <email>` for it first; one made with
+`account create` has none and needs nothing more.
+
+Getting back in. If the provider is down, its client is deleted, or your email
+there no longer matches, nobody can sign in through it. Nothing is lost: set
+`MELETE_PASSWORD_SIGNIN=on` (or remove the line) in `deploy/.env`, restart the
+service, and run `bun run melete account reset <email>` on the host for a
+one-time link that sets your password. Turn password sign-in off again once the
+provider works.
+
+Turning someone off. `account disable <email>` works the same for people who
+sign in through the provider: the next sign-in is refused, and their browsers
+are already signed out. To keep someone out at the provider instead, remove the
+claim that `MELETE_OIDC_REQUIRE_CLAIM` names. Deleting an account removes its
+link to the provider, so in `create` mode the same person signing in again
+starts a new, empty account.
+
+Back-channel logout. If the provider supports OpenID Connect Back-Channel Logout,
+set its back-channel logout URI to `<MELETE_PUBLIC_URL>/api/signin/oidc/logout`.
+When the person signs out at the provider, every browser signed in to their
+Melete account here is signed out too. Each logout token works once. Logout by
+session id (`sid`) alone is not supported; the logout token has to name the
+subject.
+
+Notes for some providers:
+
+- Google: the issuer is `https://accounts.google.com`. Create an "OAuth client
+  ID" of type "Web application" in the Google Cloud console.
+- Microsoft Entra ID: use the tenant's own issuer,
+  `https://login.microsoftonline.com/<tenant-id>/v2.0`. The shared `common`
+  endpoint names no single issuer and isn't supported. Entra ID leaves
+  `email_verified` out of its ID tokens by default, so see the last point.
+- Okta, Authentik and Keycloak: use the issuer of the authorization server or
+  realm the client belongs to.
+- Every provider: the ID token has to carry `email` and `email_verified: true`.
+  A provider that leaves `email_verified` out of its ID tokens can't sign
+  anyone in yet.
 
 ## Signing out everywhere
 
@@ -1719,6 +1882,98 @@ people use for this installation. Only a digest of each invite's token is
 stored, and the token rides in the link's fragment, which no server log sees.
 A guest whose invite has run out is taken out of the room within a minute.
 
+## Names and look
+
+An installation can have its own name, an assistant with its own name, and its
+own icons, logo and colours: useful when you run it for your family, a school
+or a team.
+
+```bash
+bun run melete set MELETE_INSTANCE_NAME='Riverside Assistant' MELETE_ASSISTANT_NAME=Juniper
+```
+
+- `MELETE_INSTANCE_NAME` is what the installation calls itself: the page title,
+  the home-screen title, and the subject and text of sign-in and password reset
+  mail, which also ends with `MELETE_PUBLIC_URL` when it is set.
+- `MELETE_ASSISTANT_NAME` is what the assistant calls itself. The built-in
+  identity begins "You are Melete"; the name takes Melete's place there. Left
+  unset, the assistant takes `MELETE_INSTANCE_NAME`, so an installation named
+  once reads as one name throughout.
+- `MELETE_IDENTITY_FILE` replaces the built-in identity with a file of your own,
+  a path the service can read. It is used as written, so it names the assistant
+  itself, and it is held to the same cap as the built-in one, about 250 tokens,
+  because it is sent with every message. The service will not start with a file
+  over the cap.
+
+Both names default to Melete, are one line of at most 60 characters, and are in
+`GET /setup` as `instance_name` and `assistant_name`, so a sign-in page can
+show them before anyone signs in. The service and the web client read them at
+start, so after `melete set`, recreate the services it names. Other words in
+the app still say Melete for now.
+
+### A brand folder
+
+`deploy/docker-compose.brand.yml` mounts a folder read-only into the web client
+and the service, `deploy/brand` unless `MELETE_BRAND_SOURCE` names another. Add
+it to the [deploy file](#the-deploy-file):
+
+```json
+{ "contract": 1, "compose_files": ["docker-compose.brand.yml"] }
+```
+
+The web client serves these files from the folder ahead of its own, and nothing
+else in it:
+
+| File | Replaces |
+|---|---|
+| `favicon.ico`, `favicon.svg`, `favicon.png` | The tab icon |
+| `icons/<name>.png`, `.svg`, `.ico`, `.webp` | The home-screen icons, such as `icons/apple-touch-icon.png` |
+| `logo.png` | The mark the app draws (`/melete-logo.png`); `logo.svg` and `logo.webp` are served at their own names |
+| `manifest.webmanifest` | The installed app's name, colours and icons |
+| `brand.css` | Colours, corners and fonts; see below |
+
+A path that climbs out of the folder, or a symbolic link that points outside it,
+is not served. Each file may be up to 2 MiB and `brand.css` up to 64 KiB; a
+larger one is not served (the app's own file is, where it has one), and the web
+client logs why. An SVG
+is served so that, opened on its own, it runs no script and loads nothing. The
+service sees the same folder at `/brand`, so an identity file
+kept there is `MELETE_IDENTITY_FILE=/brand/identity.md`; the web client never
+serves it.
+
+`brand.css` is linked after the app's own styles and may set only the design
+tokens the web client declares in
+[`apps/web/src/design/tokens.css`](../apps/web/src/design/tokens.css), in the
+same rule sets that file uses:
+
+```css
+:root { --primary: #0b6e4f; --primary-hover: #095c42; --radius-card: 8px; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --primary: #6fd3a8; }
+}
+:root[data-theme="dark"] { --primary: #6fd3a8; }
+```
+
+The dark rule sets matter: without them, dark appearance keeps the app's own
+colours. Any other property, selector or at-rule, `url()`, or a backslash
+escape, and the web client neither serves nor links the file and logs why. With
+`url()` refused, a font must be one the browser has or one the app ships (DM
+Sans, Newsreader). The tokens are:
+
+- surfaces: `--canvas`, `--surface`, `--soft`, `--overlay`, `--chip-bg`, `--hover`, `--row-hover`;
+- text: `--text`, `--heading`, `--muted`, `--secondary`, `--placeholder`;
+- lines: `--line`, `--line-strong`, `--control`, `--ring`;
+- accent: `--primary`, `--primary-hover`, `--primary-fg`, `--blue-soft`, `--blue-ink`, `--blue-line`, `--bubble`, `--bubble-ink`;
+- tints: `--travel`, `--travel-ink`, `--sage`, `--sage-ink`, `--sand`, `--sand-ink`, `--lilac`, `--lilac-ink`, `--rose`, `--rose-ink`;
+- states: `--success`, `--success-soft`, `--danger`, `--danger-soft`, `--rating`;
+- dark panels: `--studio`, `--studio-panel`, `--studio-panel-2`, `--studio-line`, `--studio-text`, `--studio-muted`;
+- shape and depth: `--radius-sheet`, `--radius-card`, `--radius-block`, `--radius-button`, `--shadow-sheet`, `--shadow-lift`, `--shadow-pill`, `--elevated`, `--skeleton-a`, `--skeleton-b`;
+- fonts: `--font-body`, `--font-voice`, `--font-head`.
+
+These names are the contract: a release that renames one says so in
+[UPGRADING.md](UPGRADING.md). Check your colours against the surfaces they sit
+on in both appearances; the app's own are set to read at 4.5:1.
+
 ## Providers
 
 `configure.ts` writes a production configuration by default: a real provider,
@@ -1798,15 +2053,43 @@ model a job was started with, so a shortened name is refused by the provider,
 not corrected.
 
 `OPENAI_COMPAT_BASE_URL` is the endpoint's version prefix, for example
-`https://models.example.net/v1`. It is the only provider address that may be
-plain `http://`, for a model server on your own machine or network; every
-built-in provider stays HTTPS. Over `http://` the key and every prompt travel
-unencrypted, so keep it to a network you trust. Inside Compose, `localhost` is
+`https://models.example.net/v1`. It and `ANTHROPIC_BASE_URL` are the only
+provider addresses that may be plain `http://`, for a model server or gateway on
+your own machine or network; every built-in provider stays HTTPS. Over
+`http://` the key and every prompt travel unencrypted, so keep it to a network
+you trust. Inside Compose, `localhost` is
 the Melete container itself, so give an address that container can reach. The
 gateway refuses a provider whose key is empty: for a server that checks no key,
 set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, an `https://`
 endpoint falls back to `OPENAI_API_KEY`; a plain `http://` endpoint never
 receives `OPENAI_API_KEY`.
+
+`ANTHROPIC_BASE_URL` sends the `anthropic` provider's calls through a gateway or
+proxy you run, for example one that logs usage or enforces a spend limit. It
+covers every call the service makes to Anthropic, agent turns and background
+work such as memory and search alike, and the connection test and model list in
+Settings › Models. Write it as the Anthropic SDKs read it, the address without
+`/v1`, for example `https://gateway.example.net`; Melete calls
+`<address>/v1/messages` with `ANTHROPIC_API_KEY`. An address that already ends
+in `/v1` stops start-up. Left empty, Melete calls `https://api.anthropic.com`
+directly. Over `http://` the key and every prompt travel unencrypted, so keep it
+to a network you trust; start-up warns when a plain `http://` address is not on
+the machine itself.
+
+Which key goes to the gateway: `ANTHROPIC_API_KEY` when it is set. Without it,
+the owner can save a key in Settings › Models, and that key is bound to the
+address Anthropic was called at when it was saved. A key saved while Melete
+called Anthropic directly is never sent to a gateway set later, and a key saved
+for a gateway never goes to another address. Settings › Models then says the
+saved key is for another address, shows the address in use, and asks for a key
+for it; until one is saved or `ANTHROPIC_API_KEY` is set, Anthropic calls are
+refused for want of a key.
+
+A gateway address is never treated as a model on your own machine, even when it
+is on your network: Anthropic still answers there. Its calls are priced at
+Anthropic's rates and count against the spending limits, take the prompt caching
+and fallback models an Anthropic call takes, and follow the privacy rules for a
+cloud model. Settings › Privacy does not offer to mark it as your own model.
 
 With `OPENAI_API_KEY` or `OPENAI_COMPAT_BASE_URL` set, the agent can also turn
 text into speech. `MELETE_SPEECH_MODEL` names the text-to-speech model it uses;
@@ -2035,10 +2318,16 @@ Postgres as JSON and compared in the service, so no database extension is needed
 voice mode; speech then uses ElevenLabs in preference to `OPENAI_API_KEY`.
 `ELEVENLABS_VOICE_ID`, `ELEVENLABS_SECOND_VOICE_ID`, `ELEVENLABS_SPEECH_MODEL`,
 `ELEVENLABS_STREAMING_MODEL` and `ELEVENLABS_TRANSCRIPTION_MODEL` choose voices
-and models. `MELETE_VOICE_DAILY_SECONDS` (default `1800`),
-`MELETE_VOICE_DAILY_CHARACTERS` (default `20000`) and
-`MELETE_VOICE_DAILY_SESSIONS` (default `30`) are what one person may use in a
-day. [VOICE](VOICE.md) describes each setting and feature.
+and models. `MELETE_VOICE_DAILY_SECONDS`, `MELETE_VOICE_DAILY_CHARACTERS` and
+`MELETE_VOICE_DAILY_SESSIONS` cap what one person may use in a day, and
+`MELETE_CALL_MONTHLY_MINUTES` caps call minutes over 30 days; each is unset
+(no cap) unless you set it. [VOICE](VOICE.md) describes each setting and
+feature.
+
+`MELETE_VOICE_DAILY_ASIDES` is how many asides (the short words with the agent
+while it works in voice mode) one person may have in a day. It is empty, and so
+no limit, unless you set it; asides are counted either way, so a limit set later
+holds from the first day.
 
 ### Auto-review
 
@@ -2063,9 +2352,31 @@ to `120`) after it is cleared to go. Its receipt shows Undo for that time, and
 cancelling sends nothing. The wait is kept in the database, so a restart during
 it still sends the message once.
 
+Work nobody is waiting on (a schedule, a timer or an event woke it) is never
+asked about by default when it would reach someone outside Melete. It goes ahead
+on its own when what the person said before makes it likely they want it, and is
+otherwise left as a quiet suggestion in the conversation. The confidence is a
+fixed sum, never the model's opinion: the person's routine or the agent's
+instructions asking for it +0.6, something they told Melete about that recipient
++0.3, each similar action to that recipient they asked for or allowed in the last
+90 days +0.15 (two at most), each one they said no to or took back -0.5, and 0
+when Melete cannot vouch for where the recipient came from.
+`MELETE_PROACTIVE_CONFIDENCE` (default `0.6`) is where it goes ahead. An email
+also needs the routine or the instructions to ask for it.
+
+Each kind of send (email, chat-app messages, calendar invites, public posts,
+anything else outside) has a level the person picks once, on a card in the
+conversation or in Settings: `draft`, `when_confident` or `always`. Chat-app
+messages start at `MELETE_MESSAGES_TO_OTHERS` (`when_confident` by default,
+also written `confidence`; `draft`; `draft_only`, which also keeps them out of
+proactive work until the person picks a level; `always`), the rest at
+`draft`. A level the person chose wins over the setting. Money moves, the
+person's own don't-rules, and sends that also delete or carry a password still
+go to the person at every level.
+
 ## Sandboxes
 
-Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
+Sandboxes: connect E2B, Modal, Daytona or Maritime in Settings → Connections → Sandbox.
 The provider's key is entered there and sealed with `MELETE_MASTER_KEY`. Or give
 every agent a computer of its own on this host's Docker engine, with no account
 and no key: see [sandbox-docker.md](sandbox-docker.md).
@@ -2073,6 +2384,124 @@ and no key: see [sandbox-docker.md](sandbox-docker.md).
 installation's sandboxes at the provider; keep it. The other `MELETE_SANDBOX_*`
 settings and `MELETE_E2B_PLAN` are optional, with their defaults listed in
 `deploy/.env.example`. Set them in `deploy/.env` and recreate the service.
+
+### Computers on Maritime
+
+[Maritime](https://maritime.sh/docs/computers) runs each agent's computer as a
+persistent Linux desktop in a micro-VM of its own. It is an option for an
+operator who would rather not run computers on their own Docker host.
+
+**Setting it up.** Make a Maritime API key whose only scope is `computers`.
+In Settings → Connections → Sandbox, choose *Maritime computers*, paste the key
+as the provider key, and set:
+
+- *Image*: `linux` (x86_64) or `linux-arm64`. Maritime runs its own desktop
+  image; a custom image is refused.
+- *What the sandbox may reach*: *Anything*. Maritime documents no egress
+  control for computers, so *Nothing at all* and allow-lists are refused when
+  the connection is saved, before any computer is made.
+- *What a sandbox keeps*: *Files kept between attempts* to keep one computer per
+  agent across attempts, or *Nothing* for a fresh computer each time.
+- *Region*: leave it empty. Maritime offers no region choice.
+
+The key is sealed with `MELETE_MASTER_KEY` like any provider key. It is sent
+only to `api.maritime.sh` as a bearer token, never into a computer, a command's
+environment, a log, a receipt or the model.
+
+**What works.** Commands, with Melete's exit records, so a command whose answer
+is lost is never run twice. Commands longer than Maritime's 30-second `exec`
+run in the background and are polled until they finish. Files in and out of
+the workspace, kept on the computer's `/data` disk. Maritime's desktop user is
+not root and cannot make `/work`, so the workspace lives at `/data/work` and the
+adapter respells `/work` at its edge: in a command's folder, in file paths, and
+in a command's words wherever `/work` stands as a path of its own. A command
+that means the text `/work` itself, such as `grep /work notes.txt`, sees
+`/data/work` instead, and `pwd` prints `/data/work`. Sleep and wake for a kept
+workspace. Each computer is found again by a hash of this installation's ids,
+never by a person's name or email, and reconciliation removes only this
+installation's own computers.
+
+**What does not.** No egress control, no preview URLs or inbound ports, no
+region choice, no custom images, and no live terminal stream. A single file
+transfer is at most 8 MiB: a larger upload is refused with a message that says
+so, and a larger download is read up to 8 MiB only when the caller asks for no
+more than that. Of the desktop tools, `computer.open` is not offered (open an
+address by clicking the browser's address bar and typing it), and the screen is
+not read as text, so the agent reads the screenshot itself.
+
+**The desktop.** Computers on Maritime can now be driven by the agent and taken
+over in the app. The agent's `computer.*` tools (screenshot, click, type,
+keys, scroll and batch) run as Maritime actions, with the same receipts as on
+Docker: each step ends with a screenshot kept in the job's workspace. The
+screen is 1200x750, the frame Maritime's screenshots are taken in; positions
+the agent gives are in that frame, and are scaled if a computer's screenshots
+come back at another size.
+
+Watching and taking over happen in Maritime's own viewer, which opens in a new
+tab, since the app does not frame other sites:
+
+- *Watch in a new tab* asks for a fresh view-only link, valid for ten minutes.
+  Watching never stops the agent.
+- *Take over* parks the agent's work as on Docker. *Open the desktop* then asks
+  for a fresh link that drives the computer, valid for five minutes; *Open a
+  fresh link* replaces it, and the old one stops working. While that link is
+  out, Maritime refuses the agent's actions, and the agent is told so in a
+  plain sentence.
+- When you are done, press *Done* in the viewer, or *Hand back* in the app.
+  Handing back closes the computer's session, which ends every link it gave
+  out, and the agent carries on from a fresh screenshot. Maritime holds the
+  desktop for you from the moment a link to drive it is made, opened or not,
+  until *Done* or a minute or so after the link runs out. So a hand-back while it
+  still holds the desktop first asks for a new 30-second link, given to no one,
+  which ends yours; the agent then carries on once Maritime gives the desktop
+  back, about a minute and a half later, rather than being refused at every step.
+- If your link runs out while you still have the computer, the panel says so;
+  open a fresh link to carry on, or hand it back. Asking for links is limited to
+  twelve a minute per person and computer, since each one is a call on the
+  installation's Maritime key.
+
+Links are asked for each time they are opened and answered with
+`cache-control: no-store`. They are never kept, written to the timeline, a
+receipt or a log, and never given to the model. Only the person the job belongs
+to (or a room's owner) can get a link that drives the computer; a room's
+members can watch.
+
+E2B, Daytona and Modal computers have no desktop: the `computer.*` tools are
+not offered there, and a call to one is refused in a plain sentence.
+
+**Sizing.** Maritime limits how many computers an account keeps and how many
+are awake at once; a sleeping computer counts only toward the first. An account
+serves as many agents as it keeps computers, and as many of them as it lets be
+awake can run commands at the same moment.
+
+**Caps.** Two settings in `deploy/.env` keep this installation inside the
+account's limits, so it never asks for computers the account does not allow.
+Both are unset by default, which means no cap:
+
+- `MELETE_MARITIME_MAX_COMPUTERS`: the most computers kept at Maritime, asleep
+  or awake. Past it, a new computer is refused, and the agent tells the person
+  in a plain sentence. No computer is made.
+- `MELETE_MARITIME_MAX_AWAKE`: the most awake at once. A computer that would
+  wake past it waits up to 30 seconds for a place, then is refused the same
+  way. A sleeping computer is never swapped for a new one to get round it.
+
+Set them to your Maritime account's limits. The counts are kept in the
+database, so several service instances share them and concurrent requests
+cannot pass a cap. Computers made before the caps were set are counted once
+they are next checked or used. Lowering a cap below what is in use refuses new
+computers and wakes until enough are deleted or asleep; computers already awake
+keep working. A create whose answer was lost keeps its place for up to fifteen
+minutes, since Maritime may have made the computer; reconciliation removes such
+a computer. Each computer has 2 GB of memory and 5 GB of disk unless the account
+raises them.
+
+**How sleep works.** Maritime puts a computer to sleep after five minutes with
+no action, keeping its memory and its disk. Melete
+wakes it before every command and touches it every four minutes while a
+command runs, so a long command is not put to sleep under it. After seven days
+asleep the memory snapshot is dropped and the next wake boots fresh on the same
+disk: files stay, running programs do not. Deleting the connection's workspaces
+deletes their computers and disks.
 
 ## Storage
 
@@ -2145,10 +2574,11 @@ alone, and `MELETE_COMPANIES_PROVIDER` another provider for it. The
 demonstration, and an installation whose provider has no key yet, read mail with
 the built-in rules instead, which find less and cost nothing.
 
-Model calls are bounded per person: across all their spaces, one person's scans
-make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it is
-unset, and each scan reads at most fifty messages. A message past the allowance
-is read on a later scan. Set these in `deploy/.env` and recreate the service.
+Each scan reads at most fifty messages. `MELETE_COMPANIES_DAILY_CALLS`, when
+set, is how many model calls one person's scans may make in any 24 hours,
+across all their spaces; it is empty, and so no limit, unless you set it. Calls
+are counted either way. A message past the allowance is read on a later scan.
+Set these in `deploy/.env` and recreate the service.
 
 ## Phone notifications
 
@@ -2197,6 +2627,16 @@ take before the engine stops it. It is a runaway stop, not a cost control: what
 an attempt may spend is decided by the job's budget, and a run that has taken
 150 turns is looping. Lower it and long legitimate work is cut off in the
 middle; raise it and a loop runs longer before anything notices.
+
+A conversation's reply has one more runaway stop, which is fixed rather than a
+setting: a reply that writes the same block of prose, at least 600 characters
+of it, four times over is stopped there. The person keeps the text up to the
+end of the first copy and a line saying why, and the service logs
+`runaway_reply_stopped` with the job, the attempt and the number of copies,
+never the words. Copies are compared by their words, so spacing, punctuation
+and case do not hide one. Code blocks, tables, list items and short paragraphs
+never count, and the same letter written out for three people is three copies,
+one short of a stop.
 
 `MELETE_COMPACTION_MAX_TOKENS` (default `200000`) is the largest conversation,
 in tokens, that may build up before the engine summarises it and carries on with
@@ -2505,7 +2945,7 @@ Melete pick a better model per call:
 
 | Setting | Used for |
 | --- | --- |
-| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier, the companies scan, conversation summaries and learning from corrections |
+| `MELETE_MODEL_FAST` | The service's short calls: reading chat into memory, voice-mode asides, the auto-review classifier, the companies scan, conversation summaries, learning from corrections and the first-line acknowledgement |
 | `MELETE_MODEL_VISION` | An agent request that carries a picture, when the turn's model does not read images |
 | `MELETE_MODEL_FALLBACK` | Comma-separated, tried in order when a provider rate-limits (429), times out, fails (5xx) or cannot be reached, before any of the reply has been sent |
 | `MELETE_MODEL_BACKGROUND` | Everyone's scheduled and background work: routines, watches, standing runs and any turn nobody is waiting on. Unset, that work runs on the default model. A person's own messages never run on it |
@@ -2518,6 +2958,20 @@ MELETE_MODEL_FAST=fireworks/accounts/fireworks/models/llama-v3p1-8b-instruct
 MELETE_MODEL_VISION=fireworks/accounts/fireworks/models/qwen2p5-vl-32b-instruct
 MELETE_MODEL_FALLBACK=fireworks/accounts/fireworks/models/deepseek-v3
 ```
+
+`MELETE_ACK_AFTER_MS` (default `0`, off) is how long a chat turn may stay
+silent before the person is shown one line saying what the agent is about to
+do, written by the fast model from their message alone, with no tools and no
+memory. Off, nothing is written and no model is called for it. On, the line is
+written as each chat turn with a new message starts, so it is ready by then,
+and shown at that time or as soon as it is ready after, only while the agent
+has said nothing. That is one short fast-model call for nearly every such turn,
+including turns the agent answers before the line is needed; the call is
+cancelled once the agent's own words arrive. Once the line is shown, the agent
+is told what was said, and its own opening line about what it will do is left
+out (an English plan line only; anything else it writes is shown). With
+`MELETE_MODEL_FAST` unset, the line is written by the default model, which is
+slower; set a small fast model for it. `800` is a good value with one.
 
 The rules, in order:
 

@@ -6,7 +6,9 @@
  * `melete init --adopt`: an installation that is already running. It reads the
  * project's containers from the engine (the image the service runs, the
  * overlay files Compose was given, whether the sandbox profile is in use) and
- * writes deploy/melete.deploy.json from them. It runs only read-only Docker
+ * writes deploy/melete.deploy.json from them. Compose files of the
+ * installation's own are kept as `compose_files`, or the adoption is refused
+ * when one cannot be named relative to deploy/. It runs only read-only Docker
  * commands and writes that one file; deploy/.env and the stack are left as
  * they are.
  *
@@ -29,19 +31,21 @@
  * A refused init leaves the checkout as it found it, deploy/.melete included.
  */
 import { existsSync, readFileSync, rmdirSync } from 'node:fs';
-import { basename, isAbsolute, join } from 'node:path';
+import { basename, isAbsolute, join, posix } from 'node:path';
 import { parseEnvFile } from '../../../../deploy/scripts/provider-settings.ts';
 import { otherCheckouts, type ProjectUse, readProjectUse } from '../compose-project.ts';
 import type { Context, Run } from '../context.ts';
 import {
   BLOBS_S3_FILE,
   channelOf,
+  composeFileIssue,
   createDeployConfig,
   DEFAULT_REGISTRY,
   DEPLOY_FILE,
   type DeployConfig,
   deployConfigSchema,
   EXTERNAL_DB_FILE,
+  isBuiltInComposeFile,
   OVERLAY_FILES,
   type Overlay,
   PROJECT_NAME,
@@ -164,6 +168,34 @@ export function parseServiceImage(image: string): DeployConfig['images'] | null 
   return { registry: match[1] ?? DEFAULT_REGISTRY, tag, channel: channelOf(tag) };
 }
 
+/**
+ * The Compose files the stack was started with beyond the built-in ones, as
+ * paths relative to deploy/, in the order Compose first listed them. A file
+ * the contract cannot name the same way on every machine (another drive, a
+ * space or other character outside letters, digits and `. _ - /`) is refused,
+ * so a hand-started overlay is never dropped without a word.
+ */
+export function adoptedComposeFiles(
+  deployDir: string,
+  containers: readonly ContainerFacts[],
+): string[] {
+  const root = deployDir.replace(/\\/g, '/');
+  const own: string[] = [];
+  for (const container of containers)
+    for (const raw of container.configFiles) {
+      const file = raw.replace(/\\/g, '/');
+      if (isBuiltInComposeFile(posix.basename(file))) continue;
+      const path = isAbsolute(raw) || /^[A-Za-z]:\//.test(file) ? posix.relative(root, file) : file;
+      if (!own.includes(path)) own.push(path);
+    }
+  const refused = own.find((path) => composeFileIssue(path) !== null);
+  if (refused !== undefined)
+    throw new InitRefusal(
+      `The stack runs with the Compose file ${refused}, which ${DEPLOY_FILE} can list only as a path relative to deploy/ with letters, digits and . _ - / in it. Move or rename the file, start the stack with it again, and run this again.`,
+    );
+  return own;
+}
+
 /** The contract the running containers describe. */
 export function adoptedConfig(
   project: string,
@@ -171,6 +203,7 @@ export function adoptedConfig(
   env: Record<string, string>,
   disk: Partial<DeployConfig['disk']>,
   backupDir?: string,
+  deployDir?: string,
 ): DeployConfig {
   const stack = containers.filter((container) => !container.oneoff);
   const services = stack.filter((container) => container.service === 'melete');
@@ -195,6 +228,8 @@ export function adoptedConfig(
   const files = new Set(
     stack.flatMap((container) => container.configFiles.map((f) => basename(f.replace(/\\/g, '/')))),
   );
+  // Files of the installation's own, such as a brand overlay, are kept in the contract.
+  const own = deployDir ? adoptedComposeFiles(deployDir, stack) : [];
   const names = new Set(stack.map((container) => container.service));
   const overlays = (Object.entries(OVERLAY_FILES) as [Overlay, string][])
     .filter(([name, file]) => files.has(file) || (name !== 'tailscale-kernel' && names.has(name)))
@@ -224,6 +259,7 @@ export function adoptedConfig(
           region: setting('MELETE_BLOB_S3_REGION'),
         }
       : { store: 'local' },
+    ...(own.length ? { compose_files: own } : {}),
   });
 }
 
@@ -286,6 +322,7 @@ async function initialize(context: Context, args: readonly string[]): Promise<Ex
           env,
           options.disk,
           options.backupDir,
+          context.deployDir,
         );
         await createDeployConfig(context.deployDir, config);
         context.out(`Wrote ${DEPLOY_FILE} from the running stack:\n${renderDeployConfig(config)}`);

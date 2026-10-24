@@ -396,7 +396,10 @@ async function contextFor(sql: Sql, subject: WorkspaceSubject, workRoot: string)
   });
   const specFor = (session: string): SandboxSpec => ({
     image: subject.image ?? 'base',
-    egress: { kind: 'deny_all' },
+    // The narrowest policy the adapter enforces.
+    egress: provider.capabilities.egress.includes('deny_all')
+      ? { kind: 'deny_all' }
+      : { kind: 'open' },
     region: null,
     lifetimeSeconds: 600,
     idleSeconds: null,

@@ -29,6 +29,7 @@ import {
   toolOffered,
 } from '../experience/access.ts';
 import { appendToolTrace } from '../experience/tools.ts';
+import { stillGiven } from '../gateway/given-skills.ts';
 import { attemptContextBudget } from '../jobs/context-budget.ts';
 import { connectionServesJob, jobConnectionAudience } from '../jobs/scopes.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
@@ -36,6 +37,15 @@ import { spaceStanding } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
 import { connectorDenied, spaceRulesFor, toolAllowedHere } from '../spaces/policy.ts';
 import { ASK_PERSON_TOOL } from './ask-person.ts';
+import {
+  keepSaidLevels,
+  levelsFor,
+  personOf,
+  roomWork,
+  sendsFromChat,
+  type TaskKind,
+  type TaskLevel,
+} from './autonomy.ts';
 import { CHASE_FOLLOW_UP_TOOL } from './chase.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -43,6 +53,7 @@ import { gist, relevance, terms, words } from './lexical.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
 import { hasResumableAction, RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
+import { toldToSend } from './told.ts';
 import { steerWebTools, webScores } from './web-steer.ts';
 
 export type CatalogSource = 'connector' | 'capability' | 'skill' | 'mcp';
@@ -185,7 +196,7 @@ export const SAY_TOOL: ToolSpec = {
 export const SKILL_READ_TOOL: ToolSpec = {
   name: SKILL_READ_TOOL_NAME,
   description:
-    'Read the full instructions of a skill listed in your skill index, by its exact name. Read one before doing the kind of work it describes.',
+    'Read the full instructions of a skill listed under "Other skills you can read", by its exact name, before doing the kind of work it describes. It only returns text and does no work. Skills given in full in your instructions are already there: never read those.',
   input_schema: {
     type: 'object',
     properties: { name: { type: 'string', minLength: 1, maxLength: 80 } },
@@ -224,6 +235,8 @@ export type CoreSelectionContext = {
   followable?: boolean;
   /** The attempt may read skills it was not given in full, so the reader must be on offer. */
   readable?: boolean;
+  /** The tools the job's previous attempt was offered, kept where the message gives no reason to swap them. */
+  kept?: ReadonlySet<string>;
 };
 
 const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
@@ -282,6 +295,8 @@ export function selectCore(
   budget = CORE_CATALOG_TOKENS,
   context: CoreSelectionContext = {},
   indexBudget = CATALOG_INDEX_TOKENS,
+  /** Named in the index but never offered: the skills this attempt was given in full. */
+  indexedOnly: readonly CatalogItem[] = [],
 ): ToolSpec[] {
   if (!Number.isSafeInteger(budget) || budget < toolTokens(META_TOOLS))
     throw new Error('Core catalog budget cannot hold discovery tools');
@@ -298,6 +313,11 @@ export function selectCore(
     .map((item) => ({ item, score: relevance(query, item.entry) }));
   // A browser tool ranks at least as high as the computer's best, and ahead of it.
   const lifted = webScores(healthy.map(({ item, score }) => ({ name: item.tool.name, score })));
+  // The tools lead a Claude request's cached prefix, so a first catalog that
+  // differs from the last attempt's writes the whole prompt to the cache
+  // again. A tool the message points at still takes its place; the room it
+  // leaves goes to what the last attempt had before anything else.
+  const kept = (item: CatalogItem) => Number(context.kept?.has(item.tool.name) === true);
   const scored = healthy
     .map(({ item, score }) => ({
       item,
@@ -310,6 +330,7 @@ export function selectCore(
         granted(b.item) - granted(a.item) ||
         b.score - a.score ||
         Number(lifted.has(b.item.tool.name)) - Number(lifted.has(a.item.tool.name)) ||
+        kept(b.item) - kept(a.item) ||
         Number(b.item.core) - Number(a.item.core) ||
         b.item.uses - a.item.uses ||
         compare(a.item.entry.name, b.item.entry.name),
@@ -376,10 +397,11 @@ export function selectCore(
     else siblings.some((other) => add(item, other));
   }
   // Relevance decides which tools make the cut, never where they stand. The
-  // tool definitions follow the system prompt in the provider's cached prefix,
-  // so the same tools are listed in the same order on every turn whatever the
-  // latest message says: pinned first, granted ahead of a server's own, then by
-  // name, which also keeps `browser.*` ahead of `computer.*` (`web-steer.ts`).
+  // tool definitions are in the provider's cached prefix (ahead of the system
+  // prompt on Claude), so the same tools are listed in the same order on every
+  // turn whatever the latest message says: pinned first, granted ahead of a
+  // server's own, then by name, which also keeps `browser.*` ahead of
+  // `computer.*` (`web-steer.ts`).
   const rank = new Map(scored.map((entry) => [entry.item.tool, entry]));
   const placed = (tool: ToolSpec) => {
     const entry = rank.get(tool);
@@ -395,10 +417,24 @@ export function selectCore(
     }),
   );
   const loader = tools.find((tool) => tool.name === 'load_tool');
-  const rest = scored.map((entry) => entry.item).filter((item) => !chosen.has(item));
+  // When the index cannot name them all, which ones it keeps never depends on
+  // the latest message, and the ones kept are named in a fixed order: the
+  // index is part of a tool definition, and a Claude request's cached prefix
+  // starts with the tools, so an index that followed the message made every
+  // turn write the whole prompt to the cache again, system prompt included.
+  // What the person granted comes first, then the local core, then by name.
+  // A skill given in full this turn is named too, so the turn's choice of
+  // skills leaves the index as it was.
+  const rest = [
+    ...scored.map((entry) => entry.item).filter((item) => !chosen.has(item)),
+    ...indexedOnly,
+  ].sort(
+    (a, b) =>
+      granted(b) - granted(a) ||
+      Number(b.core) - Number(a.core) ||
+      compare(a.entry.name, b.entry.name),
+  );
   if (loader && rest.length > 0 && indexBudget > 0) {
-    // The likeliest are kept when the index cannot name them all, and the ones
-    // kept are named in a fixed order, for the same reason as the tools.
     const listing = (shown: number) => {
       const named = rest
         .slice(0, shown)
@@ -446,6 +482,8 @@ export type CatalogOptions = {
   nativeTools?: readonly ToolSpec[];
   /** Whether a chase's scope still covers a follow-up, so its tool is offered. */
   followable?: (tx: Query, job: LockedJob) => Promise<boolean>;
+  /** The job's person's level for each kind of task, with the operator's defaults. */
+  taskLevels?: (tx: Query, jobId: string) => Promise<ReadonlyMap<TaskKind, TaskLevel>>;
 };
 
 /**
@@ -562,6 +600,17 @@ export class ToolCatalog {
         .filter((row) => !(access.allowed && !access.allowed.includes(row.id)))
         .map((row) => ({ provider: String(row.provider), scopes: row.scopes })),
     );
+    // A level the person set in the message being answered counts from the start.
+    await keepSaidLevels(tx, claims.attempt_id);
+    // A send the person asked for in this turn is offered, and so is one whose
+    // kind of task they let go on its own sometimes; otherwise it is drafted.
+    const told = access.chat && (await toldToSend(tx, claims.attempt_id));
+    // A room's work keeps its own rule: only what the person said to send.
+    const levels =
+      access.chat && !told && !(await roomWork(tx, job.id))
+        ? await (this.options.taskLevels?.(tx, job.id) ?? levelsFor(tx, await personOf(tx, job.id)))
+        : null;
+    const sends = (name: string) => told || (levels !== null && sendsFromChat(name, false, levels));
     for (const row of connections) {
       // A conversation's persona bounds which connections and verbs are offered.
       if (!connectionOffered(access, row.id)) continue;
@@ -572,7 +621,7 @@ export class ToolCatalog {
       if (connector.capability?.available === false) continue;
       if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
-        if (!toolOffered(access, declared.name)) continue;
+        if (!toolOffered(access, declared.name, sends(declared.name))) continue;
         if (!toolAllowedHere(rules, String(row.provider), declared.name)) continue;
         // Made by commands in the computer through the egress relay, never offered as a tool.
         if (isEgressTool(declared.name)) continue;
@@ -622,14 +671,13 @@ export class ToolCatalog {
         });
       }
     }
+    // A skill this attempt was given in full is already in its instructions.
+    // Offering its own tool as well had the model call it to read the same
+    // words again: a round trip before the work began, with nothing new in it.
+    const given = await givenInFull(tx, claims.attempt_id);
     for (const skill of skills) {
-      const tool: ToolSpec = {
-        name: `skills.${skill.frontmatter.name.replaceAll('-', '_')}`,
-        description: skill.frontmatter.description,
-        input_schema: { type: 'object', properties: {}, additionalProperties: false },
-        effect_class: 'read',
-        connection_id: null,
-      };
+      if (given.has(skill.frontmatter.name)) continue;
+      const { tool, entry } = skillItem(skill);
       if (
         !(await accept(tool.name, null, () => {
           if (
@@ -640,19 +688,7 @@ export class ToolCatalog {
         }))
       )
         continue;
-      items.push({
-        original: tool.name,
-        tool,
-        entry: manifestEntry(
-          tool,
-          skill.frontmatter.tools,
-          'skill',
-          'ok',
-          skill.frontmatter.triggers,
-        ),
-        core: false,
-        uses: 0,
-      });
+      items.push({ original: tool.name, tool, entry, core: false, uses: 0 });
     }
     const resumable = await hasResumableAction(tx, job);
     for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
@@ -769,11 +805,25 @@ export class ToolCatalog {
       typeof attempt?.model === 'string' ? attempt.model : '',
       job.budget,
     );
+    const given = await givenInFull(tx, claims.attempt_id);
+    const indexedOnly = given.size
+      ? (await this.skills(tx, job, claims))
+          .filter((skill) => given.has(skill.frontmatter.name))
+          .map((skill) => ({ ...skillItem(skill), core: false, uses: 0 }))
+      : [];
+    const [last] = await tx`select c.core from attempt a
+      join attempt_tool_context c on c.attempt_id = a.id
+      where a.job_id = ${claims.job_id} and a.id <> ${claims.attempt_id}
+      order by a.epoch desc limit 1`;
+    const kept = Array.isArray(last?.core)
+      ? new Set((last.core as ToolSpec[]).map((tool) => tool.name))
+      : undefined;
     const core = selectCore(
       items,
       this.options.coreTokenBudget ?? budget.core_catalog_tokens,
-      await this.turn(tx, job, claims, access),
+      { ...(await this.turn(tx, job, claims, access)), kept },
       budget.catalog_index_tokens,
+      indexedOnly,
     );
     await tx`insert into attempt_tool_context (attempt_id, job_id, core, loaded)
       values (${claims.attempt_id}, ${claims.job_id}, ${JSON.stringify(core)}::jsonb, '[]'::jsonb)`;
@@ -957,7 +1007,18 @@ export class ToolCatalog {
     z.string().min(1).max(300).parse(name);
     return this.within(claims, async (tx, _job, items, context) => {
       const item = items.find((entry) => entry.entry.name === name);
-      if (!item) throw new BrokerFault('unknown_tool');
+      if (!item) {
+        // The index names the skills given in full too; there is nothing to load
+        // for one. A long turn's compaction can drop it from the instructions,
+        // and the reader still has it then.
+        const given = await givenInFull(tx, claims.attempt_id);
+        if ([...given].some((skill) => `skills.${skill.replaceAll('-', '_')}` === name))
+          throw new BrokerFault(
+            'unknown_tool',
+            `This skill was given in full in this turn's instructions, under "How to do this kind of work": follow it there. If it is no longer there, read it with ${SKILL_READ_TOOL_NAME}.`,
+          );
+        throw new BrokerFault('unknown_tool');
+      }
       if (item.entry.health === 'failing') throw new BrokerFault('connector_unavailable');
       if (!toolSchemaFits(item.tool.input_schema))
         throw new BrokerFault(
@@ -1008,6 +1069,16 @@ export class ToolCatalog {
           : `skills.${item.frontmatter.name.replaceAll('-', '_')}` === name,
       );
       if (!skill) throw new BrokerFault('unknown_tool');
+      // A skill the agent still holds in full, at this version, is in its
+      // instructions already: its words again would cost a long tool result and
+      // say nothing new, and a second "Used the skill" entry would tell the
+      // person nothing. One a compaction left out, or that changed since, is
+      // read in full (gateway/given-skills.ts).
+      if (reading && stillGiven(claims.attempt_id, skill.frontmatter.name, skill.body))
+        return {
+          name: skill.frontmatter.name,
+          body: 'This skill is already in your instructions, in full, under "How to do this kind of work". Follow it from there; there is nothing more to read.',
+        };
       // The conversation shows the read as a tool entry naming the skill.
       const at = new Date().toISOString();
       const title = plainSkillTitle(skill.frontmatter.name);
@@ -1046,6 +1117,42 @@ const COMMAND_LINE_WORDS: Record<string, { words: string[]; commands: string }> 
   aws: { words: ['aws', 'amazon', 's3', 'ec2', 'lambda'], commands: 'aws' },
   npm: { words: ['npm', 'package', 'registry'], commands: 'npm' },
 };
+
+/** A skill as a catalog entry: its own read tool, named after it. */
+function skillItem(
+  skill: SourcedSkill,
+): Pick<CatalogItem, 'tool' | 'entry'> & { original: string } {
+  const tool: ToolSpec = {
+    name: `skills.${skill.frontmatter.name.replaceAll('-', '_')}`,
+    description: skill.frontmatter.description,
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    effect_class: 'read',
+    connection_id: null,
+  };
+  return {
+    original: tool.name,
+    tool,
+    entry: manifestEntry(tool, skill.frontmatter.tools, 'skill', 'ok', skill.frontmatter.triggers),
+  };
+}
+
+/**
+ * The names of the skills an attempt was given in full, as recorded when it
+ * started. Read through the caller's transaction; an attempt with no record
+ * was given none.
+ */
+async function givenInFull(tx: Query, attemptId: string): Promise<Set<string>> {
+  const [row] = await tx`select versions->'skills' as skills from learning_attempt
+    where attempt_id = ${attemptId}`;
+  const skills = Array.isArray(row?.skills) ? (row.skills as unknown[]) : [];
+  return new Set(
+    skills.flatMap((skill) =>
+      skill && typeof skill === 'object' && typeof (skill as { name?: unknown }).name === 'string'
+        ? [(skill as { name: string }).name]
+        : [],
+    ),
+  );
+}
 
 /**
  * The command-line accounts (GitHub, for one) this job may use: active in its

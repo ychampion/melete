@@ -15,13 +15,15 @@ import { sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
-import { PROCESS_WATCH_SQL } from './triggers.ts';
+import { UNDERWAY_WATCH_SQL } from './triggers.ts';
 
 export type StandingWorkSettings = {
   /** Days unseen before a person's standing work rests. Unset: it never rests. */
   restAfterDays?: number;
   /** Routines and repeating work one person may keep. Unset: no limit. */
   routinesPerPerson?: number;
+  /** Pieces of long work (runs) one space may have going at once. Unset: no limit. */
+  activeRunsPerSpace?: number;
 };
 
 /** What the person reads once their routines are back on. */
@@ -70,7 +72,7 @@ export async function routinesKept(
     where j.principal_id = ${principalId}
       and j.state not in ${TERMINAL}
       and (${except ?? null}::text is null or j.id <> ${except ?? null})
-      and not (${sql.raw(PROCESS_WATCH_SQL('t'))})`);
+      and not (${sql.raw(UNDERWAY_WATCH_SQL('t'))})`);
   return Number((row as { n?: unknown } | undefined)?.n ?? 0);
 }
 
@@ -80,7 +82,7 @@ export async function alreadyStanding(
   jobId: string,
 ): Promise<boolean> {
   const [row] = await tx.execute(sql`select 1 as standing from trigger t
-    where t.job_id = ${jobId} and not (${sql.raw(PROCESS_WATCH_SQL('t'))}) limit 1`);
+    where t.job_id = ${jobId} and not (${sql.raw(UNDERWAY_WATCH_SQL('t'))}) limit 1`);
   return Boolean(row);
 }
 
@@ -173,7 +175,7 @@ async function record(
       from job j
       where j.id = t.job_id and j.principal_id = ${principalId}
         and j.state not in ${TERMINAL} and t.enabled
-        and not (${sql.raw(PROCESS_WATCH_SQL('t'))})
+        and not (${sql.raw(UNDERWAY_WATCH_SQL('t'))})
       returning t.id`);
     if (!moved.length) return false;
     await tx.execute(

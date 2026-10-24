@@ -9,10 +9,13 @@ import {
   conversationCreate,
   conversationListQuery,
   conversationMessage,
+  conversationMessagesQuery,
   conversationRename,
   conversationTurn,
   decodeConversationCursor,
+  decodeTurnCursor,
   encodeConversationCursor,
+  encodeTurnCursor,
   freeAgentName,
   type SubmissionReceipt,
   sameAgentName,
@@ -53,6 +56,10 @@ import type { WorkspaceTrash } from './workspace-trash.ts';
 const UNDER_WAY = ['queued', 'working', 'streaming', 'stalled', 'needs_you', 'paused'];
 /** Turn statuses whose answer may still grow. */
 const STILL_WRITING = new Set(['queued', 'working', 'streaming', 'stalled']);
+/** How many turns a page of messages holds when `before` is given without `limit`. */
+const DEFAULT_MESSAGE_PAGE = 50;
+/** How many chats of a list page have their view read at once. */
+const LIST_VIEWS_AT_ONCE = 8;
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
   row: JobRow,
@@ -585,8 +592,14 @@ export class ExperienceService {
       .orderBy(desc(activity), desc(job.id))
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
+    // Each chat's view is a few small reads; a page of them is read a few at a time.
     const result: Conversation[] = [];
-    for (const row of page) result.push(await this.view(row));
+    for (let start = 0; start < page.length; start += LIST_VIEWS_AT_ONCE)
+      result.push(
+        ...(await Promise.all(
+          page.slice(start, start + LIST_VIEWS_AT_ONCE).map((row) => this.view(row)),
+        )),
+      );
     const last = page.at(-1);
     return {
       conversations: result,
@@ -641,16 +654,77 @@ export class ExperienceService {
     return { conversation: await this.view({ ...row, agentId }) };
   }
 
-  async messages(spaceId: string, id: string) {
+  /**
+   * A chat's turns, oldest first: all of them, or with `limit` (or `before`)
+   * the newest ones older than `before`, and where the ones before those continue.
+   */
+  async messages(spaceId: string, id: string, raw: unknown = {}) {
     await this.requireThread(spaceId, id);
-    const rows = await this.db
-      .select()
-      .from(experienceTurn)
-      .where(eq(experienceTurn.jobId, id))
-      .orderBy(experienceTurn.createdAt, experienceTurn.id);
-    const files = this.attachments ? await this.attachments.forTurns(id) : new Map();
+    const query = conversationMessagesQuery.parse(raw);
+    const paged = query.limit !== undefined || query.before !== undefined;
+    const limit = query.limit ?? DEFAULT_MESSAGE_PAGE;
+    const before = query.before ? decodeTurnCursor(query.before) : null;
+    const refused = () =>
+      new ServiceError('invalid_cursor', 'Read the chat again from its newest messages.', 400);
+    if (query.before && !before) throw refused();
+    // A cursor names the oldest turn of the page it ended. Turns go only with
+    // their chat, so one that names no turn of this chat came from another chat
+    // or was made up, and is refused. Pages continue from that turn's own time,
+    // to the microsecond, with the id breaking ties: no turn is skipped or shown
+    // twice, and the turns index reads them in order.
+    if (before) {
+      const [anchor] = await this.db
+        .select({ id: experienceTurn.id })
+        .from(experienceTurn)
+        .where(and(eq(experienceTurn.id, before.id), eq(experienceTurn.jobId, id)));
+      if (!anchor) throw refused();
+    }
+    const rows = paged
+      ? (
+          await this.db
+            .select()
+            .from(experienceTurn)
+            .where(
+              and(
+                eq(experienceTurn.jobId, id),
+                before
+                  ? sql`(${experienceTurn.createdAt}, ${experienceTurn.id}) < (select t.created_at, t.id from experience_turn t where t.id = ${before.id})`
+                  : undefined,
+              ),
+            )
+            .orderBy(desc(experienceTurn.createdAt), desc(experienceTurn.id))
+            .limit(limit + 1)
+        ).reverse()
+      : await this.db
+          .select()
+          .from(experienceTurn)
+          .where(eq(experienceTurn.jobId, id))
+          .orderBy(experienceTurn.createdAt, experienceTurn.id);
+    const more = paged && rows.length > limit;
+    const shown = more ? rows.slice(1) : rows;
+    const files = this.attachments
+      ? await this.attachments.forTurns(id, paged ? shown.map((row) => row.id) : undefined)
+      : new Map();
+    const oldest = shown[0];
+    const page = paged
+      ? {
+          next_cursor:
+            more && oldest
+              ? encodeTurnCursor({ created_at: oldest.createdAt.toISOString(), id: oldest.id })
+              : null,
+          total: Number(
+            (
+              await this.db
+                .select({ count: sql<number>`count(*)::int` })
+                .from(experienceTurn)
+                .where(eq(experienceTurn.jobId, id))
+            )[0]?.count ?? 0,
+          ),
+        }
+      : {};
     return {
-      turns: rows.map((row) =>
+      ...page,
+      turns: shown.map((row) =>
         conversationTurn.parse({
           id: row.id,
           conversation_id: row.jobId,

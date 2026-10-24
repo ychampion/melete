@@ -115,29 +115,39 @@ export async function extendHistory(
   signal: AbortSignal,
 ): Promise<AttemptBundle> {
   const jobId = bundle.attempt.job_id;
-  const read = await deps.jobs.transaction(async (tx) => {
-    const [row] = await tx.select().from(job).where(eq(job.id, jobId));
-    const [own] = await tx
-      .select({ cursor: attempt.inputCursor })
-      .from(attempt)
-      .where(eq(attempt.id, bundle.attempt.id));
-    if (!row || !own || row.audience === 'room') return null;
-    const declared = bundle as AttemptBundle & Partial<ContextGenerations>;
-    const generations: ContextGenerations =
-      declared.policy_generation !== undefined && declared.connection_generations
-        ? {
-            policy_generation: declared.policy_generation,
-            connection_generations: declared.connection_generations,
-          }
-        : await readGenerations(tx, row.spaceId);
-    // Only what the claim saw: a message sent since is this attempt's next input.
-    const conversation = await readConversation(tx, row, generations, Number(own.cursor));
-    return { row, generations, ...conversation };
-  });
-  if (!read) return bundle;
-  const limits = transcriptLimits(
-    attemptContextBudget(bundle.model.model, jobBudget.parse(read.row.budget)),
+  // A read, of events the claim already saw: every one of them committed before
+  // it did, so it needs no event order lock and holds up no other writer.
+  const read = await deps.jobs.db.transaction(
+    async (tx) => {
+      const [row] = await tx.select().from(job).where(eq(job.id, jobId));
+      const [own] = await tx
+        .select({ cursor: attempt.inputCursor })
+        .from(attempt)
+        .where(eq(attempt.id, bundle.attempt.id));
+      if (!row || !own || row.audience === 'room') return null;
+      const declared = bundle as AttemptBundle & Partial<ContextGenerations>;
+      const generations: ContextGenerations =
+        declared.policy_generation !== undefined && declared.connection_generations
+          ? {
+              policy_generation: declared.policy_generation,
+              connection_generations: declared.connection_generations,
+            }
+          : await readGenerations(tx, row.spaceId);
+      const limits = transcriptLimits(
+        attemptContextBudget(bundle.model.model, jobBudget.parse(row.budget)),
+      );
+      const fresh = bundle.inputs.new_user_messages;
+      // Only what the claim saw: a message sent since is this attempt's next input.
+      const conversation = await readConversation(tx, row, generations, Number(own.cursor), {
+        maxMessages: limits.maxMessages + fresh.length,
+        freshFrom: Math.min(...fresh.map((message) => Date.parse(message.at))),
+      });
+      return { row, generations, limits, ...conversation };
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
   );
+  if (!read) return bundle;
+  const { limits } = read;
   const freshKeys = new Set(bundle.inputs.new_user_messages.map(messageKey));
   const fresh = read.full.filter(
     (message) => message.role === 'user' && freshKeys.has(messageKey(message)),
@@ -228,7 +238,7 @@ export async function extendHistory(
     }),
   );
   deps.log?.(`history: summarised ${completed} message(s) in ${calls} call(s)`);
-  const bounded = boundHistory(read.full, fresh, stored, limits);
+  const bounded = boundHistory(read.full, fresh, stored, limits, read.settled);
   const { earlier: _built, ...rest } = bundle;
   return {
     ...rest,

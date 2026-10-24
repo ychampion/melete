@@ -1,11 +1,17 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { unavailable } from '@melete/contracts';
+import { DEFAULT_INSTANCE_NAME, unavailable } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { issuePasswordReset, RESET_MINUTES, resetUrl } from '../api/password.ts';
 import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
-import { type AccountMailer, passwordResetMail, signInMail } from './account-mail.ts';
+import { instanceName } from '../names.ts';
+import {
+  type AccountMailer,
+  type MailInstance,
+  passwordResetMail,
+  signInMail,
+} from './account-mail.ts';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -13,7 +19,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
  * What the person signing in is told when no link can be mailed. Setup steps
  * for whoever runs the installation are in its docs, not on the sign-in page.
  */
-const NO_SIGN_IN_MAIL = 'This Melete can’t email a sign-in link. Sign in with your password.';
+const NO_SIGN_IN_MAIL = `This ${instanceName()} can’t email a sign-in link. Sign in with your password.`;
 
 /**
  * The page a sign-in link opens: the sign-in screen, with the token in the
@@ -93,7 +99,14 @@ export class ExperienceSignIn {
     readonly registry: ConnectorRegistry,
     readonly publicUrl?: string,
     readonly mailer?: AccountMailer,
+    /** What the installation calls itself in account mail (`MELETE_INSTANCE_NAME`). */
+    readonly instanceName: string = DEFAULT_INSTANCE_NAME,
   ) {}
+
+  /** Who account mail says it is from: the installation's name, and its public address. */
+  private get instance(): MailInstance {
+    return { name: this.instanceName, publicUrl: this.publicUrl };
+  }
 
   /** Whether account mail can go out at all, for the sign-in page to offer it. */
   async canSend(): Promise<boolean> {
@@ -155,7 +168,7 @@ export class ExperienceSignIn {
     const mailbox = await this.ownMailbox();
     if (!mailbox.ok)
       return unavailable(
-        'This Melete can’t email you a reset link. Ask whoever set up your account to send you one.',
+        `This ${instanceName()} can’t email you a reset link. Ask whoever set up your account to send you one.`,
       );
     if (String(mailbox.owner.email).toLowerCase() === email.toLowerCase()) {
       const { owner, space, connector } = mailbox;
@@ -165,6 +178,7 @@ export class ExperienceSignIn {
           String(owner.email),
           link,
           RESET_MINUTES.email,
+          this.instance,
         );
       void this.issueReset(String(owner.id), mailbox.url, send).catch(failed);
     }
@@ -173,7 +187,7 @@ export class ExperienceSignIn {
 
   private mailReset(account: { id: string; email: string }, url: string, mailer: AccountMailer) {
     return this.issueReset(account.id, url, (link) =>
-      mailer.send(passwordResetMail(account.email, link, RESET_MINUTES.email)),
+      mailer.send(passwordResetMail(account.email, link, RESET_MINUTES.email, this.instance)),
     );
   }
 
@@ -213,7 +227,7 @@ export class ExperienceSignIn {
         .then((account) =>
           account
             ? this.issueLink(account.id, null, url, (link) =>
-                mailer.send(signInMail(account.email, link)),
+                mailer.send(signInMail(account.email, link, this.instance)),
               )
             : undefined,
         )
@@ -232,7 +246,8 @@ export class ExperienceSignIn {
         generation: Number(row.generation),
       },
       mailbox.url,
-      (link) => connector.sendSignInLink(String(space.id), String(owner.email), link),
+      (link) =>
+        connector.sendSignInLink(String(space.id), String(owner.email), link, this.instance),
     ).catch((error) => console.error('sign-in mail', String(error)));
     // The same answer whether or not the mail went: the sign-in page says to check the inbox.
     return { status: 'ok' as const };

@@ -73,6 +73,7 @@ type Options = {
   mailer?: AccountMailer;
   publicUrl?: string | null;
   multiplayer?: boolean;
+  passwordSignIn?: boolean;
 };
 
 async function harness(options: Options = {}) {
@@ -108,6 +109,14 @@ async function harness(options: Options = {}) {
       ? {}
       : { MELETE_PUBLIC_URL: options.publicUrl ?? 'https://melete.test' }),
     ...(options.multiplayer ? { MELETE_PREVIEW_MULTIPLAYER: 'true' } : {}),
+    ...(options.passwordSignIn === false
+      ? {
+          MELETE_PASSWORD_SIGNIN: 'off',
+          MELETE_OIDC_ISSUER: 'https://identity.example.test',
+          MELETE_OIDC_CLIENT_ID: 'test-client',
+          MELETE_OIDC_CLIENT_SECRET: 'test-secret',
+        }
+      : {}),
     ...CAPS,
   });
   const spending = spendingFromEnv(sql, env);
@@ -221,20 +230,23 @@ withDb('the operator console', () => {
     expect(gone.status).toBe(202);
 
     const routes = operatorRoutes(h, member.id);
-    // Nine routes, each in the published document.
+    // The console's routes and the operator's entitlement routes are all owner-only.
     expect(
       routes.map((route) => `${route.method} ${route.path.replace(member.id, '{id}')}`).sort(),
     ).toEqual([
       'DELETE /operator/people/{id}',
+      'DELETE /operator/people/{id}/entitlements/:key',
       'GET /operator/audit',
       'GET /operator/overview',
       'GET /operator/people',
+      'GET /operator/people/{id}/entitlements',
       'GET /operator/people/{id}/removal/preview',
       'POST /operator/people',
       'POST /operator/people/{id}/disable',
       'POST /operator/people/{id}/enable',
       'POST /operator/people/{id}/password-reset',
       'PUT /operator/people/{id}/caps',
+      'PUT /operator/people/{id}/entitlements/:key',
     ]);
     const before = await h.sql`select count(*)::int as n from event`;
     for (const route of routes) {
@@ -255,7 +267,7 @@ withDb('the operator console', () => {
       expect([label, asMember.status, await errorCode(asMember)]).toEqual([
         label,
         403,
-        'owner_required',
+        route.path.includes('/entitlements') ? 'scope_denied' : 'owner_required',
       ]);
       const asGuest = await h.call(guest, route.path, route.method, route.body);
       expect([label, asGuest.status, await errorCode(asGuest)]).toEqual([
@@ -288,6 +300,59 @@ withDb('the operator console', () => {
     for (const route of operatorRoutes(h, guestId))
       expect((await h.call(guest, route.path, route.method, route.body)).status).toBe(401);
     expect((await h.call(owner, '/operator/people')).status).toBe(200);
+  });
+
+  test('a linked identity stays active after its sessions end', async () => {
+    const h = await harness();
+    const { owner } = await setUp(h);
+    expect(
+      (await createAccount(h.sql, 'linked@example.test', undefined, { passwordSignIn: false })).ok,
+    ).toBe(true);
+    const [linked] = await h.sql<
+      { id: string }[]
+    >`select id from principal where email = 'linked@example.test'`;
+    if (!linked) throw new Error('no linked account');
+    await h.sql`insert into oidc_identity (issuer, subject, principal_id)
+      values ('https://identity.example.test', 'linked-person', ${linked.id})`;
+    const people = operatorPeople.parse(await (await h.call(owner, '/operator/people')).json());
+    const person = people.people.find((entry) => entry.id === linked.id);
+    expect(person?.status).toBe('active');
+    expect(person?.sessions).toBe(0);
+  });
+
+  test('password links are refused without making accounts or secrets when password sign-in is off', async () => {
+    const sent: AccountMail[] = [];
+    const h = await harness({
+      passwordSignIn: false,
+      mailer: { send: async (mail) => void sent.push(mail) },
+    });
+    const settings = { passwordSignIn: false };
+    expect((await createAccount(h.sql, ownerEmail, undefined, settings)).ok).toBe(true);
+    const [row] = await h.sql<{ id: string }[]>`select id from owner limit 1`;
+    if (!row) throw new Error('no owner');
+    const owner = await sessionFor(h, row.id, row.id);
+    expect((await createAccount(h.sql, 'member@example.test', undefined, settings)).ok).toBe(true);
+    const [member] = await h.sql<
+      { id: string }[]
+    >`select id from principal where email = 'member@example.test'`;
+    if (!member) throw new Error('no member');
+    const cookie = await sessionFor(h, member.id, row.id);
+    const [before] = await h.sql`select count(*)::int as n from event`;
+    for (const [path, body] of [
+      ['/operator/people', { email: 'never-made@example.test' }],
+      [`/operator/people/${member.id}/password-reset`, {}],
+    ] as const) {
+      const asMember = await h.call(cookie, path, 'POST', body);
+      expect([asMember.status, await errorCode(asMember)]).toEqual([403, 'owner_required']);
+      const response = await h.call(owner, path, 'POST', body);
+      expect([response.status, await errorCode(response)]).toEqual([403, 'password_signin_off']);
+    }
+    expect(
+      await h.sql`select 1 from principal where email = 'never-made@example.test'`,
+    ).toHaveLength(0);
+    expect(await h.sql`select 1 from password_reset`).toHaveLength(0);
+    expect((await h.sql`select count(*)::int as n from event`)[0]?.n).toBe(before?.n);
+    expect(sent).toHaveLength(0);
   });
 
   test('an invite without account mail hands back a link to pass on, which opens as an invite', async () => {

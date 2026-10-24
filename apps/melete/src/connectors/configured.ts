@@ -23,8 +23,10 @@ import { createCommandLineConnector } from '../egress/connector.ts';
 import { egressRecorder } from '../egress/records.ts';
 import { egressCredentialsFromEnv } from '../egress/wiring.ts';
 import type { Env } from '../env.ts';
+import { type Features, installationFeatures } from '../features.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import type { GatewaySpending } from '../gateway/types.ts';
+import { mcpServicesFromEnv } from '../pages/config.ts';
 import { multiplayerEnabled } from '../rooms/preview.ts';
 import type { DockerSandboxSettings } from '../sandbox/adapters/docker.ts';
 import {
@@ -39,7 +41,12 @@ import { leftOnComputer, removeMovedFromComputers } from '../sandbox/move-out.ts
 import { SandboxProcesses } from '../sandbox/processes.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
-import { ManagedCallMeter } from '../signals/managed-calls.ts';
+import {
+  CAP_WORDS,
+  ComposioCapReached,
+  ComposioMeter,
+  meterSettings,
+} from '../signals/managed-calls.ts';
 import { type BlobStore, configuredBlobStore } from '../storage/blob.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
 import { type BrowserWorkerEndpoint, BrowserWorkerPool } from '../workers/browser/client.ts';
@@ -50,16 +57,19 @@ import { createArtifactsConnector } from './artifacts.ts';
 import { createBrowserConnector } from './browser.ts';
 import { builtinEnvironment } from './builtin.ts';
 import { CalendarConnector } from './calendar.ts';
-import { ComposioClient } from './composio.ts';
+import { ComposioClient, TOOLKIT_SLUG } from './composio.ts';
+import { ComposioAppConnector } from './composio-app.ts';
 import {
-  composioProxyFetch,
+  composioToolFetch,
   MANAGED_GOOGLE_BASES,
   MANAGED_READS,
+  MANAGED_TOOLKITS,
   MANAGED_WRITES,
+  type ManagedRule,
   managedAccess,
   namesManagedAuthority,
-  type ProxyRule,
 } from './composio-fetch.ts';
+import { ComposioRunner } from './composio-sessions.ts';
 import { EmailConnector } from './email.ts';
 import { createExecConnector } from './exec.ts';
 import { ConnectorFaultError } from './faults.ts';
@@ -70,7 +80,7 @@ import { GoogleCalendarConnector } from './google-calendar.ts';
 import { GoogleDriveConnector } from './google-drive.ts';
 import { IcsFeedConnector } from './ics-feed.ts';
 import { mcpServerConfig } from './mcp.ts';
-import { openConfiguredMcpConnector } from './mcp-connector.ts';
+import { type McpCallServices, openConfiguredMcpConnector } from './mcp-connector.ts';
 import {
   openStdioMcpConnector,
   openStoredStdioConnector,
@@ -236,6 +246,8 @@ export async function configuredBrowserSessions(options: {
 
 export type ConnectorOptions = {
   sql: Sql;
+  /** What a connected MCP server's calls carry: pages, identity, entitlements. */
+  mcpServices?: McpCallServices;
   workRoot: string;
   spacesRoot: string;
   /** How many days a delete stays in the trash (`MELETE_TRASH_DAYS`). */
@@ -255,6 +267,11 @@ export type ConnectorOptions = {
    * connection offers nothing. Left out, it is read from `env`.
    */
   multiplayer?: boolean;
+  /**
+   * The features the operator has on (features.ts). Off, the browser, texting
+   * and the computer connections offer no tool. Left out, read from `env`.
+   */
+  features?: Features;
   /**
    * Whether a space or agent is private. A private one reads no public web
    * pages beyond what a job was explicitly given. Without it, none is.
@@ -294,10 +311,11 @@ export type ConnectorOptions = {
    */
   google?: { client: AccountClient; endpoints?: GoogleEndpoints };
   /**
-   * Composio, for Google accounts signed in through it (`COMPOSIO_API_KEY`).
-   * Without it, such a connection offers nothing. `meter` counts each call.
+   * Composio, for accounts and apps signed in through it (`COMPOSIO_API_KEY`).
+   * Without it, such a connection offers nothing. `meter` counts each call
+   * and holds it to the operator's limits; `runner` runs every tool call.
    */
-  composio?: { client: ComposioClient; meter?: ManagedCallMeter };
+  composio?: { client: ComposioClient; meter?: ComposioMeter; runner?: ComposioRunner };
   /** The operator's Microsoft client, as for Google; `tenant` is `common` unless named. */
   microsoft?: { client: AccountClient; tenant?: string; endpoints?: MicrosoftEndpoints };
   /** Where a command-line account's own check goes. Only a test replaces it. */
@@ -330,6 +348,8 @@ export type SandboxRuntimeOptions = {
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   /** The engine the docker adapter runs sandboxes on, and their limits. */
   docker?: DockerSandboxSettings;
+  /** The operator's caps on Maritime computers; unset, Maritime is uncapped. */
+  maritimeCaps?: { maxComputers: number | null; maxAwake: number | null };
 };
 
 /** What a connector is built from: the persisted row, never a request payload. */
@@ -364,6 +384,13 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('google_drive'), account: z.email(), ...managedFields }),
   z.object({ kind: z.literal('outlook_mail'), account: z.email() }),
   z.object({ kind: z.literal('outlook_calendar'), account: z.email() }),
+  z.object({
+    kind: z.literal('composio_app'),
+    toolkit: z.string().regex(TOOLKIT_SLUG),
+    title: z.string().min(1).max(80),
+    via: z.literal('composio'),
+    connected_account_id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  }),
   storedSandboxConnection,
   z.object({ kind: z.literal('sms'), sms: smsConnectionConfig }),
 ]);
@@ -373,6 +400,15 @@ const storedConfiguration = z.discriminatedUnion('kind', [
  * in an owner-audience space and never to a public compartment, which is the
  * rule an installed MCP server already follows.
  */
+/** The plain sentence for a spent limit, when that is why a call stopped. */
+function capReached(error: unknown): string | null {
+  for (let at = error, depth = 0; at && depth < 5; depth++) {
+    if (at instanceof ComposioCapReached) return CAP_WORDS[at.dimension];
+    at = (at as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
 function ownerOnly<T extends Connector>(connector: T): T {
   return Object.assign(connector, {
     catalog: { ...connector.catalog, audience: 'owner' as const },
@@ -407,6 +443,9 @@ export class ConnectorFactory {
       modalRefusal: sandbox.modalRefusal,
       ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
       ...(sandbox.docker ? { docker: sandbox.docker } : {}),
+      ...(sandbox.maritimeCaps
+        ? { maritimeCaps: { sql: this.options.sql, ...sandbox.maritimeCaps } }
+        : {}),
     });
   }
 
@@ -455,6 +494,12 @@ export class ConnectorFactory {
           }
         : undefined);
     const stored = setting ? undefined : storedConfiguration.safeParse(row.configuration).data;
+    // A feature the operator turned off offers the agent none of its tools; the
+    // rows stay as they are, so turning it on again brings them back.
+    const features = options.features ?? installationFeatures(options.env ?? process.env);
+    if (row.provider === 'web' && setting?.kind === 'browser' && !features.browser)
+      return undefined;
+    if (row.provider === 'twilio' && stored?.kind === 'sms' && !features.sms) return undefined;
     if (row.provider === 'generation') {
       // A capability is registered like any other connector, so a generation
       // call takes the path approval, fencing, budget and idempotency already
@@ -603,11 +648,17 @@ export class ConnectorFactory {
         snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
         ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
         ...(sandbox.docker ? { docker: sandbox.docker } : {}),
+        ...(sandbox.maritimeCaps
+          ? { maritimeCaps: { sql: options.sql, ...sandbox.maritimeCaps } }
+          : {}),
       });
       this.sandboxProviders.set(row.id, {
         adapter: config.adapter,
         provider: opened.provider,
       });
+      // The computer turned off: the agent is given none, while the provider is
+      // still kept above, so the sweep and a removal can stop what is running.
+      if (!features.computer) return undefined;
       const connector = createSandboxExecConnector({
         sessions: sandbox.sessions,
         provider: opened.provider,
@@ -719,6 +770,21 @@ export class ConnectorFactory {
               }
             : undefined;
       return ownerOnly(createCommandLineConnector(adapter as never, health ? { health } : {}));
+    }
+    if (stored?.kind === 'composio_app' && row.provider === 'composio') {
+      const composio = this.options.composio;
+      if (!composio) return undefined;
+      return ownerOnly(
+        new ComposioAppConnector({
+          id: row.id,
+          spaceId: row.spaceId,
+          toolkit: stored.toolkit,
+          title: stored.title,
+          connectedAccountId: stored.connected_account_id,
+          client: composio.client,
+          runner: this.composioRunner(composio),
+        }),
+      );
     }
     if (
       (stored?.kind === 'gmail' && row.provider === 'imap') ||
@@ -870,20 +936,17 @@ export class ConnectorFactory {
       if (!options.stdioLauncher) return undefined;
       // The catalog recorded at installation lets the service start without running the server.
       if (!this.overrides.has(row.id) && storedStdioConnection.safeParse(row.configuration).success)
-        return openStoredStdioConnector(
-          row,
-          options.sql,
-          this.secrets,
-          options.stdioLauncher,
-          options.stdioLifecycle,
-        );
+        return openStoredStdioConnector(row, options.sql, this.secrets, options.stdioLauncher, {
+          ...options.stdioLifecycle,
+          services: options.mcpServices,
+        });
       return openStdioMcpConnector(
         setting.server,
         { connectionId: row.id, spaceId: row.spaceId },
         options.sql,
         this.secrets,
         options.stdioLauncher,
-        options.stdioLifecycle,
+        { ...options.stdioLifecycle, services: options.mcpServices },
       );
     }
     if (row.provider === 'mcp' && setting?.kind === 'mcp')
@@ -892,6 +955,7 @@ export class ConnectorFactory {
         { connectionId: row.id, spaceId: row.spaceId },
         options.sql,
         this.secrets,
+        options.mcpServices,
       );
     if (row.provider === 'caldav' && setting?.kind === 'ics')
       return new CalendarConnector(
@@ -929,16 +993,17 @@ export class ConnectorFactory {
         : stored.kind === 'google_calendar'
           ? 'calendar'
           : 'documents';
+    const runner = this.composioRunner(composio);
     const meter = composio.meter;
-    const fetcher = (rules: readonly ProxyRule[]) =>
-      composioProxyFetch({
-        client: composio.client,
+    const fetcher = (rules: readonly ManagedRule[]) =>
+      composioToolFetch({
+        runner,
         connectedAccountId: accountId,
+        toolkit: MANAGED_TOOLKITS[part],
         rules,
-        ...(meter ? { charge: () => meter.charge(row.spaceId) } : {}),
       });
     const access = managedAccess(composio.client, accountId);
-    const build = (rules: readonly ProxyRule[]): Connector => {
+    const build = (rules: readonly ManagedRule[]): Connector => {
       const config = { id: row.id, spaceId: row.spaceId, access, fetcher: fetcher(rules) };
       if (stored.kind === 'google_drive')
         return new GoogleDriveConnector({ ...config, base: MANAGED_GOOGLE_BASES.drive });
@@ -982,7 +1047,18 @@ export class ConnectorFactory {
               detail:
                 'A tool call cannot name the account it acts for; the connection decides that.',
             });
-          const result = await execute(action, ctx);
+          // A spent limit is said plainly before anything is tried; the count
+          // itself is still taken atomically when each call is sent.
+          if (await meter?.spent('tool_calls'))
+            return { outcome: 'failed', reason: CAP_WORDS.tool_calls, retryable: false };
+          let result: Awaited<ReturnType<Connector['execute']>>;
+          try {
+            result = await execute(action, ctx);
+          } catch (error) {
+            const reached = capReached(error);
+            if (reached) return { outcome: 'failed', reason: reached, retryable: false };
+            throw error;
+          }
           return result.outcome === 'succeeded'
             ? { ...result, receipt: throughComposio(result.receipt) }
             : result;
@@ -998,6 +1074,15 @@ export class ConnectorFactory {
         },
       }),
     );
+  }
+
+  private sharedRunner: ComposioRunner | undefined;
+
+  /** The one runner every Composio connection shares, so each account keeps one session. */
+  composioRunner(composio: NonNullable<ConnectorOptions['composio']>): ComposioRunner {
+    if (composio.runner) return composio.runner;
+    this.sharedRunner ??= new ComposioRunner(composio.client, composio.meter);
+    return this.sharedRunner;
   }
 
   /** Publishing by email uses whichever mailbox connectors are registered, whenever they arrive. */
@@ -1151,6 +1236,10 @@ function sandboxOptions(sql: Sql, env: Env): NonNullable<ConnectorOptions['sandb
     maxPerConnection:
       env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
     modalRefusal: modalEnvironmentRefusal(process.env, env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT),
+    maritimeCaps: {
+      maxComputers: env.MELETE_MARITIME_MAX_COMPUTERS ?? null,
+      maxAwake: env.MELETE_MARITIME_MAX_AWAKE ?? null,
+    },
     // The idle stop asks the process records which containers are in use.
     docker: { ...dockerWithEgress(sql, env), awake: () => sessions.awakeSandboxes('docker') },
   };
@@ -1163,6 +1252,7 @@ export function connectorOptionsFromEnv(
 ): ConnectorOptions {
   return {
     sql,
+    mcpServices: mcpServicesFromEnv(sql, env),
     workRoot: env.MELETE_WORK_DIR,
     spacesRoot: env.MELETE_SPACES_DIR,
     trashDays: env.MELETE_TRASH_DAYS,
@@ -1182,7 +1272,8 @@ export function connectorOptionsFromEnv(
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     attachments: extra.attachments,
     cellIsolated: builtinEnvironment(env).cellIsolated,
-    multiplayer: env.MELETE_PREVIEW_MULTIPLAYER,
+    multiplayer: multiplayerEnabled(env),
+    features: installationFeatures(env),
     // Nothing is created until the first write.
     blobs: configuredBlobStore(env),
     ...(env.MICROSOFT_OAUTH_CLIENT_ID && env.MICROSOFT_OAUTH_CLIENT_SECRET
@@ -1213,7 +1304,7 @@ export function connectorOptionsFromEnv(
               apiKey: env.COMPOSIO_API_KEY,
               baseUrl: env.COMPOSIO_BASE_URL,
             }),
-            meter: new ManagedCallMeter(sql, env.MELETE_MANAGED_CALLS_MONTHLY_CAP ?? null),
+            meter: new ComposioMeter(sql, meterSettings(env)),
           },
         }
       : {}),

@@ -139,6 +139,7 @@ export class OperatorConsole {
         -- an emailed sign-in link, which leaves a session and then their use.
         (p.password_hash is not null or p.passkey is not null
           or exists (select 1 from principal_identity i where i.principal_id = p.id)
+          or exists (select 1 from oidc_identity i where i.principal_id = p.id)
           or exists (select 1 from session s where coalesce(s.principal_id, s.owner_id) = p.id)
           or exists (select 1 from model_usage u where u.principal_id = p.id)) as signs_in,
         exists (select 1 from owner o where o.id = p.id) as is_owner,
@@ -302,6 +303,7 @@ export class OperatorConsole {
     actor: NonNullable<OperatorActor>,
     email: string,
   ): Promise<{ person: OperatorPerson; invite: OperatorOneTimeLink }> {
+    this.requirePasswordSignIn();
     const made = await inviteAccount(this.deps.sql, email);
     if (!made.ok)
       throw new ServiceError(
@@ -339,6 +341,7 @@ export class OperatorConsole {
     actor: NonNullable<OperatorActor>,
     id: string,
   ): Promise<{ person: OperatorPerson; reset: OperatorOneTimeLink }> {
+    this.requirePasswordSignIn();
     const person = await this.changeable(id);
     if (person.status === 'disabled')
       throw new ServiceError(
@@ -373,6 +376,16 @@ export class OperatorConsole {
         ...sent,
       },
     };
+  }
+
+  /** A password link cannot invite or reset someone where passwords are turned off. */
+  private requirePasswordSignIn(): void {
+    if (!this.deps.env.MELETE_PASSWORD_SIGNIN)
+      throw new ServiceError(
+        'password_signin_off',
+        `This installation signs people in with ${this.deps.env.MELETE_OIDC_LABEL}. Create their account with the operator's account command.`,
+        403,
+      );
   }
 
   async setDisabled(

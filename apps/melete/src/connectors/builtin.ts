@@ -34,6 +34,7 @@ import {
   type SandboxConnectionConfig,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { installationFeatures } from '../features.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { newId } from '../ids.ts';
 import { multiplayerEnabled } from '../rooms/preview.ts';
@@ -179,6 +180,8 @@ export function builtinEnvironment(
     OPENAI_COMPAT_BASE_URL?: string;
     MELETE_ENABLE_FAKE_PROVIDER?: boolean;
     MELETE_PREVIEW_MULTIPLAYER?: boolean | string;
+    MELETE_FEATURE_MULTIPLAYER?: string;
+    MELETE_FEATURE_COMPUTER?: string;
   } & Partial<Omit<DockerSandboxEnv, 'MELETE_RUNTIME_ADAPTER'>>,
 ): BuiltinEnvironment {
   const capabilities = capabilitiesFromEnv({
@@ -188,10 +191,13 @@ export function builtinEnvironment(
     MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER ?? false),
   });
   return {
-    sandbox: defaultSandboxConfig({
-      ...env,
-      MELETE_DOCKER_SOCKET: env.MELETE_DOCKER_SOCKET ?? '/var/run/docker.sock',
-    }),
+    // The computer turned off (MELETE_FEATURE_COMPUTER): no space is given one.
+    sandbox: !installationFeatures(env).computer
+      ? null
+      : defaultSandboxConfig({
+          ...env,
+          MELETE_DOCKER_SOCKET: env.MELETE_DOCKER_SOCKET ?? '/var/run/docker.sock',
+        }),
     cellIsolated:
       env.MELETE_RUNTIME_ADAPTER === 'docker' ||
       (env.MELETE_RUNTIME_ADAPTER === 'hermes' && env.MELETE_RUNTIME_SUPERVISOR === 'docker'),

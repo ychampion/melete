@@ -20,7 +20,11 @@ export const VIEW_PREFIX = '/apps/view/';
 
 /** A read of a framed app's file: the one request here that carries no session. */
 export const viewPath = (method: string, path: string): boolean =>
-  (method === 'GET' || method === 'HEAD') && path.startsWith(VIEW_PREFIX);
+  (method === 'GET' || method === 'HEAD') &&
+  (path.startsWith(VIEW_PREFIX) || path.startsWith(PAGE_VIEW_PREFIX));
+
+/** Where a connection's pages are served (pages/routes.ts). */
+export const PAGE_VIEW_PREFIX = '/pages/view/';
 
 /**
  * What a browser may say it is loading (`Sec-Fetch-Dest`) for framed content
@@ -112,8 +116,11 @@ const NOT_SERVED = 'This page could not be shown safely, so it was not shown.';
  * - A refusal or error (this service's own JSON) is sent with the policy added,
  *   so even that cannot run as Melete if a browser opens it.
  */
-export function sealView(response: Response): Response {
-  if (response.ok && !isIsolated(response.headers)) {
+export function sealView(
+  response: Response,
+  sealed: (headers: Headers) => boolean = isIsolated,
+): Response {
+  if (response.ok && !sealed(response.headers)) {
     return new Response(`${NOT_SERVED}\n`, {
       status: 500,
       headers: viewHeaders('text/plain; charset=utf-8'),
@@ -121,7 +128,7 @@ export function sealView(response: Response): Response {
   }
   const headers = new Headers(response.headers);
   headers.delete('set-cookie');
-  if (!isIsolated(headers)) {
+  if (!sealed(headers)) {
     const isolation = viewHeaders(headers.get('content-type') ?? 'text/plain; charset=utf-8');
     for (const [name, value] of isolation) headers.set(name, value);
     headers.delete('access-control-allow-origin');
@@ -143,6 +150,30 @@ export const isolated: MiddlewareHandler = async (c, next) => {
   const sealed = sealView(c.res);
   // Assigning over a response merges the old one's headers into the new, set-cookie
   // included; clearing it first makes the sealed response the whole answer.
+  c.res = undefined;
+  c.res = sealed;
+};
+
+/**
+ * Whether a connection's page carries its policy: one built by `pagePolicy`,
+ * which sandboxes it without `allow-same-origin` and lets only Melete frame it.
+ */
+export function isPageIsolated(headers: Headers): boolean {
+  const policy = headers.get('content-security-policy');
+  return (
+    typeof policy === 'string' &&
+    policy.startsWith('sandbox allow-scripts allow-forms; ') &&
+    policy.endsWith("frame-ancestors 'self'") &&
+    !policy.includes('allow-same-origin') &&
+    !policy.includes('allow-popups') &&
+    !policy.includes('allow-top-navigation')
+  );
+}
+
+/** As `isolated`, for a connection's pages, whose policy names the domains each page may use. */
+export const isolatedPages: MiddlewareHandler = async (c, next) => {
+  await next();
+  const sealed = sealView(c.res, isPageIsolated);
   c.res = undefined;
   c.res = sealed;
 };

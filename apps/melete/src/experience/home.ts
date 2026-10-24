@@ -5,6 +5,7 @@ import {
   experienceSearch,
   experienceTask,
   profileInput,
+  readReplyVoice as storedVoice,
   taskInput,
   unavailable,
 } from '@melete/contracts';
@@ -23,6 +24,7 @@ import {
   task,
 } from '../db/schema.ts';
 import { newId } from '../ids.ts';
+import { assistantName } from '../names.ts';
 import { ownJob } from '../principals/authority.ts';
 import { watchedByDefault } from '../signals/poller.ts';
 import { sourceCursor } from '../signals/schema.ts';
@@ -84,10 +86,9 @@ export type ConnectionLiveness = (
   row: typeof connection.$inferSelect,
 ) => Promise<'running' | 'not_running' | 'unknown'>;
 
-const NOT_RUNNING = 'Installed, but not running right now, so Melete can’t use it yet.';
+const NOT_RUNNING = `Installed, but not running right now, so ${assistantName()} can’t use it yet.`;
 const FAILING = 'Its last check failed. Press Test to check it again, or reconnect it.';
-const NEEDS_ACCESS =
-  'It asked for more access than it was given. Sign in again to grant it, or Melete keeps going without that part.';
+const NEEDS_ACCESS = `It asked for more access than it was given. Sign in again to grant it, or ${assistantName()} keeps going without that part.`;
 
 export class ExperienceHome {
   constructor(
@@ -131,6 +132,7 @@ export class ExperienceHome {
         ),
         onboarded,
         time_zone_confirmed: Boolean(row?.timeZoneConfirmedAt),
+        voice: storedVoice(row?.voice),
         sending_address: await this.sendingAddress(spaceId),
         role: 'owner' as const,
       },
@@ -148,6 +150,7 @@ export class ExperienceHome {
         timeZone: experienceProfile.timeZone,
         dayStart: experienceProfile.dayStart,
         dayEnd: experienceProfile.dayEnd,
+        voice: experienceProfile.voice,
       })
       .from(experienceProfile)
       .where(eq(experienceProfile.spaceId, spaceId));
@@ -167,6 +170,8 @@ export class ExperienceHome {
         }),
         onboarded: true,
         time_zone_confirmed: true,
+        // The space's agent has one voice, and its owner picks it.
+        voice: storedVoice(row?.voice),
         sending_address: null,
         role: 'member' as const,
       },
@@ -215,6 +220,8 @@ export class ExperienceHome {
       onboardedAt: before?.onboardedAt ?? (input.onboarded ? now : null),
       timeZoneConfirmedAt:
         before?.timeZoneConfirmedAt ?? (input.time_zone_confirmed || moved ? now : null),
+      // A save that leaves the voice out keeps the one already picked.
+      voice: input.voice ?? storedVoice(before?.voice),
     };
     await this.db
       .insert(experienceProfile)

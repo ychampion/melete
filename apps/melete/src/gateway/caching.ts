@@ -26,6 +26,7 @@
  * one, never passed on.
  */
 import { createHmac, randomBytes } from 'node:crypto';
+import { isLongTurnNote } from './long-turn.ts';
 import { object } from './metering.ts';
 import type { GatewayPrincipal, GatewayProtocol } from './types.ts';
 
@@ -129,7 +130,15 @@ export function markAnthropicCache(body: Record<string, unknown>): number {
   if (markContent(body, 'system', true)) placed++;
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const newest = object(messages.at(-1));
-  if (newest && markContent(newest, 'content', false)) placed++;
+  if (newest) {
+    // A long-turn note is carried by this request alone. The breakpoint goes
+    // on the block before it, so the next request, which has the same blocks
+    // up to there and no note, reads them from the cache.
+    const content = newest.content;
+    const noted = Array.isArray(content) && content.length > 1 && isLongTurnNote(content.at(-1));
+    const holder = noted ? { content: (content as unknown[]).slice(0, -1) } : newest;
+    if (markContent(holder, 'content', false)) placed++;
+  }
   return placed;
 }
 

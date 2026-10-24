@@ -1,0 +1,19 @@
+# The installation's own icons, logo, manifest and colours. Add it to
+# deploy/melete.deploy.json as "compose_files": ["docker-compose.brand.yml"],
+# or read it with -f docker-compose.yml -f docker-compose.brand.yml.
+#
+# The folder (MELETE_BRAND_SOURCE, ./brand beside this file unless set) is
+# mounted read-only. The web client serves only favicon.*, icons/*, logo.*,
+# manifest.webmanifest and brand.css from it, ahead of its own files; brand.css
+# may set only the design tokens. The service sees the same folder at /brand,
+# so an identity file kept there is MELETE_IDENTITY_FILE=/brand/identity.md;
+# the web client never serves it. docs/DEPLOYMENT.md, "Names and look".
+services:
+  web:
+    environment:
+      MELETE_WEB_BRAND_DIR: /brand
+    volumes:
+      - ${MELETE_BRAND_SOURCE:-./brand}:/brand:ro
+  melete:
+    volumes:
+      - ${MELETE_BRAND_SOURCE:-./brand}:/brand:ro

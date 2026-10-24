@@ -19,6 +19,7 @@ import {
 } from '../experience/account.ts';
 import { adapter } from '../experience/adapter.ts';
 import { useApp } from '../experience/hooks.ts';
+import { instanceName } from '../experience/instance.ts';
 import { linkParam, navigate, useRoute } from '../router.ts';
 
 const panel: React.CSSProperties = { gap: 12, padding: 16 };
@@ -238,7 +239,9 @@ function AskForLink({
           {notice ? <Notice text={notice} /> : null}
         </form>
       ) : (
-        <Notice text="This Melete can’t email you a reset link. Ask whoever set up your account to send you one." />
+        <Notice
+          text={`This ${instanceName()} can’t email you a reset link. Ask whoever set up your account to send you one.`}
+        />
       )}
       <form
         className="col card"

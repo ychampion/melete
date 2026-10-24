@@ -25,10 +25,18 @@ import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import type { AccountMailer } from '../experience/account-mail.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
+import {
+  type Features,
+  installationFeatures,
+  type PersonFeatureSource,
+  personFeatures,
+} from '../features.ts';
+import { IDENTITY_JWKS_PATH } from '../identity/assertion.ts';
 import { newId } from '../ids.ts';
 import { markSeen } from '../jobs/resting.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
 import { type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
+import { PAGE_REPORT_PATH } from '../pages/routes.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import {
   resolveSessionSpace,
@@ -36,16 +44,18 @@ import {
   selectedSpace,
 } from '../principals/session-space.ts';
 import { REACH_WEBHOOK_PATH } from '../reach/routes.ts';
-import { MULTIPLAYER_UNAVAILABLE, multiplayerEnabled } from '../rooms/preview.ts';
+import { MULTIPLAYER_UNAVAILABLE } from '../rooms/preview.ts';
 import { previewPath } from '../sandbox/preview-path.ts';
 import { SMS_WEBHOOK_PATH } from '../sms/routes.ts';
 import { viewPath } from '../viewer/headers.ts';
 import { mountAccountAccess, sessionLabel } from './account-access.ts';
+import { COMPOSIO_EVENTS_PATH, MAX_DELIVERY_BYTES } from './composio.ts';
 import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import { ServiceError } from './errors.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
+import { oidcPublicPath, signInMethods } from './oidc-paths.ts';
 import { mountPassword } from './password.ts';
 import { requireStrongPassword } from './password-policy.ts';
 import {
@@ -67,6 +77,7 @@ const SESSION_BODY_BYTES = 8 * 1024 * 1024;
 const tooLarge = (c: Context) =>
   c.json({ error: { code: 'request_too_large', message: 'The request is too large.' } }, 413);
 const publicBody = bodyLimit({ maxSize: PUBLIC_BODY_BYTES, onError: tooLarge });
+const composioDeliveryBody = bodyLimit({ maxSize: MAX_DELIVERY_BYTES, onError: tooLarge });
 const sessionLimit = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
 /**
  * A file uploaded for a message may be larger than any JSON body: the file at
@@ -313,6 +324,8 @@ export function mountAuth(
     accountMail?: AccountMailer;
     /** Closes the connections of paired computers that ending an account's access disconnected. */
     devicesEnded?: (principalId: string, deviceIds: string[]) => Promise<void>;
+    /** Each person's own feature values; left out, everyone has the installation's. */
+    personFeatures?: PersonFeatureSource;
   },
 ): void {
   const { db, env, registry } = deps;
@@ -320,7 +333,19 @@ export function mountAuth(
   const setupCodeHash = env.MELETE_SETUP_CODE_HASH;
   // Reachable from other machines with no code to ask for: the first visitor is turned away.
   const claimRefused = openClaimRefused(env);
-  const multiplayer = multiplayerEnabled(env);
+  const features = installationFeatures(env);
+  const multiplayer = features.multiplayer;
+  // What the browser asking has on: the installation's features, narrowed by
+  // the signed-in person's own where a source of them is given. A missing,
+  // expired or guest session is answered with the installation's.
+  const featuresFor = async (c: Context): Promise<Features> => {
+    const source = deps.personFeatures;
+    const token = getCookie(c, SESSION_COOKIE);
+    if (!source || !db || !token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return features;
+    const active = await activeSession(db, token);
+    if (!active || active.owner.kind === 'guest') return features;
+    return personFeatures(features, await source(active.owner.id));
+  };
   const signInKinds = multiplayer ? SIGN_IN_KINDS : ['person'];
   const uploadLimit = uploadLimitFor(attachmentSettingsFromEnv(env).fileBytes);
   // Each signed-in request, and each use through another assistant, is the
@@ -420,9 +445,13 @@ export function mountAuth(
         (c.req.path === '/health' ||
           c.req.path === '/health/detail' ||
           c.req.path === '/setup' ||
+          // A connection's server checks the identity assertions Melete hands it.
+          c.req.path === IDENTITY_JWKS_PATH ||
           // An authorization server reads this client's metadata without a session.
           c.req.path === '/oauth/client-metadata.json')) ||
       mcpPublicPath(c.req.method, c.req.path) ||
+      // Signing in through the identity provider, and its back-channel logout.
+      oidcPublicPath(c.req.method, c.req.path) ||
       (c.req.method === 'POST' &&
         [
           '/setup',
@@ -447,6 +476,13 @@ export function mountAuth(
     if (c.req.method === 'POST' && REACH_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
     // So does a text to a person's own Twilio connection (see sms/routes.ts).
     if (c.req.method === 'POST' && SMS_WEBHOOK_PATH.test(c.req.path)) return publicBody(c, next);
+    // So does a trigger delivery from Composio (see api/composio.ts).
+    // Its own limit: a new-mail delivery carries the message's text.
+    if (c.req.method === 'POST' && c.req.path === COMPOSIO_EVENTS_PATH)
+      return composioDeliveryBody(c, next);
+    // A connection's server reporting on its page; believed only for its
+    // signature (see pages/service.ts).
+    if (c.req.method === 'POST' && PAGE_REPORT_PATH.test(c.req.path)) return publicBody(c, next);
     // A paired computer's companion holds no session. Every `/device/` route
     // checks the computer's own token and sets its own body limit; see
     // devices/routes.ts.
@@ -514,7 +550,13 @@ export function mountAuth(
 
   const signIn =
     deps.sql && deps.registry
-      ? new ExperienceSignIn(deps.sql, deps.registry, env.MELETE_PUBLIC_URL, deps.accountMail)
+      ? new ExperienceSignIn(
+          deps.sql,
+          deps.registry,
+          env.MELETE_PUBLIC_URL,
+          deps.accountMail,
+          env.MELETE_INSTANCE_NAME,
+        )
       : undefined;
   if (deps.sql) {
     const devicesEnded = deps.devicesEnded ? { devicesEnded: deps.devicesEnded } : {};
@@ -600,13 +642,20 @@ export function mountAuth(
     return c.json({
       needed,
       multiplayer,
+      features: await featuresFor(c),
       code_required:
         needed &&
         (claimRefused || (handle ? await setupCodeRequired(handle, setupCodeHash) : false)),
-      email_sign_in: needed || !signIn ? false : await signIn.canSend(),
       ...(env.MELETE_TERMS_URL ? { terms_url: env.MELETE_TERMS_URL } : {}),
       ...(env.MELETE_PRIVACY_URL ? { privacy_url: env.MELETE_PRIVACY_URL } : {}),
       ...(env.MELETE_SUPPORT_URL ? { support_url: env.MELETE_SUPPORT_URL } : {}),
+      email_sign_in:
+        needed || !signIn || !env.MELETE_PASSWORD_SIGNIN ? false : await signIn.canSend(),
+      signin: signInMethods(env),
+      // What the installation and its assistant are called, for the sign-in
+      // and setup pages, which load before anyone is signed in.
+      instance_name: env.MELETE_INSTANCE_NAME,
+      assistant_name: env.MELETE_ASSISTANT_NAME,
     });
   });
 

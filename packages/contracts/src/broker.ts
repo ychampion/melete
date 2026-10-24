@@ -375,5 +375,10 @@ export const approvalDecisionRequest = z.object({
   /** The hash the person was shown. A mismatch means the draft moved under them. */
   payload_hash: payloadHash,
   note: z.string().max(2000).optional(),
+  /**
+   * For a money move, the token the person's own step-up returned for this
+   * approval. An Allow of a money move without one that is still good is refused.
+   */
+  step_up_token: z.string().min(16).max(256).optional(),
 });
 export type ApprovalDecisionRequest = z.infer<typeof approvalDecisionRequest>;

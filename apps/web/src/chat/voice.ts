@@ -12,6 +12,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { adapter } from '../experience/adapter.ts';
+import { featureOn } from '../experience/features.ts';
+import { useApp } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { VoiceStatus } from '../experience/types.ts';
 
 /* ---------- whether voice is here at all ---------- */
@@ -24,11 +27,13 @@ export type VoicePlace = { conversationId: string | null; agentId: string | null
  * Read again when the place changes: a private space or agent, or a
  * conversation about a sensitive topic, has voice off. `null` is a place with
  * no voice at all, such as a routine's thread, which takes no messages: it is
- * not asked about.
+ * not asked about. Where the operator turned voice off, nothing is asked and
+ * no voice is offered.
  */
 export function useVoiceStatus(place: VoicePlace | null): VoiceStatus | null {
   const [value, setValue] = useState<VoiceStatus | null>(null);
-  const asked = place !== null;
+  const { capabilities } = useApp();
+  const asked = place !== null && featureOn(capabilities, 'voice');
   const conversationId = place?.conversationId ?? null;
   const agentId = place?.agentId ?? null;
   useEffect(() => {
@@ -53,7 +58,7 @@ export function useVoiceStatus(place: VoicePlace | null): VoiceStatus | null {
 export function microphoneProblem(error: unknown): string {
   const name = error instanceof Error ? error.name : '';
   if (name === 'NotAllowedError' || name === 'SecurityError')
-    return 'Melete can’t use your microphone. Allow it for this site in your browser, then try again.';
+    return `${assistantName()} can’t use your microphone. Allow it for this site in your browser, then try again.`;
   if (name === 'NotFoundError' || name === 'OverconstrainedError')
     return 'No microphone was found. Connect one and try again.';
   if (name === 'NotReadableError')
@@ -291,53 +296,5 @@ export async function openMicrophone(
 
 /* ---------- voice mode: replies read aloud ---------- */
 
-/**
- * A reply as it should sound: no Markdown marks, links read by their words,
- * code left on the screen.
- */
-export function speakable(text: string): string {
-  return text
-    .replace(/```[\s\S]*?(```|$)/g, ' There is code on the screen. ')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/https?:\/\/\S+/g, 'a link')
-    .replace(/^\s{0,3}(#{1,6}|[-*+]|\d+\.|>)\s+/gm, '')
-    .replace(/(\*\*|__|\*|_|~~)(\S[^*_~]*?)\1/g, '$2')
-    .replace(/\|/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** Longest piece one speech request reads; the service's own limit is higher. */
-const PIECE = 400;
-
-/**
- * The part of `text` from `from` that ends in a finished sentence, and where it
- * ends. With `final`, whatever is left is finished too. Long sentences are cut
- * at a comma or space so no piece passes the limit.
- */
-export function nextPiece(
-  text: string,
-  from: number,
-  final: boolean,
-): { piece: string; end: number } | null {
-  const rest = text.slice(from);
-  if (!rest.trim()) return null;
-  const sentences = /[.!?…](?=\s|$)|\n/g;
-  let end = -1;
-  for (let match = sentences.exec(rest); match; match = sentences.exec(rest)) {
-    if (match.index + 1 > PIECE) break;
-    end = match.index + 1;
-    if (end >= 80) break;
-  }
-  if (end < 0 && rest.length > PIECE) {
-    const cut = Math.max(rest.lastIndexOf(', ', PIECE), rest.lastIndexOf(' ', PIECE));
-    end = cut > 0 ? cut + 1 : PIECE;
-  }
-  if (end < 0) {
-    if (!final) return null;
-    end = rest.length;
-  }
-  return { piece: rest.slice(0, end).trim(), end: from + end };
-}
+// Shared with a call, which reads replies aloud from the service.
+export { nextPiece, speakable } from '@melete/contracts/voice';

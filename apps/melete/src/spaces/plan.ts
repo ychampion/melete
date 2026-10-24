@@ -111,6 +111,10 @@ export async function sweepOperational(
     await tx`delete from event
       where job_id is null and payload->>'kind' = 'connector_event'
         and payload->>'connection_id' in (select id from connection where space_id = ${spaceId})`;
+    // A time-zone difference told in a chat since deleted, kept for the space.
+    await tx`delete from event
+      where job_id is null and payload->>'kind' = 'time_zone_mismatch'
+        and starts_with(dedup_key, ${`time-zone-mismatch:${spaceId}:`})`;
     // What the space's model calls cost stays counted against its person, so
     // removing a space does not reset a spending limit; which space and job
     // they came from goes with the space.

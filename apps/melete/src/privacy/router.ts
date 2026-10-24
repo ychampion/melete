@@ -410,7 +410,13 @@ export class PrivacyRouter {
     const { principal, provider, protocol, body } = input;
     const scope = await this.scopeFor(principal);
     const settings = await this.settingsFor(scope.spaceId);
-    if (!provider.fake && (await this.onDevice(settings, provider.baseUrl))) {
+    // Only a provider that may be a model the owner runs can be confirmed as
+    // theirs: a cloud provider behind a gateway at that address is not.
+    if (
+      provider.mayBeLocal &&
+      !provider.fake &&
+      (await this.onDevice(settings, provider.baseUrl))
+    ) {
       const receipt = emptyReceipt('on_device');
       await this.log(scope, receipt);
       return { body, route: 'on_device', local: null, rehydrator: null, receipt };

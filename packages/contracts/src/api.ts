@@ -9,6 +9,7 @@ import { actionStatus, approvalRequestView, effectClass, payloadHash } from './b
 import { ID_PREFIXES, jsonObject, newPasswordInput, prefixedId, timestamp } from './common.ts';
 import { originWarnings } from './effects.ts';
 import { action, attempt, job, jobBudget, jobConstraints, space, trigger } from './entities.ts';
+import { DISPLAY_NAME_MAX } from './instance-name.ts';
 import {
   knowledgeFrontmatter,
   knowledgeRecordStatus,
@@ -119,6 +120,12 @@ export const setupStatusResponse = z.strictObject({
   needed: z.boolean(),
   /** Whether rooms, shared spaces, guests and hand-offs are switched on here. */
   multiplayer: z.boolean(),
+  /**
+   * Each feature an operator can turn on or off, by name (`voice`, `browser`,
+   * `companies`, …), and whether it is on for whoever is asking. A surface
+   * whose feature is false is left out; its routes are refused anyway.
+   */
+  features: z.record(z.string().regex(/^[a-z][a-z0-9_]*$/), z.boolean()),
   /** Whether creating the first account needs the installation's one-time setup code. */
   code_required: z.boolean(),
   /**
@@ -134,6 +141,20 @@ export const setupStatusResponse = z.strictObject({
   terms_url: z.string().max(2000).optional(),
   privacy_url: z.string().max(2000).optional(),
   support_url: z.string().max(2000).optional(),
+  /** What the installation calls itself (`MELETE_INSTANCE_NAME`); Melete unless set. */
+  instance_name: z.string().min(1).max(DISPLAY_NAME_MAX),
+  /** What the assistant calls itself (`MELETE_ASSISTANT_NAME`); Melete unless set. */
+  assistant_name: z.string().min(1).max(DISPLAY_NAME_MAX),
+  /**
+   * How people sign in here. `password` is false when the operator made the
+   * identity provider the only way in (`MELETE_PASSWORD_SIGNIN=off`); `oidc`
+   * names the provider's button (`Continue with <label>`, which opens
+   * `GET /signin/oidc/start`), or is null when none is set up.
+   */
+  signin: z.strictObject({
+    password: z.boolean(),
+    oidc: z.strictObject({ label: z.string().min(1).max(60) }).nullable(),
+  }),
 });
 
 // --------------------------------------------------------------------------

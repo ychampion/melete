@@ -501,6 +501,18 @@ label.approvals-row {
   border: 1px solid var(--line);
   color: var(--muted);
 }
+.approvals-select {
+  flex: 0 0 200px;
+  min-width: 0;
+}
+@media (max-width: 520px) {
+  .approvals-row:has(.approvals-select) {
+    flex-wrap: wrap;
+  }
+  .approvals-select {
+    flex-basis: 100%;
+  }
+}
 .approvals-head {
   font-size: 13px;
   font-weight: 600;

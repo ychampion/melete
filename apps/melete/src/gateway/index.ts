@@ -29,6 +29,7 @@ import {
   withEffort,
 } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
+import { skillsSent } from './given-skills.ts';
 import { countImages, isInlineImage, withoutImages, withoutMarks } from './images.ts';
 import { trackModelCall } from './inflight.ts';
 import { withLongTurnNote } from './long-turn.ts';
@@ -53,6 +54,7 @@ import {
   supportsStructuredOutput,
 } from './structured.ts';
 import { encodeToolNames, ToolNameStream, toolNameDecoder } from './tool-names.ts';
+import { withTurnNotes } from './turn-notes.ts';
 import {
   type GatewayBudget,
   GatewayError,
@@ -505,8 +507,16 @@ export function createModelGateway(options: GatewayOptions): Server {
           if (!reads) body = withoutImages(body, PICTURE_NOT_READ);
         }
       }
-      // A conversation's turn that has run long is pointed at background work.
-      if (principal.privacy?.kind === 'job') body = withLongTurnNote(body, protocol);
+      if (principal.privacy?.kind === 'job') {
+        // What the person was already told, and a line asked for after a quiet stretch.
+        body = withTurnNotes(body, protocol, principal.attemptId);
+        // Which skills given in full the agent still holds (given-skills.ts).
+        skillsSent(principal.attemptId, body);
+        // A conversation's turn that has run long is pointed at background work.
+        // Added last: only this request carries it, so it follows every note
+        // that is added again on later requests.
+        body = withLongTurnNote(body, protocol);
+      }
       const router = options.privacy === false ? null : options.privacy;
       let firstFailure: unknown;
       for (const [index, candidate] of candidates.entries()) {

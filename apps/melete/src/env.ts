@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ATTACHMENT_LIMITS, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
+import { ATTACHMENT_LIMITS, displayName, EXEC_LIMITS, PROCESS_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 import { formatRange, parsePrivateHosts, rangesOverlap } from './connectors/private-hosts.ts';
@@ -83,6 +83,25 @@ const personCapUsd = () =>
     .positive()
     .max(MAX_CAP_USD, `A per-person cap can be at most $${MAX_CAP_USD.toLocaleString('en-US')}`)
     .optional();
+
+/** One of the installation's names (instance-name.ts): trimmed, one line, Melete when unset. */
+const nameSetting = (setting: string) =>
+  z
+    .string()
+    .optional()
+    .transform((value, context) => {
+      try {
+        return displayName(value, setting);
+      } catch (error) {
+        context.addIssue({ code: 'custom', message: (error as Error).message });
+        return z.NEVER;
+      }
+    });
+
+/** One `MELETE_FEATURE_<NAME>` switch: `on`, `off`, or left out for the feature's default. */
+const featureSwitch = unsetWhenBlank(
+  z.enum(['on', 'off'], { message: 'Write on or off' }).optional(),
+);
 
 /**
  * Whether the Postgres client can read this address. It is judged here, the
@@ -175,6 +194,39 @@ const variables = z.object({
    * a self-hosted push server, or a test's stand-in.
    */
   MELETE_PUSH_EXTRA_ORIGINS: unsetWhenBlank(z.string().optional()),
+  /**
+   * What a person is told when a connection's tool requires an entitlement
+   * their account does not hold. Operators grant entitlements, so the default
+   * points the person at them.
+   */
+  MELETE_GATE_MESSAGE: unsetWhenBlank(
+    z.string().trim().min(1).max(300).default('Contact support to get your account verified.'),
+  ),
+  /**
+   * What the installation calls itself: page titles, account mail, the setup
+   * status. Defaults to Melete. docs/DEPLOYMENT.md, "Names and look".
+   */
+  MELETE_INSTANCE_NAME: nameSetting('MELETE_INSTANCE_NAME'),
+  /**
+   * What the assistant calls itself in its identity. Defaults to
+   * MELETE_INSTANCE_NAME, and so to Melete when neither is set.
+   */
+  MELETE_ASSISTANT_NAME: z
+    .string()
+    .optional()
+    .transform((value, context) => {
+      try {
+        return value?.trim() ? displayName(value, 'MELETE_ASSISTANT_NAME') : undefined;
+      } catch (error) {
+        context.addIssue({ code: 'custom', message: (error as Error).message });
+        return z.NEVER;
+      }
+    }),
+  /**
+   * A file that replaces the built-in identity, read once at start and held to
+   * the same token cap (packages/skills, loadIdentity).
+   */
+  MELETE_IDENTITY_FILE: unsetWhenBlank(z.string().max(4096).optional()),
   MELETE_PUBLIC_URL: unsetWhenBlank(
     z
       .url()
@@ -246,14 +298,64 @@ const variables = z.object({
       .optional(),
   ),
   /**
-   * The most calls through Composio this installation makes in a calendar
-   * month. Close to it, watched accounts are read less often; past it, once an
-   * hour, with the reason shown on each account. A send the person approved is
-   * never held back by it. Unset, there is no limit.
+   * Auth configs of the operator's own for other apps, as
+   * `toolkit=ac_id,toolkit=ac_id` (for example `slack=ac_123`). An app left out
+   * signs in with the project's Composio-managed config.
    */
-  MELETE_MANAGED_CALLS_MONTHLY_CAP: unsetWhenBlank(
-    z.coerce.number().int().min(1).max(1_000_000_000).optional(),
+  COMPOSIO_AUTH_CONFIGS: unsetWhenBlank(
+    z
+      .string()
+      .regex(
+        /^[a-z0-9_]{1,64}=[A-Za-z0-9_-]{1,128}(,[a-z0-9_]{1,64}=[A-Za-z0-9_-]{1,128})*$/,
+        'Write toolkit=auth_config_id pairs separated by commas',
+      )
+      .optional(),
   ),
+  /**
+   * A secret for Composio's webhook signatures. Set, the mail and calendar
+   * accounts signed in through Composio are watched by Composio's triggers,
+   * which call `POST /composio/events`, and read on a slow schedule otherwise;
+   * unset, they are read on a schedule only.
+   */
+  COMPOSIO_WEBHOOK_SECRET: unsetWhenBlank(z.string().min(16).max(512).optional()),
+  /**
+   * The most tool calls through Composio this installation makes in a billing
+   * month. Close to it, watched accounts are read less often; past it, every
+   * call is refused before it reaches Composio, an approved send included,
+   * until the month resets. Unset, there is no limit.
+   * `MELETE_MANAGED_CALLS_MONTHLY_CAP` is the older name for it.
+   */
+  MELETE_COMPOSIO_TOOL_CALLS_MONTHLY_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  ),
+  MELETE_MANAGED_CALLS_MONTHLY_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  ),
+  /**
+   * The most trigger events from Composio this installation takes in a billing
+   * month. Past it, its triggers are switched off at Composio until the month
+   * resets, and accounts are read on a schedule. Unset, there is no limit.
+   */
+  MELETE_COMPOSIO_TRIGGER_EVENTS_MONTHLY_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(1_000_000_000).optional(),
+  ),
+  /** The most accounts connected through Composio at once. Unset, there is no limit. */
+  MELETE_COMPOSIO_ACCOUNTS_CAP: unsetWhenBlank(
+    z.coerce.number().int().min(0).max(10_000_000).optional(),
+  ),
+  /**
+   * A monthly credit in US dollars that use past a monthly limit may spend, at
+   * the rates below. Unset, every limit is hard.
+   */
+  MELETE_COMPOSIO_MONTHLY_CREDIT_USD: unsetWhenBlank(
+    z.coerce.number().min(0).max(1_000_000).optional(),
+  ),
+  /** What one tool call past the free allowance costs, in US dollars. */
+  MELETE_COMPOSIO_TOOL_CALL_USD: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.0005)),
+  /** What one trigger event past the free allowance costs, in US dollars. */
+  MELETE_COMPOSIO_TRIGGER_EVENT_USD: unsetWhenBlank(z.coerce.number().min(0).max(1).default(0.005)),
+  /** The day of the month (1-28, UTC) Composio's billing month starts on. */
+  MELETE_COMPOSIO_BILLING_DAY: unsetWhenBlank(z.coerce.number().int().min(1).max(28).default(1)),
   /**
    * The operator's Microsoft Entra app, for signing in to Outlook mail and
    * calendar (docs/mail-calendar.md). Both, or neither. The tenant is `common`,
@@ -418,6 +520,19 @@ const variables = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * Whole features an operator turns on or off (features.ts). Left out, each
+   * keeps its default: multiplayer follows MELETE_PREVIEW_MULTIPLAYER, and
+   * every other feature is on. Off, its routes answer 404 `not_available`
+   * with a plain sentence and the web leaves it out.
+   */
+  MELETE_FEATURE_MULTIPLAYER: featureSwitch,
+  MELETE_FEATURE_VOICE: featureSwitch,
+  MELETE_FEATURE_PHONE: featureSwitch,
+  MELETE_FEATURE_SMS: featureSwitch,
+  MELETE_FEATURE_BROWSER: featureSwitch,
+  MELETE_FEATURE_COMPUTER: featureSwitch,
+  MELETE_FEATURE_COMPANIES: featureSwitch,
   MELETE_ENABLE_FAKE_PROVIDER: z
     .enum(['true', 'false'])
     .default('false')
@@ -503,6 +618,7 @@ const variables = z.object({
   /** Provider keys. The gateway injects these; the runtime never sees them. */
   FIREWORKS_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_BASE_URL: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
@@ -624,14 +740,34 @@ const variables = z.object({
   ELEVENLABS_SPEECH_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
   ELEVENLABS_STREAMING_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
   ELEVENLABS_TRANSCRIPTION_MODEL: unsetWhenBlank(z.string().min(1).max(120).optional()),
-  /** Seconds of push-to-talk recording one person may have transcribed in a day. */
-  MELETE_VOICE_DAILY_SECONDS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(1800)),
-  /** Characters of replies one person may have read aloud in a day. */
-  MELETE_VOICE_DAILY_CHARACTERS: unsetWhenBlank(
-    z.coerce.number().int().nonnegative().default(20_000),
+  /** Seconds of push-to-talk recording one person may have transcribed in a day. Unset, no cap. */
+  MELETE_VOICE_DAILY_SECONDS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /** Characters of replies one person may have read aloud in a day. Unset, no cap. */
+  MELETE_VOICE_DAILY_CHARACTERS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /** Voice mode sessions one person may start in a day. Unset, no cap. */
+  MELETE_VOICE_DAILY_SESSIONS: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /**
+   * Minutes of calls one person may have in a month (the last 30 days). Unset,
+   * calls are not capped.
+   */
+  MELETE_CALL_MONTHLY_MINUTES: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
+  /**
+   * The ElevenLabs Speech Engine calls use. Unset, the service makes one for
+   * itself at the first call, pointed at MELETE_PUBLIC_URL, and keeps it in
+   * step. Set, that engine is used exactly as it is configured in ElevenLabs.
+   */
+  ELEVENLABS_SPEECH_ENGINE_ID: unsetWhenBlank(
+    z
+      .string()
+      .regex(/^seng_[A-Za-z0-9]{1,64}$/, 'use a speech engine id, seng_…')
+      .optional(),
   ),
-  /** Voice mode sessions one person may start in a day. */
-  MELETE_VOICE_DAILY_SESSIONS: unsetWhenBlank(z.coerce.number().int().nonnegative().default(30)),
+  /**
+   * Asides (short words with the agent while it works in voice mode) one
+   * person may have in a day. Unset or blank: no daily limit; asides are
+   * still counted, so a limit set later holds from the first day.
+   */
+  MELETE_VOICE_DAILY_ASIDES: unsetWhenBlank(z.coerce.number().int().nonnegative().optional()),
   /**
    * Automatic memory reads what a person says in chat with this model, through
    * the model gateway. Unset, it uses the default provider and model; `off`
@@ -660,6 +796,12 @@ const variables = z.object({
   MELETE_REVIEW_PROVIDER: z.string().optional(),
   /** How long one review may take before the action goes to the person. */
   MELETE_REVIEW_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(20_000).default(12_000),
+  /**
+   * How long a conversation turn may stay silent before the person gets a
+   * one-line acknowledgement from the fast model, in milliseconds. `0` turns
+   * it off, which is the default for now.
+   */
+  MELETE_ACK_AFTER_MS: z.coerce.number().int().min(0).max(30_000).default(0),
   /** Reviews one space may ask for in an hour; past it, the person is asked. */
   MELETE_REVIEW_HOURLY_LIMIT: z.coerce.number().int().nonnegative().default(60),
   /**
@@ -667,6 +809,21 @@ const variables = z.object({
    * while the person can still cancel it. 0 sends at once.
    */
   MELETE_SEND_HOLD_SECONDS: z.coerce.number().int().min(0).max(120).default(20),
+  /**
+   * Work nobody is waiting on (a schedule, a timer, an event) that would reach
+   * someone outside Melete goes ahead on its own from this confidence, built
+   * from what the person said before, and is otherwise left as a suggestion.
+   */
+  MELETE_PROACTIVE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
+  /**
+   * The level a chat app's message to others starts at, until the person
+   * chooses one: `when_confident` (also `confidence`, the default), `draft`,
+   * `draft_only` (a draft that proactive work never sends, as before) or
+   * `always`. A level the person chose wins.
+   */
+  MELETE_MESSAGES_TO_OTHERS: z
+    .enum(['confidence', 'draft_only', 'draft', 'when_confident', 'always'])
+    .default('confidence'),
 
   /**
    * Spending caps on model calls, in US dollars (estimated from the price
@@ -711,6 +868,13 @@ const variables = z.object({
    * once. Unset or blank: no limit.
    */
   MELETE_ROUTINES_PER_PERSON_MAX: unsetWhenBlank(
+    z.coerce.number().int().min(1).max(100_000).optional(),
+  ),
+  /**
+   * How many pieces of long work (runs) one space may have going at once.
+   * Unset or blank: no limit.
+   */
+  MELETE_RUNS_ACTIVE_PER_SPACE_MAX: unsetWhenBlank(
     z.coerce.number().int().min(1).max(100_000).optional(),
   ),
   /**
@@ -923,6 +1087,90 @@ const variables = z.object({
    * other machines, for the setup code.
    */
   MELETE_WEB_ORIGIN: unsetWhenBlank(z.string().max(2000).optional()),
+  /**
+   * Sign-in through an OpenID Connect identity provider (Google, Microsoft,
+   * Okta, Authentik, Keycloak, or any other issuer): its issuer URL and the
+   * client registered there, whose redirect is
+   * <MELETE_PUBLIC_URL>/api/signin/oidc/callback. All three, or none.
+   * docs/DEPLOYMENT.md, "Sign-in with your identity provider".
+   */
+  MELETE_OIDC_ISSUER: unsetWhenBlank(
+    z
+      .url()
+      .max(2000)
+      .refine((value) => {
+        const url = new URL(value);
+        const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+        return (
+          !url.username &&
+          !url.password &&
+          !url.hash &&
+          !url.search &&
+          (url.protocol === 'https:' || (url.protocol === 'http:' && local))
+        );
+      }, 'an https:// issuer URL with no query (plain http only on this machine)')
+      .optional(),
+  ),
+  MELETE_OIDC_CLIENT_ID: unsetWhenBlank(z.string().min(1).max(512).optional()),
+  MELETE_OIDC_CLIENT_SECRET: unsetWhenBlank(z.string().min(1).max(2048).optional()),
+  /** What the sign-in button says after "Continue with", for example `Google`. */
+  MELETE_OIDC_LABEL: unsetWhenBlank(z.string().min(1).max(60).default('single sign-on')),
+  /** The scopes asked for; `openid` is always among them. */
+  MELETE_OIDC_SCOPES: unsetWhenBlank(
+    z
+      .string()
+      .max(1000)
+      .regex(
+        /^[\x21\x23-\x5b\x5d-\x7e]+( [\x21\x23-\x5b\x5d-\x7e]+)*$/,
+        'scopes separated by spaces',
+      )
+      .default('openid email profile')
+      .transform((value) => {
+        const scopes = value.split(' ');
+        return (scopes.includes('openid') ? scopes : ['openid', ...scopes]).join(' ');
+      }),
+  ),
+  /**
+   * `existing` signs in only accounts that already exist here, matched by
+   * verified email or by a provider account linked before. `create` also
+   * makes a person account at a first sign-in.
+   */
+  MELETE_OIDC_ACCOUNTS: unsetWhenBlank(z.enum(['existing', 'create']).default('existing')),
+  /**
+   * Which existing accounts a verified email from the provider may claim the
+   * first time. `any`: every person account with that email. `no-password`:
+   * only accounts with no password (made with `melete account create`, or by
+   * a sign-in), plus an account with a password that the operator opened with
+   * `melete account link <email>`. Use `no-password` with a public provider,
+   * where an address it once verified may no longer belong to the same person.
+   */
+  MELETE_OIDC_EMAIL_LINK: unsetWhenBlank(z.enum(['any', 'no-password']).default('any')),
+  /**
+   * `name=value`: a claim the provider must put in the ID token for the person
+   * to get in, such as `melete_access=true` or a group in `groups=melete`.
+   * A list claim needs to contain the value.
+   */
+  MELETE_OIDC_REQUIRE_CLAIM: unsetWhenBlank(
+    z
+      .string()
+      .max(500)
+      .regex(/^[A-Za-z0-9_.:/-]+=.+$/, 'name=value')
+      .transform((value) => {
+        const at = value.indexOf('=');
+        return { name: value.slice(0, at), value: value.slice(at + 1) };
+      })
+      .optional(),
+  ),
+  /**
+   * `off` leaves the identity provider as the only way in: passwords, emailed
+   * sign-in links and password resets are refused. It needs MELETE_OIDC_ISSUER.
+   */
+  MELETE_PASSWORD_SIGNIN: unsetWhenBlank(
+    z
+      .enum(['on', 'off'])
+      .default('on')
+      .transform((value) => value === 'on'),
+  ),
 
   /**
    * What the engine in an attempt's cell is bounded by. Each is read again from
@@ -1001,10 +1249,10 @@ const variables = z.object({
    * How long a space's background processes may keep its computers running
    * in one day (UTC), after the turns that used them ended, added up over its
    * computers. Past it they are stopped and new ones refused until the next
-   * day.
+   * day. Unset or blank: no daily limit; awake time is still counted.
    */
   MELETE_SANDBOX_AWAKE_SECONDS_PER_DAY: unsetWhenBlank(
-    z.coerce.number().int().positive().default(PROCESS_LIMITS.awake_seconds_per_day),
+    z.coerce.number().int().positive().optional(),
   ),
   /** How long a suspended workspace is kept while nobody resumes it. */
   MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: unsetWhenBlank(
@@ -1029,6 +1277,18 @@ const variables = z.object({
       .positive()
       .default(30 * 24 * 3600),
   ),
+  /**
+   * The most computers this installation keeps at Maritime, asleep or awake.
+   * Past it a new computer is refused with a sentence the agent passes on.
+   * Unset, there is no cap.
+   */
+  MELETE_MARITIME_MAX_COMPUTERS: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+  /**
+   * The most of those computers awake at once. A computer that would wake past
+   * it waits a little, then is refused with a sentence the agent passes on.
+   * Unset, there is no cap.
+   */
+  MELETE_MARITIME_MAX_AWAKE: unsetWhenBlank(z.coerce.number().int().positive().optional()),
   /** E2B's maximum continuous runtime follows the account's plan. */
   MELETE_E2B_PLAN: unsetWhenBlank(z.enum(['hobby', 'pro']).default('hobby')),
   /**
@@ -1314,7 +1574,42 @@ export const envSchema = variables.transform((value, context) => {
       message:
         'set both GITHUB_MCP_CLIENT_ID and GITHUB_MCP_CLIENT_SECRET, or neither (a GitHub OAuth app whose callback is <MELETE_PUBLIC_URL>/api/oauth/callback; see docs/CONNECTORS.md)',
     });
-  return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
+  const oidc = [
+    value.MELETE_OIDC_ISSUER,
+    value.MELETE_OIDC_CLIENT_ID,
+    value.MELETE_OIDC_CLIENT_SECRET,
+  ];
+  if (oidc.some(Boolean) && !oidc.every(Boolean))
+    context.addIssue({
+      code: 'custom',
+      path: [
+        !value.MELETE_OIDC_ISSUER
+          ? 'MELETE_OIDC_ISSUER'
+          : !value.MELETE_OIDC_CLIENT_ID
+            ? 'MELETE_OIDC_CLIENT_ID'
+            : 'MELETE_OIDC_CLIENT_SECRET',
+      ],
+      message:
+        'set MELETE_OIDC_ISSUER, MELETE_OIDC_CLIENT_ID and MELETE_OIDC_CLIENT_SECRET together, or none of them (a client whose redirect is <MELETE_PUBLIC_URL>/api/signin/oidc/callback; see docs/DEPLOYMENT.md)',
+    });
+  if (value.MELETE_OIDC_ISSUER && !value.MELETE_PUBLIC_URL)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_PUBLIC_URL'],
+      message:
+        'MELETE_OIDC_ISSUER needs MELETE_PUBLIC_URL, the address the identity provider sends people back to',
+    });
+  if (!value.MELETE_PASSWORD_SIGNIN && !value.MELETE_OIDC_ISSUER)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_PASSWORD_SIGNIN'],
+      message: 'MELETE_PASSWORD_SIGNIN=off needs MELETE_OIDC_ISSUER, or nobody could sign in',
+    });
+  return {
+    ...value,
+    MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '',
+    MELETE_ASSISTANT_NAME: value.MELETE_ASSISTANT_NAME ?? value.MELETE_INSTANCE_NAME,
+  };
 });
 
 export type Env = z.infer<typeof envSchema>;

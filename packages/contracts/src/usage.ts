@@ -152,12 +152,42 @@ export const usageResponse = z
   .strict();
 export type UsageResponse = z.infer<typeof usageResponse>;
 
+const composioDimension = z
+  .object({
+    used: z.number().int().nonnegative(),
+    cap: z.number().int().nonnegative().nullable(),
+    state: z.enum(['ok', 'near', 'reached']),
+  })
+  .strict();
+
+/** Use through Composio this billing period, against the operator's limits. */
+export const composioStanding = z
+  .object({
+    period: z.string().meta({ description: 'The day the billing period started, UTC' }),
+    tool_calls: composioDimension,
+    trigger_events: composioDimension,
+    connected_accounts: z
+      .object({
+        used: z.number().int().nonnegative(),
+        cap: z.number().int().nonnegative().nullable(),
+      })
+      .strict(),
+    overage_usd: z.number().nonnegative(),
+    credit_usd: z.number().nonnegative().nullable(),
+  })
+  .strict()
+  .meta({ id: 'ComposioStanding' });
+export type ComposioStanding = z.infer<typeof composioStanding>;
+
 export const healthDetailResponse = z
   .object({
     status: z.enum(['ok', 'unhealthy']),
     version: z.string(),
     checks: z.array(z.object({ name: z.string(), ok: z.boolean(), detail: z.string() }).strict()),
     time: timestamp,
+    composio: composioStanding.optional().meta({
+      description: 'This billing period at Composio against each limit, when a Composio key is set',
+    }),
   })
   .strict();
 

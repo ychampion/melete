@@ -10,6 +10,7 @@ import { LoadError } from '../design/LoadError.tsx';
 import { Badge, Button, Dialog, Field, Input, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type {
   SavedSignIn,
   SavedSignInCheck,
@@ -202,7 +203,7 @@ function SignInForm({
             Ask me first
           </span>
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            Melete asks before each use instead of signing in whenever it needs to.
+            {assistantName()} asks before each use instead of signing in whenever it needs to.
           </span>
         </span>
         <Toggle
@@ -410,7 +411,7 @@ export function SavedSignIns() {
   return (
     <Section
       title="Saved sign-ins"
-      sub="Save a username and password so Melete’s browser can sign in for you. Melete types them into the site itself; the AI model never sees them, and they’re only used on the exact site you saved."
+      sub={`Save a username and password so ${assistantName()}’s browser can sign in for you. ${assistantName()} types them into the site itself; the AI model never sees them, and they’re only used on the exact site you saved.`}
     >
       {signIns.error ? (
         <LoadError what="your saved sign-ins" error={signIns.error} onRetry={signIns.reload} />
@@ -539,7 +540,7 @@ export function SavedSignIns() {
         icon="trash"
         tone="danger"
         title={deleting ? `Delete the sign-in for ${deleting.site}?` : 'Delete this sign-in?'}
-        sub="Its username, password and code secret are erased. If Melete’s browser is already signed in to the site, it stays signed in until you sign it out under signed-in sites."
+        sub={`Its username, password and code secret are erased. If ${assistantName()}’s browser is already signed in to the site, it stays signed in until you sign it out under signed-in sites.`}
         footer={
           <>
             <Button variant="outline" disabled={saving} onClick={() => setDeleting(null)}>

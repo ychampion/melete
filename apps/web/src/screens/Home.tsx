@@ -17,6 +17,7 @@ import {
 } from 'react';
 import { useAttachments } from '../chat/attachments.ts';
 import { Composer } from '../chat/Composer.tsx';
+import { useStepUp } from '../chat/step-up.tsx';
 import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import { amountWords, matches, money } from '../companies/format.ts';
 import { statusOf } from '../companies/Ledger.tsx';
@@ -27,6 +28,8 @@ import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { clockTime, displayZone, hourOfDay, sameDay, weekday } from '../experience/clock.ts';
 import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
+import { featureOn } from '../experience/features.ts';
+import { prefetchOn } from '../experience/history.ts';
 import {
   agentById,
   faceOf,
@@ -61,6 +64,7 @@ import { Shell, toast } from '../shell/Shell.tsx';
 import { PushOffer } from './Notifications.tsx';
 import { RoutineResults } from './RoutineResults.tsx';
 import './home.css';
+import { assistantName } from '../experience/instance.ts';
 import { FirstSteps } from './FirstSteps.tsx';
 import { NeedsYouSection } from './NeedsYouSection.tsx';
 import { StarterList, starterSelection } from './Starters.tsx';
@@ -439,7 +443,7 @@ export function DecisionCard({
     >
       <div className="decision-who">
         <Face agent={agent} size={22} />
-        <span className="decision-agent">{agent?.name ?? 'Melete'}</span>
+        <span className="decision-agent">{agent?.name ?? assistantName()}</span>
         {conversation ? (
           <span className="decision-for clamp1">from “{conversation.title}”</span>
         ) : run ? (
@@ -594,6 +598,7 @@ export function WaitingOnYou({
   const { permissions, questions } = decisions;
   const [frontId, setFrontId] = useState<string | null>(null);
   const flight = useInFlight();
+  const stepUp = useStepUp();
   // Decided here and answered by the service: gone from the queue before the next read.
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
   // After a decision, focus goes to the card that comes forward.
@@ -666,11 +671,15 @@ export function WaitingOnYou({
     together: readonly Permission[] = [],
   ) =>
     void flight.run(permission.id, async () => {
+      // A money move's Allow needs the person's password first; closing that asks nothing.
+      const token = option === 'allow_once' ? await stepUp.confirm(permission) : undefined;
+      if (token === null) return;
       const result = await adapter.decide(
         permission.id,
         option,
         permission.version,
         seenTogether(together),
+        token,
       );
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
@@ -701,6 +710,7 @@ export function WaitingOnYou({
 
   return (
     <section className="home-section" aria-labelledby="home-waiting">
+      {stepUp.dialog}
       <div className="home-section-head">
         <h2 id="home-waiting">
           Waiting on you
@@ -742,7 +752,7 @@ export function WaitingOnYou({
           {next ? (
             <button type="button" className="queue-next" onClick={() => setFrontId(next.id)}>
               <Face agent={agentOf(next)} size={16} />
-              <span className="queue-next-agent">{agentOf(next)?.name ?? 'Melete'}</span>
+              <span className="queue-next-agent">{agentOf(next)?.name ?? assistantName()}</span>
               <span className="clamp1 grow queue-next-what">
                 {next.kind === 'permission' ? next.permission.what : next.question.text}
               </span>
@@ -824,7 +834,12 @@ function InMotion({ now }: { now: number }) {
         {rows.map((conversation) => {
           const agent = agentById(agents, conversation.agent_id);
           return (
-            <a key={conversation.id} className="motion-row" href={href(`/chat/${conversation.id}`)}>
+            <a
+              key={conversation.id}
+              className="motion-row"
+              href={href(`/chat/${conversation.id}`)}
+              {...prefetchOn(conversation.id)}
+            >
               <AgentAvatar
                 agent={agent}
                 size={28}
@@ -833,7 +848,7 @@ function InMotion({ now }: { now: number }) {
               <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
                 <span className="clamp1 motion-title">{conversation.title}</span>
                 <span className="clamp1 motion-line">
-                  {motionLine(conversation, waiting, agent?.name ?? 'Melete')}
+                  {motionLine(conversation, waiting, agent?.name ?? assistantName())}
                 </span>
               </span>
               <span className="motion-when">{relative(conversation.updated_at, now)}</span>
@@ -1076,8 +1091,13 @@ export function HomeScreen() {
   const mainRef = useRef<HTMLDivElement>(null);
   const composeRef = useRef<HTMLDivElement>(null);
   const cleared = useCallback(() => mainRef.current?.focus(), []);
+  const companies = featureOn(capabilities, 'companies');
 
   useEffect(() => {
+    if (!companies) {
+      setMap(null);
+      return;
+    }
     let live = true;
     void currentSpaceId().then(async (space) => {
       if (!live || space.data === null) return;
@@ -1087,7 +1107,7 @@ export function HomeScreen() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [companies]);
 
   const start = async (body: string, attached: readonly AttachmentView[] = []) => {
     const clean = body.trim();
@@ -1198,7 +1218,7 @@ export function HomeScreen() {
               value={text}
               onChange={setText}
               onSend={() => void start(text, files.ready)}
-              placeholder="Ask Melete to handle something"
+              placeholder={`Ask ${assistantName()} to handle something`}
               disabled={busy}
               attachments={files}
             />
@@ -1262,7 +1282,7 @@ export function HomeScreen() {
           {capabilities.multiplayer ? (
             <RoomHandoffs handoffs={decisions.handoffs} onChanged={refreshConversations} />
           ) : null}
-          <WaitingOnSection now={now} />
+          {companies ? <WaitingOnSection now={now} /> : null}
           <RoutineResults results={data?.routine_results ?? []} now={now} />
           <InProgress now={now} />
           <InMotion now={now} />

@@ -60,6 +60,8 @@ export const ID_PREFIXES = {
   saved_sign_in: 'ssi',
   /** One use of a saved sign-in by Melete's browser. */
   sign_in_use: 'ssu',
+  /** A page a connection showed the person in a conversation. */
+  connection_page: 'cpg',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

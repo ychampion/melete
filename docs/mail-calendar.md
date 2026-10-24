@@ -103,16 +103,22 @@ screen says so. Microsoft keeps its own sign-in either way.
 
 The connections are the same as a native sign-in's: `email.*`, `calendar.*`
 and `documents.status`, with the same approvals, receipts, privacy routing,
-watching and noticing. Only how each request travels differs: it goes to
-Composio's proxy for the row's own connected account, and Google's answer comes
-back unchanged, so every parser, cursor and change feed is shared. The proxy
-used for watching an account only reads; sending and calendar changes go only
-through the agent's tools, each after its approval.
+watching and noticing. Only how each request travels differs: each read or
+change is one of Composio's own Gmail, Google Calendar or Google Drive tools
+(such as `GMAIL_LIST_HISTORY` or `GOOGLECALENDAR_EVENTS_LIST`), run in a
+short-lived Composio session pinned to the row's own connected account, with
+Composio's workbench, proxy and connection tools switched off in it. The tool's
+answer is mapped back to the shape Google gives, so the parsers, cursors and
+change feeds are shared. Reads for watching an account only read; sending and
+calendar changes go only through the agent's tools, each after its approval.
+
+Managed sign-in does not yet carry everything a native one does: a send with
+attachments is refused, a reply's threading headers are not kept, and a
+calendar change does not check the event's version first.
 
 Setting it up:
 
-1. Create a project at composio.dev and a project API key with **Proxy
-   execute** switched on.
+1. Create a project at composio.dev and a project API key.
 2. Set `COMPOSIO_API_KEY` and restart. `MELETE_PUBLIC_URL` must be an
    `https://` address or a `localhost` one; Composio returns the browser to
    `<MELETE_PUBLIC_URL>/api/managed-sign-ins/callback`.
@@ -141,14 +147,23 @@ already reported is reported again. An address already connected through
 another active Composio account is refused. Disconnecting a connection revokes
 and removes its Composio account.
 
-Each call through Composio counts toward the month, per person. Accounts
-watched through Composio are read every ten minutes in the day for mail and
-every fifteen for calendars, and hourly at night. With
-`MELETE_MANAGED_CALLS_MONTHLY_CAP` set, an account is read half as often once
-the month's calls reach 80% of it, and once an hour past it, and each account
-shows the reason (`reading_note` on `GET /connections` and
-`GET /experience/connections`). Sends and other approved actions always go
-ahead.
+Accounts watched through Composio are read every ten minutes in the day for
+mail and every fifteen for calendars, and hourly at night. With
+`COMPOSIO_WEBHOOK_SECRET` set, Gmail and Google Calendar accounts are watched
+through Composio triggers instead: Composio tells Melete when something
+changed, at `<MELETE_PUBLIC_URL>/api/composio/events`, and the account is read
+then, with an hourly read as a fallback. Set that address as the project's
+webhook in Composio's dashboard and copy its signing secret into
+`COMPOSIO_WEBHOOK_SECRET`; a delivery whose signature does not match is
+refused.
+
+Every tool call and trigger event counts toward the operator's limits, if any
+are set ([Limits on use through Composio](CONNECTORS.md#limits-on-use-through-composio)).
+Once the month's tool calls reach 80% of their limit an account is read half as
+often, and each account shows the reason (`reading_note` on `GET /connections`
+and `GET /experience/connections`). Past the limit, no account is read through
+Composio and nothing is sent through it, approved sends included, until the
+month resets; the person is told the app is paused until then.
 
 Evidence: [managed-sign-in.test.ts](../apps/melete/test/integration/managed-sign-in.test.ts)
 and [composio.test.ts](../apps/melete/src/connectors/composio.test.ts), which

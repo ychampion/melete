@@ -24,6 +24,7 @@ import { adapter, type SavedFilePreview } from '../experience/adapter.ts';
 import { clockTime } from '../experience/clock.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import { appHref, webHref } from '../experience/markdown.ts';
 import { plainTitle } from '../experience/plain.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
@@ -724,7 +725,9 @@ export function ReceiptRow({
 
 /** A sentence as the tail of another one: "because it only reads." A name keeps its capital. */
 const asClause = (text: string) =>
-  /^(?!Melete\b)[A-Z][a-z]/.test(text) ? `${text[0]?.toLowerCase()}${text.slice(1)}` : text;
+  /^[A-Z][a-z]/.test(text) && !text.startsWith(assistantName())
+    ? `${text[0]?.toLowerCase()}${text.slice(1)}`
+    : text;
 
 /**
  * Why Melete went ahead without asking, on the receipt of what it let through,
@@ -1086,7 +1089,7 @@ export function PermissionCard({
         </Field>
         <Field
           label="Ask me again after"
-          hint="Even inside the limit, Melete checks in again after this many days."
+          hint={`Even inside the limit, ${assistantName()} checks in again after this many days.`}
         >
           <Select
             label="Ask me again after"
@@ -1294,7 +1297,7 @@ const isMessage = (action: LedgerAction): boolean => {
 };
 
 /** What "It did not" leads to: the effect is open to another attempt. */
-export const RETRY_HINT = 'Melete may try again, and asks you first.';
+export const retryWords = () => `${assistantName()} may try again, and asks you first.`;
 
 export function UnknownCard({
   action,
@@ -1340,7 +1343,7 @@ export function UnknownCard({
             What I tried: {describeAction(action)}.
           </span>
           {settled === 'failed' ? (
-            <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{RETRY_HINT}</span>
+            <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{retryWords()}</span>
           ) : null}
         </div>
         {settled ? (
@@ -1370,7 +1373,8 @@ export function UnknownCard({
             </Button>
           )}
           <span id={retryHint} style={{ fontSize: 12, color: 'var(--muted)' }}>
-            If {message ? 'it did not' : 'it didn’t'}, Melete may try again, and asks you first.
+            If {message ? 'it did not' : 'it didn’t'}, {assistantName()} may try again, and asks you
+            first.
           </span>
         </div>
       ) : null}

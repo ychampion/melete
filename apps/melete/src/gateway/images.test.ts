@@ -363,6 +363,7 @@ describe('a model that reads no pictures is sent none, whatever the deployment',
     baseUrl: 'http://127.0.0.1:11434/v1/',
     apiKey: 'local',
     allowHttp: true,
+    mayBeLocal: true,
     protocols: ['chat/completions'],
   };
 

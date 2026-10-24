@@ -4,6 +4,7 @@
  * reset code has before it is worth sending.
  */
 import { adapter } from './adapter.ts';
+import { instanceName } from './instance.ts';
 import { enablePush, forgetThisBrowser, thisBrowserHash, thisDeviceSubscribed } from './push.ts';
 
 /** The service refuses a shorter new password; the forms say so before asking. */
@@ -75,7 +76,7 @@ export async function keepingPushHere<T extends { data: unknown }>(
 export function passwordPageWords(invite: boolean) {
   return invite
     ? {
-        title: 'Welcome to Melete',
+        title: `Welcome to ${instanceName()}`,
         heading: 'Choose your password',
         lead: 'You’ll use it with your email to sign in. Next, a few quick questions to set things up.',
         field: 'Password',

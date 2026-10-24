@@ -10,6 +10,7 @@
  */
 import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import { recordingFetch } from '../feedback/diagnostics.ts';
+import { instanceName } from './instance.ts';
 import { plainError } from './plain.ts';
 import { markValueMoment } from './push.ts';
 import { readTextPrefix } from './text-prefix.ts';
@@ -43,13 +44,17 @@ import type {
   BeliefImportResult,
   BrowserControl,
   BrowserSite,
+  CallSession,
   CatalogEntry,
+  ComposioAppSearchResponse,
   ConnectedAssistant,
   ConnectionChecked,
   ConnectionCreate,
   ConnectionInstalled,
   ConnectionKind,
   ConnectionLifecycle,
+  ConnectionPageList,
+  ConnectionPageView,
   Conversation,
   ConversationCreate,
   ConversationDeleted,
@@ -129,6 +134,7 @@ import type {
   RunRecordPage,
   SandboxComputer,
   SandboxControl,
+  SandboxViewer,
   SavedSignIn,
   SavedSignInCheck,
   SavedSignInCode,
@@ -147,8 +153,11 @@ import type {
   Starters,
   StreamGap,
   Task,
+  TaskAutonomyList,
+  TaskAutonomyUpdate,
   TaskInput,
   Turn,
+  TurnPage,
   VoiceAside,
   VoiceAsideRequest,
   VoiceSession,
@@ -220,7 +229,7 @@ export const client = createMeleteClient({
   fetch: recordingFetch(globalThis.fetch.bind(globalThis)),
 });
 
-const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+const offline = () => `Couldn’t reach ${instanceName()}. Check that the service is running.`;
 
 const artifactUrl = (id: string): string =>
   `${client.options.baseUrl}/artifacts/${encodeURIComponent(id)}/content`;
@@ -275,7 +284,7 @@ function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Respon
   const code = (outcome.error as { error?: { code?: unknown } } | undefined)?.error?.code;
   return {
     data: null,
-    error: plainError(errorMessage(outcome.error, OFFLINE)),
+    error: plainError(errorMessage(outcome.error, offline())),
     unavailable: null,
     unauthorized: outcome.response?.status === 401,
     ...(typeof code === 'string' ? { code } : {}),
@@ -288,7 +297,7 @@ async function guard<T>(
   try {
     return settle<T>(await call());
   } catch {
-    return { data: null, error: OFFLINE, unavailable: null };
+    return { data: null, error: offline(), unavailable: null };
   }
 }
 
@@ -377,12 +386,22 @@ export const adapter = {
     guard<{
       needed: boolean;
       multiplayer?: boolean;
+      features?: Record<string, boolean>;
+      instance_name?: string;
+      assistant_name?: string;
       code_required?: boolean;
       email_sign_in?: boolean;
       terms_url?: string;
       privacy_url?: string;
       support_url?: string;
+      signin?: { password: boolean; oidc: { label: string } | null };
     }>(() => api.GET('/setup')),
+  /**
+   * Where the browser goes to sign in with the installation's identity
+   * provider; it comes back to `returnTo` in the app, signed in.
+   */
+  oidcSignInUrl: (returnTo: string) =>
+    `${API_BASE_URL}/signin/oidc/start?return=${encodeURIComponent(returnTo)}`,
   /** Creates the first account and signs this browser in. */
   createAccount: (email: string, password: string, setup_code?: string) =>
     guard<{ owner: SignedInOwner }>(() =>
@@ -467,6 +486,28 @@ export const adapter = {
   turns: (id: string) =>
     guard<{ turns: Turn[] }>(() => api.GET('/conversations/{id}/messages', path(id))),
   /**
+   * The newest turns older than `before` (the newest of all without it), and
+   * with `events` their events too. A service that does not page answers with
+   * every turn and no `next_cursor`.
+   */
+  turnsPage: (
+    id: string,
+    page: { limit: number; before?: string; events?: boolean; eventsAfter?: number },
+  ) =>
+    guard<TurnPage>(() =>
+      api.GET('/conversations/{id}/messages', {
+        params: {
+          path: { id },
+          query: {
+            limit: page.limit,
+            ...(page.before ? { before: page.before } : {}),
+            ...(page.events ? { events: 'true' as const } : {}),
+            ...(page.eventsAfter !== undefined ? { events_after: page.eventsAfter } : {}),
+          },
+        },
+      }),
+    ),
+  /**
    * `attachments` names files uploaded for this message, in the order they show;
    * `pasted` says which stretches of `text` the person pasted rather than typed.
    */
@@ -526,13 +567,33 @@ export const adapter = {
 
   /* ---------- decisions ---------- */
   /** With `together`, the other asks shown on the same card get the same answer. */
-  decide: (id: string, option: 'allow_once' | 'deny', version: string, together: Seen[] = []) =>
+  /** With `stepUpToken`, the Allow carries the person's own confirmation that it is them. */
+  decide: (
+    id: string,
+    option: 'allow_once' | 'deny',
+    version: string,
+    together: Seen[] = [],
+    stepUpToken?: string,
+  ) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', {
         ...path(id),
-        body: { option, version, ...(together.length ? { together } : {}) },
+        body:
+          option === 'allow_once'
+            ? {
+                option,
+                version,
+                ...(together.length ? { together } : {}),
+                ...(stepUpToken ? { step_up_token: stepUpToken } : {}),
+              }
+            : { option, version, ...(together.length ? { together } : {}) },
       }),
     ).then(worthHearing),
+  /** The person confirms it is them for a money move, and gets a one-time token for its Allow. */
+  stepUp: (id: string, password: string) =>
+    guard<{ step_up_token: string; expires_at: string }>(() =>
+      api.POST('/permissions/{id}/step-up', { ...path(id), body: { password } }),
+    ),
   decideAlways: (id: string, version: string, bounds: RuleBounds) =>
     guard<PermissionOutcome>(() =>
       api.POST('/permissions/{id}', { ...path(id), body: { option: 'always', version, bounds } }),
@@ -559,7 +620,7 @@ export const adapter = {
         return {
           data: null,
           error:
-            response.status === 404 ? 'This file is no longer the one that was saved.' : OFFLINE,
+            response.status === 404 ? 'This file is no longer the one that was saved.' : offline(),
           unavailable: null,
         };
       const type = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
@@ -580,7 +641,7 @@ export const adapter = {
         unavailable: null,
       };
     } catch {
-      return { data: null, error: OFFLINE, unavailable: null };
+      return { data: null, error: offline(), unavailable: null };
     }
   },
   questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
@@ -622,9 +683,14 @@ export const adapter = {
   approvalSettings: () => guard<ApprovalSettingsView>(() => api.GET('/approval-settings')),
   saveApprovalSettings: (body: ApprovalSettings) =>
     guard<ApprovalSettingsView>(() => api.PUT('/approval-settings', { body })),
+  /** How much the agent does on its own for each kind of task that reaches other people. */
+  autonomy: () => guard<TaskAutonomyList>(() => api.GET('/autonomy')),
+  saveAutonomy: (body: TaskAutonomyUpdate) =>
+    guard<TaskAutonomyList>(() => api.PUT('/autonomy', { body })),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
-  messageEvents: (conversationId: string, signal: AbortSignal) =>
-    subscribeEvents(client, { jobId: conversationId, signal }),
+  /** The job's own stream, after `after`: where the messages people react to get their ids. */
+  messageEvents: (conversationId: string, signal: AbortSignal, after = 0) =>
+    subscribeEvents(client, { jobId: conversationId, signal, after }),
   reactions: (conversationId: string) =>
     guard<{ reactions: Reaction[] }>(() =>
       api.GET('/jobs/{jobId}/reactions', { params: { path: { jobId: conversationId } } }),
@@ -681,7 +747,7 @@ export const adapter = {
         ? { data: { status: 'ok' }, error: null, unavailable: null }
         : settle(outcome);
     } catch {
-      return { data: null, error: OFFLINE, unavailable: null };
+      return { data: null, error: offline(), unavailable: null };
     }
   },
 
@@ -964,12 +1030,22 @@ export const adapter = {
         ? api.POST('/google-sign-ins', { body })
         : api.POST('/microsoft-sign-ins', { body });
     }),
-  /** Starts signing in to Google through Composio; the answer is the first consent page to open. */
-  startManagedSignIn: (spaceId?: string) =>
+  /**
+   * Starts signing in through Composio: Google, or the app named by its
+   * toolkit. The answer is the first consent page to open.
+   */
+  startManagedSignIn: (spaceId?: string, toolkit?: string) =>
     guard<ManagedSignInStart>(() =>
       api.POST('/managed-sign-ins', {
-        body: { provider: 'google', ...(spaceId ? { space_id: spaceId } : {}) },
+        body: toolkit
+          ? { provider: 'app', toolkit, ...(spaceId ? { space_id: spaceId } : {}) }
+          : { provider: 'google', ...(spaceId ? { space_id: spaceId } : {}) },
       }),
+    ),
+  /** Apps that can be connected through Composio, matching a search. */
+  searchComposioApps: (query: string) =>
+    guard<ComposioAppSearchResponse>(() =>
+      api.GET('/composio/apps', { params: { query: { query } } }),
     ),
   managedSignInStatus: (id: string) =>
     guard<AccountSignInStatus>(() => api.GET('/managed-sign-ins/{id}', path(id))),
@@ -1112,6 +1188,11 @@ export const adapter = {
     guard<SandboxControl>(() => api.POST('/sandbox/sessions/{id}/takeover', path(sessionId))),
   sandboxHandBack: (sessionId: string) =>
     guard<SandboxControl>(() => api.POST('/sandbox/sessions/{id}/handback', path(sessionId))),
+  /** A fresh link to a desktop shown through its provider's own viewer; never kept. */
+  sandboxViewer: (sessionId: string, mode: 'watch' | 'control') =>
+    guard<SandboxViewer>(() =>
+      api.POST('/sandbox/sessions/{id}/viewer', { ...path(sessionId), body: { mode } }),
+    ),
   sandboxLiveOpen: (sessionId: string) =>
     guard<LiveOpen>(() => api.POST('/sandbox/sessions/{id}/live', path(sessionId))),
   sandboxLiveInput: (sessionId: string, body: LiveUp) =>
@@ -1132,6 +1213,14 @@ export const adapter = {
     guard<ProcessOutput>(() => api.GET('/sandbox/processes/{id}/output', path(processId))),
   processStop: (processId: string) =>
     guard<ProcessStopped>(() => api.POST('/sandbox/processes/{id}/stop', path(processId))),
+  /** The pages a conversation's connections showed. */
+  conversationPages: (conversationId: string) =>
+    guard<ConnectionPageList>(() => api.GET('/conversations/{id}/pages', path(conversationId))),
+  /** A frame for one open page, in this browser session. */
+  pageView: (pageId: string) =>
+    guard<ConnectionPageView>(() => api.POST('/pages/{id}/views', path(pageId))),
+  /** Where a page's frame loads: the API's own address, then the view's path. */
+  pageSource: (view: ConnectionPageView) => `${API_BASE_URL}${view.view_path}`,
   /** Where a preview's page loads: the API's own address, then the preview's path. */
   previewSource: (preview: ProcessPreview) => `${API_BASE_URL}${preview.path}`,
   /** Where a file or picture the service keeps is served, with the session's cookie. */
@@ -1159,6 +1248,9 @@ export const adapter = {
       { method: 'POST', headers: { 'Content-Type': clip.type || 'audio/webm' }, body: clip },
       async (response) => (await response.json()) as VoiceTranscription,
     ),
+  /** A call with the agent: a token that starts it within minutes, for the speech service's client. */
+  startCall: (id: string) =>
+    guard<CallSession>(() => api.POST('/conversations/{id}/call', path(id))),
   /** A realtime transcription address with a single-use token, for voice mode. */
   voiceSession: (id: string) =>
     guard<VoiceSession>(() => api.POST('/conversations/{id}/voice/session', path(id))),
@@ -1229,7 +1321,7 @@ async function binary<T>(
       const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
       return {
         data: null,
-        error: errorMessage(body, OFFLINE),
+        error: errorMessage(body, offline()),
         unavailable: null,
         unauthorized: response.status === 401,
         ...(typeof code === 'string' ? { code } : {}),
@@ -1238,7 +1330,7 @@ async function binary<T>(
     return { data: await read(response), error: null, unavailable: null };
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw error;
-    return { data: null, error: OFFLINE, unavailable: null };
+    return { data: null, error: offline(), unavailable: null };
   }
 }
 
@@ -1248,13 +1340,48 @@ export type StreamItem =
   | { type: 'gap'; gap: StreamGap };
 
 /**
+ * How long a conversation's stream may send nothing before it is treated as
+ * lost. The service sends a keepalive at least every 15 seconds, so three
+ * missed in a row means the connection is gone even if it never closed.
+ */
+export const STREAM_IDLE_MS = 45_000;
+
+/**
+ * Waits `ms` before the next try, or less: the device coming back online, or
+ * the page coming back into view, tries again at once. Aborting ends the wait.
+ */
+export function waitToReconnect(
+  ms: number,
+  signal?: AbortSignal,
+  events:
+    | Pick<EventTarget, 'addEventListener' | 'removeEventListener'>
+    | undefined = typeof window === 'undefined' ? undefined : window,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      events?.removeEventListener('online', done);
+      events?.removeEventListener('focus', done);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    events?.addEventListener('online', done);
+    events?.addEventListener('focus', done);
+    signal?.addEventListener('abort', done);
+  });
+}
+
+/**
  * Follow one conversation's events. Durable items replay on reconnect from
  * the cursor; a break yields a gap so the transcript can say streamed text may
- * be missing rather than stitching two halves together.
+ * be missing rather than stitching two halves together. A stream that goes
+ * silent past `STREAM_IDLE_MS` is reopened from the cursor, and a stream that
+ * was working starts its next retry from the shortest wait.
  */
 export async function* subscribeConversation(
   id: string,
-  options: { after?: number; signal?: AbortSignal } = {},
+  options: { after?: number; signal?: AbortSignal; idleMs?: number } = {},
 ): AsyncGenerator<StreamItem, void, void> {
   let cursor = options.after ?? 0;
   let attempt = 0;
@@ -1263,7 +1390,7 @@ export async function* subscribeConversation(
     if (options.signal?.aborted) return;
     if (attempt > 1) {
       yield { type: 'gap', gap: { after: cursor, next: null, reason: 'reconnect' } };
-      await new Promise((resolve) => setTimeout(resolve, Math.min(500 * 2 ** (attempt - 2), 8000)));
+      await waitToReconnect(Math.min(500 * 2 ** (attempt - 2), 8000), options.signal);
       if (options.signal?.aborted) return;
     }
     let body: ReadableStream<Uint8Array> | null = null;
@@ -1289,7 +1416,10 @@ export async function* subscribeConversation(
     }
     yield { type: 'open' };
     try {
-      for await (const frame of readSse(body)) {
+      for await (const frame of readSse(body, { idleMs: options.idleMs ?? STREAM_IDLE_MS })) {
+        // Something came through: the connection works, so a later drop
+        // retries from the shortest wait again.
+        attempt = 1;
         if (frame.comment) continue;
         let event: ExperienceEvent;
         try {

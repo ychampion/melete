@@ -36,6 +36,8 @@ import {
 import { AgentAvatar } from '../experience/AgentAvatar.tsx';
 import { adapter, type Result } from '../experience/adapter.ts';
 import { clockTime, displayZone, sameDay, weekday } from '../experience/clock.ts';
+import { featureOn } from '../experience/features.ts';
+import { prefetchOn } from '../experience/history.ts';
 import {
   agentById,
   type Loaded,
@@ -56,6 +58,7 @@ import { showsRail } from './member-guards.ts';
 import { sidebarNav } from './nav.ts';
 import { weekStrip } from './week-strip.ts';
 import './shell.css';
+import { instanceName } from '../experience/instance.ts';
 
 export type ToastSpec = {
   id: number;
@@ -258,7 +261,12 @@ function Sidebar({
     member,
     capabilities,
   } = useApp();
-  const nav = sidebarNav(guest === true, capabilities.multiplayer, member === true);
+  const nav = sidebarNav(
+    guest === true,
+    capabilities.multiplayer,
+    member === true,
+    featureOn(capabilities, 'companies'),
+  );
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
@@ -355,6 +363,7 @@ function Sidebar({
               href={href(`/chat/${chat.id}`)}
               aria-current={chat.id === activeChat ? 'page' : undefined}
               onClick={onClose}
+              {...prefetchOn(chat.id)}
             >
               <span className="chat-face">
                 <AgentAvatar agent={agent} size={16} state={live ? 'working' : 'idle'} />
@@ -872,7 +881,7 @@ export function Shell({
                   }}
                 >
                   {agent && !phoneSub ? <AgentAvatar agent={agent} size={18} /> : null}
-                  <span className="clamp1">{title ?? 'Melete'}</span>
+                  <span className="clamp1">{title ?? instanceName()}</span>
                 </span>
                 {phoneSub ? <span className="phone-sub clamp1">{phoneSub}</span> : null}
               </div>

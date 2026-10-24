@@ -40,6 +40,7 @@ import { ShareToRoom } from '../rooms/ShareToRoom.tsx';
 import { href, navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import './beliefs.css';
+import { assistantName } from '../experience/instance.ts';
 import { LearnedTab } from './Learned.tsx';
 
 export const CATEGORY_TITLE: Record<BeliefCategory, string> = {
@@ -438,11 +439,11 @@ function AgentNotes() {
   return (
     <section className="col" style={{ gap: 8 }} aria-labelledby="bc-notes">
       <h3 id="bc-notes" className="belief-group">
-        Melete’s own notes
+        {assistantName()}’s own notes
       </h3>
       <span className="belief-note">
-        What Melete wrote down for itself in your chats, so it has it next time. These are its
-        notes, not things you said.
+        What {assistantName()} wrote down for itself in your chats, so it has it next time. These
+        are its notes, not things you said.
       </span>
       <div className="card-12 belief-list">
         {list.map((note) => (
@@ -451,7 +452,7 @@ function AgentNotes() {
               <span className="belief-value">{note.text}</span>
               <span className="belief-meta">
                 <Badge tone="neutral" style={{ height: 20, fontSize: 11 }}>
-                  Melete’s note
+                  {assistantName()}’s note
                 </Badge>
                 <span className="belief-note">
                   {noteDate(note.created)}
@@ -462,7 +463,7 @@ function AgentNotes() {
             <Button
               size="sm"
               variant="ghost"
-              aria-label={`Delete Melete’s note: ${note.text.slice(0, 60)}`}
+              aria-label={`Delete ${assistantName()}’s note: ${note.text.slice(0, 60)}`}
               onClick={() =>
                 void adapter.deleteAgentNote(note.id).then((r) => {
                   if (r.data === null) return failed(r, 'Couldn’t delete that note');
@@ -542,7 +543,7 @@ function BeliefsView({ focus }: { focus: string | null }) {
       {beliefs.data && list.length === 0 ? (
         <div className="card-12 belief-empty">
           <span className="belief-empty-title">Nothing learned yet</span>
-          <span>Melete adds to this as you talk, and tells you when it does.</span>
+          <span>{assistantName()} adds to this as you talk, and tells you when it does.</span>
         </div>
       ) : null}
       <AgentNotes />
@@ -1037,7 +1038,13 @@ export function LearningSwitch() {
   const loaded = useLoad(() => adapter.memorySettings(), []);
   const [saving, setSaving] = useState(false);
   if (loaded.error)
-    return <LoadError what="whether Melete learns" error={loaded.error} onRetry={loaded.reload} />;
+    return (
+      <LoadError
+        what={`whether ${assistantName()} learns`}
+        error={loaded.error}
+        onRetry={loaded.reload}
+      />
+    );
   if (!loaded.data) return null;
   const on = loaded.data.capture;
   const flip = async (next: boolean) => {
@@ -1064,8 +1071,8 @@ export function LearningSwitch() {
         </span>
         <span style={{ fontSize: 13, color: 'var(--muted)' }}>
           {on
-            ? 'Melete notices what you tell it and keeps what matters, shown here.'
-            : 'Melete keeps what it already knows, and learns nothing new from what you say.'}
+            ? `${assistantName()} notices what you tell it and keeps what matters, shown here.`
+            : `${assistantName()} keeps what it already knows, and learns nothing new from what you say.`}
         </span>
       </div>
       <Toggle

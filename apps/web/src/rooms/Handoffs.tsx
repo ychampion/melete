@@ -14,6 +14,7 @@ import { roomsApi } from './api.ts';
 import { Who } from './parts.tsx';
 import { dayOf } from './reduce.ts';
 import './rooms.css';
+import { assistantName } from '../experience/instance.ts';
 
 export function RoomHandoffs({
   handoffs,
@@ -116,7 +117,7 @@ export function RoomHandoffs({
             </div>
             <span className="decision-meta">
               {resultReady
-                ? 'Sharing posts exactly this text in the room, as yours, via Melete. Keeping it tells the room only that you kept it.'
+                ? `Sharing posts exactly this text in the room, as yours, via ${assistantName()}. Keeping it tells the room only that you kept it.`
                 : `It runs in your own space with your own connections, and anything it sends asks you first. Answer by ${dayOf(handoff.expires_at)}.`}
             </span>
             <div className="decision-actions">

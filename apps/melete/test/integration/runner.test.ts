@@ -8,6 +8,7 @@ import {
   attemptBundle,
   type CreateJobRequest,
   dedupKey,
+  humanText,
   type RuntimeEvent,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
@@ -517,6 +518,31 @@ withDb('attempt runner against Postgres and pg-boss', () => {
       third.bundle.transcript.some((message) => message.content === 'Continue with Tuesday.'),
     ).toBe(true);
     expect(third.bundle.transcript.some((message) => message.tool_call_id === 'read-1')).toBe(true);
+  });
+
+  test('the words recorded as they stream are the words the pass gives the whole reply', async () => {
+    const { handle } = fixture();
+    const worker = runner(new StubRuntimeAdapter());
+    const raw = 'Booked it — the room is yours. Hours are 9–5.';
+    const row = await create([
+      { type: 'text_delta', epoch: 1, text: 'Booked it ' },
+      { type: 'text_delta', epoch: 1, text: '—' },
+      { type: 'text_delta', epoch: 1, text: ' the room is yours. Hours are 9–5.' },
+      { type: 'outcome', outcome: { kind: 'completed', summary: raw, evidence: [] } },
+    ]);
+    await worker.handleWake(wake(row));
+    const stored = await handle.db.select().from(event).where(eq(event.jobId, row.id));
+    const shown = stored
+      .filter((entry) => entry.type === 'text_delta')
+      .map((entry) => (entry.payload as { text: string }).text)
+      .join('');
+    expect(shown).toBe(humanText(raw));
+    expect(shown).not.toContain('—');
+    expect(shown).toContain('9-5');
+    const [ended] = await handle.db.select().from(attempt).where(eq(attempt.jobId, row.id));
+    expect((ended?.outcomeDetail as { summary?: string } | undefined)?.summary).toBe(
+      humanText(raw),
+    );
   });
 
   test('a real stub crash retains text and completed tools, marks a gap, and resumes without a repeated effect', async () => {

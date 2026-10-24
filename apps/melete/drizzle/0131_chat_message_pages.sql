@@ -1,0 +1,2 @@
+CREATE INDEX "event_experience_turn_idx" ON "event" USING btree ("job_id",("payload"->>'turn_id'),"seq") WHERE "event"."payload"->>'kind' = 'experience';--> statement-breakpoint
+CREATE INDEX "experience_turn_job_created_idx" ON "experience_turn" USING btree ("job_id","created_at","id");

@@ -175,6 +175,19 @@ describe('broker actions', () => {
     expect(status('failed')).toMatchObject({ status: 'failed', title: 'Sending the email' });
     expect(status('denied').output_summary?.text).toBe('You declined this.');
     expect(status('admitted').status).toBe('running');
+    expect(status('failed').output_summary?.text).toBe('This did not go through.');
+  });
+
+  test('a read-only check that did not finish says so on its row', () => {
+    const count = row('files.read', { effectClass: 'read' });
+    const failed = actionCall({ action: count, connection: mail, raw: 'failed', at: later });
+    expect(failed.status).toBe('failed');
+    expect(failed.output_summary?.text).toBe('This check did not finish, so it gave no result.');
+    // A step whose effect class is anything else keeps the plain wording.
+    const odd = row('files.read', { effectClass: 'something_new' });
+    expect(
+      actionCall({ action: odd, connection: mail, raw: 'failed', at: later }).output_summary?.text,
+    ).toBe('This did not go through.');
   });
 
   test('each family gets its kind and a title; untrusted page and mail text is quoted', () => {

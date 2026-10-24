@@ -18,8 +18,12 @@ test('a fresh install asks for its first account, then signs in with it', async 
   expect(setupStatusResponse.parse(await (await app.request('/setup')).json())).toEqual({
     needed: true,
     multiplayer: false,
+    features: expect.any(Object),
     code_required: false,
     email_sign_in: false,
+    instance_name: 'Melete',
+    assistant_name: 'Melete',
+    signin: { password: true, oidc: null },
   });
   expect((await app.request('/profile')).status).toBe(401);
 
@@ -33,8 +37,19 @@ test('a fresh install asks for its first account, then signs in with it', async 
   expect(await (await app.request('/setup')).json()).toEqual({
     needed: false,
     multiplayer: false,
+    features: expect.any(Object),
     code_required: false,
     email_sign_in: false,
+    instance_name: 'Melete',
+    assistant_name: 'Melete',
+    signin: { password: true, oidc: null },
+  });
+
+  // As the service does, the assistant takes the installation's name when only that is set.
+  const named = createMock({ speed: 0, instanceName: 'Riverside' }).app;
+  expect(await (await named.request('/setup')).json()).toMatchObject({
+    instance_name: 'Riverside',
+    assistant_name: 'Riverside',
   });
 
   const again = await post(app, '/setup', {
@@ -63,8 +78,12 @@ test('by default the demo account exists and setup is not needed', async () => {
   expect(await (await app.request('/setup')).json()).toEqual({
     needed: false,
     multiplayer: false,
+    features: expect.any(Object),
     code_required: false,
     email_sign_in: false,
+    instance_name: 'Melete',
+    assistant_name: 'Melete',
+    signin: { password: true, oidc: null },
   });
   expect((await app.request('/profile')).status).toBe(200);
 });

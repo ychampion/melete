@@ -7,6 +7,7 @@
  */
 import { adapter } from '../experience/adapter.ts';
 import { turnAgent } from '../experience/hooks.ts';
+import { assistantName } from '../experience/instance.ts';
 import type { TranscriptTurn } from '../experience/reduce.ts';
 import type { ToolEntry } from '../experience/trace.ts';
 import type {
@@ -170,7 +171,8 @@ export const workerName = (
   agents: Agent[],
   removed: Agent[] | undefined,
   chatAgent: Agent | null | undefined,
-): string => (turnAgent(agents, removed, turn?.turn.agent_id) ?? chatAgent)?.name ?? 'Melete';
+): string =>
+  (turnAgent(agents, removed, turn?.turn.agent_id) ?? chatAgent)?.name ?? assistantName();
 
 /**
  * The line over the composer while the agent is at work on its computer: the

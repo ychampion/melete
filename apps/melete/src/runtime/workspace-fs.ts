@@ -107,6 +107,57 @@ function checkJob(jobId: string): void {
 const missing = (error: unknown): boolean =>
   error instanceof Error && 'code' in error && error.code === 'ENOENT';
 
+const errorCode = (error: unknown): string =>
+  error instanceof Error && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : 'unknown';
+
+/**
+ * Why this service could not move `path` to another directory, or null when
+ * it can. A directory moves only with write access to itself, since its `..`
+ * entry changes: a folder a runtime made without the group's write bit stays
+ * where it is (EACCES), even though everything around it is the service's.
+ */
+async function unmovable(path: string): Promise<string | null> {
+  const stat = await lstat(path);
+  if (!stat.isDirectory()) return null;
+  try {
+    await access(path, constants.W_OK);
+    return null;
+  } catch (error) {
+    return errorCode(error);
+  }
+}
+
+/** A set-aside job workspace that could not be put back whole. */
+export class WorkspaceRestoreError extends Error {
+  override readonly name = 'WorkspaceRestoreError';
+  constructor(
+    message: string,
+    /** The first entry's error code, such as EACCES. */
+    readonly code: string,
+    /** How many entries are still set aside. */
+    readonly left: number,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * One line for the operator about leftovers a start could not put back or
+ * remove: a fixed code, the job, the directory under the workspace root, and
+ * the error code. File names and contents stay out of it.
+ */
+function leftover(code: string, job: string | undefined, directory: string, error: unknown) {
+  const left = error instanceof WorkspaceRestoreError ? ` left=${error.left}` : '';
+  process.stderr.write(
+    `${code}${job ? ` job=${job}` : ''} directory=${directory} error=${errorCode(error)}${left}: ` +
+      'left in place under the workspace root; the service starts without it. ' +
+      'Give the service user write access to it (EACCES), or move what it holds back by hand ' +
+      '(EEXIST: the workspace has a newer entry of the same name), then restart.\n',
+  );
+}
+
 /** Where deletes keep what they took, beside the job workspaces (connectors/files-trash.ts). */
 export const TRASH_DIRECTORY = '.trash';
 
@@ -368,18 +419,41 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     }
     if (!existing.isDirectory() || existing.isSymbolicLink())
       throw new Error('Refusing a symlink or non-directory job workspace');
+    // Every entry has to move into the spare's directory afterwards. One this
+    // service cannot move would be left behind set aside, so the spare is not
+    // used and the attempt starts its own engine on the workspace as it is.
+    for (const entry of await readdir(job)) {
+      const stuck = await unmovable(join(job, entry));
+      if (stuck)
+        throw new WorkspaceRestoreError(
+          `the job workspace has an entry this service cannot move (${stuck})`,
+          stuck,
+          1,
+        );
+    }
     const asidePath = join(root, aside);
     await rename(job, asidePath);
     try {
       await rename(spare, job);
     } finally {
       // Whichever directory is the job's now, it ends with everything it had.
-      await this.restoreSetAside(asidePath, job);
+      // Only the spare has written into it, while it loaded: its copies give way.
+      await this.restoreSetAside(asidePath, job, true);
     }
   }
 
-  /** Moves a set-aside workspace's entries back into the job's; the job's own win. */
-  private async restoreSetAside(aside: string, job: string) {
+  /**
+   * Moves a set-aside workspace's entries back into the job's. Every entry
+   * that can move does. When one cannot, the set-aside stays with what is left
+   * in it and `WorkspaceRestoreError` says why.
+   *
+   * `replace` is for a takeover in progress, when what is under the same name
+   * in the job's directory is only what the spare wrote while it loaded. A set
+   * aside found at a later start may have waited while the conversation went
+   * on and wrote newer work under the same name: that is never removed, and
+   * the older entry stays set aside (EEXIST) for the operator.
+   */
+  private async restoreSetAside(aside: string, job: string, replace: boolean) {
     const exists = await lstat(job).catch(() => undefined);
     if (!exists) {
       await rename(aside, job);
@@ -387,11 +461,28 @@ export class LocalWorkspaceFs implements WorkspaceFs {
     }
     if (!exists.isDirectory() || exists.isSymbolicLink())
       throw new Error('Refusing a symlink or non-directory job workspace');
+    let first: string | undefined;
+    let left = 0;
     for (const entry of await readdir(aside)) {
-      // Anything the spare wrote under the same name while it loaded gives way.
-      await rm(join(job, entry), { recursive: true, force: true });
-      await rename(join(aside, entry), join(job, entry));
+      try {
+        // Checked before the spare's copy goes, which then stays in its place.
+        const stuck = await unmovable(join(aside, entry));
+        if (stuck) throw Object.assign(new Error(stuck), { code: stuck });
+        if (replace) await rm(join(job, entry), { recursive: true, force: true });
+        else if (await lstat(join(job, entry)).catch(() => undefined))
+          throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+        await rename(join(aside, entry), join(job, entry));
+      } catch (error) {
+        first ??= errorCode(error);
+        left++;
+      }
     }
+    if (left)
+      throw new WorkspaceRestoreError(
+        `${left} set-aside entr${left === 1 ? 'y' : 'ies'} could not be moved back (${first})`,
+        first ?? 'unknown',
+        left,
+      );
     await rmdir(aside);
   }
 
@@ -412,33 +503,46 @@ export class LocalWorkspaceFs implements WorkspaceFs {
         ? { name: rest }
         : { instance: rest.slice(0, dot).split('~')[0], name: rest.slice(dot + 1) };
     };
+    // One job's leftovers that cannot be put back or removed are reported and
+    // left where they are, and the rest go on: a start that stopped on them
+    // would stop the same way on every start after it.
     for (const entry of await readdir(root)) {
       if (entry.startsWith(ADOPTING)) {
         const found = owner(entry.slice(ADOPTING.length));
         if (!(await removable(found.instance))) continue;
-        const jobId = prefixedId('job').parse(found.name);
-        // Claimed by one atomic rename first: of two runners restoring the same
-        // set-aside, the one that loses the rename (ENOENT on Linux, where the
-        // service runs) leaves it to the other.
-        const claimed = join(
-          root,
-          `${ADOPTING}${claimant}~${randomBytes(6).toString('hex')}.${jobId}`,
-        );
+        let jobId = '';
         try {
-          await rename(join(root, entry), claimed);
+          jobId = prefixedId('job').parse(found.name);
+          // Claimed by one atomic rename first: of two runners restoring the
+          // same set-aside, the one that loses the rename (ENOENT on Linux,
+          // where the service runs) leaves it to the other.
+          const claimed = `${ADOPTING}${claimant}~${randomBytes(6).toString('hex')}.${jobId}`;
+          try {
+            await rename(join(root, entry), join(root, claimed));
+          } catch (error) {
+            if (missing(error)) continue;
+            throw error;
+          }
+          try {
+            await this.restoreSetAside(join(root, claimed), join(root, jobId), false);
+          } catch (error) {
+            leftover('workspace_restore_failed', jobId, claimed, error);
+          }
         } catch (error) {
-          if (missing(error)) continue;
-          throw error;
+          leftover('workspace_restore_failed', jobId || 'unknown', entry, error);
         }
-        await this.restoreSetAside(claimed, join(root, jobId));
       } else if (entry.startsWith(SPARE_DIRECTORY)) {
         if (!(await removable(owner(entry.slice(SPARE_DIRECTORY.length)).instance))) continue;
         const path = join(root, entry);
-        const found = await lstat(path).catch((error: unknown) => {
-          if (missing(error)) return undefined;
-          throw error;
-        });
-        if (found?.isDirectory()) await rm(path, { recursive: true, force: true });
+        try {
+          const found = await lstat(path).catch((error: unknown) => {
+            if (missing(error)) return undefined;
+            throw error;
+          });
+          if (found?.isDirectory()) await rm(path, { recursive: true, force: true });
+        } catch (error) {
+          leftover('spare_directory_remove_failed', undefined, entry, error);
+        }
       }
     }
   }

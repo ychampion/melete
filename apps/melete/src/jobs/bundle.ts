@@ -21,6 +21,7 @@ import {
   QUESTION_GUIDANCE,
   type RecallResult,
   type ResponsibilityAttemptBundle,
+  readReplyVoice,
   receipt,
   receipt as receiptContract,
   responsibilityAttemptBundle,
@@ -30,7 +31,20 @@ import {
   triggerSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
@@ -69,6 +83,7 @@ import { withSharedItems } from '../rooms/shares.ts';
 import { roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
+import { CARRIES_ON } from './answer-join.ts';
 import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import {
@@ -84,7 +99,14 @@ import {
   storedSummary,
 } from './history-summary.ts';
 import { localNow } from './local-now.ts';
-import { PRIVACY_DECISION, pickedForAgent, questionView, readDeferred } from './questions.ts';
+import {
+  answerKey,
+  PRIVACY_DECISION,
+  pickedForAgent,
+  questionView,
+  readDeferred,
+} from './questions.ts';
+import { reminderHeld } from './reminder-hold.ts';
 import type { JobRow } from './service.ts';
 import { UNSETTLED_WAIT } from './unsettled.ts';
 
@@ -136,10 +158,16 @@ export class BundleContextLimitError extends Error {
  * let a replacement stub replay its effect. Large tool bodies may be explicitly
  * abbreviated, but their call IDs remain exact. If identities alone do not fit,
  * refuse the attempt instead of silently discarding its replay protection.
+ *
+ * A call made in a turn that has ended (`settled`) can no longer be replayed:
+ * every attempt of that turn is over, and a later turn's calls are its own. It
+ * is ordinary conversation, kept while there is room, so a long chat is never
+ * refused for the calls its earlier turns made.
  */
 export function boundTranscript(
   messages: readonly CanonicalMessage[],
   limits: TranscriptLimits = BASELINE_TRANSCRIPT,
+  settled: ReadonlySet<CanonicalMessage> = NONE_SETTLED,
 ): CanonicalMessage[] {
   const { maxMessages, maxTokens, maxBytes } = limits;
   // Bound by characters at four to the token, then check the result against
@@ -149,7 +177,7 @@ export function boundTranscript(
   // proportion until both hold. Latin text fits on the first pass.
   let characters = maxTokens * CONTEXT_CHARS_PER_TOKEN;
   for (let pass = 0; ; pass++) {
-    const bounded = boundByCharacters(messages, maxMessages, characters);
+    const bounded = boundByCharacters(messages, maxMessages, characters, settled);
     const serialized = JSON.stringify(bounded);
     const tokens = estimateInputTokens(serialized);
     const bytes = wireBytes(serialized);
@@ -160,15 +188,19 @@ export function boundTranscript(
   }
 }
 
-/** The bound in serialized characters, keeping every completed tool identity. */
+const NONE_SETTLED: ReadonlySet<CanonicalMessage> = new Set();
+
+/** The bound in serialized characters, keeping every completed tool identity a turn under way made. */
 function boundByCharacters(
   messages: readonly CanonicalMessage[],
   maxMessages: number,
   maxCharacters: number,
+  settled: ReadonlySet<CanonicalMessage>,
 ): CanonicalMessage[] {
   const tools = new Map<string, number>();
   for (const [index, message] of messages.entries()) {
-    if (message.role === 'tool' && message.tool_call_id) tools.set(message.tool_call_id, index);
+    if (message.role === 'tool' && message.tool_call_id && !settled.has(message))
+      tools.set(message.tool_call_id, index);
   }
   if (tools.size > maxMessages) {
     throw new BundleContextLimitError(
@@ -179,7 +211,9 @@ function boundByCharacters(
   const selected = new Set(required);
   for (let index = messages.length - 1; index >= 0 && selected.size < maxMessages; index--) {
     const message = messages[index];
-    if (!message || (message.role === 'tool' && message.tool_call_id)) continue;
+    // A call under way is kept once, at its latest result; an earlier turn's is conversation.
+    if (!message || (message.role === 'tool' && message.tool_call_id && !settled.has(message)))
+      continue;
     selected.add(index);
   }
   const indices = [...selected].sort((a, b) => a - b);
@@ -225,7 +259,8 @@ function boundByCharacters(
   return bounded;
 }
 
-type HistoryEvent = Pick<typeof event.$inferSelect, 'seq' | 'type' | 'payload' | 'createdAt'>;
+type HistoryEvent = Pick<typeof event.$inferSelect, 'seq' | 'type' | 'payload' | 'createdAt'> &
+  Partial<Pick<typeof event.$inferSelect, 'attemptId'>>;
 type HistoryAttempt = Pick<
   typeof attempt.$inferSelect,
   'outcome' | 'outcomeDetail' | 'endedAt' | 'startedAt'
@@ -392,25 +427,65 @@ export function inTimeOrder(
   return [...merged, ...thread.slice(next)];
 }
 
-/** Pure assembly is shared by the database reader and focused replay tests. */
-export function assembleHistory(
-  events: readonly HistoryEvent[],
-  attempts: readonly HistoryAttempt[],
-  afterSeq: number,
-  context: {
-    /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
-    names?: ReadonlyMap<string, string>;
-    /** The text of each file the person sent, by id: what their messages' file blocks hold. */
-    fileTexts?: ReadonlyMap<string, string | null>;
-    /** How much transcript this attempt's model has room for. */
-    limits?: TranscriptLimits;
-    /**
-     * The person the conversation belongs to, when it has one: a message
-     * recorded as another principal's is never in their words.
-     */
-    principal?: string | null;
-  } = {},
-): Pick<AttemptBundle, 'inputs' | 'transcript' | 'earlier'> & {
+/**
+ * A room's thread and the request's bounded history, bounded again as one
+ * conversation. The calls of the request's turns that have ended stay
+ * conversation here as in the history's own bound (`boundTranscript`), so a
+ * long request in a room is never refused for them either. That bound copies
+ * the messages it keeps, so they are found again by call id; an id the turn
+ * under way also used stays the turn's.
+ */
+export function boundRoomTranscript(
+  thread: readonly CanonicalMessage[],
+  history: {
+    transcript: readonly CanonicalMessage[];
+    full: readonly CanonicalMessage[];
+    settled: ReadonlySet<CanonicalMessage>;
+  },
+): CanonicalMessage[] {
+  const call = (message: CanonicalMessage) =>
+    message.role === 'tool' && message.tool_call_id ? message.tool_call_id : null;
+  const underWay = new Set(
+    history.full.flatMap((message) =>
+      call(message) && !history.settled.has(message) ? [call(message)] : [],
+    ),
+  );
+  const ended = new Set(
+    [...history.settled].flatMap((message) => {
+      const id = call(message);
+      return id && !underWay.has(id) ? [id] : [];
+    }),
+  );
+  const merged = inTimeOrder(thread, history.transcript);
+  const settled = new Set(
+    merged.filter((message) => {
+      const id = call(message);
+      return id !== null && ended.has(id);
+    }),
+  );
+  return boundTranscript(merged, BASELINE_TRANSCRIPT, settled);
+}
+
+type HistoryContext = {
+  /** In a room, the name of each person who spoke, by principal; each message carries its speaker's. */
+  names?: ReadonlyMap<string, string>;
+  /** The text of each file the person sent, by id: what their messages' file blocks hold. */
+  fileTexts?: ReadonlyMap<string, string | null>;
+  /** How much transcript this attempt's model has room for. */
+  limits?: TranscriptLimits;
+  /**
+   * The person the conversation belongs to, when it has one: a message
+   * recorded as another principal's is never in their words.
+   */
+  principal?: string | null;
+  /** Attempts of a chat's turns that have ended; their tool calls cannot be replayed. */
+  settledAttempts?: ReadonlySet<string>;
+};
+
+/** A job's conversation in order, with what is new to the attempt, before any of it is bounded. */
+export type CollectedHistory = Pick<AttemptBundle, 'inputs'> & {
+  /** The tool results in `full` that turns which have ended made. */
+  settled: ReadonlySet<CanonicalMessage>;
   progressSummary: string;
   /** The whole conversation in order, before any of it is summarised or bounded. */
   full: CanonicalMessage[];
@@ -424,8 +499,64 @@ export function assembleHistory(
   personWords: ReadonlyMap<CanonicalMessage, string>;
   /** The newest summary of its earlier messages, if one was made. */
   stored: StoredSummary | null;
-} {
-  const { names, fileTexts = new Map(), limits = BASELINE_TRANSCRIPT, principal } = context;
+  /** The event each message in `full` was read from, by seq; an attempt's answer has none. */
+  sources: ReadonlyMap<CanonicalMessage, number>;
+};
+
+/** Pure assembly is shared by the database reader and focused replay tests. */
+export function assembleHistory(
+  events: readonly HistoryEvent[],
+  attempts: readonly HistoryAttempt[],
+  afterSeq: number,
+  context: HistoryContext = {},
+): Pick<AttemptBundle, 'inputs' | 'transcript' | 'earlier'> & Omit<CollectedHistory, 'sources'> {
+  const collected = collectHistory(events, attempts, afterSeq, context);
+  const bounded = boundHistory(
+    collected.full,
+    collected.inputs.new_user_messages,
+    collected.stored,
+    context.limits ?? BASELINE_TRANSCRIPT,
+    collected.settled,
+  );
+  return {
+    inputs: collected.inputs,
+    transcript: bounded.transcript,
+    ...(bounded.earlier ? { earlier: bounded.earlier } : {}),
+    progressSummary: collected.progressSummary,
+    settled: collected.settled,
+    full: collected.full,
+    personWords: collected.personWords,
+    stored: collected.stored,
+  };
+}
+
+/** The person's words, then the files they sent with them, fenced as untrusted data. */
+const userContent = (
+  text: string,
+  payload: { chosen?: unknown; attachments?: unknown },
+  fileTexts: ReadonlyMap<string, string | null>,
+): string =>
+  withFiles(pickedForAgent(text, payload.chosen), messageFiles(payload.attachments), fileTexts);
+
+/** What a tool result's message carries, from its stored payload. */
+const resultContent = (payload: unknown): { tool_call_id: string; content: string } => {
+  const result = toolResult.parse(payload);
+  return {
+    tool_call_id: result.call_id,
+    content: JSON.stringify({ ok: result.ok, result: result.result }),
+  };
+};
+
+/** `assembleHistory` up to the bound: the whole conversation, in order. */
+export function collectHistory(
+  events: readonly HistoryEvent[],
+  attempts: readonly HistoryAttempt[],
+  afterSeq: number,
+  context: HistoryContext = {},
+): CollectedHistory {
+  const { names, fileTexts = new Map(), principal, settledAttempts } = context;
+  const sources = new Map<CanonicalMessage, number>();
+  const settled = new Set<CanonicalMessage>();
   let stored: StoredSummary | null = null;
   const spoken = new Map<CanonicalMessage, string>();
   const inputs: AttemptBundle['inputs'] = {
@@ -471,16 +602,12 @@ export function assembleHistory(
           : undefined;
       const message: CanonicalMessage = {
         role: 'user',
-        // The person's words, then the files they sent with them, fenced as untrusted data.
-        content: withFiles(
-          pickedForAgent(payload.text, payload.chosen),
-          messageFiles(payload.attachments),
-          fileTexts,
-        ),
+        content: userContent(payload.text, payload, fileTexts),
         ...(speaker ? { name: speaker } : {}),
         at: row.createdAt.toISOString(),
       };
       transcript.push(message);
+      sources.set(message, row.seq);
       const someoneElse =
         typeof principal === 'string' &&
         typeof payload.principal_id === 'string' &&
@@ -496,13 +623,14 @@ export function assembleHistory(
         steersRead.has(payload.steer_id);
       if (row.seq > messagesAfter && !readBefore) inputs.new_user_messages.push(message);
     } else if (row.type === 'tool_result') {
-      const result = toolResult.parse(payload);
-      transcript.push({
+      const message: CanonicalMessage = {
         role: 'tool',
-        tool_call_id: result.call_id,
-        content: JSON.stringify({ ok: result.ok, result: result.result }),
+        ...resultContent(payload),
         at: row.createdAt.toISOString(),
-      });
+      };
+      transcript.push(message);
+      sources.set(message, row.seq);
+      if (row.attemptId && settledAttempts?.has(row.attemptId)) settled.add(message);
     } else if (row.seq > afterSeq && row.type === 'approval_decided') {
       const decision = attemptBundle.shape.inputs.shape.approval_results.element.safeParse({
         ...payload,
@@ -533,16 +661,61 @@ export function assembleHistory(
     }
   }
   transcript.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  const bounded = boundHistory(transcript, inputs.new_user_messages, stored, limits);
   return {
     inputs,
-    transcript: bounded.transcript,
-    ...(bounded.earlier ? { earlier: bounded.earlier } : {}),
     progressSummary,
+    settled,
     full: transcript,
     personWords: spoken,
     stored,
+    sources,
   };
+}
+
+/**
+ * What a history read has to reach for the attempt to be handed exactly what
+ * reading every event would hand it.
+ *
+ * The bound keeps a turn's calls still under way wherever they are, and of
+ * the rest picks newest first, at most `maxMessages` of them, from what came
+ * after the stored summary (`boundHistory`). So when at least that many
+ * messages it could pick are at or after some time, nothing before that time
+ * is ever picked: such a message is in no transcript, and since every message
+ * the person or the agent wrote is still read, what is left out is counted
+ * the same. Of the tool results, then, only these have bodies an attempt can
+ * see: the ones still under way, and the ones from that time on. A long
+ * chat's old outputs are most of its bytes, and none of them is among these.
+ *
+ * `history` is the conversation read without tool result bodies; the times,
+ * roles and what each message is are all it needs. `from` is that time (or
+ * minus infinity when everything fits), and `results` the seqs of the tool
+ * results whose bodies are needed.
+ */
+export function resultsInReach(
+  history: Pick<CollectedHistory, 'full' | 'inputs' | 'settled' | 'stored' | 'sources'>,
+  maxMessages: number,
+): { from: number; results: Set<number> } {
+  const through = history.stored ? Date.parse(history.stored.through) : Number.NEGATIVE_INFINITY;
+  const fresh = new Set(history.inputs.new_user_messages);
+  const underWay = (message: CanonicalMessage) =>
+    isToolIdentity(message) && !history.settled.has(message);
+  // `full` is in time order, so these are too.
+  const pickable = history.full
+    .filter((message) => !fresh.has(message) && !underWay(message))
+    .map((message) => Date.parse(message.at))
+    .filter((at) => at > through);
+  const reach = Math.max(1, maxMessages);
+  const from =
+    pickable.length >= reach
+      ? (pickable[pickable.length - reach] ?? Number.NEGATIVE_INFINITY)
+      : Number.NEGATIVE_INFINITY;
+  const results = new Set<number>();
+  for (const [message, seq] of history.sources) {
+    if (message.role !== 'tool') continue;
+    const at = Date.parse(message.at);
+    if (underWay(message) || (at >= from && at > through)) results.add(seq);
+  }
+  return { from, results };
 }
 
 /**
@@ -558,6 +731,8 @@ export function boundHistory(
   fresh: readonly CanonicalMessage[],
   stored: StoredSummary | null,
   limits: TranscriptLimits,
+  /** Tool calls of turns that have ended, which no attempt can replay (`boundTranscript`). */
+  settled: ReadonlySet<CanonicalMessage> = NONE_SETTLED,
 ): { transcript: CanonicalMessage[]; earlier?: NonNullable<AttemptBundle['earlier']> } {
   const isFresh = new Set(fresh);
   // The rules the person set in the summarised messages travel beside the
@@ -571,7 +746,9 @@ export function boundHistory(
   const through = stored ? Date.parse(stored.through) : Number.NEGATIVE_INFINITY;
   const kept = transcript.flatMap((message) => {
     if (isFresh.has(message) || Date.parse(message.at) > through) return [message];
-    return isToolIdentity(message) ? [{ ...message, content: omitted }] : [];
+    return isToolIdentity(message) && !settled.has(message)
+      ? [{ ...message, content: omitted }]
+      : [];
   });
   const carried = standing.length ? JSON.stringify(standing) : '';
   const room: TranscriptLimits = summary
@@ -589,7 +766,7 @@ export function boundHistory(
         ),
       }
     : limits;
-  const bounded = boundAroundNewMessages(kept, fresh, room);
+  const bounded = boundAroundNewMessages(kept, fresh, room, settled);
   const said = (message: CanonicalMessage) => !isToolIdentity(message);
   const shown = bounded.filter(
     (message) => said(message) && !message.content.endsWith(omitted),
@@ -623,8 +800,9 @@ function boundAroundNewMessages(
   transcript: readonly CanonicalMessage[],
   fresh: readonly CanonicalMessage[],
   limits: TranscriptLimits,
+  settled: ReadonlySet<CanonicalMessage>,
 ): CanonicalMessage[] {
-  if (fresh.length === 0) return boundTranscript(transcript, limits);
+  if (fresh.length === 0) return boundTranscript(transcript, limits, settled);
   const isFresh = new Set(fresh);
   const serialized = JSON.stringify(fresh);
   const remaining: TranscriptLimits = {
@@ -635,10 +813,10 @@ function boundAroundNewMessages(
   const prior = transcript.filter((message) => !isFresh.has(message));
   let bounded: CanonicalMessage[];
   try {
-    bounded = boundTranscript(prior, remaining);
+    bounded = boundTranscript(prior, remaining, settled);
   } catch (error) {
     if (!(error instanceof BundleContextLimitError)) throw error;
-    return boundTranscript(transcript, limits);
+    return boundTranscript(transcript, limits, settled);
   }
   return [...bounded, ...fresh].sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
 }
@@ -859,56 +1037,22 @@ async function situation(tx: Transaction, row: JobRow): Promise<string> {
 }
 
 /**
- * What a job's history is read from, with what the current context may no
- * longer carry taken out: a revoked context's tool results keep only their
- * identities, and its approvals and connector events are dropped. `upTo`
- * reads only the events written by then.
+ * A job's history with what the current context may no longer carry taken
+ * out: a revoked context's tool results keep only their identities, and its
+ * approvals and connector events are dropped. `current` holds the attempts
+ * made under the current context.
  */
-async function historyRows(
-  tx: Transaction,
-  row: JobRow,
+export function usableHistory<T extends HistoryEvent>(
+  events: readonly T[],
   generations: ContextGenerations,
-  upTo?: number,
-) {
-  const events = await tx
-    .select()
-    .from(event)
-    .where(
-      and(
-        eq(event.jobId, row.id),
-        inArray(event.type, ['notice', 'tool_result', 'approval_decided', 'steer_delivered']),
-        upTo === undefined ? undefined : lte(event.seq, upTo),
-      ),
-    )
-    .orderBy(asc(event.seq));
-  const attempts = await tx
-    .select()
-    .from(attempt)
-    .where(and(eq(attempt.jobId, row.id), isNotNull(attempt.endedAt)))
-    .orderBy(desc(attempt.epoch));
-  const provenance = await tx
-    .select({
-      id: attempt.id,
-      policyGeneration: attempt.policyGeneration,
-      connectionGenerations: attempt.connectionGenerations,
-    })
-    .from(attempt)
-    .where(eq(attempt.jobId, row.id));
-  const contextMatches = (entry: {
-    policyGeneration: number;
-    connectionGenerations: Record<string, number>;
-  }) =>
-    entry.policyGeneration === generations.policy_generation &&
-    Object.entries(entry.connectionGenerations).every(
-      ([id, generation]) => generations.connection_generations[id] === generation,
-    );
-  const currentAttempts = new Set(provenance.filter(contextMatches).map((entry) => entry.id));
-  const usableEvents = events.flatMap((entry) => {
+  current: ReadonlySet<string>,
+): T[] {
+  return events.flatMap((entry) => {
     const payload = jsonObject.parse(entry.payload);
-    const current = entry.attemptId
-      ? currentAttempts.has(entry.attemptId)
+    const made = entry.attemptId
+      ? current.has(entry.attemptId)
       : generations.policy_generation === 0;
-    if (entry.type === 'tool_result' && !current) {
+    if (entry.type === 'tool_result' && !made) {
       const result = toolResult.parse(payload);
       // Keep the completed identity to prevent replay, while discarding revoked context bytes.
       return [
@@ -922,7 +1066,7 @@ async function historyRows(
         },
       ];
     }
-    if (entry.type === 'approval_decided' && payload.decision === 'approved' && !current) return [];
+    if (entry.type === 'approval_decided' && payload.decision === 'approved' && !made) return [];
     // A summary made under a context since revoked carries what that context gave.
     if (entry.type === 'notice' && payload.kind === HISTORY_SUMMARY_KIND) {
       const stored = storedSummary(payload);
@@ -945,43 +1089,356 @@ async function historyRows(
     }
     return [entry];
   });
+}
+
+/**
+ * What a history read must reach (`resultsInReach`). `upTo` reads only the
+ * events written by then; `afterSeq` is the last event the attempt before
+ * read, so what comes after it is new.
+ */
+type HistoryReach = {
+  upTo?: number;
+  afterSeq: number;
+  /** The most messages the attempt's transcript holds, beyond the ones new to it. */
+  maxMessages: number;
+  /**
+   * Read for the summary to be extended over the messages after it, so their
+   * files are read too, and so are those of messages sent from `freshFrom` on:
+   * this turn's own, which the extension finds again by their words.
+   */
+  summarising?: { freshFrom: number };
+};
+
+/** A tool result read without its body, which `resultsInReach` showed no attempt can see. */
+const unreadResult = (seq: number) => ({ call_id: `unread:${seq}`, ok: true, result: {} });
+
+/**
+ * The notices a history is made of (`collectHistory`, `usableHistory`); a
+ * chat's other notices (an accepted submission, a reply owed) are none of it.
+ */
+export const HISTORY_NOTICES = [
+  'user_message',
+  'trigger_event',
+  HISTORY_SUMMARY_KIND,
+  PRIVACY_DECISION,
+];
+
+/** How many tool result bodies one statement asks for. */
+const BODIES_PER_READ = 500;
+
+/**
+ * A job's conversation, collected as `collectHistory` collects it from the
+ * events `usableHistory` leaves. Every event a history is made of is read, but
+ * a tool result's body only when an attempt can see it (`resultsInReach`), and
+ * a file's text only
+ * when a message that can be shown, or summarised, carries it. The events are
+ * collected once, without those bodies; the bodies and files then go into the
+ * messages they belong to, which is what collecting them all would have made.
+ */
+async function historyRows(
+  tx: Transaction,
+  row: JobRow,
+  generations: ContextGenerations,
+  reach: HistoryReach,
+  principal?: string | null,
+) {
+  const { upTo } = reach;
+  const outline = await tx
+    .select({
+      seq: event.seq,
+      type: event.type,
+      attemptId: event.attemptId,
+      createdAt: event.createdAt,
+      // Postgres reads a large body only when it is asked for; this asks for none.
+      payload: sql<unknown>`case when ${event.type} = 'tool_result' then null else ${event.payload} end`,
+    })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, row.id),
+        or(
+          inArray(event.type, ['tool_result', 'approval_decided', 'steer_delivered']),
+          and(eq(event.type, 'notice'), inArray(sql`${event.payload}->>'kind'`, HISTORY_NOTICES)),
+        ),
+        upTo === undefined ? undefined : lte(event.seq, upTo),
+      ),
+    )
+    .orderBy(asc(event.seq));
+  // Every attempt the job has made, newest first; `attempts` are the ones that ended.
+  const provenance = await tx
+    .select()
+    .from(attempt)
+    .where(eq(attempt.jobId, row.id))
+    .orderBy(desc(attempt.epoch));
+  const attempts = provenance.filter((entry) => entry.endedAt !== null);
+  // The attempts of a chat's turns that have ended: none of them runs again.
+  const settledAttempts = new Set(
+    provenance
+      .filter((entry) => entry.turnId !== null && entry.turnId !== row.currentTurnId)
+      .map((entry) => entry.id),
+  );
+  const contextMatches = (entry: {
+    policyGeneration: number;
+    connectionGenerations: Record<string, number>;
+  }) =>
+    entry.policyGeneration === generations.policy_generation &&
+    Object.entries(entry.connectionGenerations).every(
+      ([id, generation]) => generations.connection_generations[id] === generation,
+    );
+  const currentAttempts = new Set(provenance.filter(contextMatches).map((entry) => entry.id));
   // A room's request reads its thread, with each person's name on what they said.
   const room = row.audience === 'room' ? await roomTranscript(tx, row) : null;
+  const read = outlineHistory(
+    outline,
+    attempts.filter(contextMatches),
+    { generations, currentAttempts, settledAttempts },
+    reach,
+    {
+      ...(room?.names ? { names: room.names } : {}),
+      ...(principal !== undefined ? { principal } : {}),
+    },
+  );
+  const bodies = new Map<number, unknown>();
+  for (let start = 0; start < read.results.length; start += BODIES_PER_READ) {
+    const rows = await tx
+      .select({ seq: event.seq, payload: event.payload })
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, row.id),
+          inArray(event.seq, read.results.slice(start, start + BODIES_PER_READ)),
+        ),
+      );
+    for (const entry of rows) bodies.set(entry.seq, entry.payload);
+  }
   // A job running under a conversation reads that conversation's files too.
   const files = await attachmentTexts(
     tx,
     row.experienceParentId ? [row.id, row.experienceParentId] : [row.id],
+    read.files,
   );
-  return { usableEvents, attempts, contextMatches, currentAttempts, room, files };
+  read.fill(bodies, new Map([...files].map(([id, file]) => [id, file.text])));
+  return { history: read.history, attempts, contextMatches, currentAttempts, room };
+}
+
+/**
+ * `historyRows` between its reads: the conversation collected from the events
+ * read without tool result bodies (`outline`, whose tool results' payloads are
+ * not looked at), the tool results (`results`, by seq) and files (`files`, by
+ * id) an attempt can be shown, and `fill`, which puts the bodies and texts read
+ * for those into the messages they belong to. `attempts` are the ended
+ * attempts made under the current context, newest first.
+ */
+export function outlineHistory(
+  outline: readonly HistoryEvent[],
+  attempts: readonly HistoryAttempt[],
+  context: {
+    generations: ContextGenerations;
+    /** The attempts made under the current context. */
+    currentAttempts: ReadonlySet<string>;
+    settledAttempts: ReadonlySet<string>;
+  },
+  reach: HistoryReach,
+  speakers: Pick<HistoryContext, 'names' | 'principal'> = {},
+): {
+  history: CollectedHistory;
+  results: number[];
+  files: string[];
+  fill(bodies: ReadonlyMap<number, unknown>, fileTexts: ReadonlyMap<string, string | null>): void;
+} {
+  const { generations, currentAttempts, settledAttempts } = context;
+  const usable = usableHistory(
+    outline.map((entry) =>
+      entry.type === 'tool_result' ? { ...entry, payload: unreadResult(entry.seq) } : entry,
+    ),
+    generations,
+    currentAttempts,
+  );
+  const history = collectHistory(usable, attempts, reach.afterSeq, {
+    ...speakers,
+    settledAttempts,
+  });
+  const inReach = resultsInReach(history, reach.maxMessages);
+  const bySeq = new Map(outline.map((entry) => [entry.seq, entry]));
+  // The files of the messages an attempt can be shown, or the extension summarises.
+  const through = history.stored ? Date.parse(history.stored.through) : Number.NEGATIVE_INFINITY;
+  const fresh = new Set(history.inputs.new_user_messages);
+  type Sent = { text?: unknown; chosen?: unknown; attachments?: unknown };
+  const carrying: { message: CanonicalMessage; text: string; payload: Sent }[] = [];
+  const fileIds = new Set<string>();
+  for (const [message, seq] of history.sources) {
+    if (message.role !== 'user') continue;
+    const payload = bySeq.get(seq)?.payload as Sent | null | undefined;
+    const attached = messageFiles(payload?.attachments);
+    if (!payload || typeof payload.text !== 'string' || attached.length === 0) continue;
+    carrying.push({ message, text: payload.text, payload });
+    const at = Date.parse(message.at);
+    const shown =
+      fresh.has(message) ||
+      at >= inReach.from ||
+      (reach.summarising !== undefined && (at > through || at >= reach.summarising.freshFrom));
+    if (shown) for (const file of attached) fileIds.add(file.id);
+  }
+  return {
+    history,
+    results: [...inReach.results],
+    files: [...fileIds],
+    fill(bodies, fileTexts) {
+      // The bodies an attempt can see, each as `usableHistory` would have left it.
+      for (const [message, seq] of history.sources) {
+        const entry = bySeq.get(seq);
+        if (message.role !== 'tool' || !entry || !inReach.results.has(seq)) continue;
+        if (!bodies.has(seq)) throw new Error('a tool result disappeared while it was read');
+        const [usable] = usableHistory(
+          [{ ...entry, payload: bodies.get(seq) }],
+          generations,
+          currentAttempts,
+        );
+        Object.assign(message, resultContent(usable?.payload));
+      }
+      for (const { message, text, payload } of carrying)
+        message.content = userContent(text, payload, fileTexts);
+    },
+  };
 }
 
 /**
  * A job's whole conversation as its attempts read it, up to the event `upTo`,
  * with the newest summary of its earlier messages. Read again outside the
  * claim when that summary has to be extended.
+ *
+ * A tool result no attempt can see (`resultsInReach`) comes back with an
+ * empty body: `reach` is the transcript's message bound plus the messages
+ * new to the attempt, and `freshFrom` the time of the first of those.
  */
 export async function readConversation(
   tx: Transaction,
   row: JobRow,
   generations: ContextGenerations,
   upTo: number,
+  reach: { maxMessages: number; freshFrom: number },
 ): Promise<{
   full: CanonicalMessage[];
   personWords: ReadonlyMap<CanonicalMessage, string>;
   stored: StoredSummary | null;
+  settled: ReadonlySet<CanonicalMessage>;
 }> {
-  const { usableEvents, attempts, contextMatches, room, files } = await historyRows(
+  const { history } = await historyRows(
     tx,
     row,
     generations,
-    upTo,
+    {
+      upTo,
+      afterSeq: upTo,
+      maxMessages: reach.maxMessages,
+      summarising: { freshFrom: reach.freshFrom },
+    },
+    row.principalId,
   );
-  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), upTo, {
-    ...(room?.names ? { names: room.names } : {}),
-    fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
-    principal: row.principalId,
-  });
-  return { full: history.full, personWords: history.personWords, stored: history.stored };
+  return {
+    full: history.full,
+    personWords: history.personWords,
+    stored: history.stored,
+    settled: history.settled,
+  };
+}
+
+/** The most of a turn's earlier words an attempt is shown: the start and the end, each half. */
+const SAID_SHOWN_CHARS = 6000;
+
+/**
+ * What the ended attempts of the job's current conversation turn said to the
+ * person, in order. Every word streamed reached them, whether its attempt then
+ * finished, failed and ran again, or was woken later by a step it started, so
+ * the next attempt of that turn carries on from these words rather than
+ * answering again. A failed attempt's words are in no transcript, so they are
+ * read here from its stream.
+ */
+async function saidThisTurn(
+  tx: Transaction,
+  row: JobRow,
+  /** The job's ended attempts, newest first. */
+  attempts: readonly {
+    id: string;
+    turnId: string | null;
+    outcome: string | null;
+    epoch: number;
+  }[],
+): Promise<string> {
+  if (!row.currentTurnId) return '';
+  const turn = attempts.filter((entry) => entry.turnId === row.currentTurnId);
+  // Only an answer, or a failure after words, is carried on from
+  // (`carriesOnAnswer`): an attempt that waited for an approval or an event
+  // is answered whole by the attempt that follows it.
+  const kept = turn.find((entry) => entry.outcome !== 'fenced');
+  if (!kept?.outcome || !CARRIES_ON.has(kept.outcome)) return '';
+  // Fenced attempts before the turn's first kept one were replaced by it
+  // (`answerJoin`); from that one on, every word stayed in view.
+  const first = [...turn].reverse().find((entry) => entry.outcome !== 'fenced') ?? kept;
+  const earlier = turn.filter((entry) => entry.epoch >= first.epoch).map((entry) => entry.id);
+  if (!earlier.length) return '';
+  const rows = await tx
+    .select({ attemptId: event.attemptId, payload: event.payload })
+    .from(event)
+    .where(
+      and(eq(event.jobId, row.id), eq(event.type, 'text_delta'), inArray(event.attemptId, earlier)),
+    )
+    .orderBy(asc(event.seq));
+  const pieces: string[] = [];
+  let from: string | null = null;
+  for (const entry of rows) {
+    const text = (entry.payload as { text?: unknown } | null)?.text;
+    if (typeof text !== 'string' || !text) continue;
+    // Each attempt's words start a new paragraph.
+    if (from !== null && entry.attemptId !== from) pieces.push('\n\n');
+    from = entry.attemptId;
+    pieces.push(text);
+  }
+  return shownSaid(pieces.join('').trim());
+}
+
+/** Words said to the person, cut to their start and end when long. */
+function shownSaid(said: string): string {
+  if (said.length <= SAID_SHOWN_CHARS) return said;
+  const half = SAID_SHOWN_CHARS / 2;
+  return `${said.slice(0, half).trimEnd()}\n[…]\n${said.slice(-half).trimStart()}`;
+}
+
+/**
+ * The question a conversation turn's message answers, when the person typed
+ * their answer to one an earlier turn ended on, and what that turn said to
+ * them. They still have those words, and the question is in no transcript, so
+ * without both the answer reads as a fresh go-ahead and the words are sent
+ * again whole.
+ */
+async function answeredQuestion(
+  tx: Transaction,
+  row: JobRow,
+  submissionId: string,
+): Promise<{ question: string; said: string } | null> {
+  const questionId = submissionId.slice(answerKey('').length);
+  if (answerKey(questionId) !== submissionId || !questionId) return null;
+  // Only the answer the question recorded as its own: a message that merely
+  // carries a key of that shape does not stand for one.
+  const [asked] = await tx
+    .select({ text: question.text, turnId: attempt.turnId })
+    .from(question)
+    .innerJoin(attempt, eq(attempt.id, question.attemptId))
+    .where(
+      and(
+        eq(question.id, questionId),
+        eq(question.jobId, row.id),
+        eq(question.state, 'answered'),
+        eq(question.answerSubmissionId, submissionId),
+      ),
+    );
+  if (!asked?.turnId) return null;
+  const [turn] = await tx
+    .select({ answer: experienceTurn.answer })
+    .from(experienceTurn)
+    .where(and(eq(experienceTurn.id, asked.turnId), eq(experienceTurn.jobId, row.id)));
+  const said = shownSaid(turn?.answer.trim() ?? '');
+  return said ? { question: asked.text.slice(0, 2000), said } : null;
 }
 
 export async function buildAttemptSkeleton(
@@ -997,13 +1454,20 @@ export async function buildAttemptSkeleton(
   const generations = expected
     ? await requireGenerations(tx, row.spaceId, expected)
     : await readGenerations(tx, row.spaceId);
-  const { usableEvents, attempts, contextMatches, currentAttempts, room, files } =
-    await historyRows(tx, row, generations);
-  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq, {
-    ...(room?.names ? { names: room.names } : {}),
-    fileTexts: new Map([...files].map(([id, file]) => [id, file.text])),
-    limits: transcriptLimits(attemptContextBudget(model.model, jobBudget.parse(row.budget))),
-  });
+  const limits = transcriptLimits(attemptContextBudget(model.model, jobBudget.parse(row.budget)));
+  const { history, attempts, contextMatches, currentAttempts, room } = await historyRows(
+    tx,
+    row,
+    generations,
+    { afterSeq, maxMessages: limits.maxMessages },
+  );
+  const bounded = boundHistory(
+    history.full,
+    history.inputs.new_user_messages,
+    history.stored,
+    limits,
+    history.settled,
+  );
   // The agent's own timer came due: this wake is that moment, and is told so,
   // or the request that set the timer reads as a request to set it again.
   const timer = await firedTimer(tx, row.id, afterSeq, attempts[0]?.id);
@@ -1034,6 +1498,8 @@ export async function buildAttemptSkeleton(
         }
       : entry;
   });
+  const said = await saidThisTurn(tx, row, attempts.filter(contextMatches));
+  if (said) history.inputs.said_this_turn = said;
   // What a wait can name. The attempt reads the id, the event and one plain
   // sentence; the spec itself stays on the row.
   const registered = await tx
@@ -1058,6 +1524,16 @@ export async function buildAttemptSkeleton(
   const [activeTurn] = row.currentTurnId
     ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
     : [];
+  // The person's message answers the question the last turn ended on: every
+  // attempt of this turn is told so, with the words they already have from
+  // that turn, until one of them has replied (then it carries on from its own
+  // words instead). A retry of an attempt that was lost or fenced has read the
+  // message already, so whether the message is new to it does not decide this.
+  const answered =
+    activeTurn && !history.inputs.said_this_turn
+      ? await answeredQuestion(tx, row, activeTurn.submissionId)
+      : null;
+  if (answered) history.inputs.answered_question = answered;
   // The turn's agent, else the job's. One deleted since answers no more: its
   // work goes to the space's own agent, Melete, as deleting it moves its chats.
   // A room's request always has an agent: the room's.
@@ -1107,6 +1583,12 @@ export async function buildAttemptSkeleton(
       (wait.kind === 'timer' && (row.kind === 'chat' || Date.parse(wait.wake_at) > now)))
       ? wait
       : undefined;
+  // A reminder the person cancelled from another conversation comes back still
+  // cancelled, and the attempt is told so rather than that it fires.
+  const cancelledHeld =
+    row.kind === 'chat' &&
+    cancelledWait?.kind === 'timer' &&
+    (await reminderHeld(tx, row.id, cancelledWait.wake_at));
   const [open] = await tx
     .select()
     .from(question)
@@ -1153,7 +1635,7 @@ export async function buildAttemptSkeleton(
     ? await tx.select({ name: space.name }).from(space).where(eq(space.id, row.spaceId))
     : [];
   const [profile] = await tx
-    .select({ timeZone: experienceProfile.timeZone })
+    .select({ timeZone: experienceProfile.timeZone, voice: experienceProfile.voice })
     .from(experienceProfile)
     .where(eq(experienceProfile.spaceId, row.spaceId));
   // The zone the attempt reads time in, which may be the device's (see local-now.ts).
@@ -1167,6 +1649,8 @@ export async function buildAttemptSkeleton(
         }
       : {}),
     ...(profile?.timeZone ? { time_zone: canonicalTimeZone(moment.time_zone) } : {}),
+    // How the person wants the agent to sound, in replies and in drafts.
+    voice: readReplyVoice(profile?.voice),
     local_now: moment,
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
@@ -1190,13 +1674,17 @@ export async function buildAttemptSkeleton(
       deliverable: constraints.deliverable,
       triggers,
     },
-    inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
+    inputs: {
+      ...history.inputs,
+      ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}),
+      ...(cancelledHeld ? { cancelled_wait_held: true } : {}),
+    },
     since_last: delta,
     transcript: room
-      ? boundTranscript(inTimeOrder(room.thread, history.transcript))
-      : history.transcript,
+      ? boundRoomTranscript(room.thread, { ...history, transcript: bounded.transcript })
+      : bounded.transcript,
     // A room's thread is bounded with its own; only a conversation's is summarised.
-    ...(!room && history.earlier ? { earlier: history.earlier } : {}),
+    ...(!room && bounded.earlier ? { earlier: bounded.earlier } : {}),
     tools: [],
     skills: mergeSkills(
       procedures,
@@ -1456,9 +1944,27 @@ export async function completionFacts(
   // about, is theirs to settle from that question. It neither holds a later
   // turn open nor asks again: one lost result once became the same question
   // after every turn, each turn held at its end waiting for it.
+  //
+  // That question's answers settle every step of the job still open, so any
+  // one raised once the step was out covers it, whichever attempt raised it. A
+  // question that waited behind another and was asked by a later turn carries
+  // that turn's attempt, as does one asked by a retry of the step's own turn.
+  // Matching on the step's attempt alone missed both, and each later turn
+  // then asked again, with every answer starting the next turn. A step sent
+  // after the question, first or again, was not out when it was asked. Both
+  // times come from the database's clock (`resolveQuestions`).
   const askedAbout = sql`exists (select 1 from ${question} q
-    where q.job_id = ${action.jobId} and q.attempt_id = ${action.attemptId}
+    where q.job_id = ${action.jobId}
+      and (q.attempt_id = ${action.attemptId}
+        or q.created_at >= coalesce(${action.dispatchedAt}, ${action.createdAt}))
       and q.options @> ${JSON.stringify([{ id: UNSETTLED_WAIT }])}::jsonb)`;
+  // Only the steps `evaluateCompletion` can learn anything from: those not at
+  // rest, which decide whether all are, and those the outcome cites, the only
+  // ones whose receipts it reads. A step at rest that is not cited counts for
+  // nothing, and a long chat has thousands, each with its receipt.
+  const cited = outcomeCompleted.evidence.flatMap((ref) =>
+    ref.kind === 'action' ? [ref.action_id] : [],
+  );
   const actions = await tx
     .select({
       id: action.id,
@@ -1467,7 +1973,10 @@ export async function completionFacts(
       kind: action.kind,
       effectClass: action.effectClass,
       status: action.status,
-      receipt: action.receipt,
+      receipt: (cited.length
+        ? sql`case when ${inArray(action.id, cited)} then ${action.receipt} end`
+        : sql`null`
+      ).mapWith(action.receipt),
       spaceId: connection.spaceId,
       closedStep: closedComputerStepColumn,
       provider: connection.provider,
@@ -1477,6 +1986,10 @@ export async function completionFacts(
     .where(
       and(
         eq(action.jobId, row.id),
+        or(
+          notInArray(action.status, [...TERMINAL_ACTION_STATUSES]),
+          cited.length ? inArray(action.id, cited) : undefined,
+        ),
         attemptId ? sql`(${action.attemptId} = ${attemptId} or not ${askedAbout})` : undefined,
       ),
     );

@@ -24,6 +24,7 @@ import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
+import { mountComposio } from './api/composio.ts';
 import { connectorLiveness, mountConnections, mountDefaultConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
@@ -34,6 +35,7 @@ import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountModelSettings } from './api/model-settings.ts';
 import { mountMyUsage } from './api/my-usage.ts';
 import { mountNeedsYouSource } from './api/needs-you-source.ts';
+import { mountOidc, passwordSignInGate } from './api/oidc.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountProviderSignIn } from './api/provider-signin.ts';
@@ -47,6 +49,7 @@ import { mountSignIns } from './api/sign-ins.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { mountHealthDetail, mountUsage } from './api/usage.ts';
 import {
+  conversationContext,
   mountVoice,
   PostgresVoiceAllowance,
   type VoiceProviders,
@@ -60,16 +63,22 @@ import { mountAppViews } from './apps/serve.ts';
 import { attachmentSettingsFromEnv } from './attachments/limits.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
+import { defaultLevels } from './broker/autonomy.ts';
 import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import { configuredSearchGateway } from './broker/search-gateway.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { experienceCallChat } from './call/chat.ts';
+import { CallService, callVoiceFromEnv, NO_CALLS, PostgresCallUsage } from './call/service.ts';
+import type { CallTiming } from './call/session.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
 import { closeInterruptedScans } from './companies/repository.ts';
 import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
 import { companiesDeps } from './companies/service.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
+import { authConfigsSetting, ComposioCatalog } from './connectors/composio-catalog.ts';
+import { ComposioTriggers, startComposioUpkeep } from './connectors/composio-triggers.ts';
 import {
   type ConfiguredConnection,
   type ConnectorFactory,
@@ -95,6 +104,7 @@ import {
   useEffectsPool,
 } from './connectors/secrets.ts';
 import { SignInVault } from './connectors/sign-in-vault.ts';
+import type { CallVoice } from './connectors/speech-engine.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { assertMigrated, migrateDatabase } from './db/migrate.ts';
@@ -107,13 +117,21 @@ import { startEgressRetention } from './egress/records.ts';
 import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { type AccountMailer, accountMailerFromEnv } from './experience/account-mail.ts';
+import { configuredAckWriter } from './experience/ack.ts';
 import { ExperienceBeliefs } from './experience/beliefs.ts';
 import { ExperienceEffects } from './experience/effects.ts';
 import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
 import { mountExperience } from './experience/routes.ts';
+import type { ExperienceService } from './experience/service.ts';
 import { startersFromSetting } from './experience/starters.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
+import {
+  installationFeatures,
+  mountFeatureGate,
+  mountPersonFeatureGate,
+  type PersonFeatureSource,
+} from './features.ts';
 import type { FeedbackLimiter } from './feedback/rate-limit.ts';
 import { feedbackWebhook, mountFeedback } from './feedback/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
@@ -133,6 +151,7 @@ import {
   spendAlertsFromEnv,
   statfsFree,
 } from './health/monitor.ts';
+import { IDENTITY_JWKS_PATH, IdentitySigner } from './identity/assertion.ts';
 import { mountIntents } from './intents/routes.ts';
 import { IntentService, undoThrough } from './intents/service.ts';
 import { ApprovalService } from './jobs/approvals.ts';
@@ -192,6 +211,8 @@ import { stuckItems } from './ops/item-failures.ts';
 import { Leases, leaseConnection } from './ops/leader.ts';
 import { type LimitStore, PostgresLimitStore } from './ops/limiter.ts';
 import { startRetention } from './ops/retention.ts';
+import { identityIssuer, pageSecret } from './pages/config.ts';
+import { mountPages } from './pages/routes.ts';
 import {
   ownsSpace,
   refusedForRemoval,
@@ -199,6 +220,7 @@ import {
   SPACE_BEING_CLEARED,
   spaceAuthority,
 } from './principals/authority.ts';
+import { mountEntitlements } from './principals/entitlements.ts';
 import { startGuestExpiry } from './principals/expiry.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { PrincipalService } from './principals/service.ts';
@@ -218,7 +240,6 @@ import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
 import { requestFailureText } from './request-failure.ts';
-import { mountMultiplayerGate, multiplayerEnabled } from './rooms/preview.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
@@ -246,7 +267,7 @@ import {
   sandboxRemovalTeardown,
   startSandboxesFromEnv,
 } from './sandbox/wiring.ts';
-import { ManagedCallMeter } from './signals/managed-calls.ts';
+import { ComposioMeter, meterSettings, standingView } from './signals/managed-calls.ts';
 import { SignalPoller } from './signals/poller.ts';
 import { startObservationRetention } from './signals/retention.ts';
 import { mountSituations } from './situations/routes.ts';
@@ -263,7 +284,7 @@ import { storagePerPersonBytes } from './storage/per-person.ts';
 import { configuredTriageGateway, type TriageClassifier } from './triage/classifier.ts';
 import { mountNeedsYou } from './triage/routes.ts';
 import { TriageService } from './triage/service.ts';
-import { isolated, VIEW_PREFIX } from './viewer/headers.ts';
+import { isolated, isolatedPages, PAGE_VIEW_PREFIX, VIEW_PREFIX } from './viewer/headers.ts';
 import { ViewTokens } from './viewer/tokens.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
@@ -339,6 +360,10 @@ export type AppDeps = {
   voice?: VoiceProviders;
   /** The light conversation voice mode keeps up while a turn runs. Left out, none. */
   voiceCompanion?: VoiceCompanion | null;
+  /** Voice for calls. Left out, whatever the environment configures; null, no calls. */
+  callVoice?: CallVoice | null;
+  /** How a call paces its words; tests supply a quicker one. */
+  callTiming?: Partial<CallTiming>;
   /** The router every model gateway of this service uses; Settings → Privacy edits it. */
   privacy?: PrivacyRouter;
   /** The model connected in the app. Left out, built from `db` and the sign-ins. */
@@ -361,7 +386,17 @@ export type AppDeps = {
   triage?: TriageService;
   /** Sends sign-in and reset links. Left out, the sender MELETE_SMTP_URL configures, if any. */
   accountMail?: AccountMailer;
+  /**
+   * Each person's own feature values, which can only turn a feature off for
+   * them. Left out, everyone has the installation's features.
+   */
+  personFeatures?: PersonFeatureSource;
 };
+
+/** Each app's calls, for the server that takes their upstream WebSockets. */
+const callServices = new WeakMap<object, CallService>();
+/** The calls an app built, or null when it offers none. */
+export const callServiceOf = (app: object): CallService | null => callServices.get(app) ?? null;
 
 export function createApp(deps: AppDeps) {
   const db = deps.db;
@@ -387,10 +422,14 @@ export function createApp(deps: AppDeps) {
   app.use(`${VIEW_PREFIX}*`, isolated);
   // The same for a preview of a server in an agent's computer.
   app.use(`${PREVIEW_PREFIX}*`, isolated);
+  // And for a connection's page, under the policy its server and connection allow.
+  app.use(`${PAGE_VIEW_PREFIX}*`, isolatedPages);
   // Rooms, shared spaces, guests and hand-offs answer 404 while switched off,
   // before sign-in, so an invite link and a guest's session meet the same answer.
-  const multiplayer = multiplayerEnabled(deps.env);
-  mountMultiplayerGate(app, multiplayer);
+  // The same for every feature the operator has turned off (features.ts).
+  const features = installationFeatures(deps.env);
+  const multiplayer = features.multiplayer;
+  mountFeatureGate(app, features);
   // No name, address, id or search holds a NUL, and the database refuses one in
   // any text it is given: a query that carries one is refused here, for every
   // route, as invalid request data, never answered with a server error.
@@ -430,12 +469,18 @@ export function createApp(deps: AppDeps) {
           });
       }
     : undefined;
+  // With password sign-in off, its routes are refused before they run.
+  app.use(passwordSignInGate(deps.env));
   mountAuth(app, {
     ...deps,
     limits,
     accountMail,
     ...(devicesEnded ? { devicesEnded } : {}),
   });
+  // Sign-in through the installation's identity provider, when one is set.
+  mountOidc(app, { db: deps.db, env: deps.env });
+  // Once sign-in has named the person: a feature turned off for them alone.
+  mountPersonFeatureGate(app, features, deps.personFeatures);
   // Before every route that answers with a session, so its checks of a space
   // header, ?space_id and ?job_id run for all of them, files and apps included.
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
@@ -545,6 +590,27 @@ export function createApp(deps: AppDeps) {
   if (questions) mountQuestions(app, questions);
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers, db);
+  // A connection's pages, and its server's reports on them.
+  if (db && deps.sql && deps.triggers) {
+    const triggers = deps.triggers;
+    mountPages(app, {
+      db,
+      sql: deps.sql,
+      secret: pageSecret(deps.env),
+      deliver: (input) => triggers.deliver(input),
+    });
+  }
+  // Entitlements an operator grants, and the keys connections check assertions with.
+  if (db && deps.sql) mountEntitlements(app, { db, sql: deps.sql });
+  {
+    const signer = new IdentitySigner(pageSecret(deps.env), identityIssuer(deps.env));
+    // Public and the same for everyone: a server may keep it a few minutes, and
+    // reads it again when it meets a key it does not know.
+    app.get(IDENTITY_JWKS_PATH, (c) => {
+      c.header('Cache-Control', 'public, max-age=300');
+      return c.json(signer.jwks());
+    });
+  }
   const noticing =
     deps.situations ??
     (deps.jobs && deps.triggers
@@ -644,7 +710,7 @@ export function createApp(deps: AppDeps) {
             markSeen(reachDb, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
         })
       : undefined);
-  if (reaching) mountReach(app, reaching);
+  if (reaching && features.phone) mountReach(app, reaching);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   // The router every model call made from these routes goes through, and the
   // one Settings → Privacy edits.
@@ -673,7 +739,33 @@ export function createApp(deps: AppDeps) {
       resolveSpace: personalSpace,
     });
   if (deps.db) mountPrivacy(app, { router: () => privacy, providerUrl: providerAddress(deps.env) });
-  if (deps.db)
+  // Calls speak into the conversation through the experience service, which is
+  // mounted below; a call is only bound once both exist.
+  let callExperience: ExperienceService | null = null;
+  const callVoice = deps.callVoice !== undefined ? deps.callVoice : callVoiceFromEnv(deps.env);
+  const callDb = deps.db;
+  const callSql = deps.sql;
+  const calls =
+    features.voice && callVoice && callDb && callSql
+      ? new CallService({
+          voice: callVoice,
+          usage: new PostgresCallUsage(callSql),
+          monthlyMinutes: deps.env.MELETE_CALL_MONTHLY_MINUTES,
+          ...(deps.callTiming ? { timing: deps.callTiming } : {}),
+          chat: (scope, since) => {
+            if (!callExperience) throw new Error('Conversations are not ready for calls.');
+            return experienceCallChat({
+              sql: callSql,
+              experience: callExperience,
+              scope,
+              since,
+              companion: deps.voiceCompanion ?? null,
+              context: (id, agentId) => conversationContext(callDb, id, agentId),
+            });
+          },
+        })
+      : null;
+  if (deps.db && features.voice)
     mountVoice(app, {
       db: deps.db,
       allowance: deps.sql ? new PostgresVoiceAllowance(deps.sql) : undefined,
@@ -682,6 +774,7 @@ export function createApp(deps: AppDeps) {
       // Voice goes to its provider directly, so it follows the router's private marks.
       privacy: voicePrivacyFrom(privacy),
       companion: deps.voiceCompanion ?? null,
+      call: calls,
     });
   if (deps.db) mountPush(app, deps.push ?? new PushService(deps.db, pushConfig(deps.env)));
   const experience =
@@ -699,7 +792,7 @@ export function createApp(deps: AppDeps) {
       memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
       changes: deps.events,
-      browser: Boolean(deps.browserSessions),
+      browser: Boolean(deps.browserSessions) && features.browser,
       privacy,
       runs: longWork,
       attachments: deps.attachments,
@@ -711,6 +804,8 @@ export function createApp(deps: AppDeps) {
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
       starters: startersFromSetting(deps.env.MELETE_STARTERS),
     });
+  callExperience = experience || null;
+  if (calls) callServices.set(app, calls);
   // Rooms: shared spaces where several people talk to one agent. Switched
   // off, no room request is started, by a route or by a chat platform.
   if (multiplayer && deps.db && deps.jobs && submissions)
@@ -729,7 +824,7 @@ export function createApp(deps: AppDeps) {
       triggers: deps.triggers,
       surfaces: deps.roomSurfaces,
     });
-  if (connections) {
+  if (connections && features.sms) {
     const factory = connectorFactoryFor(connections.registry, () =>
       connectorOptionsFromEnv(connections.sql, connections.env),
     );
@@ -743,8 +838,28 @@ export function createApp(deps: AppDeps) {
       seen: (principalId) =>
         markSeen(connections.db, principalId, deps.env.MELETE_REST_ROUTINES_AFTER_DAYS),
     });
+    // Apps to connect through Composio, and the address its triggers deliver to.
+    const composio = factory.options.composio;
+    mountComposio(app, {
+      ...(composio
+        ? {
+            catalog: new ComposioCatalog(
+              composio.client,
+              new Set(authConfigsSetting(deps.env.COMPOSIO_AUTH_CONFIGS).keys()),
+            ),
+            triggers: new ComposioTriggers({
+              sql: connections.sql,
+              client: composio.client,
+              ...(composio.meter ? { meter: composio.meter } : {}),
+            }),
+          }
+        : {}),
+      ...(deps.env.COMPOSIO_WEBHOOK_SECRET
+        ? { webhookSecret: deps.env.COMPOSIO_WEBHOOK_SECRET }
+        : {}),
+    });
   }
-  if (deps.db)
+  if (deps.db && features.companies)
     mountCompanies(app, {
       ...companiesDeps({
         db: deps.db,
@@ -828,9 +943,6 @@ export function createApp(deps: AppDeps) {
         },
       }),
     );
-  if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
-  if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
-  if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
   // A person's saved sign-ins, sealed under the installation's key.
   const signIns =
     deps.signInVault ??
@@ -843,15 +955,30 @@ export function createApp(deps: AppDeps) {
           ),
         )
       : undefined);
-  if (signIns) mountSignIns(app, signIns);
-  if (deps.sandboxComputers) mountSandboxComputers(app, deps.sandboxComputers);
-  if (deps.sandboxPreviews) mountSandboxPreviews(app, deps.sandboxPreviews);
+  if (signIns && features.browser) mountSignIns(app, signIns);
+  if (deps.browserSessions && features.browser) {
+    mountBrowserSessions(app, deps.browserSessions);
+    mountBrowserLive(app, deps.browserSessions);
+    mountBrowserSites(app, deps.browserSessions.sites);
+  }
+  if (deps.sandboxComputers && features.computer) mountSandboxComputers(app, deps.sandboxComputers);
+  if (deps.sandboxPreviews && features.computer) mountSandboxPreviews(app, deps.sandboxPreviews);
 
+  // Use through Composio against each limit is part of the operator's health detail.
+  const composioMeter =
+    deps.env.COMPOSIO_API_KEY && deps.sql
+      ? new ComposioMeter(deps.sql, meterSettings(deps.env))
+      : undefined;
+  const baseDetail =
+    deps.healthDetail ??
+    (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql: deps.sql }));
   mountHealthDetail(app, {
     token: deps.env.MELETE_OPERATOR_TOKEN,
-    detail:
-      deps.healthDetail ??
-      (() => healthDetail({ version: VERSION, database: deps.checkDatabase, sql: deps.sql })),
+    detail: async () => {
+      const detail = await baseDetail();
+      const standing = await composioMeter?.standing().catch(() => null);
+      return standing ? { ...detail, composio: standingView(standing) } : detail;
+    },
   });
 
   app.get('/health', async (c) => {
@@ -931,6 +1058,8 @@ export async function bootstrap(
   } = {},
 ) {
   const env = options.env ?? loadEnv();
+  // A feature the operator turned off is not started at all, besides its routes being refused.
+  const features = installationFeatures(env);
   // Compose selects the supervised Docker adapter before any dependencies start.
   if (!options.runtime && !['hermes', 'docker', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
     throw new Error('MELETE_RUNTIME_ADAPTER must be hermes, docker or stub.');
@@ -1001,6 +1130,7 @@ export async function bootstrap(
   let stopAccessSweep: (() => void) | undefined;
   let stopSecretSweep: (() => void) | undefined;
   let stopManagedRemovals: (() => void) | undefined;
+  let stopComposioUpkeep: (() => void) | undefined;
   let stopGuestExpiry: (() => void) | undefined;
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
@@ -1012,6 +1142,7 @@ export async function bootstrap(
   let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
   let memoryEmbedder: Awaited<ReturnType<typeof embeddingFromEnv>> = null;
   let voiceCompanion: Awaited<ReturnType<typeof configuredVoiceCompanion>> | undefined;
+  let ackWriter: Awaited<ReturnType<typeof configuredAckWriter>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
   let searchGateway: Awaited<ReturnType<typeof configuredSearchGateway>> | undefined;
@@ -1059,6 +1190,7 @@ export async function bootstrap(
     stopAccessSweep?.();
     stopSecretSweep?.();
     stopManagedRemovals?.();
+    stopComposioUpkeep?.();
     clearInterval(leftovers);
     stopGuestExpiry?.();
     sandboxes?.stop();
@@ -1098,6 +1230,7 @@ export async function bootstrap(
       () => historySummariser?.close(),
       () => searchGateway?.close(),
       () => voiceCompanion?.close(),
+      () => ackWriter?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
       // After the registry: each server's container is removed by its connector first.
@@ -1200,7 +1333,10 @@ export async function bootstrap(
       // Before the registry is built, so an upgraded database gains its default connectors now.
       await ensureBuiltinConnections(handle.sql, builtinEnvironment(env));
       connections = await readConnectionConfig(env.MELETE_CONNECTIONS_FILE);
-      browser = await configuredBrowserSessions({ sql: handle.sql, env, connections });
+      // Turned off, the agent has no browser of its own (MELETE_FEATURE_BROWSER).
+      browser = features.browser
+        ? await configuredBrowserSessions({ sql: handle.sql, env, connections })
+        : undefined;
       // Stdio MCP servers run in containers through the same socket as the attempts.
       if (env.MELETE_RUNTIME_ADAPTER === 'docker' && !options.runtime) {
         const hostname = process.env.HOSTNAME ?? '';
@@ -1249,7 +1385,11 @@ export async function bootstrap(
         // A private or sensitive conversation's words never go to an outside search.
         searchPrivacy: ({ jobId, query, tx }) => privacy.outsideSearchRefusal(jobId, query, tx),
       });
-      catalog = new RuntimeCatalog(handle.db, registry);
+      catalog = new RuntimeCatalog(
+        handle.db,
+        registry,
+        defaultLevels(env.MELETE_MESSAGES_TO_OTHERS),
+      );
       // Sandboxes are the service's own: their providers come from the same
       // factory the connectors did, so the key stays with the connection.
       const connectors = connectorFactoryFor(registry, () =>
@@ -1257,11 +1397,12 @@ export async function bootstrap(
       );
       sandboxes = startSandboxesFromEnv(handle.sql, env, connectors);
       // Answers to texts go back from the service itself, once each turn a text began has ended.
-      smsReplies = startSmsReplies({
-        sql: handle.sql,
-        secrets: connectors.secrets,
-        twilio: connectors.options.twilio,
-      });
+      if (features.sms)
+        smsReplies = startSmsReplies({
+          sql: handle.sql,
+          secrets: connectors.secrets,
+          twilio: connectors.options.twilio,
+        });
       // A sandbox connection's key is the only way into its account, so a
       // revocation destroys what the connection holds before the key goes.
       sandboxTeardown = connectors.sandboxTeardownProviders();
@@ -1282,6 +1423,23 @@ export async function bootstrap(
       // sign-in left at Composio are removed there, tried again until gone.
       stopManagedRemovals = composio
         ? startManagedRemovalSweep(handle.sql, composio.client)
+        : undefined;
+      // Composio's own usage numbers are read beside Melete's, its triggers kept
+      // within their limit, and where each limit stands is logged.
+      stopComposioUpkeep = composio?.meter
+        ? startComposioUpkeep({
+            client: composio.client,
+            meter: composio.meter,
+            ...(env.COMPOSIO_WEBHOOK_SECRET
+              ? {
+                  triggers: new ComposioTriggers({
+                    sql: handle.sql,
+                    client: composio.client,
+                    meter: composio.meter,
+                  }),
+                }
+              : {}),
+          })
         : undefined;
       const sandboxSessions = connectors.options.sandbox?.sessions;
       if (sandboxTeardown && sandboxSessions) {
@@ -1331,6 +1489,7 @@ export async function bootstrap(
       jobs.standingWork = {
         restAfterDays: env.MELETE_REST_ROUTINES_AFTER_DAYS,
         routinesPerPerson: env.MELETE_ROUTINES_PER_PERSON_MAX,
+        activeRunsPerSpace: env.MELETE_RUNS_ACTIVE_PER_SPACE_MAX,
       };
     }
     runs = jobs ? new RunService(jobs) : undefined;
@@ -1392,8 +1551,16 @@ export async function bootstrap(
       : undefined;
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
-    if (handle && voiceProvidersFromEnv(env).live)
+    if (handle && features.voice && voiceProvidersFromEnv(env).live)
       voiceCompanion = await configuredVoiceCompanion(env, options.fakeProvider, privacy, {
+        settings: modelSettings,
+        signIn,
+        spending,
+      });
+    // A turn's first line when the agent is slow to speak: one short call, on
+    // the fast model, through the gateway. Off unless MELETE_ACK_AFTER_MS is set.
+    if (handle && env.MELETE_ACK_AFTER_MS > 0)
+      ackWriter = await configuredAckWriter(env, options.fakeProvider, privacy, {
         settings: modelSettings,
         signIn,
         spending,
@@ -1671,6 +1838,9 @@ export async function bootstrap(
             }
           : {}),
         loadCatalog: catalog?.forAttempt,
+        ...(ackWriter
+          ? { acknowledge: { afterMs: env.MELETE_ACK_AFTER_MS, writer: ackWriter.writer } }
+          : {}),
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
         // The scopes the active connections the job may use grant, and the
         // lifecycle wait. The test connector's scopes are added beside them when
@@ -1940,17 +2110,19 @@ export async function bootstrap(
         // company that answered the same day would be followed up on anyway.
         const connectors = registry;
         if (handle && connectors) {
-          companyReplies = new CompanyReplyPoller({
-            sql: handle.sql,
-            triggers,
-            mailboxFor: (candidate) =>
-              connectorReplyMailbox({
-                registry: connectors,
-                connectionId: candidate.connectionId,
-                spaceId: candidate.spaceId,
-              }),
-          });
-          await companyReplies.start();
+          if (features.companies) {
+            companyReplies = new CompanyReplyPoller({
+              sql: handle.sql,
+              triggers,
+              mailboxFor: (candidate) =>
+                connectorReplyMailbox({
+                  registry: connectors,
+                  connectionId: candidate.connectionId,
+                  spaceId: candidate.spaceId,
+                }),
+            });
+            await companyReplies.start();
+          }
           // New mail and calendar changes in the accounts some live trigger
           // listens to, read from each account's own change feed, by one
           // instance at a time. A connection installed through another
@@ -1987,13 +2159,12 @@ export async function bootstrap(
             connectors,
             leads: () => leading(leases, 'signal-poller'),
             load,
-            // Reads through Composio count toward its monthly limit, and slow near it.
+            // Reads through Composio count toward its monthly limits, slow near them,
+            // and stop at them; accounts its triggers watch are read rarely.
             ...(env.COMPOSIO_API_KEY
               ? {
-                  managedCalls: new ManagedCallMeter(
-                    sql,
-                    env.MELETE_MANAGED_CALLS_MONTHLY_CAP ?? null,
-                  ),
+                  managedCalls: new ComposioMeter(sql, meterSettings(env)),
+                  ...(env.COMPOSIO_WEBHOOK_SECRET ? { managedTriggers: true } : {}),
                 }
               : {}),
             ...(noticing
@@ -2043,7 +2214,7 @@ export async function bootstrap(
         }
         // A deadline the person set that goes unanswered climbs from push to
         // a text and a call to their own verified number.
-        if (handle && situations) {
+        if (handle && situations && features.phone) {
           const noticing = situations;
           reach = new ReachService({
             db: handle.db,
@@ -2208,10 +2379,22 @@ if (import.meta.main) {
   const apiNetwork = await resolveApiNetwork(loadEnv());
   const service = await bootstrap({ effects: true });
   const { app, env, effectBoundary } = service;
+  const api = apiFetch(app, apiNetwork, trustedProxy(env.MELETE_TRUSTED_PROXY));
+  const calls = callServiceOf(app);
   const server = Bun.serve({
     hostname: apiNetwork.hostname,
     port: env.PORT,
-    fetch: apiFetch(app, apiNetwork, trustedProxy(env.MELETE_TRUSTED_PROXY)),
+    fetch: (request, socket) => {
+      // A call's upstream WebSocket, from ElevenLabs through the web app, is
+      // admitted from the same network as every other request.
+      if (calls && apiNetwork.acceptsPeer(socket.requestIP(request)?.address)) {
+        const answered = calls.upgrade(request, socket);
+        if (answered !== null) return answered;
+      }
+      return api(request, socket);
+    },
+    // Without calls nothing is ever upgraded, so this handler never runs.
+    websocket: calls?.websocket ?? NO_CALLS,
     idleTimeout: 0,
   });
   process.stdout.write(`melete ${VERSION} listening on ${apiNetwork.hostname}:${env.PORT}\n`);

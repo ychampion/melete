@@ -26,9 +26,130 @@ select arbitrary code or credentials.
 | --- | --- |
 | `read` | Eligible for admission within scope and budget |
 | `write_reversible` | Eligible for admission within scope and budget; manifest approval requirements still apply |
-| `write_external` | Requires payload-bound approval, or an owner rule that covers this exact action |
-| `spend` | Requires approval and a budget reservation |
+| `write_external` | Requires payload-bound approval, or an owner rule that covers this exact action. A message the person said to send in the turn being answered goes without a card (below) |
+| `spend` | Moves money: requires the person's own confirmation on its card (see below). Melete's own metered speech and transcription instead require approval and a budget reservation |
 
+### Money moves
+
+The agent acts on its own and asks only for money moves and the person's own
+don't-rules. A money move is a payment, purchase, refund, transfer, or a
+booking or order that is paid for. The broker decides it from the tool's
+declared effect together with a maintained map of names and argument shapes
+(`apps/melete/src/broker/money.ts`), so a connected app's tool counts even when
+its server or the person declared it as something else:
+
+- declared `spend`, other than Melete's own metered capabilities;
+- a name that pays, charges, refunds, buys, checks out or invoices, unless it
+  only looks something up (`list_payments`);
+- a name that orders, books, reserves, transfers or subscribes, when its
+  arguments carry an amount with a currency or a way to pay;
+- any tool whose schema or call carries a way to pay (a card number, a payment
+  method, a bank account), whatever it is called;
+- a `browser.submit` whose form pays;
+- the moment the agent's own browser or computer pays (below).
+
+A money move always waits on its card and can be allowed only once, never with
+"always". Allow needs the signed-in person's password at that moment:
+`POST /permissions/{id}/step-up` checks it and returns a token that counts
+once, for that card and its exact payload, for two minutes. No standing rule,
+reviewer, scoped grant, typed "yes" in a chat, room answer, Undo or other
+service path stands in for it, and admission and every dispatch check again
+that the Allow carries a spent confirmation by the person who gave it. A
+tool that can no longer be found is treated as one that moves money. An
+account with no password cannot allow money moves until it sets one.
+
+#### Paying from the agent's own browser or computer
+
+The agent's own computer and browser do anything a person could do at them
+without asking, except pay. The broker holds a step of `computer.click`,
+`computer.type`, `computer.key` or `computer.batch` (and `browser.fill` or
+`browser.click`, and a command or code run in the computer) on the money card
+when it:
+
+- types a card number: 13 to 19 digits from a card network (its issuer prefix
+  at one of its lengths) that pass the Luhn check, typed at once, a few digits
+  or one key at a time into the same field, or split across fields one after
+  another, however short each is. Groups may be split by spaces, dashes, dots
+  or slashes, and digits in any script count (full-width, Arabic-Indic,
+  Devanagari and the rest);
+- types into a field whose accessible name says card number, CVC, CVV, CSC or
+  security code, or into a payment provider's card frame;
+- types a number that passes the Luhn check but carries no network's prefix,
+  only when card context follows it: an expiry or a code typed right after;
+- types a card's expiry and then its code (or the code and then the expiry);
+- pastes into a field named as a card's, or into a field with no name of its
+  own on a page that shows a card's field;
+- clicks into a card's field and then clicks something else or presses Return,
+  which is how a saved card the browser offers is picked;
+- presses Return, or clicks anything but a field, on a page where card details
+  were entered since it was opened;
+- clicks a button or link whose accessible name clearly pays or buys ("Pay
+  now", "Pay $24.99", "Place order", "Buy now", "Complete purchase") on a page
+  that shows a price. This is how a checkout with a saved card is caught;
+- runs a command or code in the computer (`terminal.run`, `exec.run`,
+  `exec.python`, `process.start`, `process.write`) whose text carries a card
+  network's number, such as `xdotool type`, a clipboard tool or a script that
+  fills a form.
+
+The card says "Your agent is about to pay on shop.example.com", followed by
+"The page says $24.99" when the button or the page states an amount plainly
+(otherwise no amount is shown). The amount is the page's own text, matched by a
+fixed price pattern, shown as what the page says and never used to decide
+anything. A card number on the card shows only its last four digits, and
+nothing typed into a card's details shows a digit.
+
+The step goes ahead only with a fresh step-up made for it. One step-up covers
+one checkout: once the person allows a step that enters a card with a step-up,
+the rest of that card's details typed on the same origin and the first step
+after it that sends them (a click or Return the rule holds) go ahead without
+asking again, if they come within five minutes of the step-up, on the same
+computer session and display, in the same work. The send is claimed once, as a
+notice in the work's events: a second purchase, another origin, another
+session, a step after five minutes, a whole card number typed again (it may
+be another card), or a step-up that paid without entering a card (a saved
+card's Pay button) asks again. The browser worker's steps and
+commands in the terminal are never covered.
+
+The rule is fixed code in `apps/melete/src/broker/pay-moment.ts`. It reads the
+step's own arguments and the accessibility text that the earlier steps'
+receipts kept, from every step on the page the screen shows now, back to the
+step that opened it, up to 400 steps. It never reads a screenshot, text
+recognised from one, or another model's opinion. Measured on a fixed set of 35
+ways to enter or pay with a card, it holds 33. Its limits:
+
+- **Desktop apps without accessibility text** are not covered. Field names,
+  buttons and prices come only from accessibility data. Text recognised from
+  the picture is ignored, so in such an app only a whole card number typed
+  through the computer's tools is caught.
+- **Saved cards are caught by the button, or by a click after going into a
+  card's field.** A pay control whose name does not say it pays ("Continue",
+  "Next") on a page where no card was entered or focused goes through. So do
+  one-click flows that charge on an earlier step, and a page whose price falls
+  outside the 6,000 characters of screen text a receipt keeps.
+- **Card frames from another site** often hide their field names. Digits typed
+  there still count, and a frame titled as a card's counts.
+- **Pasting** is caught by where it goes, not by what is pasted: a paste into
+  a named field that is not a card's, on a page with no card's field, goes
+  through.
+- **A number broken up by other text**, by letters in the same field, or by
+  more than 400 steps on one page is not read whole. A run longer than 19
+  digits is read from its start.
+- **A retired 13-digit Visa number**, and a Luhn-valid number from no network,
+  in a field with no card's name and with no expiry or code after it, goes
+  through.
+- **Commands** are read for a card number written in them, not for one built
+  at run time or read from a file.
+- **False alarms** ask for a step-up and stop nothing for good. Typed alone into
+  a field with no name, random 16-digit numbers are held about 3% of the time,
+  20-digit tracking numbers about 6%, a German IBAN with a valid check never,
+  an IMEI about 0.2%, and a 13-digit barcode never.
+- **Not read:** the browser worker's own card fields (the worker already hands
+  those to the person), and the person's own paired device.
+
+The card number the agent types is part of its step, so the step as proposed
+keeps it, as any step's arguments are kept. Screen text that receipts keep
+drops a card network's number however it is written, and the money card hides
+it as above.
 A `write_external` action waits for the owner unless a rule the owner made
 covers it. Choosing `always` on a permission card writes that rule with a count
 cap, an expiry and a re-consent interval, and the broker admits under it only
@@ -39,9 +160,74 @@ each use is recorded once, at admission. Rules exist for named kinds only:
 sending a message, creating, changing or removing an event, discarding a draft,
 saving or restoring a file, and pushing to `melete/` branches of one repository
 from the agent's computer
-([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)). A `spend` asks every time, and an action the
+([COMMAND-LINE-ACCESS](COMMAND-LINE-ACCESS.md#github)). A money move asks every time, and an action the
 owner is already reviewing keeps its own approval. [CLIENT](CLIENT.md)
 describes the cards, `GET /rules` and `DELETE /rules/{id}`.
+
+A message stays a draft unless the person said to send it. In a chat the agent
+drafts and the person sends from the draft card. When the person's own message
+in the turn being answered says to send ("send it", "reply to Sam that …",
+"forward this to Ana", or a short yes right after the agent offered to send),
+the send tools are offered and the send goes out without a card, held for undo
+and with a receipt that says why (`apps/melete/src/broker/told.ts`). Asking for
+a draft, saying not to send yet, or asking a question about sending does not
+count, and neither does a turn no person wrote. A recipient whose origin Melete
+cannot vouch for still asks.
+
+Besides money moves, the one thing that puts a card in front of an action the
+agent would otherwise take is the person's own "don't". The broker reads three
+places that are theirs: memory items they told Melete themselves (origin
+`owner`; words saved from an email or a page do not count), the agent's
+instructions, and their own messages in this conversation. A rule such as
+"Don't email Bob", "Never book Ryanair" or "Stop posting in #general" covers
+actions of that kind that reach what it names (a recipient, a payee, a channel,
+a domain); a rule that names no one covers every action of its kind. The card
+quotes the rule and says where it came from. Asking for that very thing in the
+message being answered lifts an older rule, and only the person the job works
+for can set or lift one (`apps/melete/src/broker/dont-rules.ts`).
+
+Work nobody is waiting on (a schedule, a timer or an event woke it) that would
+reach someone outside Melete is never asked about by default. It goes ahead on
+its own when what the person said before makes it likely they want it, with a
+receipt that gives the confidence and the reasons, and is otherwise left as a
+quiet suggestion in the conversation: nothing is sent and no card is raised.
+The confidence is a fixed sum over the person's own records: their routine or
+the agent's instructions asking for this kind of thing (to this recipient, when
+they name one) +0.6, something they told Melete about this recipient +0.3, each
+similar action to the same recipient they asked for or allowed in the last 90
+days +0.15 (two at most), each one they said no to or took back -0.5, and 0 for
+a recipient whose origin Melete cannot vouch for. An email also needs the
+routine or the instructions to ask for it. `MELETE_PROACTIVE_CONFIDENCE` sets the
+threshold (`apps/melete/src/broker/proactive.ts`).
+
+Each kind of send has a level the person picks once: email to other people,
+messages on chat apps, calendar invites to other people, public posts, and
+anything else sent outside. `draft` drafts it unless the person said to send
+it, or a routine or instructions the person wrote ask for it; `when_confident`
+sends it when the score above clears the threshold, chosen or not (choosing it
+adds nothing to the score); `always` sends it whenever the agent does it. Email, invites, public posts and anything else start
+at `draft`; chat-app messages start at `when_confident`, or at the level
+`MELETE_MESSAGES_TO_OTHERS` names. The first time a kind comes up, a card in
+the conversation asks once, with the default chosen, and the work goes on at
+the default. The choice is kept per person and kind, changed in Settings, or by
+the person saying so in their own message (`just send Slack replies from now
+on`), read under the same rule as being told to send: never from quoted,
+forwarded or code text, nor from a tool's output. A level that lets the agent
+do more than the person chose (or more than a draft, where they chose nothing)
+is kept only from a short message (400 characters at most) that is wholly
+their own typing: nothing the composer saw pasted, and nothing shaped like a
+pasted letter, thread or passage. Holding the agent back is kept from any of
+their own sentences, and where a sentence could be read either way (`never
+send emails without asking`) it holds back. A level set in a message is shown
+in the conversation as the card, with the choice drawn in. Text pasted with no
+marker and no letter shape, in a short message from a client that does not mark
+pastes, still reads as the person's own. Money moves, don't-rules, sends that
+also delete or carry a password, recipients Melete cannot vouch for, a
+connector's own question and an agent set to ask still ask at every level. With
+the older `MELETE_MESSAGES_TO_OTHERS=draft_only`, chat-app messages stay out of
+proactive work, as before, until the person picks a level
+(`apps/melete/src/broker/autonomy.ts`).
+
 Evidence for the default effect gate is conformance 4, `An approval cannot be
 spent on different content`; a manifest's schema declares what a tool takes,
 and admission is what decides whether it runs.
@@ -156,8 +342,9 @@ does.
 `setup_hint`, sent only to the installation's owner, says what to set: a
 provider's OAuth client, or a `MELETE_PUBLIC_URL` to return the browser to. An
 entry may carry a `warning` to show before connecting: Stripe's says its tools
-can move money, and that those tools should be granted as `spend`, so each one
-waits for approval.
+can move money, and that those tools should be granted as `spend`. Each one,
+and any tool the broker recognises as moving money, waits for the person to
+confirm it is them.
 An entry that is available but offers less than it could here carries
 `limited_reason` instead: text messages without a public address can be sent
 but not received. Its `setup_hint`, again only for the owner, says what to set.
@@ -817,7 +1004,8 @@ policy, and a server tool the policy does not name is ignored.
 The worker runs outside the runtime cell. Its test stdio transport uses a
 filtered environment and its own temporary working directory. It receives neither vault
 credentials nor database, broker or provider keys. It offers the server no
-roots, sampling or other client capabilities. HTTP redirects, automatic call
+roots, sampling or elicitation; the one capability it declares is the MCP Apps
+extension (see [Pages a server shows](#pages-a-server-shows)). HTTP redirects, automatic call
 replay and unbounded responses are refused. Results retain external-content
 provenance and action evidence handles. A lost acknowledgement remains unknown;
 generic MCP verification cannot prove that an effect happened.
@@ -830,7 +1018,7 @@ stores the policy.
 
 Over HTTP the client speaks every revision of the MCP transport in use. It first
 sends `server/discover` the stateless way (revision `2026-07-28`): with the
-revision, the client's name and its (empty) capabilities in the request's
+revision, the client's name and its capabilities (the MCP Apps extension) in the request's
 `_meta`, and the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. A
 server that answers is spoken to that way from then on: no `initialize`, no
 session, a header for each tool parameter whose schema marks it with
@@ -846,6 +1034,94 @@ fails without a retry. A call whose answer never came stays unknown and is never
 sent again, whatever the revision. Evidence:
 [mcp-protocol.test.ts](../apps/melete/src/connectors/mcp-protocol.test.ts).
 
+### Pages a server shows
+
+A tool can show the person an interactive page in the conversation, with the
+MCP Apps extension (`io.modelcontextprotocol/ui`): the tool's `_meta.ui.resourceUri`
+names a `ui://` resource of type `text/html;profile=mcp-app`. When such a call
+succeeds over HTTP, Melete reads the page with `resources/read`, keeps it, and
+shows it in the conversation under the connection's name and its server's
+address. A tool whose `_meta.ui.visibility` leaves out `model` is meant for the
+page alone and is never offered to the model.
+
+The page runs in a sandboxed frame with an opaque origin. It is served from
+`/pages/view/<token>` with `Content-Security-Policy: sandbox allow-scripts
+allow-forms` (no `allow-same-origin`, popups or top navigation), `default-src
+'none'`, and the domains the page declared in its resource's `_meta.ui.csp`
+(`connectDomains`, `resourceDomains`, `frameDomains`) that the connection allows:
+its server's own origin and the origins in the policy's `pages.origins`. The
+token is for one page, one person and one browser session; the page is served
+only into a frame, and only while it is open and that session is signed in.
+The page talks to Melete only through MCP Apps messages: `ui/initialize`, the
+tool call's input and result, its size, and `ui/open-link` for an address on
+an allowed origin, which opens in a new tab once the person agrees. Every other
+request, such as `tools/call` or `ui/message`, is refused. When the person's
+theme changes, the page gets `ui/notifications/host-context-changed` with the
+new `theme`. Report the size as
+the height of the page's body: the document's scroll height never drops below
+the frame's own, so a frame sized by it can only grow.
+
+A page whose work must happen at the top level of the browser (a form a third
+party's script must own, for one) asks to open its own address that way.
+
+**Waiting on a page.** The tool call carries `_meta["io.melete/page"]` with the
+page's `id`, a `report_url` and a `report_key` made for that page alone. The
+turn that showed the page ends, and the conversation waits for the page the way
+it waits for an approval, until the server reports or the page expires (30
+minutes, or the server's `_meta["io.melete/page"].expires_in_seconds` on its
+result, at most a day). The person can still write in the meantime.
+
+Only the server can end the wait. It posts to `report_url` a body
+`{status: completed|failed|cancelled, summary, data?}`, signed like a Standard
+Webhooks message: `webhook-id`, `webhook-timestamp` (within five minutes) and
+`webhook-signature: v1,<base64 HMAC-SHA256 of id.timestamp.body>` with the
+`report_key` (a `whsec_` secret). Melete keeps no copy of the key; it derives it
+again from its own secret. The page never sees the key, so nothing it says or
+posts can settle it. A report settles an open page once; the same report again
+is answered as before, a different one is refused (409), and one after the page
+expired is refused (410). The conversation then goes on with the server's
+summary and data as external content. `report_base_url` in the policy names
+the address the server reaches Melete at when it is not `MELETE_PUBLIC_URL`.
+Evidence: [connection-pages.test.ts](../apps/melete/test/integration/connection-pages.test.ts),
+[page-bridge.test.ts](../apps/web/src/chat/page-bridge.test.ts).
+
+### Entitlements and identity
+
+The operator can grant a person's account an entitlement, from a closed list
+that starts with `verified`, and a connection can require one:
+
+```json
+{ "tools": [{ "name": "reserve", "alias": "reserve", "required_scopes": ["desk.reserve"],
+    "requires_entitlements": ["verified"] }] }
+```
+
+A call to such a tool, by a person without the entitlement, is refused before
+anyone is asked to approve it and before anything reaches the server, and again
+just before it is sent, in case the grant was taken away in between. The person
+reads `MELETE_GATE_MESSAGE` (default: "Contact support to get your account
+verified."). Entitlements are read from the database, never from what the model
+says.
+
+Only the account that set Melete up grants them: `PUT` and `DELETE
+/operator/people/{id}/entitlements/{key}` (with an optional `value` of
+`method` and `level` strings and an `expires_at`), or on the host
+`bun run melete account grant|revoke <email> verified` and
+`bun run melete account entitlements <email>`. A lapsed grant counts for nothing.
+
+A remote server whose policy sets `"identity": true` is sent, with each call, a
+signed identity assertion in the `Melete-Identity` header: a JWT signed with
+EdDSA (Ed25519) whose keys are at `<API>/.well-known/jwks.json`. Its claims are
+`iss` (this installation's API address), `aud` (the server's endpoint address
+as the policy names it, without query, fragment or trailing slash, such as
+`https://tools.example.com/mcp`), `sub` (an id for the person that only this
+server sees, never an email), `ent` (the entitlements the person holds), `jti`
+(the action), `act` (the server's tool name), and `iat`/`exp` five minutes
+apart. The model never sees or sets it. A server checks `aud` against its own
+endpoint address, so an assertion sent to one server is refused by another,
+even one on the same host. The key set is served with `Cache-Control: public,
+max-age=300`; a server that meets an unknown `kid` reads it again. A server can
+then refuse on its own side too, so the check sits where its credentials are.
+Evidence: [assertion.test.ts](../apps/melete/src/identity/assertion.test.ts).
 ### Signing in to an MCP server
 
 A server that asks for OAuth can be connected by signing in from the browser
@@ -1052,6 +1328,93 @@ offered: one such call could run whichever action it is told to under a single
 name. Gmail, Google Calendar and Google Drive signed in through Composio keep
 Melete's own `email.*`, `calendar.*` and `documents.*` tools; see
 [Signing in with Google through Composio](mail-calendar.md#signing-in-with-google-through-composio).
+
+#### Connecting an app through Composio
+
+With `COMPOSIO_API_KEY` set, the catalog also lists popular apps that
+Composio signs in to with its own OAuth app (Slack, Google Docs and Sheets,
+Outlook, Teams, Asana, HubSpot, Salesforce and others; `POPULAR_APPS` in
+`apps/melete/src/connectors/composio-catalog.ts`), each as `app-<toolkit>`.
+`GET /composio/apps?query=` searches everything else Composio offers; an app
+is found only when Composio has a managed sign-in for it, or when the operator
+set an auth config of their own for it in `COMPOSIO_AUTH_CONFIGS`
+(`toolkit=ac_id,...`). Answers are kept for ten minutes.
+
+An app the remote MCP catalog above already offers is not offered again
+through Composio: its own server's entry wins, so each app appears once. The
+overlap comes from the MCP catalog itself (`mcpCatalogCovers` in
+`packages/contracts/src/mcp-catalog.ts`): an entry's id, and the `products`
+it names when they go by other names (Atlassian covers Composio's `jira` and
+`confluence`). Today that hides Notion, Linear, Jira, Confluence, Sentry,
+Stripe and GitHub from the popular list, from search and from a new sign-in,
+and a new MCP entry hides its Composio twin by itself. A connection already
+made through Composio for one of them keeps working. Composio's own toolkits
+and its meta tools (`COMPOSIO_*`) are never offered or run.
+
+`POST /managed-sign-ins` with `{ "provider": "app", "toolkit": "slack" }`
+signs in the same way as the Google sign-in, and installs one connection per
+app in the space, with three tools:
+
+- `app_<toolkit>.find_tools` (`read`): lists the app's tools that match what
+  the agent is looking for, a few at a time, so the agent's tool list stays
+  small;
+- `app_<toolkit>.read` (`read`): runs one of the app's tools that Composio
+  marks read-only;
+- `app_<toolkit>.act` (`write_external`): runs any other tool of the app; it
+  always asks first.
+
+Each runs in a Composio session pinned to the connection's own account, with
+Composio's workbench, proxy and connection tools switched off, and an argument
+that names another account is refused. Disconnecting revokes and removes the
+Composio account. Evidence: `an app connected through Composio` and `the app
+catalog` in [composio.test.ts](../apps/melete/src/connectors/composio.test.ts) and
+[managed-sign-in.test.ts](../apps/melete/test/integration/managed-sign-in.test.ts).
+
+#### Limits on use through Composio
+
+Every limit is an operator setting and is unset by default, which means no
+limit. They are counted for the whole install, per billing month:
+
+| Setting | Limits |
+|---|---|
+| `MELETE_COMPOSIO_TOOL_CALLS_MONTHLY_CAP` | tool calls run through Composio (reads for watching, the agent's tools, sends) |
+| `MELETE_COMPOSIO_TRIGGER_EVENTS_MONTHLY_CAP` | trigger events Composio delivers |
+| `MELETE_COMPOSIO_ACCOUNTS_CAP` | connected accounts at Composio at once |
+| `MELETE_COMPOSIO_MONTHLY_CREDIT_USD` | an amount the month may spend past the free counts above |
+| `MELETE_COMPOSIO_TOOL_CALL_USD`, `MELETE_COMPOSIO_TRIGGER_EVENT_USD` | the price of each one past its count, used with the credit |
+| `MELETE_COMPOSIO_BILLING_DAY` | the day of the month (1–28, UTC) the month starts on; 1 by default |
+
+`MELETE_MANAGED_CALLS_MONTHLY_CAP`, the older name, still sets the tool-call
+limit when the new one is unset.
+
+- A limit is hard. A call that would pass it is refused before it reaches
+  Composio, approved sends included, and the person is told the app is paused
+  until the month resets.
+- With a credit, the counts above become free counts: use may go past them
+  only while the estimated cost of everything past them, across tool calls and
+  trigger events, stays within the credit.
+- A call takes its place in the count before it is sent and gives it back only
+  when it surely did not run; a call that timed out stays counted. The count is
+  kept in Postgres under a lock, so several Melete processes share it.
+- Trigger events are counted as they arrive. A delivery is taken only when its
+  signature, made with `COMPOSIO_WEBHOOK_SECRET` over the exact bytes sent, is
+  less than five minutes old, and each `webhook-id` is taken once, so a retry
+  or a replay is neither counted nor acted on twice. A delivery larger than
+  1 MiB is refused unread. Without the secret the address answers 404. Past
+  their limit, Melete switches
+  every trigger off at Composio and reads accounts on the fallback schedule; it
+  switches them back on in the next month.
+- Every ten minutes Melete asks Composio for its own counts for the month and
+  uses whichever is larger, its own or Composio's plus what it ran since.
+  Composio's usage numbers cover tool calls, not trigger events, so the event
+  count is Melete's own.
+- A new sign-in past the accounts limit is refused before Composio makes an
+  account.
+
+`GET /health/detail` (with the operator's token) shows the month's standing under `composio` (each
+count, its limit and `ok`, `near` or `reached`, the accounts, and the estimated
+spend past the free counts), and the same is logged every ten minutes.
+Evidence: [managed-calls.test.ts](../apps/melete/src/signals/managed-calls.test.ts).
 
 #### Connecting GitHub
 

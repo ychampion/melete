@@ -1,7 +1,12 @@
 /** How the service builds its privacy router from its database and environment. */
 import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
-import { modelApiMode, protocolForApiMode, providersFromEnv } from '../gateway/providers.ts';
+import {
+  modelApiMode,
+  OPENAI_COMPATIBLE,
+  protocolForApiMode,
+  providersFromEnv,
+} from '../gateway/providers.ts';
 import type { LocalModel } from './local.ts';
 import type { Protocol } from './redact.ts';
 import { PrivacyRouter } from './router.ts';
@@ -30,17 +35,23 @@ export function engineProtocol(env: Env): Protocol {
   return protocolForApiMode(modelApiMode(env.MELETE_DEFAULT_PROVIDER, env.MELETE_DEFAULT_MODEL));
 }
 
-/** The configured provider's address, when the environment names one. */
+/**
+ * The configured provider's address, when it may be a model the owner runs:
+ * only the OpenAI-compatible endpoint's. No other provider's address is offered
+ * to be confirmed as on their device, a gateway in front of a cloud model included.
+ */
 export function providerAddress(env: Env): string | undefined {
-  return providersFromEnv(env as unknown as Record<string, string | undefined>).find(
-    (provider) => provider.name === env.MELETE_DEFAULT_PROVIDER,
-  )?.baseUrl;
+  const provider = providersFromEnv(env as unknown as Record<string, string | undefined>).find(
+    (candidate) => candidate.name === env.MELETE_DEFAULT_PROVIDER,
+  );
+  return provider?.mayBeLocal ? provider.baseUrl : undefined;
 }
 
 /**
  * How an attempt's own model is reached, for the privacy checks made before it
- * starts: the protocol it speaks and its address, from the address the owner
- * connected in the app when there is one, else the environment's.
+ * starts: the protocol it speaks and, for the OpenAI-compatible endpoint (the
+ * only one that may be the owner's own model), its address, from the address
+ * the owner connected in the app when there is one, else the environment's.
  */
 export function attemptEngine(
   env: Env,
@@ -53,7 +64,9 @@ export function attemptEngine(
   return async (model) => ({
     protocol: protocolForApiMode(modelApiMode(model.provider, model.model)),
     providerUrl:
-      (await addresses?.providerAddress(model.provider)) ??
-      configured.find((provider) => provider.name === model.provider)?.baseUrl,
+      model.provider === OPENAI_COMPATIBLE
+        ? ((await addresses?.providerAddress(model.provider)) ??
+          configured.find((provider) => provider.name === model.provider)?.baseUrl)
+        : undefined,
   });
 }

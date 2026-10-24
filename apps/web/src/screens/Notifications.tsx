@@ -8,7 +8,9 @@ import { useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Button, Input, Select, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { featureOn } from '../experience/features.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
+import { assistantName, instanceName } from '../experience/instance.ts';
 import {
   dismissOffer,
   enablePush,
@@ -66,7 +68,7 @@ function Row({ title, sub, children }: { title: string; sub: string; children: R
 }
 
 export function NotificationsTab() {
-  const { profile, refreshProfile, member } = useApp();
+  const { profile, refreshProfile, member, capabilities } = useApp();
   const key = useLoad(() => adapter.pushPublicKey(), []);
   const devices = useLoad(() => adapter.pushDevices(), []);
   const settings = useLoad(() => adapter.pushSettings(), []);
@@ -142,8 +144,8 @@ export function NotificationsTab() {
   return (
     <div className="col" style={{ gap: 12 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        Melete pushes to your phone when a decision is waiting or a chase settles. It stays quiet
-        outside your day, groups what arrives together, and says why it sent each one.
+        {assistantName()} pushes to your phone when a decision is waiting or a chase settles. It
+        stays quiet outside your day, groups what arrives together, and says why it sent each one.
       </p>
 
       {key.data && !configured ? (
@@ -158,7 +160,7 @@ export function NotificationsTab() {
           title="This device"
           sub={
             !pushSupported()
-              ? 'This browser can’t receive pushes. On an iPhone, add Melete to your Home Screen first.'
+              ? `This browser can’t receive pushes. On an iPhone, add ${instanceName()} to your Home Screen first.`
               : here
                 ? 'Pushes arrive here.'
                 : 'Pushes don’t arrive here yet.'
@@ -275,7 +277,7 @@ export function NotificationsTab() {
         </>
       ) : null}
 
-      <ReachMe />
+      {featureOn(capabilities, 'phone') ? <ReachMe /> : null}
     </div>
   );
 }

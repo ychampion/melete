@@ -11,6 +11,15 @@ existing file. Start with
 `docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300`.
 The README explains provider configuration and the first sign-in.
 
+Compose files of your own go in `compose_files` in `deploy/melete.deploy.json`,
+as paths relative to this folder (for example `"../private/compose.extra.yml"`).
+The melete command reads them after its own overlays, in the order listed, and
+refuses a contract that names one that is missing
+([the deploy file](../docs/DEPLOYMENT.md#the-deploy-file)).
+`docker-compose.brand.yml` is one: it mounts a brand folder for the
+installation's icons, logo and colours
+([names and look](../docs/DEPLOYMENT.md#names-and-look)).
+
 `melete-cells` receives `/var/run/docker.sock`, and no other service does. The
 socket grants **host-root equivalent** authority, so `melete-cells` holds no
 database address and no service key, answers only the `melete` service on a

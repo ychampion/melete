@@ -49,6 +49,7 @@ const WITHHELD_TABLES = new Set([
   'saved_sign_in',
   'session',
   'password_reset',
+  'step_up',
   'magic_link',
   'mcp_token',
   // A browser's push address and keys, which let whoever holds them notify it.

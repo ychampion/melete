@@ -34,10 +34,22 @@ import {
   waitSpec,
 } from '@melete/contracts';
 import { withoutNarration, withoutUnbackedClaims } from '@melete/runtime-hermes';
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  DrizzleQueryError,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  sql,
+} from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { personQuestionKey } from '../broker/ask-person.ts';
+import { redactSecrets } from '../connectors/faults.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -54,34 +66,41 @@ import {
 import { databaseUnreachable, failureMessage } from '../db/sweep-failure.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import type { AckWriter } from '../experience/ack.ts';
 import { checkCitations, sourcesRead } from '../experience/citations.ts';
 import { withDeliveryNote } from '../experience/delivery-claims.ts';
-import { STOPPED_NOTE } from '../experience/projectors.ts';
+import { plainText, STOPPED_NOTE } from '../experience/projectors.ts';
 import { withdrawPendingPermissions } from '../experience/service.ts';
 import {
   pagesVisited,
   withoutRepeatedLinks,
   withVisitedLinks,
 } from '../experience/visited-links.ts';
+import { skillsDone, skillsGiven } from '../gateway/given-skills.ts';
 import { stopModelCalls } from '../gateway/inflight.ts';
 import type { LimitReached } from '../gateway/spending.ts';
+import { turnAcknowledged, turnEnded, turnSpoke, turnStarted } from '../gateway/turn-notes.ts';
 import type { UsageClass } from '../gateway/usage-class.ts';
 import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
+import { instanceName } from '../names.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import type { RunService } from '../runs/service.ts';
 import { EngineImageUnavailable } from '../runtime/cell-host.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
-import { type AnswerJoin, answerJoin } from './answer-join.ts';
+import { type AnswerJoin, answerJoin, carriesOnAnswer } from './answer-join.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildAttemptSkeleton, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
+import { FirstLine } from './first-line.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import { personWords } from './history-summary.ts';
+import { HumanStream, humanOutcome } from './human-stream.ts';
 import { LIMIT_REACHED_NOTE } from './limits.ts';
 import { PROVIDER_FAILURE_NOTES } from './provider-notes.ts';
-import { persistQuestions, resolveQuestions } from './questions.ts';
+import { persistQuestions, resolveQuestions, withdrawSettledQuestion } from './questions.ts';
 import {
   ATTEMPT_QUEUES,
   type AttemptWake,
@@ -90,6 +109,8 @@ import {
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
 import { workQuiet } from './quiet.ts';
+import { reminderHeld } from './reminder-hold.ts';
+import { RUNAWAY_NOTE, RunawayReply, runawayWatch } from './runaway.ts';
 import { connectionScopesForJob } from './scopes.ts';
 import { type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
@@ -114,22 +135,32 @@ export const LEASE_MS = 45_000;
  * What a conversation's turn ends with when its engine could not start because
  * the engine image the service started with is gone or refused.
  */
-export const ENGINE_IMAGE_NOTE =
-  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then send your message again.';
+export const ENGINE_IMAGE_NOTE = `I couldn’t start the engine that does the work: the engine image ${instanceName()} started with is no longer available. Restart ${instanceName()}, or ask whoever runs it to, then send your message again.`;
 /** What long work asks the person when its engine could not start that way. */
-export const ENGINE_IMAGE_QUESTION =
-  'I couldn’t start the engine that does the work: the engine image Melete started with is no longer available. Restart Melete, or ask whoever runs it to, then say "continue" to try again.';
+export const ENGINE_IMAGE_QUESTION = `I couldn’t start the engine that does the work: the engine image ${instanceName()} started with is no longer available. Restart ${instanceName()}, or ask whoever runs it to, then say "continue" to try again.`;
 /** Why long work or a helper stopped that way, in its record. */
-const ENGINE_IMAGE_WHY =
-  'Its engine could not start: the engine image Melete started with is no longer available.';
+const ENGINE_IMAGE_WHY = `Its engine could not start: the engine image ${instanceName()} started with is no longer available.`;
 /** The reason an attempt lost that way is recorded with. */
 export const ENGINE_IMAGE_REASON = 'engine_image_unavailable';
 /** What a conversation's turn ends with when its work was cut off and could not be resumed. */
-export const LOST_NOTE =
-  'This was interrupted before it could finish, for example because Melete restarted while it was working. Nothing more will happen here until you send another message.';
+export const LOST_NOTE = `This was interrupted before it could finish, for example because ${instanceName()} restarted while it was working. Nothing more will happen here until you send another message.`;
 /** The same, when the work stopped because an app it was using was disconnected. */
 export const DISCONNECTED_NOTE =
   'This stopped because an app it was using was disconnected. Nothing more will happen here until you send another message.';
+
+/**
+ * What a conversation's turn ends with when the work could not be put
+ * together from what the chat has stored, so nothing was done.
+ */
+export const BUNDLE_FAILED_NOTE =
+  'I couldn’t get started on this, so nothing was done. Send your message again to try once more.';
+/** The reason such an attempt failed with, and the code the operator's log names. */
+export const BUNDLE_FAILED_CODE = 'bundle_build_failed';
+
+/** Whether a failure came from the database: a failed query, or one Postgres answered with. */
+const fromDatabase = (error: unknown): boolean =>
+  error instanceof DrizzleQueryError ||
+  (error instanceof Error && (error.name === 'PostgresError' || 'query' in error));
 
 /** How many attempts run at once unless the service is told otherwise. */
 export const DEFAULT_ATTEMPT_CONCURRENCY = 4;
@@ -190,6 +221,12 @@ export type RunnerOptions = {
    * busy or limited runs again; each later one doubles, up to four times it.
    */
   retryBackoffMs?: number;
+  /**
+   * A one-line acknowledgement for a conversation turn the person is waiting
+   * on, shown when the agent has said nothing `afterMs` after it started.
+   * Left out, or `afterMs` 0, there is none.
+   */
+  acknowledge?: { afterMs: number; writer: AckWriter };
 };
 
 /** The spending limit a job's person has reached, for each class of work. */
@@ -243,6 +280,67 @@ async function namedFailure(
   };
 }
 
+/** What a turn that stopped without a question asks, when no step failed. */
+export const STOPPED_QUESTION = 'I stopped before finishing. What should I do next?';
+
+/**
+ * The words a failed step gave for failing, as the person may read them: the
+ * first line, cut where a raw body (JSON or a page) begins, with address
+ * query strings and anything shaped like a credential taken out. A provider's
+ * error often quotes the request, its key included; that never reaches the
+ * question.
+ */
+export function failureWords(result: JsonObject): string {
+  const error = result.error;
+  const said =
+    typeof error === 'string'
+      ? error
+      : error && typeof error === 'object' && !Array.isArray(error)
+        ? (error as JsonObject).message
+        : (result.message ?? result.reason);
+  const first = (plainText(said, '', 400).split(/\r?\n/, 1)[0] ?? '').replace(
+    /(https?:\/\/[^\s'"?#]+)[?#][^\s'"]*/gi,
+    '$1',
+  );
+  // A body is cut where it starts; the "[hidden]" left for a secret is not one.
+  const line = /^\s*\[(?!hidden\])/.test(first) ? '' : (first.split(/[{<]/, 1)[0] ?? '');
+  const text = redactSecrets(line, 400)
+    .replace(/\s+/g, ' ')
+    .replace(/[\s:;,-]+$/, '')
+    .trim();
+  if (!text) return '';
+  if (text.length <= 160) return text.replace(/[.!?]+$/, '');
+  return `${text.slice(0, 159).trimEnd()}…`;
+}
+
+/**
+ * The question for a turn that stopped without one: why it stopped, from the
+ * last step of the attempt that failed, and what the person wants done.
+ */
+async function stoppedQuestion(tx: Transaction, attemptId: string): Promise<string> {
+  const [failed] = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(
+      and(
+        eq(event.attemptId, attemptId),
+        eq(event.type, 'tool_result'),
+        sql`${event.payload}->>'ok' = 'false'`,
+      ),
+    )
+    .orderBy(desc(event.seq))
+    .limit(1);
+  const payload = (failed?.payload ?? {}) as JsonObject;
+  const result = payload.result;
+  const why =
+    result && typeof result === 'object' && !Array.isArray(result)
+      ? failureWords(result as JsonObject)
+      : '';
+  return failed
+    ? `I stopped because a step failed${why ? `: ${why}` : ''}. What should I do?`
+    : STOPPED_QUESTION;
+}
+
 /**
  * Past the broker's longest dispatch budget and its recovery sweep, so every
  * dispatch that still has a sender has settled by then.
@@ -267,10 +365,145 @@ const PROGRESS_EVENTS = new Set<RuntimeEvent['type']>([
   'tool_result',
 ]);
 
+/** Action statuses that are not settled yet: waiting to be sent, sent, or unsure. */
+const OPEN_STEPS = [
+  'needs_approval',
+  'approved',
+  'admitted',
+  'dispatched',
+  'unknown',
+  'unresolved',
+];
+
+/**
+ * Whether this wake of a conversation only brings news of its answered turn's
+ * steps, all of it good: the turn's last attempt finished with its answer,
+ * nothing new came from the person or anything else, no step is open, and
+ * every step that settled after that answer went through.
+ */
+async function answeredTurnSettled(
+  tx: Transaction,
+  row: JobRow,
+  previous: typeof attempt.$inferSelect | undefined,
+  bundle: ResponsibilityAttemptBundle,
+): Promise<boolean> {
+  if (row.kind !== 'chat' || !row.currentTurnId || !previous?.endedAt) return false;
+  if (previous.turnId !== row.currentTurnId || previous.outcome !== 'completed') return false;
+  const { inputs } = bundle;
+  if (
+    inputs.new_user_messages.length ||
+    inputs.approval_results.length ||
+    inputs.trigger_events.length ||
+    inputs.repair_briefs.length ||
+    inputs.cancelled_wait
+  )
+    return false;
+  const steps = await tx
+    .select({ status: action.status, resolvedAt: action.resolvedAt })
+    .from(action)
+    .where(eq(action.jobId, row.id));
+  const answeredAt = previous.endedAt.getTime();
+  return steps.every(
+    (step) =>
+      !OPEN_STEPS.includes(step.status) &&
+      (!step.resolvedAt || step.resolvedAt.getTime() < answeredAt || step.status === 'succeeded'),
+  );
+}
+
+/**
+ * The saved answer of a turn whose attempt carried on from an answer already
+ * in (`carriesOnAnswer`): what the turn said before this attempt, then what
+ * this attempt added, the way a finished turn keeps an attempt's final words
+ * rather than everything it streamed (a reply cut back after it looped keeps
+ * its first copy). An attempt that added nothing leaves the turn as it is;
+ * so does one whose streamed words cannot be told apart from the rest.
+ */
+async function carriedOnAnswer(
+  tx: Transaction,
+  turnId: string,
+  attemptId: string,
+  added: string,
+): Promise<{ answer?: string }> {
+  if (!added.trim()) return {};
+  const [turn] = await tx
+    .select({ answer: experienceTurn.answer })
+    .from(experienceTurn)
+    .where(eq(experienceTurn.id, turnId));
+  const current = turn?.answer ?? '';
+  // Only words written while this attempt was current reached the turn.
+  const pieces = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(and(eq(event.attemptId, attemptId), eq(event.type, 'text_delta')))
+    .orderBy(asc(event.seq));
+  const streamed = pieces
+    .map((piece) => piece.payload as { text?: unknown; late?: unknown } | null)
+    .filter((payload) => payload?.late !== true && typeof payload?.text === 'string')
+    .map((payload) => String(payload?.text))
+    .join('');
+  // This attempt's words joined the turn's as a paragraph of their own.
+  const before = !streamed
+    ? current
+    : current === streamed
+      ? ''
+      : current.endsWith(`\n\n${streamed}`)
+        ? current.slice(0, current.length - streamed.length - 2)
+        : null;
+  if (before === null) return {};
+  return { answer: before.trim() ? `${before}\n\n${added}` : added };
+}
+
 /** The question a turn rests on when something it started has not reported back. */
 export const STILL_RUNNING_NOTE =
   'Something this turn started has not reported back yet. Its result will show here once it does, so nothing was run again.';
-export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
+export type ClaimedAttempt = {
+  bundle: ResponsibilityAttemptBundle;
+  claims: CapabilityClaims;
+  /** Set when the attempt answers a turn of a person's conversation. */
+  turn?: ConversationTurn;
+};
+/** The conversation turn an attempt answers. */
+type ConversationTurn = {
+  turnId: string;
+  spaceId: string;
+  principalId?: string;
+  /** The person is waiting on it: their message started it. */
+  interactive: boolean;
+  /**
+   * An earlier attempt of the turn showed the acknowledgement and nothing has
+   * been said in the turn since: this attempt's first words are judged
+   * against it (`FirstLine`).
+   */
+  acknowledged?: boolean;
+};
+
+/**
+ * Whether the turn's acknowledgement has been shown and is still the last
+ * thing the person read in it: no words of the agent's, and no line it said,
+ * since. A dropped plan line was recorded as empty text and counts as nothing.
+ */
+async function acknowledgedInSilence(
+  tx: Transaction,
+  jobId: string,
+  turnId: string,
+): Promise<boolean> {
+  const [said] = await tx
+    .select({
+      acknowledged: sql<boolean>`coalesce(bool_or(${event.type} = 'notice' and ${event.payload}->>'acknowledgement' = 'true'), false)`,
+      spoken: sql<boolean>`coalesce(bool_or(not (${event.type} = 'notice' and ${event.payload}->>'acknowledgement' = 'true')), false)`,
+    })
+    .from(event)
+    .innerJoin(attempt, eq(attempt.id, event.attemptId))
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        eq(attempt.turnId, turnId),
+        sql`((${event.type} = 'text_delta' and btrim(${event.payload}->>'text') <> '')
+          or (${event.type} = 'notice' and ${event.payload}->>'kind' = 'experience_say'))`,
+      ),
+    );
+  return Boolean(said?.acknowledged) && !said?.spoken;
+}
 /** What the attempt raised besides its outcome, handed to every finish handler. */
 export type OutcomeContext = {
   questions: readonly QuestionSpec[];
@@ -440,6 +673,9 @@ export class AttemptRunner {
       // A question left from before the request changed is closed first, so
       // this attempt is told it was withdrawn rather than that it is pending.
       await withdrawOutdatedPermissions(tx, row.id);
+      // So is a conversation's question about steps that have all settled since:
+      // whatever this wake does, nothing is left to ask about them.
+      if (row.kind === 'chat') await withdrawSettledQuestion(tx, row.id);
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
       const chosen: { provider: string; model: string; vision?: boolean; refused?: string } =
         (await this.options.resolveModel?.(tx, row, cause.usageClass)) ?? {
@@ -490,21 +726,33 @@ export class AttemptRunner {
         exp: Math.floor(Date.now() / 1000) + CAPABILITY_TTL_SECONDS,
       };
       const generations = await readGenerations(tx, row.spaceId);
-      const bundle = await buildAttemptSkeleton(
-        tx,
-        row,
-        {
-          id: attemptId,
-          epoch,
-          revision: row.revision,
-          token: signCapability(claims, this.options.key),
-        },
-        model,
-        previous?.inputCursor ?? 0,
-        generations,
-        capabilities.version,
-      );
-      if (this.options.loadCatalog)
+      // A bundle that cannot be built from what is stored would fail the same
+      // way on every wake, so the turn ends on it below instead of waiting
+      // queued for ever. A failed statement has already ended the transaction
+      // and may well pass next time: that is retried as before.
+      let bundle: ResponsibilityAttemptBundle | null = null;
+      let unbuilt = 'Error';
+      try {
+        bundle = await buildAttemptSkeleton(
+          tx,
+          row,
+          {
+            id: attemptId,
+            epoch,
+            revision: row.revision,
+            token: signCapability(claims, this.options.key),
+          },
+          model,
+          previous?.inputCursor ?? 0,
+          generations,
+          capabilities.version,
+        );
+      } catch (error) {
+        if (fromDatabase(error)) throw error;
+        // The class's name, never a message; a name that is not one is not logged.
+        if (error instanceof Error && /^\w{1,64}$/.test(error.name)) unbuilt = error.name;
+      }
+      if (bundle && this.options.loadCatalog)
         Object.assign(bundle, await this.options.loadCatalog(tx, claims, bundle));
       await tx.insert(attempt).values({
         id: attemptId,
@@ -528,10 +776,11 @@ export class AttemptRunner {
         triggerId: cause.triggerId,
         situationId: cause.situationId,
       });
-      await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
+      if (bundle)
+        await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
       // The attempt is told its wait was cancelled; this row is what lets its
       // outcome restore that wait, once, if it finishes without choosing another.
-      if (bundle.inputs.cancelled_wait)
+      if (bundle?.inputs.cancelled_wait)
         await appendEvent(tx, {
           jobId: row.id,
           attemptId,
@@ -580,6 +829,21 @@ export class AttemptRunner {
         this.runs && isRunKind(row.kind) ? await this.runs.settle(tx, row, attemptId) : null;
       if (settled) {
         await this.finish(tx, row, attemptId, settled, limits);
+        return null;
+      }
+      // A conversation turn whose answer is in, woken only because steps it
+      // left open have since gone through, has nothing for a model to do: the
+      // steps show on the turn's record and the answer stands. Running the
+      // turn would answer it a second time. A step that failed instead goes to
+      // an attempt, which is shown what was already said (`said_this_turn`).
+      if (bundle && (await answeredTurnSettled(tx, row, previous, bundle))) {
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'completed', summary: '', evidence: [] },
+          limits,
+        );
         return null;
       }
       // An attempt that starts no engine reads none of its inputs: they are
@@ -653,6 +917,34 @@ export class AttemptRunner {
         );
         return null;
       }
+      // No engine starts on a bundle that could not be built. The work fails
+      // once, with a plain sentence where the person reads the turn, and the
+      // operator's log names what failed, never what was said.
+      if (!bundle) {
+        console.error(`attempt: ${BUNDLE_FAILED_CODE}:${unbuilt} (job ${row.id})`);
+        // Nothing read what the person sent, so the next turn reads it as new.
+        await unread();
+        await this.finish(
+          tx,
+          row,
+          attemptId,
+          { kind: 'failed', reason: BUNDLE_FAILED_CODE, retryable: false },
+          limits,
+          [],
+          BUNDLE_FAILED_NOTE,
+        );
+        if (row.currentTurnId)
+          await tx
+            .update(experienceTurn)
+            .set({
+              answer: sql`case when ${experienceTurn.answer} = '' then ${BUNDLE_FAILED_NOTE}
+                else ${experienceTurn.answer} || ${`\n\n${BUNDLE_FAILED_NOTE}`} end`,
+            })
+            .where(
+              and(eq(experienceTurn.id, row.currentTurnId), eq(experienceTurn.status, 'failed')),
+            );
+        return null;
+      }
       // The skills went into the instructions, where no tool call shows them.
       const followed = skillTraceCall(attemptId, bundle.skills, await databaseNow(tx));
       if (followed)
@@ -670,7 +962,19 @@ export class AttemptRunner {
           .where(eq(experienceTurn.id, row.currentTurnId));
       // Words sent while the job waited to start are this attempt's new messages.
       await steersRead(tx, row.id, attemptId, Number(latest?.seq ?? 0));
-      return { bundle, claims };
+      const turn: ConversationTurn | undefined =
+        row.kind === 'chat' && row.currentTurnId
+          ? {
+              turnId: row.currentTurnId,
+              spaceId: row.spaceId,
+              ...(access.principalId ? { principalId: access.principalId } : {}),
+              interactive: cause.usageClass === 'interactive',
+              ...((await acknowledgedInSilence(tx, row.id, row.currentTurnId))
+                ? { acknowledged: true }
+                : {}),
+            }
+          : undefined;
+      return { bundle, claims, ...(turn ? { turn } : {}) };
     });
   }
 
@@ -779,8 +1083,9 @@ export class AttemptRunner {
       const type = value.type === 'attempt_outcome' ? 'notice' : value.type;
       if (current && row.currentTurnId) await this.liveness(tx, row, execution.id, value);
       if (current && row.currentTurnId && value.type === 'text_delta') {
-        // A retried turn replaces the partial answer the lost attempt left; a
-        // turn that carries on after a wait starts a new paragraph.
+        // A turn run again after a lost attempt replaces what that attempt
+        // left; a turn that carries on from words the person already has
+        // (after a wait, a failure or its answer) starts a new paragraph.
         const join = await this.firstAnswerJoin(tx, execution.id, row.id);
         await tx
           .update(experienceTurn)
@@ -961,6 +1266,14 @@ export class AttemptRunner {
       .limit(1);
     const parsed = waitSpec.safeParse((notice?.payload as JsonObject | undefined)?.wait);
     if (!parsed.success) return null;
+    // The person cancelled it during this attempt (run.stop): it stays gone,
+    // for a retry of this turn too.
+    const [dropped] = await tx
+      .select({ seq: event.seq })
+      .from(event)
+      .where(and(eq(event.dedupKey, `${attemptId}:wait-dropped`), eq(event.jobId, row.id)))
+      .limit(1);
+    if (dropped) return null;
     const wait = parsed.data;
     const [pending] = await tx
       .select({ id: action.id })
@@ -984,10 +1297,15 @@ export class AttemptRunner {
     // due while a reply was written is put back all the same and fires at once,
     // late but never lost. Other work woken after its timer's time has nothing
     // left to wait for.
-    if (wait.kind === 'timer')
-      return row.kind === 'chat' || Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime()
-        ? wait
-        : null;
+    // A reminder held from another conversation comes back still held (the
+    // move is told it is restoring), and one whose time passed while held has
+    // nothing left to come back to.
+    if (wait.kind === 'timer') {
+      const ahead = Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime();
+      if (row.kind === 'chat' && !ahead && (await reminderHeld(tx, row.id, wait.wake_at)))
+        return null;
+      return row.kind === 'chat' || ahead ? wait : null;
+    }
     if (wait.kind !== 'event') return null;
     const [registration] = await tx
       .select({ id: trigger.id })
@@ -1068,7 +1386,8 @@ export class AttemptRunner {
     raised: readonly QuestionSpec[] = [],
     /**
      * The sentence a conversation turn stopped short ends on, in place of the
-     * general one, when the reason is one the person can act on.
+     * general one, when the reason is one the person can act on: a limit it
+     * reached, or a failure that ends it.
      */
     limitNote?: string,
   ): Promise<JobRow> {
@@ -1077,13 +1396,17 @@ export class AttemptRunner {
     const capped = endsOnLimit(given)
       ? (limits[await usageClassOf(tx, attemptId)]?.message ?? null)
       : null;
+    // The saved answer reads as the person saw it stream: the same plain-text
+    // pass, last, after the answer's links and notes are settled.
     const original: AttemptOutcome = capped
       ? { kind: 'budget_exhausted', summary: capped }
-      : await this.citedOnlyWhatWasRead(
-          tx,
-          row,
-          attemptId,
-          await namedFailure(tx, attemptId, given),
+      : humanOutcome(
+          await this.citedOnlyWhatWasRead(
+            tx,
+            row,
+            attemptId,
+            await namedFailure(tx, attemptId, given),
+          ),
         );
     let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
@@ -1307,6 +1630,10 @@ export class AttemptRunner {
         kind: 'user_input',
         question: `A declared artifact check did not pass: ${artifactFailures.join('; ')}. Fix the file and finish, or say what should happen instead.`,
       };
+    // A conversation never waits on the person without saying what for: a turn
+    // that stopped with no question asks one, naming the step that failed.
+    if (row.kind === 'chat' && !parked && wait.kind === 'user_input' && !wait.question.trim())
+      wait = { kind: 'user_input', question: await stoppedQuestion(tx, attemptId) };
     // Deciding the question before the move lets the wait name the one asked.
     const resolution = await resolveQuestions(tx, row, {
       attemptId,
@@ -1327,6 +1654,8 @@ export class AttemptRunner {
           wait,
           payload: { outcome },
           ...(retryAfterMs > 0 ? { retryAfterMs } : {}),
+          // Put back by itself, not chosen by this attempt: a hold on it stays.
+          ...(restored !== posed && outcome === restored ? { restoring: true } : {}),
         });
     // The work runs again by itself: the turn is still under way, not failed.
     const retrying = outcome.kind === 'failed' && updated.state === 'queued';
@@ -1364,6 +1693,7 @@ export class AttemptRunner {
         ...(outcome.kind === 'budget_exhausted' && (capped ?? limitNote)
           ? { limit_note: capped ?? limitNote }
           : {}),
+        ...(outcome.kind === 'failed' && !retrying && limitNote ? { failed_note: limitNote } : {}),
         ...(retrying && updated.nextWakeAt ? { retry_at: updated.nextWakeAt.toISOString() } : {}),
       },
       dedupKey: `${attemptId}:ended`,
@@ -1399,11 +1729,25 @@ export class AttemptRunner {
                   answer: sql`case when ${experienceTurn.answer} = '' then ${PROVIDER_FAILURE_NOTES[outcome.failure]}
                   else ${experienceTurn.answer} || ${`\n\n${PROVIDER_FAILURE_NOTES[outcome.failure]}`} end`,
                 }
-              : 'summary' in outcome
-                ? { answer: outcome.summary }
-                : outcome.kind === 'waiting_for_input' && outcome.draft
-                  ? { answer: outcome.draft }
-                  : {}),
+              : // One that carried on from an answer already in keeps that
+                // answer, with what it added after it, as the person saw them.
+                row.kind === 'chat' && (await carriesOnAnswer(tx, attemptId))
+                ? await carriedOnAnswer(
+                    tx,
+                    row.currentTurnId,
+                    attemptId,
+                    'summary' in outcome
+                      ? outcome.summary
+                      : outcome.kind === 'waiting_for_input'
+                        ? (outcome.draft ?? '')
+                        : '',
+                  )
+                : // A conversation's attempt that adds nothing keeps the answer its turn has.
+                  'summary' in outcome && (outcome.summary || row.kind !== 'chat')
+                  ? { answer: outcome.summary }
+                  : outcome.kind === 'waiting_for_input' && outcome.draft
+                    ? { answer: outcome.draft }
+                    : {}),
           finishedAt: new Date(),
         })
         .where(eq(experienceTurn.id, row.currentTurnId));
@@ -2002,6 +2346,36 @@ export class AttemptRunner {
           heartbeatBusy = false;
         });
     }, this.options.heartbeatMs ?? HEARTBEAT_MS);
+    // The gateway keeps the turn's notes while it runs (gateway/turn-notes.ts).
+    if (claim.turn) turnStarted(claims.attempt_id);
+    // A read of a skill given in full is a pointer while the agent still holds it.
+    skillsGiven(claims.attempt_id, bundle.skills);
+    // The turn's first line is said once: by the acknowledgement or by the
+    // agent, never both (first-line.ts). One already shown in this turn, with
+    // nothing said since, has this attempt's first words judged against it.
+    const acknowledged = Boolean(claim.turn?.acknowledged);
+    const acknowledging = Boolean(
+      !acknowledged && claim.turn?.interactive && this.acknowledges(bundle),
+    );
+    // A conversation's reply that starts saying the same thing over and over
+    // is stopped and cut back to its first copy (`runaway.ts`). It counts the
+    // words as they are recorded, so what it keeps is what was shown.
+    const runaway = claim.turn ? runawayWatch() : null;
+    // The agent's words reach the record as a person would write them, the
+    // same live as saved (`human-stream.ts`).
+    const human = new HumanStream(async (event) => {
+      await this.emit(claims, event);
+      // Stopped only once the words that showed the loop are stored, so
+      // the turn's end, written next, is the last thing said.
+      const loop = runaway && event.type === 'text_delta' ? runaway.see(event.text) : null;
+      if (loop && !controller.signal.aborted)
+        controller.abort(new RunawayReply(loop.kept, loop.copies));
+    });
+    const firstLine = new FirstLine((event) => human.emit(event), acknowledging, acknowledged);
+    const acknowledgement =
+      acknowledging && claim.turn
+        ? this.acknowledgeLater(claims, claim.turn, bundle, firstLine)
+        : null;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let completed: Extract<AttemptOutcome, { kind: 'completed' }> | null = null;
     let abortListener = () => {};
@@ -2021,7 +2395,16 @@ export class AttemptRunner {
       });
       const call = this.runtime.start(
         bundle,
-        { emit: (event) => this.emit(claims, event) },
+        {
+          emit: async (event) => {
+            if (claim.turn && event.type === 'text_delta' && event.text.trim()) {
+              // The agent's own words come first: no acknowledgement is needed.
+              acknowledgement?.cancel();
+              turnSpoke(claims.attempt_id);
+            }
+            return firstLine.emit(event);
+          },
+        },
         controller.signal,
       );
       // Words sent after this attempt was claimed and before it started reach it now.
@@ -2039,41 +2422,34 @@ export class AttemptRunner {
       // wait for what that work started, which must not be cut short into a
       // lost attempt and a rerun. Only Stop or a fence ends the wait early.
       clearTimeout(timeout);
-      const outcome = isOutcomeEnvelope(result) ? result.outcome : result;
+      // Words still held behind an acknowledgement, then words the pass still
+      // held, reach the record before the outcome does. A failure to record one
+      // was the runtime's to report.
+      acknowledgement?.cancel();
+      await firstLine.drain().catch(() => undefined);
+      await human.drain();
+      // The answer is saved as the person saw it, without a line dropped from it.
+      const outcome = firstLine.settled(isOutcomeEnvelope(result) ? result.outcome : result);
       if (outcome.kind === 'completed') {
         completed = outcome;
         await this.awaitDispatched(claims, controller.signal);
       }
-      await this.commitOutcome(claims, result);
+      await this.commitOutcome(
+        claims,
+        isOutcomeEnvelope(result) ? { ...result, outcome } : outcome,
+      );
     } catch (error) {
-      if (
+      // Whatever ends the attempt, the words already said are kept as shown.
+      await human.drain().catch(() => undefined);
+      if (controller.signal.reason instanceof RunawayReply) {
+        await this.endRunaway(claims, controller.signal.reason, controller.signal);
+      } else if (
         completed &&
         error instanceof ServiceError &&
         error.code === 'actions_not_terminal' &&
         !controller.signal.aborted
       ) {
-        // The work is done and its answer written; what it started is still
-        // out. Running the turn again would do every step a second time, so
-        // the turn rests on its answer until that action reports back.
-        // The person is asked what to do about it, with answers to press.
-        const draft = completed.summary;
-        const asked = namingSteps(
-          STILL_RUNNING_NOTE,
-          await this.jobs.transaction((tx) => this.openSteps(tx, claims.attempt_id)),
-        );
-        await this.commitOutcome(claims, {
-          outcome: {
-            kind: 'waiting_for_input',
-            question: asked,
-            ...(draft.trim() ? { draft } : {}),
-          },
-          questions: [unsettledQuestion(claims.attempt_id, asked)],
-        }).catch(async (failure: unknown) => {
-          await this.loseAttempt(
-            claims.attempt_id,
-            failure instanceof Error ? failure.message : 'runtime_crashed',
-          );
-        });
+        await this.restOnOpenSteps(claims, completed.summary);
       } else if (error instanceof AttemptBudgetExceeded) {
         await this.commitOutcome(claims, {
           kind: 'budget_exhausted',
@@ -2098,6 +2474,9 @@ export class AttemptRunner {
     } finally {
       clearInterval(heartbeat);
       if (timeout) clearTimeout(timeout);
+      acknowledgement?.cancel();
+      if (claim.turn) turnEnded(claims.attempt_id);
+      skillsDone(claims.attempt_id);
       controller.signal.removeEventListener('abort', abortListener);
       if (this.active.get(claims.attempt_id)?.controller === controller)
         this.active.delete(claims.attempt_id);
@@ -2111,6 +2490,195 @@ export class AttemptRunner {
       }
       finished();
     }
+  }
+
+  /** Whether this attempt's turn may get an acknowledgement: it is on, and the person wrote something new. */
+  private acknowledges(bundle: ResponsibilityAttemptBundle): boolean {
+    const options = this.options.acknowledge;
+    const message = [...bundle.inputs.new_user_messages]
+      .reverse()
+      .find((entry) => entry.role === 'user');
+    return Boolean(options && options.afterMs > 0 && message?.content.trim());
+  }
+
+  /**
+   * The work is done and its answer written; what it started is still out.
+   * Running the turn again would do every step a second time, so the turn
+   * rests on its answer until that action reports back. The person is asked
+   * what to do about it, with answers to press.
+   */
+  private async restOnOpenSteps(claims: CapabilityClaims, draft: string): Promise<void> {
+    const asked = namingSteps(
+      STILL_RUNNING_NOTE,
+      await this.jobs.transaction((tx) => this.openSteps(tx, claims.attempt_id)),
+    );
+    await this.commitOutcome(claims, {
+      outcome: {
+        kind: 'waiting_for_input',
+        question: asked,
+        ...(draft.trim() ? { draft } : {}),
+      },
+      questions: [unsettledQuestion(claims.attempt_id, asked)],
+    }).catch(async (failure: unknown) => {
+      await this.loseAttempt(
+        claims.attempt_id,
+        failure instanceof Error ? failure.message : 'runtime_crashed',
+      );
+    });
+  }
+
+  /**
+   * A reply that kept repeating itself ends after its first copy, with a plain
+   * line saying why, as a finished answer: the conversation waits for the
+   * person's next message, and nothing is run again. The log line says only
+   * that it happened, never the words.
+   */
+  private async endRunaway(
+    claims: CapabilityClaims,
+    loop: RunawayReply,
+    signal: AbortSignal,
+  ): Promise<void> {
+    process.stderr.write(
+      `runaway_reply_stopped job=${claims.job_id} attempt=${claims.attempt_id} copies=${loop.copies}\n`,
+    );
+    const summary = loop.kept.trim() ? `${loop.kept}\n\n${RUNAWAY_NOTE}` : RUNAWAY_NOTE;
+    await this.awaitDispatched(claims, signal);
+    try {
+      await this.commitOutcome(claims, { kind: 'completed', summary, evidence: [] });
+    } catch (error) {
+      if (error instanceof ServiceError && error.code === 'actions_not_terminal')
+        await this.restOnOpenSteps(claims, summary);
+      else if (
+        !(
+          error instanceof ServiceError && ['stale_epoch', 'revision_mismatch'].includes(error.code)
+        )
+      )
+        await this.loseAttempt(
+          claims.attempt_id,
+          error instanceof Error ? error.message : 'runtime_crashed',
+        );
+    }
+  }
+
+  /**
+   * Shows the person a one-line acknowledgement if the agent is still silent
+   * `acknowledge.afterMs` after the attempt started. The line is written from
+   * the person's new message alone, starting as the attempt does, so it is
+   * ready by the deadline; it is shown then, or as soon as it is ready after,
+   * and only while the agent has said nothing. A turn gets at most one. Once it
+   * is shown, the agent's own opening line gives way to it (`firstLine`), and
+   * the agent is told what was said, so it does not say it again. `cancel`
+   * stops it, the call included.
+   */
+  private acknowledgeLater(
+    claims: CapabilityClaims,
+    turn: ConversationTurn,
+    bundle: ResponsibilityAttemptBundle,
+    firstLine: FirstLine,
+  ): { cancel(): void } | null {
+    const options = this.options.acknowledge;
+    if (!options || !this.acknowledges(bundle)) return null;
+    const stop = new AbortController();
+    // Anything the person already heard in this turn, from any of its attempts:
+    // the agent's words, a line it said, or an earlier acknowledgement.
+    const spokeInTurn = async (tx: Transaction) => {
+      const [spoken] = await tx
+        .select({ seq: event.seq })
+        .from(event)
+        .innerJoin(attempt, eq(attempt.id, event.attemptId))
+        .where(
+          and(
+            eq(event.jobId, claims.job_id),
+            eq(attempt.turnId, turn.turnId),
+            sql`((${event.type} = 'text_delta' and btrim(${event.payload}->>'text') <> '')
+              or (${event.type} = 'notice' and ${event.payload}->>'kind' = 'experience_say'))`,
+          ),
+        )
+        .limit(1);
+      return Boolean(spoken);
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, options.afterMs);
+      stop.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+    const writing = (async () => {
+      // Only what the person wrote themselves: an attached file's text or a
+      // pasted email is someone else's words, and a line written from them
+      // would put those words in the agent's voice.
+      const own = await this.jobs.transaction(async (tx) => {
+        if (await spokeInTurn(tx)) return '';
+        const [sent] = await tx
+          .select({ payload: event.payload })
+          .from(event)
+          .where(
+            and(
+              eq(event.jobId, claims.job_id),
+              eq(event.type, 'notice'),
+              sql`${event.payload}->>'kind' = 'user_message'`,
+            ),
+          )
+          .orderBy(desc(event.seq))
+          .limit(1);
+        const payload = (sent?.payload ?? {}) as JsonObject;
+        return typeof payload.text === 'string'
+          ? personWords({ text: payload.text, pasted: payload.pasted, chosen: payload.chosen })
+          : '';
+      });
+      if (!own.trim() || stop.signal.aborted || !firstLine.silent) return null;
+      return options.writer.write({
+        spaceId: turn.spaceId,
+        conversationId: claims.job_id,
+        ...(turn.principalId ? { principalId: turn.principalId } : {}),
+        message: own.trim(),
+        signal: stop.signal,
+      });
+    })();
+    void (async () => {
+      const [said] = await Promise.all([writing, deadline]);
+      // The agent's words that came first win, even over a line already written.
+      if (!said || stop.signal.aborted || !firstLine.beginShow()) return;
+      let shown = false;
+      try {
+        shown = await this.jobs.transaction(async (tx) => {
+          const row = await this.jobs.lock(tx, claims.job_id);
+          if (!row || row.currentTurnId !== turn.turnId) return false;
+          // Only while the attempt is working: once it waits on an approval or
+          // a check, the person has a card in front of them already.
+          await requireCurrentAttempt(tx, claims);
+          // Words that reached the record while the line was written win.
+          if ((await spokeInTurn(tx)) || stop.signal.aborted) return false;
+          const added = await appendEvent(tx, {
+            jobId: row.id,
+            attemptId: claims.attempt_id,
+            type: 'notice',
+            payload: { kind: 'experience_say', text: said, acknowledgement: true },
+            dedupKey: `ack:${turn.turnId}`,
+          });
+          return Boolean(added);
+        });
+      } finally {
+        if (shown) turnAcknowledged(claims.attempt_id, said);
+        // What the agent said meanwhile goes out now: held behind the line
+        // when it was shown, as it came when it was not.
+        void firstLine.endShow(shown).catch(() => undefined);
+      }
+    })().catch((error: unknown) => {
+      // An acknowledgement that could not be shown is no loss: the agent's
+      // own words follow, and the attempt goes on regardless. An attempt
+      // that has already ended is the expected case and is not reported.
+      if (error instanceof ServiceError) return;
+      process.stderr.write(
+        `acknowledgement not shown for ${claims.attempt_id}: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+      );
+    });
+    return {
+      cancel() {
+        clearTimeout(timer);
+        firstLine.cancel();
+        stop.abort();
+      },
+    };
   }
 
   /** How this attempt's answer text joins the turn's, for its first piece only. */

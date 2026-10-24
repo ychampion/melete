@@ -72,6 +72,7 @@ import {
   accountSignInRequest,
   accountSignInStart,
   accountSignInStatus,
+  composioAppSearchResponse,
   connectionCheckResponse,
   connectionKindListResponse,
   connectionListResponse,
@@ -199,6 +200,7 @@ import {
   testModelConnectionResponse,
 } from './model-settings.ts';
 import { operatorPaths } from './operator-openapi.ts';
+import { pagesPaths } from './pages-openapi.ts';
 import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
   accountAdminResponse,
@@ -329,6 +331,8 @@ import {
   sandboxComputerQuery,
   sandboxControlRequest,
   sandboxControlResponse,
+  sandboxViewerRequest,
+  sandboxViewerResponse,
 } from './sandbox-computer.ts';
 import {
   savedSignIn,
@@ -356,6 +360,7 @@ import {
 import { needsYouItemResponse, needsYouList } from './triage.ts';
 import { healthDetailResponse, myUsageResponse, usageResponse } from './usage.ts';
 import {
+  callSession,
   voiceAside,
   voiceAsideRequest,
   voiceContextQuery,
@@ -1432,6 +1437,9 @@ export function buildOpenApiDocument() {
         { name: 'actions' },
         { name: 'artifacts' },
         { name: 'apps' },
+        { name: 'pages' },
+        { name: 'identity' },
+        { name: 'entitlements' },
         { name: 'approvals' },
         { name: 'connections' },
         { name: 'devices' },
@@ -2678,11 +2686,19 @@ export function buildOpenApiDocument() {
               'creating the account and signing in. `needed` is true until an owner exists. ' +
               '`multiplayer` says whether rooms, shared spaces, guests and hand-offs are ' +
               'switched on (`MELETE_PREVIEW_MULTIPLAYER`); off, their routes answer 404 ' +
-              '`not_available`. `code_required` says whether setup needs the one-time setup ' +
+              '`not_available`. `features` names each feature an operator can turn on or off ' +
+              '(`MELETE_FEATURE_<NAME>=on|off`) and whether it is on for whoever is asking: ' +
+              'the installation’s value, narrowed by the signed-in person’s own. A feature ' +
+              'that is off has its routes answer 404 `not_available`. ' +
+              '`code_required` says whether setup needs the one-time setup ' +
               'code: when one is configured or issued, and also when none exists but ' +
               '`MELETE_PUBLIC_URL` or `MELETE_WEB_ORIGIN` names another machine and ' +
               '`MELETE_SETUP_OPEN` is not true. `email_sign_in` says whether this installation ' +
-              'can email sign-in and password reset links.',
+              'can email sign-in and password reset links. `signin` says whether passwords ' +
+              'sign in here and names the identity provider’s button, when there is one. ' +
+              '`instance_name` and `assistant_name` ' +
+              'are what the installation and its assistant are called (`MELETE_INSTANCE_NAME`, ' +
+              '`MELETE_ASSISTANT_NAME`), both Melete unless set.',
             responses: {
               '200': jsonResponse('Whether setup is needed', setupStatusResponse),
               '503': problem('No database is configured'),
@@ -2713,6 +2729,64 @@ export function buildOpenApiDocument() {
               '409': problem('The owner is already set up'),
               '429': rateLimited('Too many setup attempts from this address'),
               '503': problem('No database is configured'),
+            },
+          },
+        },
+
+        '/signin/oidc/start': {
+          get: {
+            tags: ['account'],
+            summary: 'Begin signing in with the installation’s identity provider',
+            description:
+              'Opened by the browser, not fetched. Sends it to the OpenID Connect provider ' +
+              '(`MELETE_OIDC_ISSUER`) with PKCE, a state and a nonce, which a sealed ' +
+              'melete_oidc cookie keeps for ten minutes. `return` is a path in the app to ' +
+              'land on afterwards; anything else lands on the home screen.',
+            requestParams: { query: z.object({ return: z.string().max(512).optional() }) },
+            responses: {
+              '302': redirect('To the identity provider, or back to sign-in with signin_error'),
+              '404': problem('No identity provider is set up'),
+            },
+          },
+        },
+
+        '/signin/oidc/callback': {
+          get: {
+            tags: ['account'],
+            summary: 'Where the identity provider sends the browser back',
+            description:
+              'Checks the state against the cookie and spends it, exchanges the code, and ' +
+              'verifies the ID token against the provider’s keys (issuer, audience, expiry, ' +
+              'nonce, and a verified email). Signs in the account linked to the provider ' +
+              'account or holding that email; with `MELETE_OIDC_ACCOUNTS=create` it makes one. ' +
+              'A disabled account, a missing `MELETE_OIDC_REQUIRE_CLAIM` claim or any failed ' +
+              'check returns to the sign-in page with `signin_error`.',
+            responses: {
+              '302': redirect('Into the app, signed in, or back to sign-in with signin_error'),
+              '404': problem('No identity provider is set up'),
+              '503': problem('No database is configured'),
+            },
+          },
+        },
+
+        '/signin/oidc/logout': {
+          post: {
+            tags: ['account'],
+            summary: 'OpenID Connect back-channel logout',
+            description:
+              'Called by the identity provider with a signed `logout_token`. Ends every browser ' +
+              'session of the account linked to its subject.',
+            requestBody: {
+              content: {
+                'application/x-www-form-urlencoded': {
+                  schema: z.object({ logout_token: z.string() }),
+                },
+              },
+            },
+            responses: {
+              '200': { description: 'The sessions have ended, or there were none' },
+              '400': { description: 'The logout token was refused' },
+              '404': problem('No identity provider is set up'),
             },
           },
         },
@@ -3241,22 +3315,62 @@ export function buildOpenApiDocument() {
         '/managed-sign-ins': {
           post: {
             tags: ['connections'],
-            summary: 'Start connecting Google through Composio',
+            summary: 'Start connecting Google, or another app, through Composio',
             description:
-              "Offered when the operator has set a Composio key. Composio's own Google app asks for " +
+              "Offered when the operator has set a Composio key. Composio's own app asks for " +
               'consent and keeps the tokens; Melete keeps which Composio account each connection acts ' +
-              'for. One sign-in connects Gmail and Google Calendar, one consent page each; with ' +
+              'for. A Google sign-in connects Gmail and Google Calendar, one consent page each; with ' +
               '`documents`, Google Drive alone. Each account comes back as connections with the same ' +
               'tools, approvals and receipts as a native Google sign-in. An address already ' +
               'connected in the space through Composio is refused; one connected natively moves to ' +
-              'Composio and keeps its connection.',
+              'Composio and keeps its connection. With `provider: app` and a `toolkit`, any app ' +
+              'Composio signs in to is connected, and the agent finds and runs its tools there. A ' +
+              "sign-in makes an account at Composio, so it is refused while the operator's limit on " +
+              'connected accounts is reached.',
             requestBody: json(managedSignInRequest),
             responses: {
               '201': jsonResponse('Open `authorize_url` in the browser', managedSignInStart),
-              '400': problem('Invalid request'),
+              '400': problem('Invalid request, or an app that cannot be connected here'),
               '403': problem('Space owner and matching audience required'),
-              '409': problem('No Composio key, no public address to return to, or no master key'),
+              '409': problem(
+                'No Composio key, no public address to return to, no master key, or a limit reached',
+              ),
               '502': problem('Composio did not answer'),
+            },
+          },
+        },
+
+        '/composio/apps': {
+          get: {
+            tags: ['connections'],
+            summary: 'Search the apps that can be connected through Composio',
+            description:
+              'Searches every app Composio offers and answers with those it signs in to itself, or ' +
+              'that the operator set an auth config for. Answers are kept for ten minutes. Without a ' +
+              'Composio key, 409.',
+            requestParams: { query: z.object({ query: z.string().max(60) }) },
+            responses: {
+              '200': jsonResponse('Apps matching the search', composioAppSearchResponse),
+              '409': problem('No Composio key'),
+              '502': problem('Composio did not answer'),
+            },
+          },
+        },
+
+        '/composio/events': {
+          post: {
+            tags: ['connections'],
+            summary: "Composio's trigger deliveries",
+            description:
+              'Set as the webhook address in Composio, with its signing secret as ' +
+              '`COMPOSIO_WEBHOOK_SECRET`. Each delivery is checked against its signature, counted ' +
+              'toward the trigger-event limit, and makes the account it names be read now. Without ' +
+              'the secret, 404.',
+            security: [],
+            responses: {
+              '204': { description: 'Taken' },
+              '401': problem('The signature is missing, wrong or too old'),
+              '404': problem('Triggers are not set up here'),
             },
           },
         },
@@ -3940,6 +4054,31 @@ export function buildOpenApiDocument() {
               '403': problem('Request origin refused'),
               '404': problem('No such computer'),
               '409': problem('Control could not change'),
+            },
+          },
+        },
+        '/sandbox/sessions/{id}/viewer': {
+          post: {
+            tags: ['sandbox'],
+            summary: "A short-lived link to the desktop's own viewer",
+            description:
+              'For a computer whose `view` is `link`. `watch` may be asked while the agent ' +
+              'drives; `control` only while the person holds control, after takeover. The link ' +
+              'is minted on each call, answered with no-store, and never recorded: it is a ' +
+              'credential for that computer until `expires_at`. A new control link ends the ' +
+              'one before it, and handing the computer back ends them all, even one still open in a tab.',
+            requestParams: idParam('id', 'Sandbox session id from GET /sandbox/computers'),
+            requestBody: {
+              required: true,
+              content: { 'application/json': { schema: sandboxViewerRequest } },
+            },
+            responses: {
+              '200': jsonResponse('The viewer link', sandboxViewerResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such computer'),
+              '409': problem('Take over first, or this computer is shown in the live view'),
+              '429': problem('Too many links asked for at once'),
             },
           },
         },
@@ -4646,8 +4785,9 @@ export function buildOpenApiDocument() {
             tags: ['voice'],
             summary: 'Which voice features this installation has',
             description:
-              'Both are false until the operator sets a speech provider key. Push-to-talk needs a ' +
-              'provider that transcribes; voice mode needs ElevenLabs. Given a conversation, or the ' +
+              'All are false until the operator sets a speech provider key. Push-to-talk needs a ' +
+              'provider that transcribes; voice mode needs ElevenLabs; a call needs ElevenLabs and ' +
+              'a public https:// address. Given a conversation, or the ' +
               'agent a new chat will have, `off_reason` says why voice is off there: the space or ' +
               'agent is marked private, or the conversation is about a sensitive topic.',
             requestParams: { query: voiceContextQuery },
@@ -4748,8 +4888,30 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/conversations/{id}/call': {
+          post: {
+            tags: ['voice'],
+            summary: 'Start a call with the conversation’s agent',
+            description:
+              'Answers with a token for the speech service, good for one call and for a few ' +
+              'minutes; the provider key never reaches the browser. On the call the speech ' +
+              'service listens, takes turns and speaks; the agent is the conversation’s own, ' +
+              'with its tools, memory and approvals. Each thing said becomes a message in the ' +
+              'conversation, as if typed, and the answer is read aloud as it is written. ' +
+              'Hanging up ends only the call: work it started goes on.',
+            requestParams: idParam('id', 'Conversation id'),
+            responses: {
+              '201': jsonResponse('Start the call with `token`', callSession),
+              '403': problem('Voice is off in a private space, agent or sensitive conversation'),
+              '404': problem('No such conversation, or calls are not set up'),
+              '429': problem('The person’s call minutes for this month are used up'),
+              '502': problem('The speech provider could not start a call'),
+            },
+          },
+        },
         ...devicePaths(),
         ...appsPaths(),
+        ...pagesPaths(),
         ...processPreviewPaths(),
         ...operatorPaths(),
         '/sign-ins': {

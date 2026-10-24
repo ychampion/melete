@@ -40,7 +40,15 @@
 #    is configured here without the capability and handed to the launcher,
 #    which loads the engine, takes the attempt over its port, and runs this same
 #    program again before the engine serves (see process_launcher.py).
+#
+# 6. What the engine and the code it runs make under /work keeps the group's
+#    write bit. The job's workspace belongs to the service, which shares this
+#    group and has to move and remove what is in it. A folder made under the
+#    usual umask 022 (mode 755) cannot be moved to another directory by the
+#    service, nor its files removed. Every process the engine starts inherits
+#    this umask.
 set -eu
+umask 002
 
 : "${HERMES_HOME:?HERMES_HOME must be set}"
 SPARE="${MELETE_RUNTIME_SPARE:-}"
@@ -54,8 +62,15 @@ rm -rf "$HERMES_HOME/plugins/melete"
 # Timestamps kept, so the bytecode compiled into the image still matches.
 cp -R --preserve=timestamps /opt/melete-runtime/melete_plugin "$HERMES_HOME/plugins/melete"
 # Melete's identity is the engine's identity slot. Written on every start, so
-# the engine never seeds its own stock persona into a fresh home.
-cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"
+# the engine never seeds its own stock persona into a fresh home. The service
+# passes the installation's own (its assistant's name, or its identity file)
+# as MELETE_ENGINE_SOUL, base64; without it the release's copy is used.
+if [ -n "${MELETE_ENGINE_SOUL:-}" ]; then
+  python -c 'import base64, os, sys; open(sys.argv[1], "wb").write(base64.b64decode(os.environ["MELETE_ENGINE_SOUL"], validate=True))' "$HERMES_HOME/SOUL.md"
+else
+  cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"
+fi
+unset MELETE_ENGINE_SOUL
 
 BOOT_CONFIG=$(cat <<'PY'
 import os, sys, yaml
@@ -142,6 +157,13 @@ PY
 )
 
 python -c "$BOOT_CONFIG" "$HERMES_HOME/config.yaml"
+
+# /work is shared with the service through a setgid group. What the engine and
+# the commands it runs make there is group-writable, so the service can move a
+# file the agent made into the person's Files. Without that group, the umask stands.
+if [ -g "${MELETE_WORK_DIR:-/work}" ]; then
+  umask 002
+fi
 
 if [ "$SPARE" = 1 ]; then
   export MELETE_BOOT_CONFIG="$BOOT_CONFIG" MELETE_RUNTIME_HANDOFF=http

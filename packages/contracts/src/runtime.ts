@@ -13,6 +13,7 @@ import { executionMode } from './execution.ts';
 import { hookCaptureErrorCode, hookObservation } from './hooks.ts';
 import { claimHandle, memoryKey, originTrust } from './memory.ts';
 import { repairBrief } from './provenance.ts';
+import { replyVoice } from './reply-voice.ts';
 
 export const runtimeCapabilities = z.object({
   streaming: z.boolean(),
@@ -382,10 +383,33 @@ export const attemptBundle = z.object({
      */
     cancelled_wait: waitSpec.optional(),
     /**
+     * True when `cancelled_wait` is a conversation's reminder the person
+     * cancelled from another conversation: it comes back still cancelled and
+     * does not fire unless run.resume turns it back on.
+     */
+    cancelled_wait_held: z.boolean().optional(),
+    /**
      * What a correction broke and where. Each brief names the handle that moved,
      * the value before and after, and the outputs that cited the old revision.
      */
     repair_briefs: z.array(repairBrief).default([]),
+    /**
+     * What earlier attempts of this same conversation turn already said to the
+     * person, which reached them however those attempts ended. An attempt that
+     * runs the turn again carries on from it instead of answering a second
+     * time. Optional, so an older producer still parses.
+     */
+    said_this_turn: z.string().max(8000).optional(),
+    /**
+     * Set when this turn's message answers a question an earlier turn ended
+     * on: that question, and what the earlier turn already said to the
+     * person, which they still have. The attempt replies to the answer
+     * instead of sending those words again. Optional, so an older producer
+     * still parses.
+     */
+    answered_question: z
+      .object({ question: z.string().max(2000), said: z.string().max(8000) })
+      .optional(),
   }),
   /**
    * What has happened since the last attempt, from durable rows. Additive: a
@@ -431,6 +455,11 @@ export const attemptBundle = z.object({
    * line has no tool of its own). Additive: a producer that omits it names none.
    */
   connected_accounts: z.array(z.string().min(1).max(300)).max(20).optional(),
+  /**
+   * The voice the person picked for replies and drafts. Additive: a producer
+   * that omits it gets the default voice.
+   */
+  voice: replyVoice.optional(),
   knowledge: z.array(knowledgeExcerpt),
   workspace: z.object({
     mount: z.literal('/work'),
