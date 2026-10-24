@@ -535,7 +535,7 @@ export class ExperienceEvents {
       const changed = work.filter(({ raw, projectable }) => raw && projectable).length;
       // Concurrent conversations share the next wake's short collection
       // window. A lone conversation keeps its original streaming cadence.
-      if (changed) this.readGap = EXPERIENCE_READ_GAP_MS * (changed > 1 ? 3 : 1);
+      if (changed) this.readGap = EXPERIENCE_READ_GAP_MS * (changed > 1 ? 4 : 1);
       // Only once the conversations are known, so a failed look is tried again.
       this.through = through;
       for (const { id, spaceId, principalId, raw, projectable } of work) {
