@@ -2392,6 +2392,9 @@ export class AttemptRunner {
       acknowledgement?.cancel();
       await firstLine.drain().catch(() => undefined);
       await human.drain();
+      // Words held until now can be the ones that show a loop: the reply is
+      // still cut back to its first copy, as one seen while it streamed is.
+      if (controller.signal.reason instanceof RunawayReply) throw controller.signal.reason;
       // The answer is saved as the person saw it, without a line dropped from it.
       const outcome = firstLine.settled(isOutcomeEnvelope(result) ? result.outcome : result);
       if (outcome.kind === 'completed') {
