@@ -99,7 +99,12 @@ import {
 import { useEffectsPool } from './connectors/secrets.ts';
 import type { CallVoice } from './connectors/speech-engine.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
-import { type Database, openDatabase, pingDatabase } from './db/client.ts';
+import {
+  type Database,
+  IDLE_IN_TRANSACTION_TIMEOUT_MS,
+  openDatabase,
+  pingDatabase,
+} from './db/client.ts';
 import { assertMigrated, migrateDatabase } from './db/migrate.ts';
 import { checkRoles } from './db/roles.ts';
 import { owner } from './db/schema.ts';
@@ -287,6 +292,8 @@ const TEST_CONNECTOR_SCOPES = ['test.send', 'test.read'];
 export type AppDeps = {
   env: Env;
   db: Database | null;
+  /** Connections for lock-free reads (DatabaseHandle.reader); left out, they use db. */
+  reader?: Database;
   /** Long work in the background; built from `jobs` when left out. */
   runs?: RunService;
   loginThrottle?: LoginThrottle;
@@ -747,6 +754,7 @@ export function createApp(deps: AppDeps) {
     deps.db &&
     mountExperience(app, {
       db: deps.db,
+      ...(deps.reader ? { reader: deps.reader } : {}),
       jobs: deps.jobs,
       submissions,
       runner: deps.runner,
@@ -1038,7 +1046,14 @@ export async function bootstrap(
   const docker = dockerEndpoint(env);
   if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
     await assertDockerEngine(new DockerSocketApi(docker), endpointName(docker));
-  const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
+  const handle = env.DATABASE_URL
+    ? openDatabase(
+        env.DATABASE_URL,
+        env.MELETE_DB_POOL_MAX,
+        IDLE_IN_TRANSACTION_TIMEOUT_MS,
+        env.MELETE_DB_READ_POOL_MAX,
+      )
+    : null;
   // With separate database roles, the one role that may read the secret table
   // has a pool of its own, and only the secret store uses it.
   const effectsHandle =
@@ -2235,6 +2250,7 @@ export async function bootstrap(
     healthDetail: detail,
     ...(blobs ? { blobs: blobs.store } : {}),
     db: handle?.db ?? null,
+    ...(handle ? { reader: handle.reader } : {}),
     jobs,
     triggers,
     situations,

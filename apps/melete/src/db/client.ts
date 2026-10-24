@@ -19,8 +19,18 @@ export type Database = ReturnType<typeof drizzle<typeof schema>>;
 export type DatabaseHandle = {
   db: Database;
   sql: ReturnType<typeof postgres>;
+  /**
+   * For reads that never take the event order lock and need no transaction: a
+   * chat list, a page of messages, a live stream's next page. It has its own
+   * connections when `readers` is set, so a burst of writers queued on the lock
+   * cannot leave a reader waiting for a connection; otherwise it is `db`.
+   */
+  reader: Database;
   close: () => Promise<void>;
 };
+
+/** The service's own connections, unless `MELETE_DB_POOL_MAX` says otherwise. */
+export const POOL_MAX = 10;
 
 /**
  * How long a connection may sit inside an open transaction without sending a
@@ -54,11 +64,13 @@ export function reportClosedTransaction(error: unknown): void {
  * Open a connection pool. `max` is deliberately small: the service is one
  * process on one machine, and a large pool only hides a slow query.
  * `idleInTransactionMs` is for tests that need the limit to arrive sooner.
+ * `readers` opens that many connections apart for `reader`; 0 shares the pool.
  */
 export function openDatabase(
   url: string,
-  max = 10,
+  max = POOL_MAX,
   idleInTransactionMs = IDLE_IN_TRANSACTION_TIMEOUT_MS,
+  readers = 0,
 ): DatabaseHandle {
   // For verify-ca and verify-full, the server is checked against the URL's own host (db/tls.ts).
   const tls = verifyingTls(url);
@@ -122,11 +134,19 @@ export function openDatabase(
     },
   });
   const db = drizzle(pool, { schema });
+  // Statements only: nothing here takes the event order lock, so a read on it
+  // never waits for a holder of that lock, wherever it is sent from.
+  const reading = readers > 0 ? postgres(url, { max: readers, ...settings }) : undefined;
   return {
     db,
     sql: pool,
+    reader: reading ? drizzle(reading, { schema }) : db,
     close: async () => {
-      await Promise.all([sql.end({ timeout: 5 }), reserve?.end({ timeout: 5 })]);
+      await Promise.all([
+        sql.end({ timeout: 5 }),
+        reserve?.end({ timeout: 5 }),
+        reading?.end({ timeout: 5 }),
+      ]);
     },
   };
 }

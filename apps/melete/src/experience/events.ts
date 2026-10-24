@@ -427,6 +427,8 @@ export class ExperienceEvents {
     },
     /** Commit notifications, so a live stream reads new events when they land rather than on its next poll. */
     readonly changes?: EventChanges,
+    /** Where pages are read once projected: connections that never wait on the event order lock. */
+    readonly reader: Database = db,
   ) {}
 
   /**
@@ -1194,7 +1196,7 @@ export class ExperienceEvents {
     principalId = requestPrincipal(),
   ): Promise<ConversationProgress> {
     await this.sync(spaceId, jobId, principalId);
-    const rows = await this.db
+    const rows = await this.reader
       .select({ payload: event.payload })
       .from(event)
       .where(
@@ -1243,7 +1245,7 @@ export class ExperienceEvents {
     principalId = requestPrincipal(),
   ) {
     await this.sync(spaceId, jobId, principalId);
-    const rows = await this.db
+    const rows = await this.reader
       .select({ event })
       .from(event)
       .innerJoin(job, eq(job.id, event.jobId))
@@ -1282,7 +1284,7 @@ export class ExperienceEvents {
    */
   async cut(spaceId: string, jobId: string, principalId = requestPrincipal()): Promise<number> {
     await this.sync(spaceId, jobId, principalId);
-    const [last] = await this.db
+    const [last] = await this.reader
       .select({ seq: sql<number | null>`max(${event.seq})` })
       .from(event)
       .where(and(eq(event.jobId, jobId), sql`${event.payload}->>'kind' = 'experience'`));
@@ -1312,7 +1314,7 @@ export class ExperienceEvents {
     // The person's message is written with its turn, at the same moment, so the
     // job's own stream holds these turns' messages from there on.
     const [opened] = from
-      ? await this.db
+      ? await this.reader
           .select({ seq: sql<number | null>`min(${event.seq})` })
           .from(event)
           .where(
@@ -1328,7 +1330,7 @@ export class ExperienceEvents {
     let which = owned;
     if (newest) {
       const [first] = owned
-        ? await this.db
+        ? await this.reader
             .select({ seq: sql<number | null>`min(${event.seq})` })
             .from(event)
             .where(and(eq(event.jobId, jobId), experience, owned))
@@ -1341,7 +1343,7 @@ export class ExperienceEvents {
     }
     if (!which)
       return { events: [], events_cursor: null, last_seq: lastSeq, messages_after: messagesAfter };
-    const rows = await this.db
+    const rows = await this.reader
       .select()
       .from(event)
       .where(

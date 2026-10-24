@@ -438,6 +438,8 @@ services:
       # Engines kept loaded ahead of the next attempts (default 1), and attempts run at once (default 4).
       MELETE_ENGINE_PREWARM: ${MELETE_ENGINE_PREWARM:-}
       MELETE_ATTEMPT_CONCURRENCY: ${MELETE_ATTEMPT_CONCURRENCY:-}
+      MELETE_DB_POOL_MAX: ${MELETE_DB_POOL_MAX:-}
+      MELETE_DB_READ_POOL_MAX: ${MELETE_DB_READ_POOL_MAX:-}
       # The text-to-speech model, when an OpenAI or OpenAI-compatible key is set.
       MELETE_SPEECH_MODEL: ${MELETE_SPEECH_MODEL:-}
       MELETE_ENABLE_FAKE_PROVIDER: ${MELETE_ENABLE_FAKE_PROVIDER:-false}

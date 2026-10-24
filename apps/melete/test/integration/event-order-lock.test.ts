@@ -92,4 +92,52 @@ suite('event order lock', () => {
       }),
     40_000,
   );
+
+  test(
+    'a read on the reading connections is answered while writers fill the pool waiting on the lock',
+    () =>
+      withGuard(undefined, async () => {
+        // Two connections of its own and one kept for reads.
+        const small = openDatabase(url, 2, undefined, 1);
+        try {
+          let release!: () => void;
+          const held = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          // Someone else holds the event order lock for a while.
+          const holder = sql.begin(async (tx) => {
+            await lockEventOrderIn(tx);
+            await held;
+          });
+          await Bun.sleep(100);
+          // Writers queue on it, one pool connection each, until the pool is full.
+          const writers = [1, 2].map(() =>
+            small.sql.begin(async (tx) => {
+              await lockEventOrderIn(tx);
+            }),
+          );
+          await Bun.sleep(200);
+          const started = performance.now();
+          const [row] = await small.reader.execute<{ one: number }>('select 1 as one');
+          expect(Number(row?.one)).toBe(1);
+          // A read on the pool itself waits for a writer to finish; this one did not.
+          expect(performance.now() - started).toBeLessThan(2_000);
+          release();
+          await holder;
+          await Promise.all(writers);
+        } finally {
+          await small.close();
+        }
+      }),
+    40_000,
+  );
+
+  test('without reading connections the reader is the pool itself', async () => {
+    const shared = openDatabase(url, 2);
+    try {
+      expect(shared.reader).toBe(shared.db);
+    } finally {
+      await shared.close();
+    }
+  });
 });

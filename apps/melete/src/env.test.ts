@@ -264,6 +264,8 @@ describe('the engine limits', () => {
       'MELETE_RUNTIME_START_TIMEOUT_MS',
       'MELETE_ENGINE_PREWARM',
       'MELETE_ATTEMPT_CONCURRENCY',
+      'MELETE_DB_POOL_MAX',
+      'MELETE_DB_READ_POOL_MAX',
       'MELETE_SPEECH_MODEL',
     ];
     for (const name of names) expect(composed[name]).toBe('');
@@ -273,6 +275,16 @@ describe('the engine limits', () => {
       expect(env[name as keyof typeof env]).toEqual(defaults[name as keyof typeof defaults]);
     expect(env.MELETE_MCP_EGRESS_PORT).toBe(8789);
     expect(loadEnv({ MELETE_MCP_IDLE_MS: '60000' }).MELETE_MCP_IDLE_MS).toBe(60000);
+  });
+
+  test('the database pools are counts: ten connections of its own and four kept for reads', () => {
+    expect(loadEnv({}).MELETE_DB_POOL_MAX).toBe(10);
+    expect(loadEnv({}).MELETE_DB_READ_POOL_MAX).toBe(4);
+    expect(loadEnv({ MELETE_DB_POOL_MAX: '24' }).MELETE_DB_POOL_MAX).toBe(24);
+    // None kept apart: reads share the service's own connections.
+    expect(loadEnv({ MELETE_DB_READ_POOL_MAX: '0' }).MELETE_DB_READ_POOL_MAX).toBe(0);
+    expect(() => loadEnv({ MELETE_DB_POOL_MAX: '1' })).toThrow();
+    expect(() => loadEnv({ MELETE_DB_READ_POOL_MAX: '-1' })).toThrow();
   });
 
   test('spare engines and concurrent attempts are counts, with the old switch still read', () => {
