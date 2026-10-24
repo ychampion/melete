@@ -112,7 +112,7 @@ withCompose(`conformance 7: ${s.title}`, () => {
     before = await physical();
     const job = await createApprovalJob({
       title: 'Retract knowledge during a durable approval wait',
-      objective: `Use ${marker} as background and send the scripted test message once.`,
+      objective: `Use ${marker} as background and get the scripted test message ready. Do not send it until I approve it.`,
     });
     jobId = job.jobId;
     expect(job.spaceId).toBe(spaceId);
