@@ -64,7 +64,10 @@ export class EventWrites {
       for (const write of writes) write.resolve();
     } catch (error) {
       const rollback = this.restore(ran);
-      if (rollback || writes.length === 1) {
+      // Refused before any caller ran (a lock wait that timed out, a lost
+      // connection): each caller alone would have met the same refusal, so
+      // retrying one at a time would only repeat the wait once per caller.
+      if (rollback || writes.length === 1 || !ran.length) {
         for (const write of writes) write.reject(rollback?.error ?? error);
         return;
       }

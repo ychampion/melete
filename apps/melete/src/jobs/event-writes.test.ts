@@ -203,6 +203,31 @@ describe('runtime writes sharing a transaction', () => {
     expect(db.committed).toEqual(['next']);
   });
 
+  test('a shared batch refused before any caller ran is not retried once per caller', async () => {
+    // A lock wait that times out refuses the transaction before any operation;
+    // every caller alone would have waited and been refused the same way.
+    const db = database({
+      beforeBegin: (call) => {
+        if (call === 1) throw new Error('canceling statement due to lock timeout');
+      },
+    });
+    const writes = new EventWrites(db.transaction);
+    let ran = 0;
+    const results = await Promise.allSettled(
+      ['a', 'b', 'c'].map((value) =>
+        writes.write(async (tx) => {
+          ran++;
+          insert(tx, value);
+        }, unchanged),
+      ),
+    );
+    expect(results.map((result) => result.status)).toEqual(['rejected', 'rejected', 'rejected']);
+    expect(db.calls()).toBe(1);
+    expect(ran).toBe(0);
+    await writes.write(async (tx) => insert(tx, 'next'), unchanged);
+    expect(db.committed).toEqual(['next']);
+  });
+
   test('a large queue is bounded and preserves order across commits', async () => {
     const db = database();
     const writes = new EventWrites(db.transaction);
