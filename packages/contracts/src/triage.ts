@@ -6,8 +6,9 @@
  * `needs_you`, `fyi` or `ignore`, with a short reason. Labels are all it gives.
  * It never makes anything urgent, starts work, sends anything or acts.
  *
- * Home's "Needs you" list is built from those labels and from what Melete
- * noticed on its own, ranked so the few things that need the person come first.
+ * Home's "Needs you" list is built from those labels, from what Melete noticed
+ * on its own and from reminders that came due while the person was elsewhere,
+ * ranked so the few things that need the person come first.
  */
 import { z } from 'zod';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
@@ -26,11 +27,11 @@ export const triageUrgency = z.enum(TRIAGE_URGENCIES);
 export type TriageUrgency = z.infer<typeof triageUrgency>;
 
 /** Where an item on the list came from, which decides the routes that acknowledge it. */
-export const NEEDS_YOU_SOURCES = ['triage', 'situation'] as const;
+export const NEEDS_YOU_SOURCES = ['triage', 'situation', 'reminder'] as const;
 
 /** What an item rests on: the message or calendar entry it was read from. */
 export const needsYouBecause = z.strictObject({
-  kind: z.enum(['mail', 'calendar', 'situation']),
+  kind: z.enum(['mail', 'calendar', 'situation', 'reminder']),
   /** One line naming the source, such as "Email from Dana Kim". */
   label: z.string().max(400),
   /** The handle of the observation or record behind it: `event:<seq>`, `subject:<key>`. */
@@ -43,7 +44,10 @@ export const needsYouBecause = z.strictObject({
 export type NeedsYouBecause = z.infer<typeof needsYouBecause>;
 
 export const needsYouItem = z.strictObject({
-  /** A `tri_` id for a sorted item, a `sit_` id for something Melete noticed. */
+  /**
+   * A `tri_` id for a sorted item, a `sit_` id for something Melete noticed, a
+   * `turn_` id for a reminder that came due.
+   */
   id: z.string().min(1).max(64),
   source: z.enum(NEEDS_YOU_SOURCES),
   /** One plain sentence: what needs the person. */
@@ -62,6 +66,11 @@ export const needsYouItem = z.strictObject({
    * chat is an ordinary one: anything it would do still asks first.
    */
   chat_prompt: z.string().max(1000).nullable(),
+  /**
+   * For a reminder: the chat it came due in. Opening that chat, or
+   * `POST /conversations/{id}/seen`, takes it off the list.
+   */
+  conversation_id: z.string().min(1).max(64).optional(),
 });
 export type NeedsYouItem = z.infer<typeof needsYouItem>;
 

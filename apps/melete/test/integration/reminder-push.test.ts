@@ -304,9 +304,11 @@ const dawnZone = (() => {
     expect((await intents(who)).map((intent) => intent.kind)).toEqual(['reminder']);
   });
 
-  test('turning the kind off stops reminders too', async () => {
+  test('reminders have their own switch, on by default', async () => {
     const who = await person();
-    await push.updateSettings(who.principalId, { settled: false });
+    expect((await push.settings(who.principalId)).reminders).toBe(true);
+    const off = await push.updateSettings(who.principalId, { reminders: false });
+    expect(off).toMatchObject({ reminders: false, settled: true });
     await answered(who, {
       title: 'Airport',
       answer: 'Time to leave for the airport.',
@@ -314,5 +316,32 @@ const dawnZone = (() => {
     });
     expect(await pass(who)).toBe('nothing');
     expect(to(who)).toHaveLength(0);
+  });
+
+  test('turning chases off leaves reminders on', async () => {
+    const who = await person();
+    await push.updateSettings(who.principalId, { settled: false });
+    await answered(who, {
+      title: 'Airport',
+      answer: 'Time to leave for the airport.',
+      submission: (id) => `wake:${id}:timer:4`,
+    });
+    expect(await pass(who)).toBe('sent');
+    expect(to(who).map((entry) => entry.payload.title)).toEqual(['Airport']);
+  });
+
+  test('a reminder waiting when reminders are turned off does not go', async () => {
+    const who = await person();
+    await answered(who, {
+      title: 'Airport',
+      answer: 'Time to leave for the airport.',
+      submission: (id) => `wake:${id}:timer:4`,
+    });
+    await push.collectStatus(who.principalId, new Date(Date.now() - 60 * MINUTE), new Date());
+    await push.updateSettings(who.principalId, { reminders: false });
+    expect(await push.dispatch(who.principalId, new Date())).toBe('nothing');
+    const [held] = await intents(who);
+    expect(held).toMatchObject({ kind: 'reminder', sentAt: null });
+    expect(held?.droppedAt).not.toBeNull();
   });
 });

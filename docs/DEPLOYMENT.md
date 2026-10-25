@@ -2613,7 +2613,8 @@ Melete decides to say by itself is sent outside their day hours, in their own
 time zone, and every push says why it was sent. What the person asked for at a
 time they chose (a reminder coming due, a routine's scheduled run, the report
 from a scheduled occurrence of long work) goes at that time, whatever the hour,
-and does not count toward the daily limit.
+and does not count toward the daily limit. Reminders have their own switch
+there, on unless the person turns it off.
 
 ## Engine limits
 

@@ -12,6 +12,7 @@ import { BATCH_OPTIONS, CAP_OPTIONS, deviceLine, quietLine } from './Notificatio
 const settings: PushSettings = {
   decisions: true,
   settled: true,
+  reminders: true,
   weekly_summary: true,
   daily_cap: 4,
   batch_minutes: 10,

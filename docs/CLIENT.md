@@ -114,12 +114,19 @@ person's devices without their endpoints or keys, and
 is not found.
 
 `GET` and `PATCH /push/settings` hold what is pushed (`decisions`, `settled`,
-`weekly_summary`), the `daily_cap` and the `batch_minutes` that fold events
-arriving together into one push. `quiet_hours` is read from the profile's day
+`reminders`, `weekly_summary`), the `daily_cap` and the `batch_minutes` that
+fold events arriving together into one push. `reminders` covers what the person
+timed: a reminder, a chat's own schedule or a routine's run, sent at that time. `quiet_hours` is read from the profile's day
 hours and changes with them. A push's payload is `{ title, body, because, url,
 tag }`: show `because` with the body, and open `url` when it is tapped. The web
-app asks about pushes only after a decision is made or a chase settles, never on
-a first visit. Evidence is `apps/melete/test/integration/push.test.ts`.
+app asks about pushes only after a decision is made, a chase settles or a
+reminder comes due, never on a first visit.
+
+A chat where something the person timed came due carries `unread: true` until
+they open it. `POST /conversations/{id}/seen` clears it; the web app calls it
+when the chat is open in a window in front of the person. Until then the chat
+is listed in `GET /needs-you` as an item whose `source` is `reminder`, with the
+chat's id in `conversation_id`. Evidence is `apps/melete/test/integration/push.test.ts`.
 
 ## Reproduce the examples without a deployed service
 

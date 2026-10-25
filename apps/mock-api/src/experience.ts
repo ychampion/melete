@@ -2084,6 +2084,11 @@ export class ExperienceMock {
         return this.computer.view(required(this.chats, id).view.id);
       case 'GET /conversations/{id}/drafts':
         return { drafts: required(this.chats, id).drafts };
+      case 'POST /conversations/{id}/seen': {
+        const chat = required(this.chats, id);
+        delete chat.view.unread;
+        return { conversation: chat.view };
+      }
       case 'POST /conversations/{id}/pause':
       case 'POST /conversations/{id}/resume':
       case 'POST /conversations/{id}/stop': {

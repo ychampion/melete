@@ -69,6 +69,7 @@ import type {
   RuleBounds,
   TurnStatus,
 } from '../experience/types.ts';
+import { useSeenWhileOpen } from '../experience/unread.ts';
 import { ChatCapBanner } from '../models/Usage.tsx';
 import { NEW_CHAT_AGAIN, navigate, useRoute } from '../router.ts';
 import { RunChatCards } from '../runs/RunCards.tsx';
@@ -603,6 +604,8 @@ export function ChatScreen({ id }: { id: string | null }) {
   const fallback = asked ?? defaultAgentOf(agents);
   const state = useConversation(conversationId);
   const { conversation, transcript, setTranscript } = state;
+  // Opening the chat is seeing what came due in it.
+  useSeenWhileOpen(conversationId, conversation?.unread === true);
   // A library agent's first chat opens with its welcome. Its link names the
   // template, so the welcome stays once the chat starts and after a reload.
   const welcomeId = route.query.get('welcome');

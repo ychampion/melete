@@ -1,8 +1,10 @@
 /**
- * "Needs you": the new mail and calendar changes that need the person, and
- * what Melete noticed on its own, most pressing first. Everything shown is what
- * `GET /needs-you` returned. Each item says why (the message or meeting it
- * rests on), its urgency, and lets the person mark it seen or dismiss it.
+ * "Needs you": the new mail and calendar changes that need the person, what
+ * Melete noticed on its own, and reminders that came due while the person was
+ * elsewhere, most pressing first. Everything shown is what `GET /needs-you`
+ * returned. Each item says why (the message or meeting it rests on), its
+ * urgency, and lets the person mark it seen or dismiss it. A reminder opens its
+ * chat instead, and opening it is seeing it.
  * "Handle it" starts an ordinary chat about it, where anything Melete would do
  * still asks first. The person's message names only the item's source; the
  * source itself goes with it as an attached file, which the agent reads as
@@ -16,9 +18,11 @@ import { Button, Status } from '../design/primitives.tsx';
 import type { Result } from '../experience/adapter.ts';
 import { call } from '../experience/call.ts';
 import { clockTime, sameDay } from '../experience/clock.ts';
-import { useDecisions } from '../experience/hooks.ts';
+import { useApp, useDecisions } from '../experience/hooks.ts';
 import { pastDay } from '../experience/past-day.ts';
 import type { NeedsYou, NeedsYouItem } from '../experience/types.ts';
+import { unreadChats } from '../experience/unread.ts';
+import { href } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 
 export const needsYouApi = {
@@ -28,18 +32,24 @@ export const needsYouApi = {
     call<{ attachment: AttachmentView }>(`/needs-you/${encodeURIComponent(item.id)}/source`, {
       method: 'POST',
     }),
-  /** A sorted item is marked through its own routes; something noticed, through the situation's. */
+  /**
+   * A sorted item is marked through its own routes; something noticed, through
+   * the situation's; a reminder, by seeing its chat.
+   */
   mark: (item: NeedsYouItem, what: 'ack' | 'dismiss'): Promise<Result<unknown>> =>
-    call(
-      `/${item.source === 'situation' ? 'situations' : 'needs-you'}/${encodeURIComponent(item.id)}/${what}`,
-      { method: 'POST' },
-    ),
+    item.source === 'reminder' && item.conversation_id
+      ? call(`/conversations/${encodeURIComponent(item.conversation_id)}/seen`, { method: 'POST' })
+      : call(
+          `/${item.source === 'situation' ? 'situations' : 'needs-you'}/${encodeURIComponent(item.id)}/${what}`,
+          { method: 'POST' },
+        ),
 };
 
 const ICON: Record<NeedsYouItem['because']['kind'], IconName> = {
   mail: 'mail',
   calendar: 'calendar',
   situation: 'bell',
+  reminder: 'clock',
 };
 
 /** The urgency as a person would read it; nothing for the ordinary lane. */
@@ -81,7 +91,8 @@ export function emptyLine(waiting: number): string {
   return waiting > 0 ? 'Nothing else needs you right now.' : 'Nothing needs you right now.';
 }
 
-function Row({
+/** One item: what it is, why, and what the person can do about it. */
+export function NeedsYouRow({
   item,
   now,
   busy,
@@ -134,6 +145,15 @@ function Row({
         ) : null}
       </span>
       <span className="needs-you-actions">
+        {item.source === 'reminder' && item.conversation_id ? (
+          <a
+            className="btn btn-sm btn-outline"
+            href={href(`/chat/${item.conversation_id}`)}
+            aria-label={`Open: ${item.sentence}`}
+          >
+            <span>Open</span>
+          </a>
+        ) : null}
         {item.chat_prompt ? (
           <Button
             size="sm"
@@ -156,15 +176,18 @@ function Row({
             Seen
           </Button>
         ) : null}
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={busy}
-          aria-label={`Dismiss: ${item.sentence}`}
-          onClick={() => onMark(item, 'dismiss')}
-        >
-          Dismiss
-        </Button>
+        {/* A reminder seen is done with: there is nothing more to dismiss. */}
+        {item.source === 'reminder' ? null : (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            aria-label={`Dismiss: ${item.sentence}`}
+            onClick={() => onMark(item, 'dismiss')}
+          >
+            Dismiss
+          </Button>
+        )}
       </span>
     </li>
   );
@@ -181,19 +204,25 @@ export function NeedsYouSection({
   const [busy, setBusy] = useState<string | null>(null);
   const live = useRef(true);
   const waiting = useDecisions().count;
+  const { conversations, refreshConversations } = useApp();
+  // A reminder that comes due, or is seen elsewhere, changes the list: read it again.
+  const unread = unreadChats(conversations)
+    .map((chat) => chat.id)
+    .join(' ');
 
   const load = useCallback(async () => {
     const result = await needsYouApi.list();
     if (live.current && result.data) setView(result.data);
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a change in what is unread is the reason to read again
   useEffect(() => {
     live.current = true;
     void load();
     return () => {
       live.current = false;
     };
-  }, [load]);
+  }, [load, unread]);
 
   const mark = async (item: NeedsYouItem, what: 'ack' | 'dismiss') => {
     if (busy) return;
@@ -205,7 +234,11 @@ export function NeedsYouSection({
         title: what === 'ack' ? 'Couldn’t mark it seen' : 'Couldn’t dismiss it',
         sub: result.error ?? result.unavailable ?? '',
       });
-    } else await load();
+    } else {
+      await load();
+      // Seeing a reminder here clears its chat's mark in the sidebar too.
+      if (item.source === 'reminder') refreshConversations();
+    }
     if (live.current) setBusy(null);
   };
 
@@ -231,7 +264,7 @@ export function NeedsYouSection({
       {view.items.length ? (
         <ul className="needs-you-list">
           {view.items.map((item) => (
-            <Row
+            <NeedsYouRow
               key={item.id}
               item={item}
               now={now}

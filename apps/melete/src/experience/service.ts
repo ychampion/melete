@@ -50,6 +50,7 @@ import { answerStream } from './answer-filter.ts';
 import type { ExperienceEvents } from './events.ts';
 import type { ExperiencePermissions } from './permissions.ts';
 import { answerText, plainText, type STOPPED_NOTE, SUPERSEDED_NOTE } from './projectors.ts';
+import { cameDueUnseen, markSeen } from './unread.ts';
 import type { WorkspaceTrash } from './workspace-trash.ts';
 
 /** Turn statuses of work not yet over: an agent is not deleted under one. */
@@ -92,6 +93,8 @@ export function conversationView(
     ...(status === 'needs_you' && row.state === 'waiting_for_event_or_time' && row.nextWakeAt
       ? { waiting_until: row.nextWakeAt.toISOString() }
       : {}),
+    // Something the person timed came due here and they have not looked yet.
+    ...(cameDueUnseen(row, turn) ? { unread: true } : {}),
   });
 }
 
@@ -571,6 +574,13 @@ export class ExperienceService {
       progress && (progress.steps_done > 0 || progress.current) ? progress : undefined,
       schedule?.id,
     );
+  }
+
+  /** The person opened the chat: what came due in it is no longer unread. */
+  async seen(spaceId: string, id: string) {
+    const row = await this.requireConversation(spaceId, id);
+    await markSeen(this.db, row.id);
+    return { conversation: await this.view(row) };
   }
 
   /** The caller's chats, most recently active first, a page at a time. */
