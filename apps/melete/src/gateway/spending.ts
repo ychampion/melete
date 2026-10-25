@@ -663,6 +663,10 @@ export class SpendingGuard implements GatewaySpending {
       // Read before the transaction: inside it, a read on another connection
       // could wait for a free one while admissions hold them all.
       const limits = await this.limitsFor(scope.personId);
+      // No limit this call counts toward: nothing to judge, and nothing whose
+      // hold another call would read.
+      if (!anyLimit(limits) && !(scope.usageClass === 'background' && anyBackgroundLimit(limits)))
+        return null;
       const { reached, held } = await this.sql.begin(async (tx) => {
         await tx`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
         const found = await this.judge(scope.personId, scope.usageClass, limits, tx);
@@ -672,7 +676,10 @@ export class SpendingGuard implements GatewaySpending {
         const now = this.now();
         if (now.getTime() - this.swept >= HOLD_SWEEP_MS) {
           this.swept = now.getTime();
-          await tx`delete from spend_hold where expires_at <= ${now.toISOString()}::timestamptz`;
+          // Rows another instance is removing are left to it, so two sweeps
+          // never wait on each other.
+          await tx`delete from spend_hold where id in (select id from spend_hold
+            where expires_at <= ${now.toISOString()}::timestamptz for update skip locked)`;
         }
         const id = randomUUID();
         const usd =

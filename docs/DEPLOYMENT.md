@@ -2811,9 +2811,9 @@ it.
   all start under one. A call that ends without its usage, cut off part way,
   is counted at what it streamed, estimated. Holds are kept in Postgres
   (`spend_hold`) and every service instance admits calls under the same lock,
-  so the limits hold across instances as on one: past a limit, at most the one
-  call that crossed it finishes. A hold whose call never reports back, because
-  its instance stopped, counts for ten minutes and then lapses.
+  so the limits hold across instances as they do on one. A hold counts for ten
+  minutes: one whose call never reports back, because its instance stopped,
+  lapses then, and so does the hold of a call still streaming past that.
 - A web search past a limit is refused with the same sentence; it is not
   handed to another search backend.
 - Memory reads that meet a reached limit wait and are tried again every 30
