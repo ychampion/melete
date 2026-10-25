@@ -1,0 +1,1 @@
+ALTER TABLE "privacy_conversation" ADD COLUMN "sensitive_by_person" boolean DEFAULT true NOT NULL;
