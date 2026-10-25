@@ -510,21 +510,23 @@ describe('an engine got ready while the attempt is put together', () => {
   }
 
   test('the handoff and the engine coming up overlap the bundle being put together', async () => {
-    const after = await setup({ spares: 1, bootMs: 300, serveMs: 400 });
+    // Long enough that overlapping saves far more than a busy machine's delays:
+    // overlapped saves about 800 ms, and half of that is asked for.
+    const after = await setup({ spares: 1, bootMs: 300, serveMs: 800 });
     await after.runtime.initialize();
     after.runtime.warm(bundle().model);
     await Bun.sleep(450);
-    const sequentialMs = await firstRunAfter(after, bundle(0), 400, false);
-    const ahead = await setup({ spares: 1, bootMs: 300, serveMs: 400 });
+    const sequentialMs = await firstRunAfter(after, bundle(0), 800, false);
+    const ahead = await setup({ spares: 1, bootMs: 300, serveMs: 800 });
     await ahead.runtime.initialize();
     ahead.runtime.warm(bundle().model);
     await Bun.sleep(450);
-    const overlappedMs = await firstRunAfter(ahead, bundle(1), 400, true);
+    const overlappedMs = await firstRunAfter(ahead, bundle(1), 800, true);
     process.stdout.write(
-      `bundle 400 ms + engine 400 ms to first run: after ${sequentialMs} ms, overlapped ${overlappedMs} ms\n`,
+      `bundle 800 ms + engine 800 ms to first run: after ${sequentialMs} ms, overlapped ${overlappedMs} ms\n`,
     );
-    expect(sequentialMs).toBeGreaterThanOrEqual(800);
-    expect(overlappedMs).toBeLessThan(sequentialMs - 250);
+    expect(sequentialMs).toBeGreaterThanOrEqual(1600);
+    expect(overlappedMs).toBeLessThan(sequentialMs - 400);
     // The engine got ready is the one that ran: one handoff, to this attempt.
     const handed = ahead.engines.containers.filter((entry) => entry.handoff);
     expect(handed.map((entry) => entry.handoff?.env.MELETE_ATTEMPT_ID)).toEqual([
