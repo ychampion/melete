@@ -10,7 +10,16 @@
  * route and what was swapped, by category and placeholder name, never a value.
  * Every row goes with its space.
  */
-import { bigserial, index, integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import {
+  bigserial,
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+} from 'drizzle-orm/pg-core';
 import { space } from '../db/schema.ts';
 
 const updated = () => timestamp('updated_at', { withTimezone: true }).notNull().defaultNow();
@@ -45,6 +54,13 @@ export const privacyConversation = pgTable('privacy_conversation', {
    * not go back unless they clear it, which stores `none`.
    */
   sensitive: text('sensitive'),
+  /**
+   * Whether the person set the topic themselves. A topic they set holds
+   * whatever the privacy settings say; one found in what they wrote holds
+   * only while that topic is kept private. A row from before this was
+   * recorded counts as theirs, so it holds as it always did.
+   */
+  sensitiveByPerson: boolean('sensitive_by_person').notNull().default(true),
   /**
    * When the person last cleared it. What they write after this is still
    * read, so a later phrase about themselves marks it sensitive again.

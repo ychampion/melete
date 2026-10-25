@@ -8,6 +8,7 @@
 
 import type { AttachmentView } from '@melete/contracts/attachments';
 import { mentionedAgent } from '@melete/contracts/mention';
+import { namedOption } from '@melete/contracts/options';
 import {
   Fragment,
   useCallback,
@@ -441,10 +442,13 @@ function TurnView({
             active={latest && open?.id === block.question.id}
             onAnswer={(optionId) => onAnswer(block.question.id, optionId)}
             // A question that takes free text is answered in it; one that does
-            // not takes the words as the next message instead.
-            onOwn={(text) =>
-              block.question.free_text ? onAnswer(block.question.id, { text }) : onOwn(text)
-            }
+            // not is answered by words that name one of its answers, and takes
+            // any other words as the next message instead.
+            onOwn={(text) => {
+              if (block.question.free_text) return onAnswer(block.question.id, { text });
+              const named = namedOption(text, block.question.options);
+              return named ? onAnswer(block.question.id, named.id) : onOwn(text);
+            }}
           />
         );
       case 'autonomy':

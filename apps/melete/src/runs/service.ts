@@ -92,7 +92,7 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import { DEFAULT_BUDGET, type JobRow, type JobService } from '../jobs/service.ts';
 import { recordSteer } from '../jobs/steer.ts';
 import type { TriggerRow, TriggerService } from '../jobs/triggers.ts';
-import { ENDED_NOTE, withdrawPermissions } from '../jobs/withdraw.ts';
+import { ENDED_NOTE, withdrawOpenQuestion, withdrawPermissions } from '../jobs/withdraw.ts';
 import {
   ownJob,
   principalContext,
@@ -2924,8 +2924,11 @@ export class RunService {
       const locked = await this.jobs.lock(tx, row.id);
       if (!locked) throw missing();
       // Decided under the lock: a shift that just ended with a question gets
-      // this as its answer, not as a note it never reads.
+      // this as its answer, not as a note it never reads. The question card
+      // closes, as a chat's does when the person writes instead of choosing,
+      // so whatever the next shift asks is the one shown.
       if (locked.state === 'waiting_for_input') {
+        await withdrawOpenQuestion(tx, row.id, 'superseded_by_input');
         await this.jobs.inputInTransaction(tx, row.id, text);
         return;
       }
