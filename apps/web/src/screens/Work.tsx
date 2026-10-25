@@ -15,6 +15,7 @@ import { href, navigate } from '../router.ts';
 import { usePoll } from '../runs/poll.ts';
 import { RecordTimeline } from '../runs/Record.tsx';
 import { permissionsFor, RunPermissions } from '../runs/RunPermissions.tsx';
+import { questionOfRun, RunQuestion } from '../runs/RunQuestion.tsx';
 import { useRun } from '../runs/useRun.ts';
 import {
   ago,
@@ -478,6 +479,8 @@ function WorkDetail({ id }: { id: string }) {
   const paused = isPaused(run);
   const helpers = new Map(run.steps.map((step) => [step.id, step.title]));
   const asksOk = permissionsFor(run, decisions.permissions).length > 0;
+  // A question with answers to press is answered here, with them.
+  const asked = run.status === 'needs_you' ? questionOfRun(run, decisions.questions) : null;
 
   const act = (
     kind: 'pause' | 'stop',
@@ -606,9 +609,13 @@ function WorkDetail({ id }: { id: string }) {
               <h2 id="run-question" className="run-block-title">
                 It needs you
               </h2>
-              <p className="run-question-text voice">
-                {run.question ?? 'It’s waiting to hear from you before it carries on.'}
-              </p>
+              {asked ? (
+                <RunQuestion question={asked} onAnswered={data.reload} />
+              ) : (
+                <p className="run-question-text voice">
+                  {run.question ?? 'It’s waiting to hear from you before it carries on.'}
+                </p>
+              )}
               <RunPermissions run={run} onDecided={data.reload} />
               <MessageBox
                 label="Your reply"

@@ -299,6 +299,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const runs = deps.runs;
       if (!runs) return unavailable(RUNS_UNAVAILABLE);
       const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      // A reply that names an answer to the privacy question it waits on is that answer.
+      if (await deps.questions?.answerInWords(row.id, String(input.text)))
+        return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
       if (await runs.message(row, String(input.text)))
         // Not taken now is not lost: the run's next shift reads it.
         await deps.runner?.steer(row.id).catch((error: unknown) => {

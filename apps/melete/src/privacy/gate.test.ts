@@ -178,6 +178,78 @@ describe('asking before a private conversation leaves the machine', () => {
   });
 });
 
+describe('a topic held back follows the privacy settings as they are now', () => {
+  const ALL = ['health', 'therapy', 'finance'];
+  const topics = async (
+    { store, router }: ReturnType<typeof harness>,
+    sensitive_topics: string[],
+  ) => {
+    await store.saveSettings(SPACE, { sensitive_topics } as never, null);
+    router.invalidate(SPACE);
+  };
+
+  test('turning the topic off lets the next request go; turning it on holds it again', async () => {
+    const h = harness({});
+    const { run, started, store } = h;
+    await run(bundle(1, 'Can you go through my bank statements for last year?'));
+    expect(started).toEqual([]);
+    expect((await store.conversation(JOB)).sensitive).toBe('finance');
+    // The person did not answer; with the topic still on, nothing goes.
+    await run(bundle(2, 'Please carry on.'));
+    expect(started).toEqual([]);
+
+    await topics(h, ['health', 'therapy']);
+    await run(bundle(3, 'Please carry on and finish the brief.'));
+    expect(started).toEqual([attemptId(3)]);
+    // A request in the same conversation leaves for the cloud model as an ordinary one.
+    expect(await h.router.refusesServiceRead(JOB, { protocol: 'chat/completions' })).toBe(false);
+
+    await topics(h, ALL);
+    const held = await run(bundle(4, 'And one more thing.'));
+    expect(started).toEqual([attemptId(3)]);
+    expect((held as { questions: unknown[] }).questions).toHaveLength(1);
+  });
+
+  test('another topic found while the first is off is kept, and an earlier yes no longer stands', async () => {
+    const h = harness({});
+    const { run, started, store } = h;
+    await run(bundle(1, 'Can you go through my bank statements for last year?'));
+    store.answers.set(attemptId(1), SEND_REDACTED);
+    await run(bundle(2, 'go on'));
+    expect(started).toEqual([attemptId(2)]);
+    expect((await store.conversation(JOB)).consent).toBe('allowed');
+
+    await topics(h, ['health', 'therapy']);
+    const asked = await run(bundle(3, 'My therapist says I should track my spending.'));
+    expect(started).toEqual([attemptId(2)]);
+    expect((asked as { outcome: { question: string } }).outcome.question).toContain(
+      'therapy or mental health',
+    );
+    expect(await store.conversation(JOB)).toMatchObject({ sensitive: 'therapy', consent: null });
+    // Read again on the next request without the words that found it, it still holds.
+    await run(bundle(4, 'ok'));
+    expect(started).toEqual([attemptId(2)]);
+  });
+
+  test('a reply that chooses neither answer is asked again, and the question says so', async () => {
+    const { run, started, store } = harness({});
+    const first = await run(bundle(1, 'Can you go through my bank statements for last year?'));
+    const firstText = (first as { outcome: { question: string } }).outcome.question;
+    expect(firstText).not.toContain('Your last reply');
+    // The reply moved the conversation on without choosing: the question has no answer.
+    const again = await run(bundle(2, 'Yes, that’s fine. It’s just a shopping question.'));
+    expect(started).toEqual([]);
+    const text = (again as { outcome: { question: string } }).outcome.question;
+    expect(text).toStartWith(
+      `Your last reply did not choose “${SEND_REDACTED}” or “${KEEP_PRIVATE}”.`,
+    );
+    expect(again).toMatchObject({
+      questions: [{ text, options: [{ label: SEND_REDACTED }, { label: KEEP_PRIVATE }] }],
+    });
+    expect((await store.conversation(JOB)).consent).toBeNull();
+  });
+});
+
 describe('the broker resolves placeholders a payload still carries', () => {
   const KEY = 'k'.repeat(40);
   const token = signCapability(

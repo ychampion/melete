@@ -50,6 +50,7 @@ import {
   resolveSettings,
   type Scope,
   type ScreenshotSource,
+  type ConversationState as StoredConversation,
   sameAddress,
 } from './store.ts';
 import { Rehydrator } from './stream.ts';
@@ -216,7 +217,7 @@ export class PrivacyRouter {
     const conversation = scope.conversationId
       ? await this.store.conversation(scope.conversationId, tx)
       : null;
-    if (conversation?.sensitive) return SEARCH_KEPT_PRIVATE;
+    if (activeTopic(conversation, settings)) return SEARCH_KEPT_PRIVATE;
     // The person said this conversation is not sensitive; the query is not read for a topic.
     if (!conversation?.cleared && classifyParts([query], settings.topics, this.topics))
       return SEARCH_KEPT_TOPIC;
@@ -527,11 +528,19 @@ export class PrivacyRouter {
     const conversation = scope.conversationId
       ? await this.store.conversation(scope.conversationId)
       : null;
-    let sensitive = conversation?.sensitive ?? null;
+    let sensitive = activeTopic(conversation, settings);
+    // A topic marked anew withdraws an answer given about the old one.
+    let consent = conversation?.consent ?? null;
     if (!sensitive && !conversation?.cleared) {
       sensitive = classifyParts(person, settings.topics, this.topics);
-      if (remember && sensitive && scope.conversationId && scope.spaceId)
-        await this.store.updateConversation(scope.conversationId, scope.spaceId, { sensitive });
+      if (
+        remember &&
+        sensitive &&
+        scope.conversationId &&
+        scope.spaceId &&
+        (await this.keepTopic(scope.conversationId, scope.spaceId, conversation, sensitive))
+      )
+        consent = null;
     } else if (!sensitive && conversation?.clearedAt && remember) {
       const clearedAt = Date.parse(conversation.clearedAt);
       sensitive = classifyStrong(
@@ -540,14 +549,16 @@ export class PrivacyRouter {
           .map((message) => message.content),
         settings.topics,
       );
-      if (sensitive && scope.conversationId && scope.spaceId)
+      if (sensitive && scope.conversationId && scope.spaceId) {
         await this.store.markConversation(scope.conversationId, scope.spaceId, sensitive);
+        consent = null;
+      }
     }
     const agentPrivate = scope.agentId !== null && settings.privateAgents.has(scope.agentId);
     return {
       private: settings.privateSpace || agentPrivate || sensitive !== null,
       sensitive,
-      consent: conversation?.consent ?? null,
+      consent,
     };
   }
 
@@ -627,7 +638,7 @@ export class PrivacyRouter {
     const isPrivate =
       settings.privateSpace ||
       (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) ||
-      !!conversation?.sensitive;
+      activeTopic(conversation, settings) !== null;
     return isPrivate && (await this.readyLocal(settings, engine.protocol)) !== null;
   }
 
@@ -647,7 +658,7 @@ export class PrivacyRouter {
     const conversation = scope.conversationId
       ? await this.store.conversation(scope.conversationId)
       : null;
-    if (conversation?.sensitive) return false;
+    if (activeTopic(conversation, settings)) return false;
     // The person said this conversation is not sensitive: it is not read for a topic.
     return !text || Boolean(conversation?.cleared) || classify(text, settings.topics) === null;
   }
@@ -678,12 +689,33 @@ export class PrivacyRouter {
     const conversation = scope.conversationId
       ? await this.store.conversation(scope.conversationId)
       : null;
-    if (conversation?.sensitive) return conversation.sensitive;
+    const kept = activeTopic(conversation, settings);
+    if (kept) return kept;
     if (conversation?.cleared) return null;
     const sensitive = classify(text, settings.topics);
     if (sensitive && scope.conversationId)
-      await this.store.updateConversation(scope.conversationId, scope.spaceId, { sensitive });
+      await this.keepTopic(scope.conversationId, scope.spaceId, conversation, sensitive);
     return sensitive;
+  }
+
+  /**
+   * Keep a topic just found on the conversation. One found before, under a
+   * topic the person has since turned off, is replaced, and an answer given
+   * about it is withdrawn: the store keeps the first topic it is told, and
+   * the old one no longer holds anything back. True when it was replaced.
+   */
+  private async keepTopic(
+    conversationId: string,
+    spaceId: string,
+    conversation: StoredConversation | null,
+    sensitive: SensitiveTopic,
+  ): Promise<boolean> {
+    if (conversation?.sensitive && conversation.sensitive !== sensitive) {
+      await this.store.markConversation(conversationId, spaceId, sensitive);
+      return true;
+    }
+    await this.store.updateConversation(conversationId, spaceId, { sensitive });
+    return false;
   }
 
   private async log(scope: Scope, receipt: PrivacyReceipt) {
@@ -736,8 +768,11 @@ export class PrivacyRouter {
       !!local && engineProtocol === 'chat/completions' && (await this.isLocal(local.baseUrl));
     if (localReady || decision.consent === 'allowed') return { proceed: true };
     const conversation = await this.store.conversation(scope.conversationId);
+    // Asked before, and the person wrote again without choosing either answer.
+    let unanswered = false;
     if (conversation.askedAttemptId) {
       const answer = await this.store.answer(conversation.askedAttemptId);
+      unanswered = answer === null;
       if (answer === SEND_REDACTED) {
         await this.store.updateConversation(scope.conversationId, scope.spaceId, {
           consent: 'allowed',
@@ -769,7 +804,12 @@ export class PrivacyRouter {
         ? 'Your local model is not answering at the address in Settings → Privacy'
         : 'Your local model cannot take this kind of request'
       : 'There is no local model set up in Settings → Privacy';
-    const text = `${why} ${missing}, so Melete has not sent anything. It can send a redacted version to the cloud model instead: account and card numbers, IDs, contact details, keys and the details you listed are swapped for placeholders, but the rest of the text goes as written.`;
+    // Said again in the same words, the question reads as if the reply was
+    // never seen: it says the reply chose neither answer, and names them.
+    const again = unanswered
+      ? `Your last reply did not choose “${SEND_REDACTED}” or “${KEEP_PRIVATE}”. `
+      : '';
+    const text = `${again}${why} ${missing}, so Melete has not sent anything. It can send a redacted version to the cloud model instead: account and card numbers, IDs, contact details, keys and the details you listed are swapped for placeholders, but the rest of the text goes as written.`;
     return {
       proceed: false,
       text,
@@ -921,6 +961,20 @@ export class PrivacyRouter {
 
 /** Why a message is private, as memory records it on what it learns. */
 export type PrivateOrigin = 'space' | 'agent' | SensitiveTopic;
+
+/**
+ * The topic a conversation was found to be about, while the person still
+ * keeps that topic private. Once they turn it off in Settings it holds
+ * nothing back, and what they write is judged again under the settings as
+ * they are now; turned on again, it holds again.
+ */
+function activeTopic(
+  conversation: Pick<StoredConversation, 'sensitive'> | null,
+  settings: Pick<ResolvedSettings, 'topics'>,
+): SensitiveTopic | null {
+  const topic = conversation?.sensitive ?? null;
+  return topic && settings.topics.includes(topic) ? topic : null;
+}
 
 /** Private memory as values the redactor swaps, in both its plain and JSON-escaped spelling. */
 function memoryValues(contents: string[]): KnownValue[] {

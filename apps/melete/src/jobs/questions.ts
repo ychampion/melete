@@ -10,6 +10,7 @@ import {
   deferredQuestion,
   isTerminal,
   type JobState,
+  namedOption,
   type OwnerQuestion,
   ownerQuestion,
   type QuestionSpecInput,
@@ -597,13 +598,14 @@ export class QuestionService {
    */
   private async decidePrivacy(
     current: { row: QuestionRow; view: OwnerQuestion },
-    text: string,
+    reply: string,
   ): Promise<AnswerResult> {
     const key = answerKey(current.row.id);
     if (current.row.state === 'answered' && current.row.answerSubmissionId === key)
       return { question: current.view, job: null, receipt: null, status: 200 };
-    if (!current.row.options.some((option) => option.label === text))
-      throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
+    // The option's own label is what is recorded, however the person typed it.
+    const text = namedOption(reply, current.row.options)?.label;
+    if (!text) throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
     const jobId = current.row.jobId ?? '';
     const heldAttempt = current.row.attemptId ?? '';
     const resumed = await this.jobs.transaction(async (tx) => {
@@ -849,6 +851,29 @@ export class QuestionService {
     });
     const after = await this.read(current.row.id);
     return { question: after.view, job: held, receipt: null, status: 200 };
+  }
+
+  /**
+   * A reply written to a job while its privacy question is open, read as the
+   * answer it names. "Send a redacted version." is that answer, recorded on
+   * the question as pressing it would be, and the held request picks up where
+   * it stopped; the words are not passed on as a message. Null when no such
+   * question is open or the words name neither answer: they then go on as the
+   * person's next message, and the next request is judged again.
+   */
+  async answerInWords(jobId: string, reply: string): Promise<AnswerResult | null> {
+    const [open] = await this.jobs.db
+      .select({ question, title: job.title })
+      .from(question)
+      .leftJoin(job, eq(job.id, question.jobId))
+      .where(and(eq(question.jobId, jobId), eq(question.state, 'open')))
+      .limit(1);
+    if (!open || !namedOption(reply, open.question.options)) return null;
+    if (!(await this.isPrivacyQuestion(open.question))) return null;
+    return this.decidePrivacy(
+      { row: open.question, view: questionView(open.question, open.title) },
+      reply,
+    );
   }
 
   /**

@@ -1,5 +1,6 @@
 import {
   experienceQuestion,
+  namedOption,
   quickAnswerRequest,
   quickOptions,
   unavailable,
@@ -103,10 +104,15 @@ export class ExperienceQuestions {
         throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
       text = option.label;
       offered = option;
-    } else {
-      if (!freeText(entry.question))
-        throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
+    } else if (freeText(entry.question)) {
       text = request.text;
+    } else {
+      // Words that name one of the answers are that answer; any others are refused.
+      const option = namedOption(request.text, quickOptions.parse(entry.question.options));
+      if (!option)
+        throw new ServiceError('invalid_choice', 'Choose one of the offered answers.', 400);
+      text = option.label;
+      offered = option;
     }
     if (!this.questions) return unavailable('Answers are not connected yet.');
     if (entry.question.source === 'memory')

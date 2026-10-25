@@ -120,6 +120,25 @@ describe.if(jobs !== null)('answering the privacy question', () => {
     expect(started[0]?.transcript.map((entry) => entry.content)).not.toContain(SEND_REDACTED);
   });
 
+  test('an answer typed as an option, in any case or punctuation, is recorded as that option', async () => {
+    const created = await jobs.create({
+      space_id: spaceId,
+      title: 'Research',
+      objective: 'Help with what the person asks',
+    });
+    await wake(created);
+    const [open] = await handle.db
+      .select()
+      .from(question)
+      .where(and(eq(question.jobId, created.id), eq(question.state, 'open')));
+    if (!open) throw new Error('the privacy question was not asked');
+    // Words that name neither answer are not taken for one.
+    expect(await questions.answerInWords(created.id, 'Sure, send it however')).toBeNull();
+    const answered = await questions.answerInWords(created.id, ' SEND a redacted version! ');
+    expect(answered?.question).toMatchObject({ state: 'answered', answer: SEND_REDACTED });
+    expect(answered?.job?.state).toBe('queued');
+  });
+
   test('an answer that is not one of the offered options is refused', async () => {
     const created = await jobs.create({
       space_id: spaceId,
