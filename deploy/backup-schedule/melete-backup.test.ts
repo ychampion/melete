@@ -13,8 +13,13 @@ const bash = process.platform === 'win32' ? process.env.MELETE_TEST_BASH : Bun.w
 const script = join(import.meta.dir, 'melete-backup.sh');
 
 const STUB_BUN = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$STUB_BUN_LOG"
 exit "\${STUB_BUN_EXIT:-0}"
 `;
+const OFF_MACHINE = {
+  MELETE_BACKUP_TO: 'ssh://backup.example:/srv/melete',
+  MELETE_BACKUP_RECIPIENT: 'age1example',
+};
 const STUB_CURL = `#!/usr/bin/env bash
 for last; do :; done
 printf '%s\\n' "$last" >> "$STUB_LOG"
@@ -28,10 +33,18 @@ afterEach(() => {
 
 /** Runs the script with a backup that finishes or fails; answers the addresses it called. */
 function run(pingUrl: string, backupFails: boolean) {
+  const { exit, pings } = execute({ ...OFF_MACHINE, MELETE_BACKUP_PING_URL: pingUrl }, backupFails);
+  return { exit, pings };
+}
+
+/** Runs the script with these settings; answers its exit, the addresses it called and the melete commands it ran. */
+function execute(settings: Record<string, string>, backupFails = false) {
   if (directory) rmSync(directory, { recursive: true, force: true });
   directory = mkdtempSync(join(tmpdir(), 'melete-backup-'));
   const log = join(directory, 'pings.log');
+  const bunLog = join(directory, 'bun.log');
   writeFileSync(log, '');
+  writeFileSync(bunLog, '');
   for (const [name, body] of [
     ['bun', STUB_BUN],
     ['curl', STUB_CURL],
@@ -50,17 +63,46 @@ function run(pingUrl: string, backupFails: boolean) {
       PATH: `${directory}${delimiter}${process.env.PATH ?? ''}`,
       STUB_DIR: directory,
       STUB_LOG: log,
+      STUB_BUN_LOG: bunLog,
       STUB_BUN_EXIT: backupFails ? '3' : '0',
-      MELETE_BACKUP_TO: 'ssh://backup.example:/srv/melete',
-      MELETE_BACKUP_RECIPIENT: 'age1example',
-      MELETE_BACKUP_PING_URL: pingUrl,
+      MELETE_BACKUP_TO: '',
+      MELETE_BACKUP_RECIPIENT: '',
+      MELETE_BACKUP_PING_URL: '',
+      ...settings,
     },
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  const pings = readFileSync(log, 'utf8').split('\n').filter(Boolean);
-  return { exit: result.exitCode, pings };
+  const lines = (file: string) => readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  return { exit: result.exitCode, pings: lines(log), commands: lines(bunLog) };
 }
+
+describe.skipIf(!bash)('where the scheduled backup goes', () => {
+  test('with nothing set, it backs up on this machine', () => {
+    expect(execute({})).toEqual({ exit: 0, pings: [], commands: ['run melete backup'] });
+  });
+
+  test('a key alone encrypts the backup on this machine', () => {
+    expect(execute({ MELETE_BACKUP_RECIPIENT: 'age1example' }).commands).toEqual([
+      'run melete backup --encrypt-to age1example',
+    ]);
+  });
+
+  test('another machine gets the backup encrypted', () => {
+    expect(execute(OFF_MACHINE).commands).toEqual([
+      'run melete backup --to ssh://backup.example:/srv/melete --encrypt-to age1example',
+    ]);
+  });
+
+  test('another machine without a key is refused before anything runs', () => {
+    expect(
+      execute({
+        MELETE_BACKUP_TO: 'ssh://backup.example:/srv/melete',
+        MELETE_BACKUP_PING_URL: 'https://hc-ping.com/abc',
+      }),
+    ).toEqual({ exit: 2, pings: [], commands: [] });
+  });
+});
 
 describe.skipIf(!bash)('the backup check-in', () => {
   test('a finished backup calls the address as it is', () => {

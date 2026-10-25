@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# An example of a daily backup that leaves this machine, encrypted, and says
-# when it did not run (docs/DEPLOYMENT.md, "Backups on a schedule"). Run it
-# from cron or from the systemd timer next to it. Set:
+# An example of a daily backup that says when it did not run
+# (docs/DEPLOYMENT.md, "Backups on a schedule"). Run it from cron or from the
+# systemd timer next to it. With nothing set, it backs up into the deploy
+# file's backup.dir on this machine. Set:
 #
-#   MELETE_BACKUP_TO         where the backup goes: ssh://host:/path
+#   MELETE_BACKUP_TO         optional: another machine the backup goes to
+#                            instead, ssh://host:/path
 #   MELETE_BACKUP_RECIPIENT  the age1... (or ssh-ed25519) public key it is
-#                            encrypted to; keep the private half off this machine
+#                            encrypted to; keep the private half off this
+#                            machine. Needed with MELETE_BACKUP_TO, optional
+#                            without it.
 #   MELETE_BACKUP_PING_URL   optional: a check-in address from a monitor that
 #                            alerts you when the pings stop. It is called as it
 #                            is after each backup that finishes. After one that
@@ -24,9 +28,18 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
-: "${MELETE_BACKUP_TO:?Set MELETE_BACKUP_TO to ssh://host:/path}"
-: "${MELETE_BACKUP_RECIPIENT:?Set MELETE_BACKUP_RECIPIENT to an age1... public key}"
+to="${MELETE_BACKUP_TO:-}"
+recipient="${MELETE_BACKUP_RECIPIENT:-}"
 ping_url="${MELETE_BACKUP_PING_URL:-}"
+
+# A backup that leaves this machine is always encrypted.
+if [ -n "$to" ] && [ -z "$recipient" ]; then
+  echo "Set MELETE_BACKUP_RECIPIENT to an age1... public key: a backup sent to $to is encrypted to it." >&2
+  exit 2
+fi
+args=(backup)
+if [ -n "$to" ]; then args+=(--to "$to"); fi
+if [ -n "$recipient" ]; then args+=(--encrypt-to "$recipient"); fi
 
 # The address that reports a failed backup. Appending /fail to the whole
 # address would put it inside a query string (?rid=1/fail, or Uptime Kuma's
@@ -57,7 +70,7 @@ ping() {
   fi
 }
 
-if bun run melete backup --to "$MELETE_BACKUP_TO" --encrypt-to "$MELETE_BACKUP_RECIPIENT"; then
+if bun run melete "${args[@]}"; then
   ping ok
 else
   status=$?
