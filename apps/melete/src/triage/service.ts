@@ -76,6 +76,11 @@ export type TriageDeps = {
   spending?: { reached(personId: string | null, usageClass?: UsageClass): Promise<string | null> };
   /** What Melete noticed on its own, for the list. Left out, the list is sorted items alone. */
   situations?: (principalId: string) => Promise<NoticedSituation[]>;
+  /**
+   * Reminders that came due in the person's chats and are not seen yet, for the
+   * list (see `experience/unread.ts`). Left out, none are listed.
+   */
+  reminders?: (principalId: string) => Promise<NeedsYouItem[]>;
   /** Whether this instance does the scheduled sorting. */
   leads?: () => Promise<boolean>;
   intervalSeconds?: number;
@@ -388,10 +393,11 @@ export class TriageService {
   }
 
   /**
-   * What needs the person, most pressing first: urgent, then soon, then the
-   * rest; within each, a deadline they set first, then what they have not seen,
-   * then the newest. A sorted item about something Melete already noticed is
-   * left out, so one thing is listed once.
+   * What needs the person, most pressing first: urgent, then a reminder that
+   * came due and is not seen yet (they chose its time, and that time is now),
+   * then soon, then the rest; within each, a deadline they set first, then what
+   * they have not seen, then the newest. A sorted item about something Melete
+   * already noticed is left out, so one thing is listed once.
    */
   async needsYou(principalId: string): Promise<NeedsYouList> {
     const sql = this.deps.sql;
@@ -403,16 +409,25 @@ export class TriageService {
     const situations = (await this.deps.situations?.(principalId)) ?? [];
     const live = situations.filter((s) => s.state === 'open' || s.state === 'routed');
     const noticed = new Set(live.map((s) => s.subject_key));
+    const reminders = (await this.deps.reminders?.(principalId)) ?? [];
     const entries = [
+      ...reminders.map((item) => ({ item, personSet: true })),
       ...live.map((s) => ({ item: this.situationView(s), personSet: s.person_set })),
       ...rows
         .filter((row) => !noticed.has(row.subject_key))
         .map((row) => ({ item: this.view(row), personSet: false })),
     ];
-    const lane = { urgent: 0, soon: 1, normal: 2 } as const;
+    const lane = (item: NeedsYouItem) =>
+      item.urgency === 'urgent'
+        ? 0
+        : item.source === 'reminder'
+          ? 1
+          : item.urgency === 'soon'
+            ? 2
+            : 3;
     entries.sort(
       (a, b) =>
-        lane[a.item.urgency] - lane[b.item.urgency] ||
+        lane(a.item) - lane(b.item) ||
         Number(b.personSet) - Number(a.personSet) ||
         Number(a.item.seen) - Number(b.item.seen) ||
         Date.parse(b.item.created_at) - Date.parse(a.item.created_at),

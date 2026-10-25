@@ -750,6 +750,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /conversations/{id}/messages': (spaceId, c, input) =>
       service.message(spaceId, c.req.param('id') ?? '', input, c.req.header('Idempotency-Key')),
     'POST /conversations/{id}/stop': (spaceId, c) => service.stop(spaceId, c.req.param('id') ?? ''),
+    'POST /conversations/{id}/seen': (spaceId, c) => service.seen(spaceId, c.req.param('id') ?? ''),
     'POST /conversations/{id}/pause': (spaceId, c) =>
       service.pause(spaceId, c.req.param('id') ?? ''),
     'POST /conversations/{id}/resume': (spaceId, c) =>

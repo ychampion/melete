@@ -251,6 +251,10 @@
   height: 16px;
   flex-shrink: 0;
 }
+.chat-row[data-unread="true"] > .grow {
+  font-weight: 600;
+  color: var(--heading);
+}
 .chat-dot {
   width: 6px;
   height: 6px;

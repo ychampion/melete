@@ -29,6 +29,7 @@ export function mountPushMock(
   const settings = {
     decisions: true,
     settled: true,
+    reminders: true,
     weekly_summary: true,
     daily_cap: 4,
     batch_minutes: 10,

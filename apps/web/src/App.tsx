@@ -21,7 +21,9 @@ import {
 import { instanceName, setInstance } from './experience/instance.ts';
 import { latestOnly } from './experience/latest.ts';
 import { onboardedProfile } from './experience/profile.ts';
+import { markValueMoment } from './experience/push.ts';
 import type { Agent, Capabilities, Conversation, Profile } from './experience/types.ts';
+import { tabTitle, unreadChats } from './experience/unread.ts';
 import { useInstance } from './experience/use-instance.ts';
 import { useFocusBeat } from './push-focus.ts';
 import { roomsApi } from './rooms/api.ts';
@@ -170,9 +172,6 @@ export function App() {
     });
   }, []);
   useEffect(refreshSetupStatus, [refreshSetupStatus]);
-  useEffect(() => {
-    document.title = instance.name;
-  }, [instance.name]);
 
   const refreshAgents = useCallback(() => {
     // A list that failed to load keeps what was last read; it never decides setup.
@@ -274,6 +273,18 @@ export function App() {
     for (const id of unknown) askedAgents.current.add(id);
     refreshAgents();
   }, [signedIn, agentsLoaded, route, conversations, agents, removedAgents, refreshAgents]);
+
+  // Something that came due and is not seen yet shows in the tab, so a person
+  // in another tab sees that it waits.
+  const unread = unreadChats(conversations).length;
+  useEffect(() => {
+    document.title = tabTitle(instance.name, unread);
+  }, [instance.name, unread]);
+  // A reminder that came due is a moment Melete was worth hearing from: Home
+  // then offers to send the next one to the phone.
+  useEffect(() => {
+    if (unread > 0) markValueMoment();
+  }, [unread]);
 
   // Conversations move while the person is elsewhere; keep the sidebar honest.
   useEffect(() => {

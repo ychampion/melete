@@ -33,9 +33,13 @@ const STATUS_WORDS: Record<Conversation['status'], string> = {
   stopped: 'Stopped',
 };
 
-/** A chat's state in words; one held up by an open decision waits for the person. */
+/**
+ * A chat's state in words; one held up by an open decision waits for the
+ * person, and one where something came due that they have not seen says so.
+ */
 export function statusWord(chat: Conversation, waiting: ReadonlySet<string>): string {
   if (isWaiting(chat, waiting)) return STATUS_WORDS.needs_you;
+  if (chat.unread) return 'New message';
   return chat.waiting_until ? waitingUntilWords(chat.waiting_until) : STATUS_WORDS[chat.status];
 }
 

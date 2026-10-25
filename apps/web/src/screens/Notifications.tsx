@@ -27,6 +27,10 @@ import type { PushDevice, PushSettings } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
 import { ReachMe } from './ReachMe.tsx';
 
+/** What the offer on Home promises: reminders on time, everything else paced. */
+export const PUSH_OFFER_LINE =
+  'Reminders you set arrive right on time. A decision waiting or a chase settling comes during your day, a few a day at most.';
+
 export const CAP_OPTIONS = [1, 2, 3, 4, 6, 8, 12].map((n) => ({
   value: String(n),
   label: n === 1 ? 'One a day at most' : `${n} a day at most`,
@@ -144,8 +148,9 @@ export function NotificationsTab() {
   return (
     <div className="col" style={{ gap: 12 }}>
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-        {assistantName()} pushes to your phone when a decision is waiting or a chase settles. It
-        stays quiet outside your day, groups what arrives together, and says why it sent each one.
+        {assistantName()} pushes to your phone when a reminder you set comes due, a decision is
+        waiting or a chase settles. Reminders arrive at the time you set. For the rest it stays
+        quiet outside your day and groups what arrives together. Each push says why it was sent.
       </p>
 
       {key.data && !configured ? (
@@ -193,6 +198,13 @@ export function NotificationsTab() {
           </span>
           <div className="card-12" style={{ overflow: 'hidden' }}>
             <div style={{ height: 1 }} />
+            <Row title="Reminders" sub="At the time you set, even outside your day.">
+              <Toggle
+                on={current.reminders}
+                label="Reminders"
+                onChange={(next) => void save({ reminders: next })}
+              />
+            </Row>
             <Row title="A decision is waiting" sub="Something can’t go on until you say.">
               <Toggle
                 on={current.decisions}
@@ -283,8 +295,8 @@ export function NotificationsTab() {
 }
 
 /**
- * The offer on Home, after the first decision or settled chase. It asks once;
- * "Not now" is remembered in this browser.
+ * The offer on Home, after the first decision, settled chase or reminder that
+ * came due. It asks once; "Not now" is remembered in this browser.
  */
 export function PushOffer() {
   const [show, setShow] = useState(false);
@@ -328,10 +340,7 @@ export function PushOffer() {
         <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
           Get a nudge when something needs you
         </span>
-        <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-          One push when a decision is waiting or a chase settles. Only during your day, a few a day
-          at most.
-        </span>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>{PUSH_OFFER_LINE}</span>
       </div>
       <div className="row" style={{ gap: 6 }}>
         <Button
