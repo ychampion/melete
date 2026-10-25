@@ -537,6 +537,9 @@ export const adapter = {
     guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/resume', path(id))),
   stop: (id: string) =>
     guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/stop', path(id))),
+  /** The person has the chat in front of them: what came due in it is no longer unread. */
+  markSeen: (id: string) =>
+    guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/seen', path(id))),
   rename: (id: string, title: string) =>
     guard<{ conversation: Conversation }>(() =>
       api.PATCH('/conversations/{id}', { ...path(id), body: { title } }),

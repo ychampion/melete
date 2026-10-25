@@ -344,6 +344,9 @@
                   "settled": {
                     "type": "boolean"
                   },
+                  "reminders": {
+                    "type": "boolean"
+                  },
                   "weekly_summary": {
                     "type": "boolean"
                   },
@@ -4769,6 +4772,44 @@
           "experience"
         ],
         "summary": "POST /conversations/{id}/stop",
+        "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome or unavailable capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema365"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema364"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/conversations/{id}/seen": {
+      "post": {
+        "tags": [
+          "experience"
+        ],
+        "summary": "POST /conversations/{id}/seen",
         "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
         "parameters": [
           {
@@ -39094,6 +39135,9 @@
               "settled": {
                 "type": "boolean"
               },
+              "reminders": {
+                "type": "boolean"
+              },
               "weekly_summary": {
                 "type": "boolean"
               },
@@ -39131,6 +39175,7 @@
             "required": [
               "decisions",
               "settled",
+              "reminders",
               "weekly_summary",
               "daily_cap",
               "batch_minutes",
@@ -42070,6 +42115,10 @@
           },
           "waiting_until": {
             "$ref": "#/components/schemas/__schema362"
+          },
+          "unread": {
+            "type": "boolean",
+            "const": true
           }
         },
         "required": [
@@ -50863,7 +50912,8 @@
             "type": "string",
             "enum": [
               "triage",
-              "situation"
+              "situation",
+              "reminder"
             ]
           },
           "sentence": {
@@ -50882,7 +50932,8 @@
                 "enum": [
                   "mail",
                   "calendar",
-                  "situation"
+                  "situation",
+                  "reminder"
                 ]
               },
               "label": {
@@ -50948,6 +50999,11 @@
                 "type": "null"
               }
             ]
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
           }
         },
         "required": [

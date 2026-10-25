@@ -119,13 +119,17 @@ const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming', 
 /** How many chats the sidebar lists; the rest are a click away under "All chats". */
 const RECENT_CHATS = 8;
 
+/** Waiting for the person, or holding something that came due they have not seen. */
+const wantsPerson = (chat: Conversation) => chat.status === 'needs_you' || chat.unread === true;
+
 /**
- * The chats the sidebar lists: those waiting for the person first, then the
- * latest, and the open one wherever it falls, so it is always in view.
+ * The chats the sidebar lists: those that want the person first (waiting for
+ * them, or unread), then the latest, and the open one wherever it falls, so it
+ * is always in view.
  */
 export function sidebarChats(chats: Conversation[], active: string | null): Conversation[] {
-  const needs = chats.filter((chat) => chat.status === 'needs_you');
-  const rest = chats.filter((chat) => chat.status !== 'needs_you');
+  const needs = chats.filter(wantsPerson);
+  const rest = chats.filter((chat) => !wantsPerson(chat));
   const shown = [...needs, ...rest.slice(0, Math.max(0, RECENT_CHATS - needs.length))];
   const open = active ? chats.find((chat) => chat.id === active) : undefined;
   return open && !shown.includes(open) ? [...shown, open] : shown;
@@ -362,6 +366,7 @@ function Sidebar({
               className="chat-row"
               href={href(`/chat/${chat.id}`)}
               aria-current={chat.id === activeChat ? 'page' : undefined}
+              data-unread={chat.unread ? 'true' : undefined}
               onClick={onClose}
               {...prefetchOn(chat.id)}
             >
@@ -372,6 +377,10 @@ function Sidebar({
               {chat.status === 'needs_you' && !chat.waiting_until ? (
                 <span className="chat-dot" data-tone="needs" title="Waiting for you">
                   <span className="sr-only">, waiting for you</span>
+                </span>
+              ) : chat.unread ? (
+                <span className="chat-dot" data-tone="needs" title="New message">
+                  <span className="sr-only">, new message</span>
                 </span>
               ) : live ? (
                 <span className="chat-dot dot-live" data-tone="working" title="Working">

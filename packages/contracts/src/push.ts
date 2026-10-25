@@ -45,6 +45,11 @@ export const pushSettings = z.strictObject({
   decisions: z.boolean(),
   /** "A chase settled." */
   settled: z.boolean(),
+  /**
+   * What the person timed coming due: a reminder, a chat's own schedule or a
+   * routine's run. It goes at the time they set, outside their day too.
+   */
+  reminders: z.boolean(),
   /** The weekly "what came back" summary. */
   weekly_summary: z.boolean(),
   /** At most this many pushes a day; what is held back goes into the next one. */

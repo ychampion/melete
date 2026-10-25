@@ -76,6 +76,7 @@ export type PushConfig = {
 export const DEFAULT_SETTINGS = {
   decisions: true,
   settled: true,
+  reminders: true,
   weeklySummary: true,
   dailyCap: 4,
   batchMinutes: 10,
@@ -344,6 +345,7 @@ export class PushService {
     return {
       decisions: row.decisions,
       settled: row.settled,
+      reminders: row.reminders,
       weekly_summary: row.weeklySummary,
       daily_cap: row.dailyCap,
       batch_minutes: row.batchMinutes,
@@ -358,6 +360,7 @@ export class PushService {
       principalId,
       decisions: patch.decisions ?? current.decisions,
       settled: patch.settled ?? current.settled,
+      reminders: patch.reminders ?? current.reminders,
       weeklySummary: patch.weekly_summary ?? current.weeklySummary,
       dailyCap: patch.daily_cap ?? current.dailyCap,
       batchMinutes: patch.batch_minutes ?? current.batchMinutes,
@@ -369,7 +372,8 @@ export class PushService {
     // A kind turned off stops what of it was still waiting.
     const off: IntentKind[] = [
       ...(next.decisions ? [] : (['decision', 'needs_you'] as const)),
-      ...(next.settled ? [] : (['settled', 'progress', 'done', 'reminder'] as const)),
+      ...(next.settled ? [] : (['settled', 'progress', 'done'] as const)),
+      ...(next.reminders ? [] : (['reminder'] as const)),
       ...(next.weeklySummary ? [] : (['weekly'] as const)),
     ];
     if (off.length) await this.dropWaiting(principalId, off);
@@ -559,7 +563,9 @@ export class PushService {
             where p.dedup_key = 'status:needs_you:' || j.id || ':' || j.state_version
               and ${STOPPED_ON_PERSON})`);
     }
-    if (pacing.settled) {
+    // Each kind is read only while the person has it on: answers under
+    // `settled`, what they timed under `reminders`.
+    if (pacing.settled || pacing.reminders) {
       // A turn its own timer or schedule opened (see jobs/wake-turn.ts), or a routine's run.
       const timed = sql`((j.kind = 'chat' and starts_with(t.submission_id, 'wake:'))
         or (j.kind = 'routine' and starts_with(t.submission_id, 'routine:')))`;
@@ -593,6 +599,7 @@ export class PushService {
       for (const row of answered) {
         // What the person timed comes due as a reminder; any other answer is news Melete tells.
         const kind: IntentKind = row.timed ? 'reminder' : 'done';
+        if (!(kind === 'reminder' ? pacing.reminders : pacing.settled)) continue;
         candidates.push({
           kind,
           key: `status:${kind}:${row.job_id}:${row.turn_id}`,
@@ -729,7 +736,8 @@ export class PushService {
     // What Melete noticed has no switch of its own: it is paced by its urgency.
     const on: IntentKind[] = [
       ...(pacing.decisions ? (['decision', 'needs_you'] as const) : []),
-      ...(pacing.settled ? (['settled', 'progress', 'done', 'reminder'] as const) : []),
+      ...(pacing.settled ? (['settled', 'progress', 'done'] as const) : []),
+      ...(pacing.reminders ? (['reminder'] as const) : []),
       ...(pacing.weeklySummary ? (['weekly'] as const) : []),
       'situation',
     ];

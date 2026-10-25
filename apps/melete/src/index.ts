@@ -130,6 +130,7 @@ import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts
 import { mountExperience } from './experience/routes.ts';
 import type { ExperienceService } from './experience/service.ts';
 import { startersFromSetting } from './experience/starters.ts';
+import { unseenReminders } from './experience/unread.ts';
 import { trashOrphanedWorkspaces } from './experience/workspace-trash.ts';
 import {
   installationFeatures,
@@ -729,14 +730,16 @@ export function createApp(deps: AppDeps) {
         })
       : defaultPrivacyRouter());
   // Before the experience routes, which answer every operation they do not implement.
-  if (deps.sql)
+  const needsSql = deps.sql;
+  if (needsSql)
     mountNeedsYou(
       app,
       deps.triage ??
         new TriageService({
-          sql: deps.sql,
+          sql: needsSql,
           classifier: null,
           ...(noticing ? { situations: (principalId) => noticing.list(principalId) } : {}),
+          reminders: (principalId) => unseenReminders(needsSql, principalId),
         }),
     );
   if (deps.sql && deps.attachments)
@@ -2210,6 +2213,8 @@ export async function bootstrap(
             spending,
             // What Melete noticed on its own is ranked with the sorted items.
             situations: async (principalId) => (await situations?.list(principalId)) ?? [],
+            // Reminders that came due and are not seen yet are ranked with them too.
+            reminders: (principalId) => unseenReminders(handle.sql, principalId),
             leads: () => leading(leases, 'triage'),
             intervalSeconds: env.MELETE_TRIAGE_INTERVAL_SECONDS,
             onError: (error) =>

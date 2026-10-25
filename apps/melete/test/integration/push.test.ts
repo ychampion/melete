@@ -257,7 +257,12 @@ const MINUTE = 60_000;
   test('settings read quiet hours from the profile and turn kinds off', async () => {
     const settings = await push.settings(people.ben);
     expect(settings.quiet_hours).toEqual({ from: '20:00', until: '08:00', time_zone: noonZone });
-    expect(settings).toMatchObject({ decisions: true, settled: true, weekly_summary: true });
+    expect(settings).toMatchObject({
+      decisions: true,
+      settled: true,
+      reminders: true,
+      weekly_summary: true,
+    });
     const off = await push.updateSettings(people.ben, { decisions: false });
     expect(off.decisions).toBe(false);
     await ask('ben', 'Reply to the landlord?');

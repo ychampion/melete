@@ -1139,6 +1139,8 @@ export const pushSetting = pgTable('push_setting', {
     .references(() => principal.id, { onDelete: 'cascade' }),
   decisions: boolean('decisions').notNull().default(true),
   settled: boolean('settled').notNull().default(true),
+  /** What the person timed coming due: reminders, a chat's own schedule, routine runs. */
+  reminders: boolean('reminders').notNull().default(true),
   weeklySummary: boolean('weekly_summary').notNull().default(true),
   dailyCap: integer('daily_cap').notNull().default(4),
   batchMinutes: integer('batch_minutes').notNull().default(10),
@@ -1306,6 +1308,11 @@ export const experienceTurn = pgTable(
     status: text('status').notNull().default('queued'),
     createdAt: created(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
+    /**
+     * When the person saw a turn their chat opened by itself at a time they set
+     * (a `wake:` turn). Until then the chat is unread. Null on other turns.
+     */
+    seenAt: timestamp('seen_at', { withTimezone: true }),
   },
   // A chat's turns, newest first, a page at a time.
   (t) => [index('experience_turn_job_created_idx').on(t.jobId, t.createdAt, t.id)],

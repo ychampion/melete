@@ -780,6 +780,11 @@ export const conversation = z.strictObject({
    * reminder or a check later: nothing is asked of the person until then.
    */
   waiting_until: date.optional(),
+  /**
+   * Set when something the person timed came due here (a reminder, or this
+   * chat's own schedule) and they have not opened the chat since.
+   */
+  unread: z.literal(true).optional(),
 });
 export type Conversation = z.infer<typeof conversation>;
 export const conversationTurn = z.strictObject({
@@ -1607,6 +1612,8 @@ export const experienceOperations = {
   'POST /conversations/{id}/pause': { response: conversationResponse },
   'POST /conversations/{id}/resume': { response: conversationResponse },
   'POST /conversations/{id}/stop': { response: conversationResponse },
+  /** The person has seen what came due in the chat, so it is no longer unread. */
+  'POST /conversations/{id}/seen': { response: conversationResponse },
   'GET /conversations/{id}/cards': { response: z.strictObject({ cards: z.array(resultCard) }) },
   'GET /conversations/{id}/receipts': {
     response: z.strictObject({ receipts: z.array(experienceReceipt) }),

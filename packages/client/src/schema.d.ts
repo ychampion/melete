@@ -5219,6 +5219,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/conversations/{id}/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /conversations/{id}/seen
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema365"] | components["schemas"]["__schema364"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/{id}/stop": {
         parameters: {
             query?: never;
@@ -19076,6 +19117,7 @@ export interface paths {
                         batch_minutes?: number;
                         daily_cap?: number;
                         decisions?: boolean;
+                        reminders?: boolean;
                         settled?: boolean;
                         weekly_summary?: boolean;
                     };
@@ -27073,6 +27115,7 @@ export interface components {
                     time_zone: string;
                     until: components["schemas"]["__schema266"];
                 };
+                reminders: boolean;
                 settled: boolean;
                 weekly_summary: boolean;
             };
@@ -27680,6 +27723,8 @@ export interface components {
             };
             status: components["schemas"]["__schema360"];
             title: components["schemas"]["__schema359"];
+            /** @constant */
+            unread?: true;
             updated_at: components["schemas"]["__schema362"];
             waiting_until?: components["schemas"]["__schema362"];
         };
@@ -29477,18 +29522,19 @@ export interface components {
                 at: components["schemas"]["__schema261"] | null;
                 handle: string;
                 /** @enum {string} */
-                kind: "mail" | "calendar" | "situation";
+                kind: "mail" | "calendar" | "situation" | "reminder";
                 label: string;
                 subject: string | null;
             };
             chat_prompt: string | null;
+            conversation_id?: string;
             created_at: components["schemas"]["__schema261"];
             id: string;
             reason: string;
             seen: boolean;
             sentence: string;
             /** @enum {string} */
-            source: "triage" | "situation";
+            source: "triage" | "situation" | "reminder";
             /** @enum {string} */
             urgency: "normal" | "soon" | "urgent";
         };
