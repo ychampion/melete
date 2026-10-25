@@ -674,14 +674,20 @@ export function createModelGateway(options: GatewayOptions): Server {
           maxOutputTokens: requested,
           local: servedLocally,
         });
-        reservation = await options.budget.reserve({
-          principal,
-          requestId: randomUUID(),
-          provider: callProvider.name,
-          model: callModel,
-          estimatedTokens: inputTokens + requested,
-          maxOutputTokens: requested,
-        });
+        try {
+          reservation = await options.budget.reserve({
+            principal,
+            requestId: randomUUID(),
+            provider: callProvider.name,
+            model: callModel,
+            estimatedTokens: inputTokens + requested,
+            maxOutputTokens: requested,
+          });
+        } catch (error) {
+          // Refused before it was sent: its spending hold goes with it.
+          await options.spending?.release?.(principal);
+          throw error;
+        }
         settlement = {
           provider: callProvider.name,
           modelRequested: callModel,

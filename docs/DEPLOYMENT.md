@@ -2809,14 +2809,15 @@ it.
 - While a call runs, the most it can cost (its input and its whole output
   allowance) is held against the limits, so calls running side by side cannot
   all start under one. A call that ends without its usage, cut off part way,
-  is counted at what it streamed, estimated.
+  is counted at what it streamed, estimated. Holds are kept in Postgres
+  (`spend_hold`) and every service instance admits calls under the same lock,
+  so the limits hold across instances as they do on one. A hold counts for ten
+  minutes: one whose call never reports back, because its instance stopped,
+  lapses then, and so does the hold of a call still streaming past that.
 - A web search past a limit is refused with the same sentence; it is not
   handed to another search backend.
 - Memory reads that meet a reached limit wait and are tried again every 30
   minutes until it resets; a voice aside says the limit's sentence.
-- Totals are reused for up to two seconds, and holds are kept by each service
-  instance, so several instances started at the same moment can overshoot a
-  limit by the calls each of them is running.
 - To raise a limit, change the setting in `deploy/.env` and recreate the
   service; the new limit applies from the next call.
 

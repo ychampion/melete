@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import type { AttemptBundle, AttemptOutcome, RuntimeAdapter } from '@melete/contracts';
 import { eq, sql } from 'drizzle-orm';
+import postgres, { type Sql, type TransactionSql } from 'postgres';
 import { attempt, job, principal, space } from '../../src/db/schema.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import { createModelGateway, providersFromEnv } from '../../src/gateway/index.ts';
@@ -13,7 +14,12 @@ import {
   SpendingGuard,
   type SpendingLimits,
 } from '../../src/gateway/spending.ts';
-import type { GatewayPrincipal, GatewaySettlement } from '../../src/gateway/types.ts';
+import {
+  GatewayError,
+  type GatewayPrincipal,
+  type GatewayReservation,
+  type GatewaySettlement,
+} from '../../src/gateway/types.ts';
 import { healthDetail } from '../../src/health/monitor.ts';
 import { newId } from '../../src/ids.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
@@ -88,12 +94,18 @@ const servicePrincipal = (): GatewayPrincipal => ({
 
 const servers: Server[] = [];
 
-/** A gateway whose provider answers 40 output tokens, slowly when asked. */
-async function gateway(guard: SpendingGuard) {
+/**
+ * A gateway whose provider answers 40 output tokens, slowly when asked, and
+ * whose budget reserves every call unless `reserve` says otherwise.
+ */
+async function gateway(
+  guard: SpendingGuard,
+  reserve: () => Promise<GatewayReservation> = async () => ({ id: randomUUID() }),
+) {
   const server = createModelGateway({
     privacy: false,
     spending: guard,
-    budget: { reserve: async () => ({ id: randomUUID() }), settle: async () => {} },
+    budget: { reserve, settle: async () => {} },
     authenticate: async () => servicePrincipal(),
     providers: providersFromEnv({ FIREWORKS_API_KEY: 'fixture-key' }),
     defaultProvider: 'fireworks',
@@ -149,6 +161,7 @@ withDb('spending caps', () => {
     await resetTestRows(handle.sql);
     await handle.sql`delete from model_usage`;
     await handle.sql`delete from spending_notice`;
+    await handle.sql`delete from spend_hold`;
     personId = newId('own');
     spaceId = newId('sp');
     await handle.db.insert(principal).values({ id: personId, email: `${personId}@example.test` });
@@ -338,6 +351,21 @@ withDb('spending caps', () => {
     expect(await guard.reached(personId)).toBeNull();
   });
 
+  test('a call its budget refuses before it is sent leaves no hold behind', async () => {
+    const { handle } = fixture();
+    const guard = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 1, tokens: null } }),
+      prices,
+      () => NOW,
+    );
+    const call = await gateway(guard, async () => {
+      throw new GatewayError(429, 'budget_exceeded');
+    });
+    expect((await call('Summarise the week')).status).toBe(429);
+    expect(await handle.sql`select 1 from spend_hold`).toHaveLength(0);
+  });
+
   test("calls on a person's own model cost nothing, so they never reach the installation's dollar limit", async () => {
     const { handle } = fixture();
     const guard = new SpendingGuard(
@@ -507,6 +535,133 @@ withDb('spending caps', () => {
     });
     expect(refused).toMatchObject({ code: 'spending_limit_reached' });
     expect((await guard.totals(personId, NOW, true)).person?.month.usd).toBeCloseTo(1, 6);
+  });
+
+  test("service instances on one database hold each other's running calls against a cap", async () => {
+    const { handle } = fixture();
+    // Each instance has connections of its own, as separate services do, and
+    // writes a call's hold a moment after reading the totals: calls not judged
+    // one after another would all read the totals before any hold is written.
+    const clients: Sql[] = [];
+    const instance = (caps: SpendingLimits) => {
+      const client = postgres(handle.url, { max: 2 });
+      clients.push(client);
+      const slowHolds = (tx: TransactionSql) =>
+        new Proxy(tx, {
+          apply(target, self, args) {
+            const [strings] = args as unknown[];
+            const text = Array.isArray(strings) && 'raw' in strings ? strings.join('') : '';
+            const query = Reflect.apply(target, self, args);
+            return text.includes('insert into spend_hold')
+              ? Bun.sleep(100).then(() => query)
+              : query;
+          },
+        });
+      const slow = new Proxy(client, {
+        get(target, property, receiver) {
+          if (property !== 'begin') return Reflect.get(target, property, receiver);
+          return (step: (tx: TransactionSql) => Promise<unknown>) =>
+            target.begin((tx) => step(slowHolds(tx)));
+        },
+      });
+      return new SpendingGuard(slow, caps, prices, () => NOW);
+    };
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 60,
+      local: false,
+    };
+    try {
+      // Calls started at once; each instance lets go of the ones it started.
+      // How many started is returned.
+      const started = async (tries: (readonly [SpendingGuard, GatewayPrincipal])[]) => {
+        const settled = await Promise.allSettled(
+          tries.map(([guard, principal]) => guard.admit(principal, call)),
+        );
+        for (const one of settled)
+          if (one.status === 'rejected')
+            expect(one.reason).toMatchObject({ code: 'spending_limit_reached' });
+        for (const [guard, principal] of tries) await guard.release(principal);
+        expect(await handle.sql`select 1 from spend_hold`).toHaveLength(0);
+        return settled.filter((one) => one.status === 'fulfilled').length;
+      };
+      // A person's $1 cap and $0.60 calls, two on each of six instances: two
+      // start, as on one instance, never one or two per instance.
+      const six = Array.from({ length: 6 }, () =>
+        instance(limits({ month: { usd: 1, tokens: null } })),
+      );
+      expect(
+        await started(
+          six
+            .flatMap((guard) => [guard, guard])
+            .map((guard) => [guard, servicePrincipal()] as const),
+        ),
+      ).toBe(2);
+      // A call running on one instance is held on the other until it reports.
+      const [one, two] = six as [SpendingGuard, SpendingGuard];
+      const running = servicePrincipal();
+      await one.admit(running, call);
+      await two.admit(servicePrincipal(), call);
+      let refused: unknown;
+      await two.admit(servicePrincipal(), call).catch((error) => {
+        refused = error;
+      });
+      expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+      // It used $0.05: $0.65 with the other's hold, so another call starts.
+      await one.record(running, settlement(5));
+      await two.admit(servicePrincipal(), call);
+      // The installation's own $1 cap holds across people too: of six people's
+      // calls, one on each of six instances, two start.
+      await handle.sql`delete from spend_hold`;
+      await handle.sql`delete from model_usage`;
+      const whole: SpendingLimits = {
+        installation: { day: NO_LIMIT, month: { usd: 1, tokens: null } },
+        person: { day: NO_LIMIT, month: NO_LIMIT },
+        noticePercent: 80,
+      };
+      expect(
+        await started(
+          Array.from(
+            { length: 6 },
+            () => [instance(whole), { ...servicePrincipal(), actor: newId('own') }] as const,
+          ),
+        ),
+      ).toBe(2);
+    } finally {
+      await Promise.all(clients.map((client) => client.end()));
+    }
+  });
+
+  test('a hold whose call never reports stops counting once it expires', async () => {
+    const { handle } = fixture();
+    let now = NOW;
+    const guard = new SpendingGuard(
+      handle.sql,
+      limits({ month: { usd: 1, tokens: null } }),
+      prices,
+      () => now,
+    );
+    const call = {
+      provider: 'fireworks',
+      model: MODEL,
+      inputTokens: 10,
+      maxOutputTokens: 60,
+      local: false,
+    };
+    await guard.admit(servicePrincipal(), call);
+    await guard.admit(servicePrincipal(), call);
+    let refused: unknown;
+    await guard.admit(servicePrincipal(), call).catch((error) => {
+      refused = error;
+    });
+    expect(refused).toMatchObject({ code: 'spending_limit_reached' });
+    // Neither call ever reported back. Ten minutes on, their holds are gone:
+    // a call starts, and only its own hold is left.
+    now = new Date(NOW.getTime() + 10 * 60_000 + 1);
+    await guard.admit(servicePrincipal(), call);
+    expect(await handle.sql`select 1 from spend_hold`).toHaveLength(1);
   });
 
   test('the totals the caps read stay in step with every call written, changed and removed', async () => {
