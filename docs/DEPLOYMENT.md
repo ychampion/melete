@@ -558,9 +558,10 @@ bun run melete set MELETE_SPEND_PERSON_DAILY_USD=2 MELETE_SPEND_PERSON_MONTHLY_U
 bun run melete check
 ```
 
-A hosted installation also needs a daily backup that leaves the machine:
-`check` and `status` fail once the newest backup is more than 26 hours old
-([Backups on a schedule](#backups-on-a-schedule)).
+A hosted installation also needs a daily backup: `check` and `status` fail
+once the newest backup is more than 26 hours old
+([Backups on a schedule](#backups-on-a-schedule)). Send it to another machine,
+or keep a snapshot of this one, so it survives losing the disk.
 
 People you invite should be able to read your terms and privacy notice and
 reach you for help. Host those pages yourself and name them; each is linked on
@@ -3755,13 +3756,22 @@ records a measured run and its evidence.
 
 ### Backups on a schedule
 
-A backup that stays on the same disk goes when that disk goes. Run one every
-day, encrypted, to another machine, and have something tell you when a day is
-missed. `deploy/backup-schedule/` holds an example: `melete-backup.sh` takes
-the backup with `--to` and `--encrypt-to`, then calls a check-in address you
-choose; the systemd `melete-backup.timer` runs it every night, and runs a
-missed night as soon as the machine is back. Any monitor that alerts you when
-its pings stop arriving will do.
+Run a backup every day, and have something tell you when a day is missed.
+`deploy/backup-schedule/` holds an example: the systemd `melete-backup.timer`
+runs `melete-backup.sh` every night, and runs a missed night as soon as the
+machine is back. The script takes the backup, then calls a check-in address
+you choose. Any monitor that alerts you when its pings stop arriving will do.
+
+Where the backup goes:
+
+- **With nothing set,** it stays on this machine, in `backup.dir`, and `keep`
+  and `max_age_days` prune it there. That protects against a bad upgrade or a
+  deleted space, but a backup on the same disk goes when that disk goes: add a
+  snapshot of the machine from your host, or send the backup elsewhere.
+- **`MELETE_BACKUP_TO=ssh://host:/path`** sends it to another machine instead
+  (`--to`), encrypted to `MELETE_BACKUP_RECIPIENT` (`--encrypt-to`). The script
+  refuses to send a backup off the machine without a key to encrypt it to.
+- **`MELETE_BACKUP_RECIPIENT` alone** encrypts the backup kept on this machine.
 
 A finished backup calls the check-in address exactly as you gave it. A backup
 that did not finish calls it as a failure:
@@ -3775,9 +3785,9 @@ that did not finish calls it as a failure:
   becomes `https://kuma.example/api/push/T0k3n?ping=&status=down&msg=backup%20failed`.
 
 ```bash
-age-keygen -o melete-backup.key   # on another machine; keep this file off the server
+age-keygen -o melete-backup.key   # only for a backup host: on another machine; keep this file off the server
 sudo cp deploy/backup-schedule/melete-backup.{service,timer} /etc/systemd/system/
-sudoedit /etc/systemd/system/melete-backup.service   # the account, the paths, the destination, the public key, the check-in address
+sudoedit /etc/systemd/system/melete-backup.service   # the account and the paths; the destination, the public key and the check-in address if you use them
 sudo systemctl daemon-reload && sudo systemctl enable --now melete-backup.timer
 ```
 
@@ -3788,8 +3798,12 @@ every night's backup fails with `bun: command not found`:
 
 ```cron
 PATH=/home/melete/.bun/bin:/usr/local/bin:/usr/bin:/bin
-30 3 * * * cd /home/melete/melete && MELETE_BACKUP_TO=ssh://backup-host:/srv/melete-backups MELETE_BACKUP_RECIPIENT=age1... MELETE_BACKUP_PING_URL=https://monitor.example/ping/your-check deploy/backup-schedule/melete-backup.sh
+30 3 * * * cd /home/melete/melete && MELETE_BACKUP_PING_URL=https://monitor.example/ping/your-check deploy/backup-schedule/melete-backup.sh
 ```
+
+To send it to a backup host, add
+`MELETE_BACKUP_TO=ssh://backup-host:/srv/melete-backups MELETE_BACKUP_RECIPIENT=age1...`
+before the script.
 
 Then say that backups run on a schedule, in `deploy/melete.deploy.json`:
 
