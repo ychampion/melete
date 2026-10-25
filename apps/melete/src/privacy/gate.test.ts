@@ -231,6 +231,36 @@ describe('a topic held back follows the privacy settings as they are now', () =>
     expect(started).toEqual([attemptId(2)]);
   });
 
+  test('a conversation the person marked themselves holds whatever the settings say', async () => {
+    const h = harness({});
+    const { run, started, store } = h;
+    // Automatic finance detection is off, but this one conversation was marked by hand.
+    await topics(h, ['health', 'therapy']);
+    await store.markConversation(JOB, SPACE, 'finance');
+    const held = await run(bundle(1, 'What should I do with the money this month?'));
+    expect(started).toEqual([]);
+    expect((held as { outcome: { question: string } }).outcome.question).toContain(
+      'personal finances',
+    );
+    expect(await h.router.refusesServiceRead(JOB, { protocol: 'chat/completions' })).toBe(true);
+    // A topic found in what they write later never takes the place of their own mark.
+    await run(bundle(2, 'My therapist says I should track my spending.'));
+    expect(started).toEqual([]);
+    expect((await store.conversation(JOB)).sensitive).toBe('finance');
+    expect(await h.router.captureOrigin(JOB, 'My therapist says hello')).toBe('finance');
+    expect((await store.conversation(JOB)).sensitive).toBe('finance');
+  });
+
+  test('a topic found automatically is released once that topic is off', async () => {
+    const h = harness({});
+    const { run, started, store } = h;
+    await run(bundle(1, 'Can you go through my bank statements for last year?'));
+    expect(await store.conversation(JOB)).toMatchObject({ sensitive: 'finance', byPerson: false });
+    await topics(h, ['health', 'therapy']);
+    await run(bundle(2, 'Please carry on.'));
+    expect(started).toEqual([attemptId(2)]);
+  });
+
   test('a reply that chooses neither answer is asked again, and the question says so', async () => {
     const { run, started, store } = harness({});
     const first = await run(bundle(1, 'Can you go through my bank statements for last year?'));

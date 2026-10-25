@@ -101,6 +101,7 @@ test('a private conversation with no model of the person’s own is not summaris
   store.scopes.set(JOB, { spaceId: SPACE, conversationId: JOB, agentId: null, turnId: null });
   store.conversations.set(JOB, {
     sensitive: 'health',
+    byPerson: false,
     cleared: false,
     clearedAt: null,
     consent: null,

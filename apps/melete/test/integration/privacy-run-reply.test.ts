@@ -208,6 +208,41 @@ describe.if(jobs !== null)('answering the privacy question long work waits on', 
     expect(started).toHaveLength(0);
   });
 
+  test('with the topic off, a conversation marked by hand, or one marked before origins were kept, still sends nothing', async () => {
+    const saved = await request('/privacy/settings', 'PUT', {
+      sensitive_topics: ['health', 'therapy'],
+    });
+    expect(saved.status).toBe(200);
+    router.invalidate(spaceId);
+    const create = (goal: string) =>
+      jobs.transaction((tx) =>
+        runs.create(tx, spaceId, { goal }, { principalId: ownerId, typed: true }),
+      );
+    // Marked by the person through the conversation's privacy route.
+    const marked = await create('Plan what to do with the money this month.');
+    const put = await request(`/conversations/${marked.id}/privacy`, 'PUT', {
+      sensitive: 'finance',
+    });
+    expect(put.status).toBe(200);
+    // A row written before it was recorded who set the topic.
+    const older = await create('Plan what to do with the savings this year.');
+    await handle.sql`insert into privacy_conversation (conversation_id, space_id, sensitive)
+      values (${older.id}, ${spaceId}, 'finance')`;
+    for (const row of [marked, older]) {
+      const after = await wake(row);
+      expect(after.state).toBe('waiting_for_input');
+      expect((await openQuestion(row.id))?.text).toContain('personal finances');
+    }
+    expect(started).toHaveLength(0);
+    // Found automatically under a topic that is now off: it goes.
+    const found = await create('Find a good used bike under 300 dollars.');
+    await handle.sql`insert into privacy_conversation
+        (conversation_id, space_id, sensitive, sensitive_by_person)
+      values (${found.id}, ${spaceId}, 'finance', false)`;
+    await wake(found);
+    expect(started).toHaveLength(1);
+  });
+
   test('turning the topic off in Settings lets the next shift go', async () => {
     const { row } = await heldRun();
     const saved = await request('/privacy/settings', 'PUT', {

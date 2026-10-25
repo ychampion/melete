@@ -170,6 +170,12 @@ export const SCREENSHOT_TOOLS = [
 export type ConversationState = {
   sensitive: SensitiveTopic | null;
   /**
+   * The person set the topic themselves, or it was stored before that was
+   * recorded. Such a topic holds whatever the privacy settings say; one found
+   * in what they wrote holds only while that topic is kept private.
+   */
+  byPerson: boolean;
+  /**
    * The person said this conversation is not sensitive. What was there then is
    * not judged again; a phrase about themselves written later still is.
    */
@@ -207,12 +213,13 @@ export interface PrivacyStore {
   /**
    * Change only the named fields. `sensitive` is never cleared here once set:
    * a write that carries none, or races another, leaves it as it was. Only the
-   * person changes it, through `markConversation`.
+   * person changes it, through `markConversation`. A topic set here was found
+   * in what the person wrote, not set by them.
    */
   updateConversation(
     conversationId: string,
     spaceId: string,
-    change: Partial<Omit<ConversationState, 'cleared' | 'clearedAt'>>,
+    change: Partial<Omit<ConversationState, 'cleared' | 'clearedAt' | 'byPerson'>>,
   ): Promise<void>;
   /**
    * The person's own word on a conversation: a topic marks it sensitive, null
@@ -225,6 +232,8 @@ export interface PrivacyStore {
     conversationId: string,
     spaceId: string,
     sensitive: SensitiveTopic | null,
+    /** False when the topic was found in what the person wrote rather than set by them. */
+    byPerson?: boolean,
   ): Promise<void>;
   /**
    * Withdraw "send a redacted version" answers given before the space, or one
@@ -264,6 +273,7 @@ const CLEARED = 'none';
 
 const EMPTY_CONVERSATION: ConversationState = {
   sensitive: null,
+  byPerson: false,
   cleared: false,
   clearedAt: null,
   consent: null,
@@ -406,13 +416,15 @@ export class PostgresPrivacyStore implements PrivacyStore {
     conversationId: string,
     query?: Sql | TransactionSql,
   ): Promise<ConversationState> {
-    const [row] = await (query ?? this.sql)`select sensitive, cleared_at, consent, consent_turn_id,
-        asked_attempt_id
+    const [row] = await (query ??
+      this.sql)`select sensitive, sensitive_by_person, cleared_at, consent,
+        consent_turn_id, asked_attempt_id
       from privacy_conversation where conversation_id = ${conversationId}`;
     if (!row) return { ...EMPTY_CONVERSATION };
     return {
       sensitive:
         row.sensitive && row.sensitive !== CLEARED ? (row.sensitive as SensitiveTopic) : null,
+      byPerson: row.sensitive_by_person !== false,
       cleared: row.sensitive === CLEARED,
       clearedAt:
         row.sensitive === CLEARED && row.cleared_at
@@ -427,18 +439,22 @@ export class PostgresPrivacyStore implements PrivacyStore {
   async updateConversation(
     conversationId: string,
     spaceId: string,
-    change: Partial<Omit<ConversationState, 'cleared' | 'clearedAt'>>,
+    change: Partial<Omit<ConversationState, 'cleared' | 'clearedAt' | 'byPerson'>>,
   ): Promise<void> {
     // One statement that touches only the named columns, so two writers (the
     // gate recording a question, the router marking the topic) cannot undo each
     // other, and a topic once found stays found.
     const has = (field: keyof typeof change) => field in change;
     await this.sql`insert into privacy_conversation
-        (conversation_id, space_id, sensitive, consent, consent_turn_id, asked_attempt_id)
-      values (${conversationId}, ${spaceId}, ${change.sensitive ?? null}, ${change.consent ?? null},
-        ${change.consentTurnId ?? null}, ${change.askedAttemptId ?? null})
+        (conversation_id, space_id, sensitive, sensitive_by_person, consent, consent_turn_id,
+          asked_attempt_id)
+      values (${conversationId}, ${spaceId}, ${change.sensitive ?? null}, ${!change.sensitive},
+        ${change.consent ?? null}, ${change.consentTurnId ?? null}, ${change.askedAttemptId ?? null})
       on conflict (conversation_id) do update set
         sensitive = coalesce(privacy_conversation.sensitive, excluded.sensitive),
+        sensitive_by_person = case when privacy_conversation.sensitive is null
+          and excluded.sensitive is not null then false
+          else privacy_conversation.sensitive_by_person end,
         consent = case when ${has('consent')} then excluded.consent
           else privacy_conversation.consent end,
         consent_turn_id = case when ${has('consentTurnId')} then excluded.consent_turn_id
@@ -452,13 +468,15 @@ export class PostgresPrivacyStore implements PrivacyStore {
     conversationId: string,
     spaceId: string,
     sensitive: SensitiveTopic | null,
+    byPerson = true,
   ): Promise<void> {
     const value = sensitive ?? CLEARED;
     const clearedAt = sensitive === null ? this.sql`now()` : null;
     await this.sql`insert into privacy_conversation
-        (conversation_id, space_id, sensitive, cleared_at)
-      values (${conversationId}, ${spaceId}, ${value}, ${clearedAt})
+        (conversation_id, space_id, sensitive, sensitive_by_person, cleared_at)
+      values (${conversationId}, ${spaceId}, ${value}, ${byPerson}, ${clearedAt})
       on conflict (conversation_id) do update set sensitive = excluded.sensitive,
+        sensitive_by_person = excluded.sensitive_by_person,
         cleared_at = excluded.cleared_at, consent = null, consent_turn_id = null,
         updated_at = now()`;
   }
@@ -604,13 +622,15 @@ export class MemoryPrivacyStore implements PrivacyStore {
   async updateConversation(
     conversationId: string,
     _spaceId: string,
-    change: Partial<Omit<ConversationState, 'cleared' | 'clearedAt'>>,
+    change: Partial<Omit<ConversationState, 'cleared' | 'clearedAt' | 'byPerson'>>,
   ) {
     const current = await this.conversation(conversationId);
+    const found = !current.cleared && !current.sensitive && Boolean(change.sensitive);
     this.conversations.set(conversationId, {
       ...current,
       ...change,
       sensitive: current.cleared ? null : (current.sensitive ?? change.sensitive ?? null),
+      byPerson: found ? false : current.byPerson,
     });
   }
 
@@ -618,11 +638,13 @@ export class MemoryPrivacyStore implements PrivacyStore {
     conversationId: string,
     _spaceId: string,
     sensitive: SensitiveTopic | null,
+    byPerson = true,
   ) {
     const current = await this.conversation(conversationId);
     this.conversations.set(conversationId, {
       ...current,
       sensitive,
+      byPerson,
       cleared: sensitive === null,
       clearedAt: sensitive === null ? new Date().toISOString() : null,
       consent: null,

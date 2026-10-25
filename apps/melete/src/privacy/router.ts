@@ -550,7 +550,7 @@ export class PrivacyRouter {
         settings.topics,
       );
       if (sensitive && scope.conversationId && scope.spaceId) {
-        await this.store.markConversation(scope.conversationId, scope.spaceId, sensitive);
+        await this.store.markConversation(scope.conversationId, scope.spaceId, sensitive, false);
         consent = null;
       }
     }
@@ -702,7 +702,8 @@ export class PrivacyRouter {
    * Keep a topic just found on the conversation. One found before, under a
    * topic the person has since turned off, is replaced, and an answer given
    * about it is withdrawn: the store keeps the first topic it is told, and
-   * the old one no longer holds anything back. True when it was replaced.
+   * the old one no longer holds anything back. A topic the person set
+   * themselves is never replaced by one found. True when it was replaced.
    */
   private async keepTopic(
     conversationId: string,
@@ -710,8 +711,9 @@ export class PrivacyRouter {
     conversation: StoredConversation | null,
     sensitive: SensitiveTopic,
   ): Promise<boolean> {
+    if (conversation?.sensitive && conversation.byPerson) return false;
     if (conversation?.sensitive && conversation.sensitive !== sensitive) {
-      await this.store.markConversation(conversationId, spaceId, sensitive);
+      await this.store.markConversation(conversationId, spaceId, sensitive, false);
       return true;
     }
     await this.store.updateConversation(conversationId, spaceId, { sensitive });
@@ -963,17 +965,19 @@ export class PrivacyRouter {
 export type PrivateOrigin = 'space' | 'agent' | SensitiveTopic;
 
 /**
- * The topic a conversation was found to be about, while the person still
- * keeps that topic private. Once they turn it off in Settings it holds
- * nothing back, and what they write is judged again under the settings as
- * they are now; turned on again, it holds again.
+ * The topic that holds a conversation back. One the person set themselves
+ * holds whatever the settings say. One found in what they wrote holds only
+ * while they keep that topic private: once they turn it off in Settings it
+ * holds nothing back, and what they write is judged again under the settings
+ * as they are now; turned on again, it holds again.
  */
 function activeTopic(
-  conversation: Pick<StoredConversation, 'sensitive'> | null,
+  conversation: Pick<StoredConversation, 'sensitive' | 'byPerson'> | null,
   settings: Pick<ResolvedSettings, 'topics'>,
 ): SensitiveTopic | null {
   const topic = conversation?.sensitive ?? null;
-  return topic && settings.topics.includes(topic) ? topic : null;
+  if (!topic) return null;
+  return conversation?.byPerson || settings.topics.includes(topic) ? topic : null;
 }
 
 /** Private memory as values the redactor swaps, in both its plain and JSON-escaped spelling. */
