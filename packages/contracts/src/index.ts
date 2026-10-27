@@ -12,6 +12,7 @@ export * from './artifacts.ts';
 export * from './attachments.ts';
 export * from './audit.ts';
 export * from './beliefs.ts';
+export * from './board.ts';
 export * from './broker.ts';
 export * from './browser.ts';
 export * from './browser-live.ts';

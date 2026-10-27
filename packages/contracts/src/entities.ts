@@ -88,6 +88,8 @@ export const CONNECTION_PROVIDERS = [
   'apps',
   /** Handoffs from a room's agent, and posts and files a person sends to a room they are in. */
   'room',
+  /** A room's board: dated items its agent and its people keep, each shown to the people it is for. */
+  'board',
   /** The agent's own working notes, kept in the person's space and shown in Memory. */
   'notes',
   /** The person's own skills, saved in their space when they ask for one. */

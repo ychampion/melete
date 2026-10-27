@@ -14,6 +14,7 @@ import {
 } from '../sandbox/docker-default.ts';
 import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
+import { boardManifest } from './board.ts';
 import { BUILTIN_CONNECTIONS, builtinEnvironment } from './builtin.ts';
 import { calendarManifest } from './calendar.ts';
 import { emailManifest } from './email.ts';
@@ -38,11 +39,14 @@ describe('default connections', () => {
       exec: execManifest,
       sandbox: sandboxExecManifest,
       notes: notesManifest,
+      board: boardManifest,
       skills: skillsManifest,
     };
     expect(BUILTIN_CONNECTIONS.map((builtin) => builtin.provider).sort()).toEqual([
       'apps',
       'artifacts',
+      // A room's board.
+      'board',
       'exec',
       'files',
       // Speech and transcription: two rows of the one generation provider.
@@ -215,6 +219,7 @@ describe('default connections', () => {
       'apps',
       'rooms',
       'room_handoff',
+      'board',
       'notes',
       'skills',
     ]);
@@ -235,6 +240,7 @@ describe('default connections', () => {
       'exec',
       'rooms',
       'room_handoff',
+      'board',
       'notes',
       'skills',
     ]);

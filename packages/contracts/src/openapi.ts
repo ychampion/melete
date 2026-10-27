@@ -54,6 +54,7 @@ import {
   spaceAuditQuery,
   spaceAuditResponse,
 } from './audit.ts';
+import { boardPaths } from './board-openapi.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -4911,6 +4912,7 @@ export function buildOpenApiDocument() {
         },
         ...devicePaths(),
         ...appsPaths(),
+        ...boardPaths(),
         ...pagesPaths(),
         ...processPreviewPaths(),
         ...operatorPaths(),

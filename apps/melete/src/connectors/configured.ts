@@ -54,6 +54,7 @@ import { PostgresBrowserRecipeStore } from '../workers/browser/recipes.ts';
 import { BrowserSessionService } from '../workers/browser/routes.ts';
 import { createAppsConnector } from './apps.ts';
 import { createArtifactsConnector } from './artifacts.ts';
+import { createBoardConnector } from './board.ts';
 import { createBrowserConnector } from './browser.ts';
 import { builtinEnvironment } from './builtin.ts';
 import { CalendarConnector } from './calendar.ts';
@@ -559,6 +560,11 @@ export class ConnectorFactory {
             workRoot: options.workRoot,
             spacesRoot: options.spacesRoot,
           });
+    if (row.provider === 'board')
+      // Rooms switched off: the rows stay, and none of their tools is offered.
+      return !(options.multiplayer ?? multiplayerEnabled(options.env ?? process.env))
+        ? undefined
+        : createBoardConnector({ sql: options.sql });
     if (row.provider === 'skills')
       return createSkillsConnector({
         sql: options.sql,
