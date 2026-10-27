@@ -1,6 +1,6 @@
-# 0002 - The v0.1 engine is a pinned, unmodified Hermes release
+# 0002 - The v0.1 engine starts from Hermes behind the RuntimeAdapter
 
-Status: accepted
+Status: superseded by [0026](0026-engine-forward.md)
 Date: 2026-09-11
 
 ## Problem
@@ -12,10 +12,10 @@ tools, and identity, which are exactly the things Melete has to control.
 
 ## Decision
 
-The v0.1 engine is Hermes at tag `v2026.9.7`, unmodified, configured thin,
+The v0.1 engine is Hermes at tag `v2026.9.7`, with a small configuration,
 behind the `RuntimeAdapter` interface. No fork.
 
-Thin means `skip_memory`, `skip_context_files`, built-in toolsets disabled, one
+The small configuration means `skip_memory`, `skip_context_files`, built-in toolsets disabled, one
 trusted Melete plugin that registers the broker's tools and nothing else,
 `HERMES_EXEC_ASK=1` so approvals surface over HTTP, an identity under 250 tokens
 in place of SOUL.md, and at most three skills per attempt. Melete consumes the

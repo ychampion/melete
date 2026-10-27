@@ -9,7 +9,7 @@ The broker's answer to a screenshot is a receipt: where the picture was saved
 in the job's workspace, its size and its digest. A model that reads images is
 also given the picture itself, through the engine's multimodal tool result
 (``{"_multimodal": True, "content": [...], "text_summary": ...}``, accepted by
-``tools/registry.py`` ``_normalize_handler_result`` at the pinned release). A
+``tools/registry.py`` ``_normalize_handler_result`` at the engine commit this build expects). A
 model that does not is sent no picture, by this model or any other: it is given
 the receipt, which carries the screen as text (``screen_text``: the page's
 accessibility tree, or OCR marked as such), and told plainly that it cannot
@@ -21,7 +21,7 @@ The engine decides the rest, and none of it is changed here:
   active model is not configured to read images (``model.supports_vision``).
 - ``agent/context_compressor.py`` keeps the newest three tool pictures in every
   request it sends and replaces older ones with their text summary.
-- The pinned engine estimates every picture at a flat number of tokens, so the
+- The engine estimates every picture at a flat number of tokens, so the
   picture is made small here: at most 1280 pixels on its longest side, as JPEG,
   lowering the quality and then the size until it fits the gateway's per-picture
   limit. The numbers match ``packages/contracts/src/model-vision.ts``.
@@ -143,7 +143,7 @@ def encode(data: bytes, mark: str = "") -> Optional[str]:
     """
     try:
         from PIL import Image
-    except ImportError:  # pragma: no cover - present in the pinned engine's environment
+    except ImportError:  # pragma: no cover - present in the engine's environment
         logger.warning("melete: Pillow is not available; screenshots are sent as receipts")
         return None
     try:

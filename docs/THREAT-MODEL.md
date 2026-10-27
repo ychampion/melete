@@ -1172,7 +1172,7 @@ cookies, and its owner can sign it out of one, which clears that site's cookies
 and stored data from the profile.
 
 `bun run deploy/scripts/browser-compose-check.ts` checks deployment
-configuration, including that the seccomp profile is the pinned engine default
+configuration, including that the seccomp profile is the Docker engine's default (moby v28.0.1)
 plus exactly its three additions; the browser and integration tests check live
 controller behaviour on local fixtures. Unlike the runtime cell, which scenario
 6 probes from inside, the worker's network boundary rests on that checked

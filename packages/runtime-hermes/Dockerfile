@@ -1,4 +1,5 @@
-# The Melete runtime: pinned Hermes configured thin with an observer-only bridge.
+# The Melete runtime: Melete's engine, built on Hermes and customised, with an
+# observer-only bridge.
 #
 # The seams in patches/observer_bridge.py are checked against the audited pin
 # before application. They add compaction observation, bind the plugin's
@@ -6,7 +7,7 @@
 # stream, keep the engine's own install out of the system prompt and keep a
 # screenshot's picture in the session store for the next run. They change no
 # broker decision.
-# Thin configuration keys are cited in .agents/notes/0009-hermes-surface.md.
+# Configuration keys are cited in .agents/notes/0009-hermes-surface.md.
 #
 # The container has no route to the internet. docker-compose attaches it only to
 # the `internal` network, whose sole reachable peer is the Melete broker.
@@ -19,14 +20,14 @@ ARG HERMES_TAG=v2026.9.7
 ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 
 # The commit the tag resolved to on 2026-09-11. Recorded so a rebuild that
-# produces something else is visible rather than silent: a moved tag is the one
-# way a "pinned, unmodified release" stops being either.
+# produces something else is visible rather than silent: a moved tag would
+# otherwise change the engine underneath every customisation.
 ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
 # The digest over melete_plugin/, asserted by build-metadata.py during the
 # build. `bun run compose:check` recomputes it from the tracked files and names
 # the value to paste here, so a plugin change without a new pin fails before an
 # image is built.
-ARG MELETE_PLUGIN_SHA=fb78decc15258c7deb31dcdbf8c5c12470de61ac8c93413da44c92fdee11a483
+ARG MELETE_PLUGIN_SHA=60449bfaf82d7e7ddf249a9153d76da0b66b47dbe3198527d0da545f9bb22a39
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -36,7 +37,7 @@ ENV PYTHONUNBUFFERED=1 \
     UV_PYTHON_DOWNLOADS=never \
     PATH=/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# git fetches the pinned tag; ca-certificates verifies the clone. The cell's
+# git fetches the engine tag; ca-certificates verifies the clone. The cell's
 # network, filesystem and tool boundaries are enforced separately below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
@@ -125,7 +126,7 @@ RUN useradd --uid 10001 --create-home --home-dir /home/runtime runtime \
 
 LABEL org.opencontainers.image.title="melete-runtime" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.description="Pinned Hermes release configured thin behind Melete's RuntimeAdapter" \
+      org.opencontainers.image.description="Melete's engine, built on Hermes and customised, behind Melete's RuntimeAdapter" \
       com.melete.hermes.tag="${HERMES_TAG}" \
       com.melete.hermes.commit="${HERMES_COMMIT}" \
       com.melete.plugin.sha256="${MELETE_PLUGIN_SHA}" \

@@ -56,7 +56,7 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
     sink: EventSink,
     signal: AbortSignal,
   ): Promise<AttemptOutcome> {
-    // Reserve conservative framing for the pinned engine preamble and plugin schemas.
+    // Reserve conservative framing for the engine preamble and plugin schemas.
     const promptBytes =
       Buffer.byteLength(
         JSON.stringify([renderInstructions(bundle), renderInput(bundle), bundle.tools]),

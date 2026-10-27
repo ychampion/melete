@@ -1,4 +1,4 @@
-"""Boot configuration must select the gateway in the pinned resolver's model section."""
+"""Boot configuration must select the gateway in the engine resolver's model section."""
 import builtins
 import json
 from pathlib import Path

@@ -16,7 +16,7 @@ import { object } from './metering.ts';
 import type { GatewayProtocol } from './types.ts';
 
 /**
- * The opening of the summarizer preamble, byte-identical to the pinned engine
+ * The opening of the summarizer preamble, byte-identical to the engine
  * (`agent/context_compressor.py`, `_build_summary_prompt`). It is shared by the
  * fresh and the iterative-update prompt, so it identifies both.
  */
@@ -35,7 +35,7 @@ export const SCRIPTED_SUMMARY = 'SCRIPTED-SUMMARY-7f3a';
  */
 const SUMMARY_TARGET = /Target ~(\d+) tokens\./;
 
-/** Used when the prompt states no target, which the pinned engine always does. */
+/** Used when the prompt states no target, which the engine always does. */
 export const SUMMARY_OUTPUT_TOKENS = 2000;
 
 /** What the script says once every fixture is read. */

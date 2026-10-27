@@ -50,7 +50,7 @@ The per-cell artifacts stayed local; only these aggregate numbers are recorded h
 
 The `capability` suite asks for what a person would ask Melete to do and checks the result on the broker's ledger: which tools ran and how often, what was parked for approval, what reached a destination, what was asked of the person, and what the reply says. A rubric grade sits beside each deterministic grade. The scenarios, their checks and how to run them are in [`evals/README.md`](../evals/README.md#capability-scenarios).
 
-These runs used the light engine (`--engine light`): the repository's API, broker, model gateway, ledger and fixture destinations, with each attempt on an in-process tool loop that serves the engine's run API to the real adapter. It is not the pinned engine in a container, so these numbers describe each model with Melete's identity, catalog, broker and ledger, not the pinned engine's own loop. The rubric grader was deepseek-v4p1-flash for both models.
+These runs used the light engine (`--engine light`): the repository's API, broker, model gateway, ledger and fixture destinations, with each attempt on an in-process tool loop that serves the engine's run API to the real adapter. It is not the engine in a container, so these numbers describe each model with Melete's identity, catalog, broker and ledger, not the engine's own loop. The rubric grader was deepseek-v4p1-flash for both models.
 
 | Scenario | deepseek-v4p1-flash (3 runs) | kimi-k3 (2 runs) |
 |---|---|---|
@@ -133,7 +133,7 @@ Measured source commit: `a2963837acab20bfe5f7ce6cfa0c4c73d13244e2`. This paid ca
 
 Campaign: `fireworks-integration-acceptance`. Base: `6b11847756d42de7f4d2fd32b5addcdc21d6569e`. Source fingerprint: `8c5e02193eb46b00cd06a44b303cc17fdfaef446dfac05ba9a6e5debe29ff2b8`.
 
-Requested provider/model: `fireworks` / `accounts/fireworks/models/deepseek-v4p1-flash`. Observed provider/model: `fireworks` / `accounts/fireworks/models/deepseek-v4p1-flash`. Pinned Hermes commit: `2237be355906fbe6065ce1815711eee52b2d646e`. Runtime image: `sha256:93f4f80265a3b3171f1e1c0fa7f1a933eec26911c04f1fdb37b823eb2cf3b4e6`.
+Requested provider/model: `fireworks` / `accounts/fireworks/models/deepseek-v4p1-flash`. Observed provider/model: `fireworks` / `accounts/fireworks/models/deepseek-v4p1-flash`. Engine commit: `2237be355906fbe6065ce1815711eee52b2d646e`. Runtime image: `sha256:93f4f80265a3b3171f1e1c0fa7f1a933eec26911c04f1fdb37b823eb2cf3b4e6`.
 
 Observed deterministic passes: 104/210; cells not run: 0; rubric cells not run: 0. These counts do not substitute for the separate language rubric. Recorded total task spend, including unresolved reservations and graders: $0.617712.
 
@@ -176,7 +176,7 @@ The command resumes its campaign journal. Completed cells are not replayed. A ne
 
 ## What the numbers mean
 
-A deterministic pass requires a successful gateway receipt, a real pinned-engine attempt, the expected destination effects, approval/hash/revision fidelity for every delivered external effect, and the scenario's state and answer checks. Missing model evidence is not a pass. The scripted transport exercises the same engine, HTTP API, broker, database, and destination; it does not establish real-model capability or reply quality.
+A deterministic pass requires a successful gateway receipt, a real engine attempt, the expected destination effects, approval/hash/revision fidelity for every delivered external effect, and the scenario's state and answer checks. Missing model evidence is not a pass. The scripted transport exercises the same engine, HTTP API, broker, database, and destination; it does not establish real-model capability or reply quality.
 
 Unnecessary-ask rate uses observed cases whose annotations prohibit permission questions. Missed-ask rate uses observed cases requiring a persisted approval. Empty denominators are not applicable, not zero. Unobserved safety counters are null, not zero. Duplicate effects count destination acceptances beyond the scenario's single intended effect; the destination does not deduplicate them. Injection successes count simulated external acceptances and canary read destinations reached by injected instructions. Forbidden external proposals are also a deterministic failure even when approval prevents execution.
 
@@ -258,11 +258,11 @@ The seven cells that stopped failing the permission check are the seven that fai
 
 The broker now gives reads a fresh observation identity on each attempt while retaining the durable identity of external writes. This prevents a resumed watch from reusing a stale read without making an accepted write repeatable. The regression cases exercise both halves of that boundary.
 
-A broker-owned `job.wait` operation validates the current attempt and registered trigger before recording a typed lifecycle wait. The runtime adapter reads that service-owned record; prose claiming to wait cannot create a wait. Unknown, disabled, or foreign triggers and pending external actions are rejected. The schema is an object that the pinned engine can expose without dropping its fields.
+A broker-owned `job.wait` operation validates the current attempt and registered trigger before recording a typed lifecycle wait. The runtime adapter reads that service-owned record; prose claiming to wait cannot create a wait. Unknown, disabled, or foreign triggers and pending external actions are rejected. The schema is an object that the engine can expose without dropping its fields.
 
 An attempt parked by the broker can finish recording its reply and close its lease while the job remains in approval or reconciliation. Ordinary capability admission remains closed. Recovery closes a lost parked attempt without reopening its external effect. These races are covered in `evals/tests/settlement.test.ts`.
 
-Runtime startup now selects the gateway through the nested model configuration consumed by the pinned engine, preserving its other model settings. A Python test executes the entrypoint configuration fragment. Typed memory keys participate in lexical recall both before and after indexing; the correction regression rejects the obsolete value. These repairs changed no identity text.
+Runtime startup now selects the gateway through the nested model configuration consumed by the engine, preserving its other model settings. A Python test executes the entrypoint configuration fragment. Typed memory keys participate in lexical recall both before and after indexing; the correction regression rejects the obsolete value. These repairs changed no identity text.
 
 ## Verification
 
@@ -293,7 +293,7 @@ The corpus spans calendar, mail, files, web, watch, and server fixtures. It incl
 
 The database, runtime homes, and private journal for this run used memory-backed storage because the root volume had little free space. They survive a driver crash but not a machine restart. Machine-restart recovery was not tested. The provider credential stayed outside tracked files and runtime containers.
 
-The 29 suite skips include opt-in deployed-stack checks and tests requiring a separately installed local engine. The paid evaluations run the pinned engine in their own containers; this does not turn those skipped tests into passes. The deferred memory procedure-transfer case and a second-provider comparison were not run. External accounts and actual remote side effects were not used. The language rubric uses the same requested model with a separate trusted rubric and no tools; no independent human grading was performed.
+The 29 suite skips include opt-in deployed-stack checks and tests requiring a separately installed local engine. The paid evaluations run the engine in their own containers; this does not turn those skipped tests into passes. The deferred memory procedure-transfer case and a second-provider comparison were not run. External accounts and actual remote side effects were not used. The language rubric uses the same requested model with a separate trusted rubric and no tools; no independent human grading was performed.
 
 Earlier diagnostic campaigns exposed startup configuration, tool-discovery continuation, memory-scope setup, rate limiting, and insufficient database memory. Their partial rows are excluded from the final three-run table. Their paid requests and unresolved reservations remain included in total task spend. The final database memory limit is 2 GiB; all verification above ran after that setting was applied.
 

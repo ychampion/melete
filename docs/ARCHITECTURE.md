@@ -66,7 +66,7 @@ With Postgres, `bootstrap` migrates, starts pg-boss, starts memory behind the
 restriction-journal restore gate (the `docker` adapter starts the deployment
 memory the same way), and then chooses the runtime. With the default
 `MELETE_RUNTIME_ADAPTER=hermes` it starts the effect boundary and a supervisor
-that launches one pinned Hermes engine per attempt (`MELETE_RUNTIME_SUPERVISOR=process`
+that launches one engine per attempt (`MELETE_RUNTIME_SUPERVISOR=process`
 for local development with the current user's OS access, `docker` for a
 container per attempt). The process supervisor keeps one engine loaded ahead of
 the next attempt (`MELETE_ENGINE_PREWARM`, on by default): it imports the engine
@@ -154,7 +154,8 @@ Compose restart on one Linux host.
 
 ## 5. Runtime and context
 
-The adapter package pins Hermes `v2026.9.7` and uses its HTTP runs API.
+The adapter package builds the engine from Hermes `v2026.9.7`, customised, and
+uses its HTTP runs API.
 Its client/adapter tests include `names the exact release the image is built
 from`, `the start carries the attempt id as its idempotency key`, and
 `refuses an engine whose run idempotency is not durable`.
@@ -274,7 +275,7 @@ turn whose message ranks the same tools differently sends the same definitions
 says`). Whether this ranking improves a real model's tool
 choice is **not claimed** here; it is measured by the evaluation campaign. A schema loaded on demand
 is persisted for the attempt (`loaded schema persists across service restart
-without leaking to another attempt`). The pinned engine builds a run's tool list
+without leaking to another attempt`). The engine builds a run's tool list
 when the run starts; the plugin registers the loaded tool and asks the engine's
 own live refresh to add it to the running agent's list, at the end, so the
 model calls it on its next request in the same run (`joins the running agent:
@@ -454,7 +455,7 @@ describes the Compose opt-in for 6–8.
 
 ## 13. Further maps
 
-[CAPABILITIES](CAPABILITIES.md) is the capability matrix against the pinned
+[CAPABILITIES](CAPABILITIES.md) is the capability matrix against the
 engine; [LEARNING](LEARNING.md) the correction-to-procedure loop;
 [the browser worker](browser-worker.md) the out-of-cell browser;
 [DEPLOYMENT](DEPLOYMENT.md) operations on the Linux stack;

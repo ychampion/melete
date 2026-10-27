@@ -1682,7 +1682,7 @@ export async function bootstrap(
         );
       }
       if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime && handle && queue) {
-        // The wired product path: the broker and one pinned engine per attempt,
+        // The wired product path: the broker and one engine per attempt,
         // started here so the listener precedes any worker that can claim a job
         // and launch a child.
         if (!env.MELETE_CAPABILITY_KEY)

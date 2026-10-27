@@ -346,7 +346,7 @@ browser launch and model latency.
 
 The Compose check parses YAML and rejects mutations that broaden networks,
 mounts, credentials, uids, or privileges. Its 14 checks include the image's
-pinned packages and the renderer sandbox profile, which must be the pinned
-engine default plus exactly the three additions above. It does not prove Linux
+pinned packages and the renderer sandbox profile, which must be the Docker
+engine's default plus exactly the three additions above. It does not prove Linux
 packet filtering, volume ownership, or container escape resistance, and the
 combined stack with this override runs only on a Linux host.

@@ -1,5 +1,5 @@
 /**
- * What the model is actually told, read off the request the pinned engine sends.
+ * What the model is actually told, read off the request the engine sends.
  *
  * The service is booted with the process supervisor, so the real engine builds
  * its own system prompt from the configuration and home Melete renders. The
@@ -23,7 +23,7 @@ const configured = loadEnv({});
 const localEngine = existsSync(configured.MELETE_HERMES_PYTHON);
 if (!localEngine)
   process.stdout.write(
-    'identity prompt skipped: .hermes-venv is absent; install the pinned local Hermes first\n',
+    'identity prompt skipped: .hermes-venv is absent; install the local engine first\n',
   );
 const handle = localEngine ? await testDatabase() : null;
 afterAll(async () => {
@@ -47,7 +47,7 @@ const text = (content: unknown): string =>
       ? content.map((part) => (part as { text?: string }).text ?? '').join('')
       : '';
 
-(handle ? describe : describe.skip)('the system prompt the pinned engine sends', () => {
+(handle ? describe : describe.skip)('the system prompt the engine sends', () => {
   test('a chat is Melete first, with its persona on top and only this attempt’s facts', async () => {
     if (!handle) return;
     await resetTestRows(handle.sql);

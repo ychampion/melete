@@ -1,4 +1,4 @@
-"""Launch the pinned engine with an OS-selected, continuously held API port.
+"""Launch the engine with an OS-selected, continuously held API port.
 
 The source checkout stays untouched. This small aiohttp startup wrapper reports
 the bound socket, since Hermes's API_SERVER_PORT=0 log only prints the requested

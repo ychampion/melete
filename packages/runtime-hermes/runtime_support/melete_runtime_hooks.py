@@ -1,4 +1,4 @@
-"""Bounded observer capture shared by the plugin and the pinned HTTP bridge.
+"""Bounded observer capture shared by the plugin and the engine's HTTP bridge.
 
 No broker decision, network call or disk write belongs here. Context variables
 keep concurrent runs separate and are copied by Hermes's bounded hook workers.

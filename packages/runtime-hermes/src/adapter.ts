@@ -1,5 +1,5 @@
 /**
- * The `RuntimeAdapter` over a pinned Hermes API server.
+ * The `RuntimeAdapter` over the engine's API server.
  *
  * Everything difficult here is about not lying. The engine's run stream is an
  * in-memory queue with no replay (`gateway/platforms/api_server_runs.py`),

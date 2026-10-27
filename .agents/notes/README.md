@@ -41,7 +41,7 @@ tests it names.
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-thin-harness.md) | The harness is thin and the boundary is thick | accepted |
-| [0002](0002-pinned-hermes-engine.md) | The v0.1 engine is a pinned, unmodified Hermes release | accepted |
+| [0002](0002-pinned-hermes-engine.md) | The v0.1 engine starts from Hermes behind the RuntimeAdapter | superseded by 0026 |
 | [0003](0003-postgres-bounded-state-machine.md) | Job state lives in Postgres as a bounded state machine | accepted |
 | [0004](0004-compose-internal-network-sandbox.md) | v0.1 isolation is a compose internal network, and we say so | accepted |
 | [0005](0005-markdown-knowledge-git-fts.md) | Knowledge is Markdown in git with a per-space FTS5 index | accepted |
@@ -59,9 +59,9 @@ tests it names.
 | [0018](0018-discovery-and-mcp.md) | Discovery over a small core, with MCP and composition behind the broker | accepted |
 | [0019](0019-learning-loop.md) | Corrections become episodes and audited procedure candidates | accepted |
 | [0020](0020-deployment-evidence.md) | Deployment claims require a running Linux stack | accepted |
-| [0021](0021-hermes-capability-audit.md) | What the pinned engine is proven to do, and what awaits proof | accepted |
-| [0022](0022-wired-assistant.md) | The ordinary HTTP job runs one pinned engine per attempt | accepted |
+| [0021](0021-hermes-capability-audit.md) | What the engine is proven to do, and what awaits proof | accepted |
+| [0022](0022-wired-assistant.md) | The ordinary HTTP job runs one engine per attempt | accepted |
 | [0023](0023-experience-adapter.md) | The experience API is an adapter over saved work, never a second truth | accepted |
 | [0024](0024-browser-worker.md) | A browser worker outside the cell, with recipes and takeover | accepted |
 | [0025](0025-web-app.md) | The web app is built from the design canvas, behind one adapter | accepted |
-| [0026](0026-engine-forward.md) | Engine surface probes: what the pinned engine actually does | recorded |
+| [0026](0026-engine-forward.md) | Engine surface probes: what the engine actually does | recorded |

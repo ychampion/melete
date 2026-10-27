@@ -1,6 +1,6 @@
 """The parallel-reads seam: Melete's web lookups in one batch run side by side.
 
-The pinned engine source is read from the local checkout named by
+The engine source is read from the local checkout named by
 ``MELETE_HERMES_ROOT`` (or ``.hermes-src`` at the repository root). Without one
 the tests that need it are skipped with the reason; the others need none.
 """
@@ -41,7 +41,7 @@ def engine_source() -> str:
     root = Path(os.environ.get("MELETE_HERMES_ROOT") or REPOSITORY / ".hermes-src")
     target = root / NAME
     if not target.exists():
-        pytest.skip(f"No pinned engine checkout at {root}; set MELETE_HERMES_ROOT to run this.")
+        pytest.skip(f"No engine checkout at {root}; set MELETE_HERMES_ROOT to run this.")
     return target.read_text(encoding="utf-8")
 
 
@@ -59,7 +59,7 @@ def planner(source: str, monkeypatch):
     for name, module in stubs.items():
         monkeypatch.setitem(sys.modules, name, module)
     module = types.ModuleType("tool_dispatch_helpers")
-    exec(compile(source, NAME, "exec"), module.__dict__)  # noqa: S102 - the pinned engine source
+    exec(compile(source, NAME, "exec"), module.__dict__)  # noqa: S102 - the engine source
     return module._plan_tool_batch_segments
 
 

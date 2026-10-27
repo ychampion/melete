@@ -21,14 +21,14 @@ const configured = loadEnv({});
 const localEngine = existsSync(configured.MELETE_HERMES_PYTHON);
 if (!localEngine)
   process.stdout.write(
-    'wired assistant skipped: .hermes-venv is absent; install the pinned local Hermes first\n',
+    'wired assistant skipped: .hermes-venv is absent; install the local engine first\n',
   );
 const handle = localEngine ? await testDatabase() : null;
 afterAll(async () => {
   await handle?.close();
 }, 30_000);
 
-(handle ? describe : describe.skip)('wired assistant through HTTP and pinned Hermes', () => {
+(handle ? describe : describe.skip)('wired assistant through HTTP and the engine', () => {
   test('skills, handled recall, delta and correction repair reach the model from bootstrap', async () => {
     if (!handle) return;
     const root = await mkdtemp(join(tmpdir(), 'melete-wired-assistant-'));

@@ -15,8 +15,8 @@ merging. The gateway and broker use only service-owned credentials. Each engine
 gets its bounded attempt capability and an independent API key; neither the
 database URL nor provider, approval or master keys enter its environment.
 
-The process supervisor runs `process_launcher.py`, which calls the pinned Hermes CLI, from the
-job's workspace, with a fresh temporary home and the unmodified pinned checkout
+The process supervisor runs `process_launcher.py`, which calls the engine's CLI, from the
+job's workspace, with a fresh temporary home and the engine checkout
 at `2237be355906fbe6065ce1815711eee52b2d646e` (v2026.9.7). The HTTP dependency is
 `aiohttp==3.14.3`. It kills the complete owned process tree and removes the home
 on attempt end. Canonical transcript, constraints, delta and repair briefs are
@@ -24,9 +24,9 @@ rendered into every new engine's input. The per-job workspace remains available
 to later attempts. Process mode has the launching user's OS access and is
 intended for local development.
 
-The thin config disables auxiliary title generation and background review, and
+The engine config disables auxiliary title generation and background review, and
 the plugin serializes broker results into the text format accepted by the
-pinned Hermes registry. At the live service boundary the broker records an
+engine's registry. At the live service boundary the broker records an
 approval request without moving the job out of `running`: the runner must
 first finish the attempt under its lease. Standalone broker callers retain
 their existing transition behavior. Reusing a proposal after a job revision

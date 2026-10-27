@@ -388,7 +388,7 @@ const variables = z.object({
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /**
-   * `hermes` starts one pinned engine per attempt through the selected supervisor;
+   * `hermes` starts one engine per attempt through the selected supervisor;
    * `docker` is the deployment's supervised container path; `external` expects an
    * injected RuntimeAdapter; `stub` is an explicit scripted development choice.
    */
