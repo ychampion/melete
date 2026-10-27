@@ -30,22 +30,20 @@ for another model your account can use.
 | Model | Exact Token Factory model ID | Context tokens | Tools | Reads images | Use it for |
 | --- | --- | ---: | --- | --- | --- |
 | NVIDIA Nemotron 3 Super | `nvidia/nemotron-3-super-120b-a12b` | 262,144 | Yes | No | The main model for everyday work, coding and multi-step tasks |
-| NVIDIA Nemotron 3 Nano | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | 262,144 | Yes | No | Quick side calls, such as short summaries, titles and memory extraction |
+| NVIDIA Nemotron 3 Nano | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | 262,144 | Yes | No | Quick side calls, such as reading chats into memory and quick voice replies |
 | NVIDIA Nemotron 3 Ultra | `nvidia/Nemotron-3-Ultra-550b-a55b` | 1,048,576 | Yes | No | Long research and demanding reasoning |
 
 These are the public serverless recommendations. Exact IDs, tool support and
 token limits come from the
 [official model catalog](https://tokenfactory.nebius.com/model-catalog.md) and its
 [model metadata](https://tokenfactory.nebius.com/api/public/models_info).
-Ultra uses the newer
-[Nemotron inference page's](https://nebius.com/services/token-factory/models/nvidia-nemotron-models-inference)
-1,024K context limit, confirmed as 1,048,576 tokens in the catalog metadata;
-older model summaries listed 256K. Context includes both input and output.
+The [Nemotron models page](https://nebius.com/services/token-factory/models/nvidia-nemotron-models-inference)
+lists the same limits. Context includes both input and output.
 
 Keep Super as the primary model. In **Settings → Models → Secondary model**,
-use the same Nebius connection to choose Nano, and keep **Side tasks** on
-**Secondary** for short calls such as reading chats into memory. Scheduled work
-stays on the primary unless you change its existing setting. For a long research
+use the same Nebius connection to choose Nano, and keep **Quick side tasks** on
+**Secondary** for short calls such as reading chats into memory. **Scheduled and
+repeating jobs** stay on the primary unless you move them. For a long research
 session, switch the primary to Ultra and return to Super afterwards.
 
 Super, Nano and Ultra above read text only. Nemotron **Nano Omni needs a dedicated
@@ -80,28 +78,17 @@ unset NEBIUS_API_KEY
 
 ### Pass the key to a Compose service
 
-Compose's `.env` file supplies substitutions; it does not pass every variable
-into the container. The shipped `deploy/docker-compose.nebius.yml` override
-passes the key to the Melete service:
-
-```yaml
-services:
-  melete:
-    environment:
-      NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
-```
-
-Use it alongside the standard file, including when recreating the service after
-changing the key:
+The shipped `deploy/docker-compose.yml` passes `NEBIUS_API_KEY` from
+`deploy/.env` to the Melete service, as it does for the other provider keys.
+Recreate the service after changing the key:
 
 ```bash
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.nebius.yml up -d --wait
+docker compose -f deploy/docker-compose.yml up -d --wait
 ```
 
-Keep using both files for later Compose commands. Only the Melete service needs
-the provider key; the agent's computer receives credentials from the gateway.
-When you connect the key in Settings instead, no Compose override is needed.
-See [Deployment → Providers](DEPLOYMENT.md#providers) for the surrounding setup.
+Only the Melete service receives the provider key; the agent's computer receives
+credentials from the gateway. See [Deployment → Providers](DEPLOYMENT.md#providers)
+for the surrounding setup.
 
 ## Run the open weights yourself
 

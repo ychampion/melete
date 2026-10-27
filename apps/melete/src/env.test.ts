@@ -210,17 +210,13 @@ describe('the model defaults', () => {
     expect(composeServiceEnvironment().MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe('4096');
   });
 
-  test('every service setting the example lists reaches the service with its documented Compose files', () => {
+  test('every service setting the example configuration lists reaches the service', () => {
     // Compose hands a container only the variables its file names, so a setting
-    // written in deploy/.env and missing there is silently ignored. Nebius keys
-    // use the provider override documented alongside the example setting.
+    // written in deploy/.env and missing there is silently ignored.
     const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
     const listed = [...example.matchAll(/^([A-Z_][A-Z0-9_]*)=/gm)].map((match) => match[1] ?? '');
     const read = Object.keys(envSchema.in.shape);
-    const nebius = parse(
-      readFileSync(join(import.meta.dir, '../../../deploy/docker-compose.nebius.yml'), 'utf8'),
-    ) as { services: { melete: { environment: Record<string, string> } } };
-    const composed = { ...composeServiceEnvironment(), ...nebius.services.melete.environment };
+    const composed = composeServiceEnvironment();
     expect(listed).toContain('MELETE_ENGINE_MAX_TURNS');
     expect(listed.filter((name) => read.includes(name) && !(name in composed))).toEqual([]);
   });

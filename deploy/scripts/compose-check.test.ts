@@ -27,19 +27,10 @@ const failures = (file: ComposeFile) =>
     .map((r) => r.name);
 
 describe('the shipped compose file', () => {
-  test('the Nebius override hands its key only to the API and preserves the boundaries', () => {
-    const overlay = loadCompose(join(import.meta.dir, '..', 'docker-compose.nebius.yml'));
-    expect(Object.keys(overlay.services ?? {})).toEqual(['melete']);
-    expect(Object.keys(overlay.services?.melete ?? {})).toEqual(['environment']);
-    expect(overlay.services?.melete?.environment?.NEBIUS_API_KEY).toBe('${NEBIUS_API_KEY:-}');
-    const merged = structuredClone(compose);
-    Object.assign(
-      merged.services?.melete?.environment ?? {},
-      overlay.services?.melete?.environment,
-    );
-    expect(failures(merged)).toEqual([]);
-    for (const [name, service] of Object.entries(merged.services ?? {})) {
-      if (name !== 'melete') expect(service.environment).not.toHaveProperty('NEBIUS_API_KEY');
+  test('the Nebius key reaches only the API, like the other provider keys', () => {
+    expect(compose.services?.melete?.environment?.NEBIUS_API_KEY).toBe('${NEBIUS_API_KEY:-}');
+    for (const [name, service] of Object.entries(compose.services ?? {})) {
+      if (name !== 'melete') expect(service.environment ?? {}).not.toHaveProperty('NEBIUS_API_KEY');
     }
   });
 

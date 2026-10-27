@@ -32,7 +32,7 @@ const PROVIDER_PROTOCOLS = {
   [OPENAI_COMPATIBLE]: ['chat/completions', 'responses'],
 } as const satisfies Record<string, readonly GatewayProtocol[]>;
 
-/** How the pinned engine is told to speak to the gateway. */
+/** How the engine is told to speak to the gateway. */
 export type ModelApiMode = 'anthropic_messages' | 'codex_responses' | 'chat_completions';
 
 const API_MODE_PROTOCOLS: Record<ModelApiMode, GatewayProtocol> = {

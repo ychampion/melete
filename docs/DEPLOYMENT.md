@@ -2028,7 +2028,7 @@ provider.
 | `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, or OAuth sign-in | chat completions; responses for `gpt-6` models |
 
 [NVIDIA Nemotron on Nebius Token Factory](NEBIUS.md) covers connecting in Settings,
-the server environment and Compose key passthrough, and choosing a primary and secondary model.
+the server environment, and choosing a primary and secondary model.
 
 Any other name stops the service at start-up with a message naming the setting,
 and so does `openai-compatible` without a usable `OPENAI_COMPAT_BASE_URL`. An
