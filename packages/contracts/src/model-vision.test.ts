@@ -27,6 +27,8 @@ test('the catalog knows the models that read images', () => {
     ['openai-compatible', 'qwen2.5vl:7b'],
     ['openai-compatible', 'gemma3:27b'],
     ['openai-compatible', 'llama3.2-vision'],
+    ['nebius', 'nvidia/Nemotron-3.5-Super-VL'],
+    ['openai-compatible', 'nvidia/Nemotron-3-Nano-Omni'],
   ] as const)
     expect([provider, model, modelSupportsVision(provider, model)]).toEqual([
       provider,
@@ -41,6 +43,9 @@ test('anything else reads text only', () => {
     ['openai', 'text-embedding-3-large'],
     ['openai-compatible', 'llama3.1:8b'],
     ['openai-compatible', 'mistral-small'],
+    ['nebius', 'nvidia/nemotron-3-super-120b-a12b'],
+    ['nebius', 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B'],
+    ['nebius', 'nvidia/Nemotron-3-Ultra-550b-a55b'],
     ['fake', 'script'],
     ['stub', 'script'],
     ['a-provider-nobody-listed', 'claude-opus-4-1'],

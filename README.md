@@ -87,6 +87,13 @@ you speak.
 
 ![Melete following a job through: the draft, the one approval, then the replies and follow-up until it's settled.](docs/assets/readme/demo.gif)
 
+## Choose your model
+
+Run Melete with NVIDIA's open Nemotron models through Nebius Token Factory.
+Connect your key in **Settings → Models**, start with Super, and use Nano for
+quick side calls. [Connect Nemotron](docs/NEBIUS.md) covers the models, server
+configuration and running the same open weights on your own hardware.
+
 ## Run it yourself
 
 You need Docker, Bun and an API key for your model provider.

@@ -2023,8 +2023,12 @@ provider.
 | `anthropic` | `ANTHROPIC_API_KEY` | messages |
 | `openai` | `OPENAI_API_KEY` | responses |
 | `google` | `GOOGLE_API_KEY` | chat completions |
+| `nebius` | `NEBIUS_API_KEY` | chat completions |
 | `chatgpt` | the owner's ChatGPT sign-in | responses |
 | `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, or OAuth sign-in | chat completions; responses for `gpt-6` models |
+
+[NVIDIA Nemotron on Nebius Token Factory](NEBIUS.md) covers connecting in Settings,
+the server environment and Compose key passthrough, and choosing a primary and secondary model.
 
 Any other name stops the service at start-up with a message naming the setting,
 and so does `openai-compatible` without a usable `OPENAI_COMPAT_BASE_URL`. An
