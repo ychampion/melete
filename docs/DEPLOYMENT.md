@@ -1077,7 +1077,7 @@ docker compose -f deploy/docker-compose.yml ps
 ```
 
 Then open **http://localhost:3101** on the Windows machine and continue with the
-README's [Run it yourself](../README.md#run-it-yourself).
+README's [Get started](../README.md#get-started).
 
 `bun run doctor --docker` names anything on the list above that is missing:
 Docker Desktop not running (nothing answers on its named pipe,

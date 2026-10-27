@@ -153,7 +153,7 @@ unset FIREWORKS_API_KEY
 ```
 
 For another provider, they export its key and add `--provider` and `--model`,
-as [Connect your model](README.md#connect-your-model) lists, for example
+as [Your model. Your context.](README.md#your-model-your-context) lists, for example
 `ANTHROPIC_API_KEY` with `--provider anthropic --model <model id>`.
 
 **Other ports or a second installation.** Before the first start, and only
@@ -274,6 +274,13 @@ choosing one from the list.
 
 The basic setup is done here. Tell the person, and offer the optional parts
 below. Do each only when the person wants it.
+
+For a useful first session, follow [Start here](docs/START-HERE.md). The
+person can bring a short, reviewed preferences file from their current
+assistant through **Memory → Import**; [Bring your context](docs/BRING-YOUR-CONTEXT.md)
+includes the export prompt and accepted format. Help them choose one
+[playbook](docs/PLAYBOOKS.md) and check its result after the needed accounts
+are connected. Keep personalization separate from credentials and access.
 
 ## 8. Optional: a computer for the agent
 
