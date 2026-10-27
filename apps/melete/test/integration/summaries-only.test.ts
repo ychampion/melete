@@ -231,6 +231,51 @@ databaseTest(
   },
 );
 
+databaseTest(
+  'a recording is an original too; only speech Melete made plays as before',
+  async () => {
+    // A voicemail saved into Files, and a recording kept as an artifact.
+    const memo = await savedFile('mail/voicemail.mp3', 'A letter, read aloud\n');
+    const recording = await savedArtifact('downloads/memo.m4a', 'A voice memo\n', 'audio/mp4');
+    // Speech an audio.synthesize step made, kept under that step's own id.
+    const step = recordId('act');
+    const payload = JSON.stringify({ text: 'Your bill is due on Friday.' });
+    await sql()`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+      canonical_payload, payload_hash, status, idempotency_key, receipt, resolved_at)
+    values (${step}, ${jobId}, ${attemptId}, ${connectionId}, 'audio.synthesize', 'write',
+      ${payload}::jsonb, ${hash(payload)}, 'succeeded', ${step},
+      ${JSON.stringify({ action_id: step, detail: {} })}::jsonb, now())`;
+    const speech = `art_${step.slice('act_'.length)}`;
+    const said = 'RIFF speech\n';
+    await mkdir(join(spacesRoot, spaceId, 'artifacts'), { recursive: true });
+    await writeFile(join(spacesRoot, spaceId, 'artifacts', 'reply.wav'), said);
+    await sql()`insert into artifact
+    (id, space_id, job_id, source_job_id, area, path, kind, content_hash, mime, size)
+    values (${speech}, ${spaceId}, ${jobId}, null, 'artifacts', 'artifacts/reply.wav', 'audio',
+      ${hash(said)}, 'audio/wav', ${Buffer.byteLength(said)})`;
+
+    await turn(true);
+    const opens = async () =>
+      (await activity()).filter((entry) => entry.note === 'original_opened').length;
+    const already = await opens();
+    for (const path of [`/files/${memo}/content`, `/artifacts/${recording}/content`]) {
+      const refused = await read(path);
+      expect(refused.status).toBe(403);
+      expect(await refused.text()).not.toContain('read aloud');
+    }
+    const opened = await open(`/files/${memo}/original`);
+    expect(opened.status).toBe(200);
+    expect(await opened.text()).toBe('A letter, read aloud\n');
+    expect(await opens()).toBe(already + 1);
+    // Melete's own speech is its words, not an original: it plays, and nothing is noted.
+    const played = await read(`/artifacts/${speech}/content`);
+    expect(played.status).toBe(200);
+    expect(await played.text()).toBe(said);
+    expect(await opens()).toBe(already + 1);
+    await turn(false);
+  },
+);
+
 /** What the next attempt of the chat is asked to do, as the agent is given it. */
 async function objective(): Promise<string> {
   if (!fixture) throw new Error('No database');

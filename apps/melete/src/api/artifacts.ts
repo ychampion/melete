@@ -229,18 +229,43 @@ type Read = 'content' | 'original';
 
 /**
  * Whether this read may go ahead in the file's space, and whether it is to be
- * noted there once the file is open. Speech Melete made for a reply is its own
- * words, not an original, so it plays as before.
+ * noted there once the file is open. Speech Melete made itself is its own
+ * words, not an original, so it plays as before; any other recording, such as
+ * a voicemail saved from a message, is an original like any other file.
  */
 async function admitRead(
   db: Database,
   read: Read,
-  file: { spaceId: string; mime: string },
+  file: { spaceId: string; generatedSpeech: boolean },
 ): Promise<boolean> {
-  if (file.mime.startsWith('audio/')) return false;
+  if (file.generatedSpeech) return false;
   if (!(await summariesOnlyIn(db, file.spaceId))) return false;
   if (read === 'content') throw new ServiceError(SUMMARIES_ONLY_CODE, SUMMARIES_ONLY_REFUSAL, 403);
   return true;
+}
+
+/**
+ * Whether an artifact is speech Melete made: the file an `audio.synthesize`
+ * step of the same job recorded under that step's own id. Its mime alone says
+ * nothing, since a recording saved from elsewhere carries the same one.
+ */
+async function generatedSpeech(
+  db: Database,
+  file: { id: string; jobId: string | null; mime: string },
+): Promise<boolean> {
+  if (!file.mime.startsWith('audio/') || !file.jobId) return false;
+  const actionId = `${ID_PREFIXES.action}_${file.id.slice(ID_PREFIXES.artifact.length + 1)}`;
+  const [made] = await db
+    .select({ id: action.id })
+    .from(action)
+    .where(
+      and(
+        eq(action.id, actionId),
+        eq(action.jobId, file.jobId),
+        eq(action.kind, 'audio.synthesize'),
+      ),
+    );
+  return made !== undefined;
 }
 
 /**
@@ -312,7 +337,7 @@ export function mountArtifacts(
     const name = found.artifact.path.split('/').at(-1) ?? 'artifact';
     const noted = await admitRead(db, read, {
       spaceId: found.artifact.spaceId,
-      mime: found.artifact.mime,
+      generatedSpeech: await generatedSpeech(db, found.artifact),
     });
     const opened = await verified(
       () => openArtifact(roots, found.artifact.spaceId, found.artifact),
@@ -360,7 +385,8 @@ export function mountArtifacts(
     const saved = row ? savedFile(row.action.kind, row.action.receipt) : null;
     if (!row || !saved) throw noFile();
     const name = saved.path.split('/').at(-1) ?? 'file';
-    const noted = await admitRead(db, read, { spaceId: row.job.spaceId, mime: mimeForName(name) });
+    // A saved file is never speech Melete made: that is an artifact of its own.
+    const noted = await admitRead(db, read, { spaceId: row.job.spaceId, generatedSpeech: false });
     const opened = await verified(
       () =>
         openArtifact(roots, row.job.spaceId, {
