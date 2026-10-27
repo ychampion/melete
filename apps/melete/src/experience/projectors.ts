@@ -96,6 +96,7 @@ export function appName(row: ConnectionRow): string {
     drive: 'Drive',
     files: 'Files',
     web: 'Web',
+    room: 'Room',
     test: 'Test connection',
     device: 'Computer',
     sandbox: 'Computer',
@@ -119,6 +120,8 @@ const LABELS: Record<string, string> = {
   'calendar.create': 'Created an event',
   'calendar.update': 'Updated an event',
   'calendar.delete': 'Removed an event',
+  'room.member_freebusy': 'Checked a member’s free time',
+  'room.add_to_member_calendar': 'Added an event to a member’s calendar',
   'email.search': 'Checked your mail',
   'email.read': 'Read a message',
   'email.draft': 'Prepared a draft',
@@ -162,6 +165,11 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'calendar.create': ['Adding an event', 'Added an event'],
   'calendar.update': ['Updating an event', 'Updated an event'],
   'calendar.delete': ['Removing an event', 'Removed an event'],
+  'room.member_freebusy': ['Checking a member’s free time', 'Checked a member’s free time'],
+  'room.add_to_member_calendar': [
+    'Adding an event to a member’s calendar',
+    'Added an event to a member’s calendar',
+  ],
   'email.search': ['Searching your mail', 'Searched your mail'],
   'email.read': ['Reading a message', 'Read a message'],
   'email.draft': ['Drafting a message', 'Drafted a message'],
@@ -876,6 +884,8 @@ export function actionSources(row: ActionRow, connection: ConnectionRow): Experi
     case 'calendar.update':
     case 'calendar.delete':
       return [source('event', payload.summary ?? detail.summary, 'Calendar event')];
+    case 'room.add_to_member_calendar':
+      return [source('event', object(payload.event).summary, 'Calendar event')];
     case 'email.search':
       return array(detail.messages).map((item) =>
         source('message', object(item).subject, 'Message'),
@@ -1039,7 +1049,12 @@ export function projectCards(
   const payload = object(row.canonicalPayload);
   const detail = object(object(row.receipt).detail);
   return sources.map((source, index) => {
-    const event = row.kind === 'calendar.list' ? object(array(detail.events)[index]) : payload;
+    const event =
+      row.kind === 'calendar.list'
+        ? object(array(detail.events)[index])
+        : row.kind === 'room.add_to_member_calendar'
+          ? object(payload.event)
+          : payload;
     const facts: Array<{ label: string; value: string }> = [];
     if (source.kind === 'event')
       for (const [field, label] of [
@@ -1269,6 +1284,8 @@ export function projectQuestionDecision(input: {
  * invite from outside their own accounts and what a double-booking lands on.
  */
 export function calendarReasons(kind: string, payload: Record<string, unknown>): string[] {
+  if (kind === 'room.add_to_member_calendar')
+    return calendarReasons('calendar.create', memberCalendarEvent(payload));
   if (kind !== 'calendar.create' && kind !== 'calendar.update') return [];
   const checked = object(payload.checked);
   const strings = (value: unknown) =>
@@ -1320,6 +1337,8 @@ export function calendarFacts(
   kind: string,
   payload: Record<string, unknown>,
 ): { label: string; value: string }[] {
+  if (kind === 'room.add_to_member_calendar')
+    return calendarFacts('calendar.create', memberCalendarEvent(payload));
   if (kind !== 'calendar.create' && kind !== 'calendar.update') return [];
   const checked = object(payload.checked);
   const guests = array(payload.attendees).filter(
@@ -1347,6 +1366,12 @@ export function calendarFacts(
     facts.push({ label: 'Why both', value: plainText(doubleBook.reason, 'No reason given') });
   }
   return facts;
+}
+
+/** A room can describe the event it proposes, but never existing private event names. */
+function memberCalendarEvent(payload: Record<string, unknown>): Record<string, unknown> {
+  const event = object(payload.event);
+  return { ...event, checked: { ...object(event.checked), names: false } };
 }
 
 /**
@@ -1453,6 +1478,8 @@ export function projectPermission(input: {
   because?: BecauseLink[];
 }) {
   const payload = object(input.action.canonicalPayload);
+  const memberCalendar = input.action.kind === 'room.add_to_member_calendar';
+  const eventPayload = memberCalendar ? object(payload.event) : payload;
   const isSend = input.action.kind.endsWith('.send');
   const draft = isSend ? draftForReview(input.action) : null;
   const file = input.action.kind === 'files.write' ? proposedFile(payload) : null;
@@ -1462,18 +1489,28 @@ export function projectPermission(input: {
   const past = Object.keys(ASKED).find((verb) => label.startsWith(`${verb} `));
   const base = past ? `${ASKED[past]}${label.slice(past.length)}` : label;
   const egress = egressCard(input.action.kind, payload);
-  const what = isSend
-    ? `${base} to ${recipientText(payload)}`
-    : file
-      ? // Where it lands, plainly: the person's own Files are not the agent's workspace.
-        `Save ${file.path}${payload.area === 'artifacts' ? ' to your Files' : ''}`
-      : (egress?.title ??
-        stepAsk(input.action.kind, payload) ??
-        DEVICE_ASKS[input.action.kind] ??
-        SANDBOX_ASKS[input.action.kind] ??
-        appAsk(input.action.kind, payload) ??
-        base);
+  const what = memberCalendar
+    ? 'Add an event to this member’s calendar?'
+    : isSend
+      ? `${base} to ${recipientText(payload)}`
+      : file
+        ? // Where it lands, plainly: the person's own Files are not the agent's workspace.
+          `Save ${file.path}${payload.area === 'artifacts' ? ' to your Files' : ''}`
+        : (egress?.title ??
+          stepAsk(input.action.kind, payload) ??
+          DEVICE_ASKS[input.action.kind] ??
+          SANDBOX_ASKS[input.action.kind] ??
+          appAsk(input.action.kind, payload) ??
+          base);
   const facts = [
+    ...(memberCalendar
+      ? [
+          {
+            label: 'Calendar member',
+            value: plainText(payload.member_name ?? payload.member, 'The member who shared it'),
+          },
+        ]
+      : []),
     ...(egress?.facts ?? []),
     ...(file
       ? [
@@ -1507,15 +1544,23 @@ export function projectPermission(input: {
           },
         ]
       : []),
-    ...(typeof payload.summary === 'string'
-      ? [{ label: 'Event', value: plainText(payload.summary, 'Event') }]
+    ...(typeof eventPayload.summary === 'string'
+      ? [{ label: 'Event', value: plainText(eventPayload.summary, 'Event') }]
+      : []),
+    ...(memberCalendar && typeof eventPayload.description === 'string' && eventPayload.description
+      ? [
+          {
+            label: eventPayload.description.length > 4000 ? 'Description preview' : 'Description',
+            value: shownWhole(plainText(eventPayload.description, 'Not specified', 50_000)),
+          },
+        ]
       : []),
     ...(['start', 'end', 'location'] as const).flatMap((key) =>
-      typeof payload[key] === 'string'
+      typeof eventPayload[key] === 'string'
         ? [
             {
               label: key === 'start' ? 'Starts' : key === 'end' ? 'Ends' : 'Place',
-              value: plainText(payload[key], 'Not specified'),
+              value: plainText(eventPayload[key], 'Not specified'),
             },
           ]
         : [],

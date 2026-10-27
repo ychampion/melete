@@ -30,6 +30,7 @@ import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { openMcpWorker } from '../../src/connectors/mcp.ts';
 import { mcpConnector } from '../../src/connectors/mcp-connector.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { roomManifest } from '../../src/connectors/room.ts';
 import { sandboxTerminalManifest } from '../../src/connectors/sandbox-exec.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -42,6 +43,7 @@ import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { createMemoryTrustResolver } from '../../src/memory/broker-trust.ts';
 import { principalContext } from '../../src/principals/authority.ts';
 import { PushService } from '../../src/push/service.ts';
+import { resolveRoomCalendarShare } from '../../src/rooms/calendar-shares.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { mcpFixtureConfig } from '../fixtures/mcp-config.ts';
@@ -459,6 +461,74 @@ async function setPolicy(roomId: string, patch: Record<string, unknown>) {
   ).policy;
 }
 
+/** Route an action through the room while the calendar remains in its member's own space. */
+async function sharedCalendar(roomId: string, person: Person) {
+  const { sql } = database();
+  const [personal] = await sql`select id from space where kind = 'personal'
+    and owner_principal_id = ${person.id}`;
+  const calendar = await install(String(personal?.id), calendarManifest, 'owner');
+  const share = () =>
+    ok(
+      send(person.cookie, `/rooms/${roomId}/calendar-shares`, 'PUT', {
+        connection_id: calendar,
+        mode: 'freebusy_add',
+      }),
+    );
+  await share();
+  // Execution is not exercised here. The real share resolver binds the consent
+  // before the broker's actual decision routes and card projection are exercised.
+  const connector: Connector = {
+    ...succeeding(roomManifest),
+    async prepare(payload, ctx, tx) {
+      const member = String(payload.member);
+      const { share, connection } = await resolveRoomCalendarShare(tx, ctx.space_id, member, true);
+      return {
+        ...payload,
+        calendar_connection_id: connection.id,
+        share_created_at: share.createdAt.toISOString(),
+        membership_generation: share.membershipGeneration,
+      };
+    },
+  };
+  const roomConnection = await installAs(roomId, roomManifest, 'room', connector, true);
+  return { calendar, roomConnection, share };
+}
+
+async function askForCalendar(roomId: string, roomConnection: string, target: Person) {
+  const { broker, runner } = database();
+  const opened = await startThread(
+    world.alice,
+    roomId,
+    '@Melete add the planning session to the shared member calendar',
+  );
+  const requestId = opened.request_job_id ?? '';
+  const { claims } = await claim(requestId);
+  const asked = await broker.propose(claims as CapabilityClaims, {
+    connection_id: roomConnection,
+    kind: 'room.add_to_member_calendar',
+    payload: {
+      member: target.id,
+      event: {
+        summary: 'Planning session',
+        start: '2027-01-10T09:00:00Z',
+        end: '2027-01-10T10:00:00Z',
+      },
+    },
+  });
+  expect(asked.requires_approval).toBe(true);
+  await runner.commitOutcome(claims, {
+    kind: 'waiting_for_approval',
+    action_ids: [asked.action_id],
+  });
+  return {
+    requestId,
+    threadId: opened.thread.id,
+    approvalId: asked.approval_id ?? '',
+    actionId: asked.action_id,
+    hash: asked.payload_hash,
+  };
+}
+
 withDb('room approvals', () => {
   afterAll(async () => {
     await runner?.stop();
@@ -502,6 +572,96 @@ withDb('room approvals', () => {
     }
     world = people as World;
   }, 60_000);
+
+  test('only the calendar member approves its addition under every room rule and receives its push', async () => {
+    const { sql, db, broker } = database();
+    const { roomId } = await makeRoom('Member calendar approvals');
+    const { roomConnection } = await sharedCalendar(roomId, world.bob);
+    const push = new PushService(db, { keys: null, subject: null, extraOrigins: [] });
+    const since = new Date(Date.now() - 60_000);
+    for (const approvers of ['requester', 'any_member', 'owners']) {
+      await setPolicy(roomId, { approvers, team_account_approvers: 'owners' });
+      const asked = await askForCalendar(roomId, roomConnection, world.bob);
+      const { card: shown } = await card(world.carol, roomId, asked.threadId, asked.approvalId);
+      expect(shown.requested_by?.principal_id).toBe(world.alice.id);
+      expect(shown.eligible_approvers?.map((who) => who.principal_id)).toEqual([world.bob.id]);
+      expect(shown.why.join(' ')).toContain(
+        `Waiting for ${labelOf(world.bob, roomId)}, whose calendar this adds to.`,
+      );
+      for (const person of [world.alice, world.carol, world.dan]) {
+        for (const option of ['allow_once', 'deny'] as const)
+          expect(
+            (
+              await answer(person, roomId, asked.approvalId, {
+                option,
+                version: shown.version,
+                payload_hash: asked.hash,
+              })
+            ).status,
+          ).toBe(403);
+      }
+      expect(
+        await refusalOf(
+          broker.decide(
+            asked.actionId,
+            { decision: 'approved', payload_hash: asked.hash },
+            undefined,
+            world.alice.id,
+          ),
+        ),
+      ).toBe('scope_denied');
+      for (const person of Object.values(world)) await push.collectDecisions(person.id, since);
+      const told = await sql`select principal_id from push_intent
+        where dedup_key like ${`decision:approval:${asked.approvalId}:%`} and dropped_at is null`;
+      expect(told.map((row) => String(row.principal_id))).toEqual([world.bob.id]);
+      await ok(
+        answer(world.bob, roomId, asked.approvalId, {
+          option: 'allow_once',
+          version: shown.version,
+          payload_hash: asked.hash,
+        }),
+      );
+      expect(await decision(asked.approvalId)).toEqual({
+        decision: 'approved',
+        decided_by: world.bob.id,
+      });
+    }
+  }, 90_000);
+
+  test('revoking, replacing consent or leaving removes the calendar approver immediately', async () => {
+    const { sql, db } = database();
+    const { roomId } = await makeRoom('Withdrawn calendar consent');
+    const { roomConnection, share } = await sharedCalendar(roomId, world.bob);
+    const asked = await askForCalendar(roomId, roomConnection, world.bob);
+    const { card: shown } = await card(world.bob, roomId, asked.threadId, asked.approvalId);
+    const body = {
+      option: 'allow_once' as const,
+      version: shown.version,
+      payload_hash: asked.hash,
+    };
+    await ok(send(world.bob.cookie, `/rooms/${roomId}/calendar-shares`, 'DELETE'));
+    expect(
+      (await card(world.alice, roomId, asked.threadId, asked.approvalId)).card.eligible_approvers,
+    ).toEqual([]);
+    expect((await answer(world.bob, roomId, asked.approvalId, body)).status).toBe(403);
+    await share();
+    expect((await answer(world.bob, roomId, asked.approvalId, body)).status).toBe(403);
+    const next = await askForCalendar(roomId, roomConnection, world.bob);
+    await ok(send(world.bob.cookie, `/rooms/${roomId}/members/${world.bob.id}`, 'DELETE'));
+    // Roster changes already withdraw room permissions. No other member
+    // inherits the calendar owner's unanswered permission.
+    const view = roomThreadView.parse(
+      await ok(send(world.alice.cookie, `/rooms/${roomId}/threads/${next.threadId}`)),
+    );
+    expect(view.requests.find((entry) => entry.job_id === next.requestId)?.permissions).toEqual([]);
+    const push = new PushService(db, { keys: null, subject: null, extraOrigins: [] });
+    for (const person of Object.values(world))
+      await push.collectDecisions(person.id, new Date(Date.now() - 60_000));
+    const told = await sql`select principal_id from push_intent
+      where dedup_key like ${`decision:approval:${next.approvalId}:%`} and dropped_at is null`;
+    expect(told).toHaveLength(0);
+    expect(await decision(next.approvalId)).toEqual({ decision: 'denied', decided_by: 'policy' });
+  }, 90_000);
 
   test('only the requester decides under the requester policy, and a guest never decides', async () => {
     const { broker } = database();

@@ -586,6 +586,7 @@ export class OutlookCalendarConnector implements Connector {
           { id: MELETE_MARK, value: `${uid} ${action.id} ${action.payload_hash}` },
         ],
       };
+      await ctx.beforeCalendarWrite?.();
       dispatched = true;
       const response =
         update && existing?.id

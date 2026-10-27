@@ -68,6 +68,7 @@ export * from './redact.ts';
 export * from './repair.ts';
 export * from './reply-voice.ts';
 export * from './responsibility.ts';
+export * from './room-calendar-shares.ts';
 export * from './rooms.ts';
 export * from './runs.ts';
 export * from './runtime.ts';
