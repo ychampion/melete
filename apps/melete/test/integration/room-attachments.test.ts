@@ -126,7 +126,10 @@ let carol: Person;
 
 async function makeRoom(members: Person[]) {
   const made = roomDetail.parse(
-    await ok(send(alice.cookie, '/rooms', 'POST', { name: `Home ${newId('x')}` }), 201),
+    await ok(
+      send(alice.cookie, '/rooms', 'POST', { name: `Home ${randomBytes(4).toString('hex')}` }),
+      201,
+    ),
   );
   for (const member of members)
     await ok(
