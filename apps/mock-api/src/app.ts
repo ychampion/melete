@@ -71,7 +71,7 @@ import {
   sseFrame,
 } from '@melete/contracts';
 import { attachmentResponse } from '@melete/contracts/attachments';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -93,6 +93,12 @@ import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { mountMockSignIns } from './sign-ins.ts';
 import { MockConflict, newId, type Store } from './store.ts';
+import {
+  mountSummariesMock,
+  noteActivity,
+  seedSummariesOnly,
+  summariesRefused,
+} from './summaries.ts';
 import { mountVoiceMock } from './voice.ts';
 
 export const MOCK_VERSION = '0.2.1';
@@ -154,6 +160,11 @@ export type AppDeps = {
   /** What the installation and its assistant are called, as MELETE_INSTANCE_NAME and MELETE_ASSISTANT_NAME set them. */
   instanceName?: string;
   assistantName?: string;
+  /**
+   * "Show me only what needs me" on, with files saved and the notes they left
+   * (`MELETE_MOCK_SUMMARIES_ONLY=on`).
+   */
+  summariesOnly?: boolean;
 };
 
 /** The features the service lists in features.ts, each on unless turned off; multiplayer follows its own switch. */
@@ -257,6 +268,14 @@ export function createMockApp(deps: AppDeps) {
   });
 
   // Before the experience routes, which answer every operation they do not implement.
+  const summaries = {
+    store,
+    spaceId: deps.spaceId,
+    session: mockSession,
+    activity: () => experience.activity,
+    name: () => experience.profile.name || 'You',
+  };
+  mountSummariesMock(app, summaries);
   mountAppsMock(app, deps);
   mountPrivacyMock(app, deps, () => experience.chats);
   const experience = mountExperienceMock(app, deps);
@@ -284,6 +303,7 @@ export function createMockApp(deps: AppDeps) {
     },
   });
   if (deps.seedExperience) experience.seed();
+  if (deps.summariesOnly) seedSummariesOnly(summaries);
   // The companies surface is agreed but not yet in openapi.json, so it mounts
   // its own routes rather than going through the contract's operation table.
   mountCompaniesMock(app, deps, experience);
@@ -506,10 +526,11 @@ export function createMockApp(deps: AppDeps) {
       });
     });
 
-  app.get('/artifacts/:id/content', (c) => {
+  // In a summaries-only space the content routes refuse, and the original is opened on purpose and noted.
+  const artifactContent = (c: Context, original: boolean) => {
     if (getCookie(c, 'melete_mock_session') !== mockSession)
       return c.json(fail('unauthorized', 'A session is required.'), 401);
-    const entry = store.artifacts.get(c.req.param('id'));
+    const entry = store.artifacts.get(c.req.param('id') ?? '');
     if (
       !entry ||
       entry.artifact.space_id !== deps.spaceId ||
@@ -517,22 +538,29 @@ export function createMockApp(deps: AppDeps) {
       createHash('sha256').update(entry.bytes).digest('hex') !== entry.artifact.content_hash
     )
       return c.json(fail('not_found', 'No such artifact.'), 404);
-    const headers = fileHeaders(
-      entry.artifact.mime,
-      entry.artifact.path.split('/').at(-1) ?? 'artifact',
-      c.req.query('disposition') === 'inline',
-    );
+    const name = entry.artifact.path.split('/').at(-1) ?? 'artifact';
+    if (store.summariesOnly && !entry.artifact.mime.startsWith('audio/')) {
+      if (!original) return c.json(summariesRefused(), 403);
+      noteActivity(summaries, 'original_opened', name);
+    }
+    const headers = fileHeaders(entry.artifact.mime, name, c.req.query('disposition') === 'inline');
     headers.set('content-length', String(entry.bytes.length));
     return new Response(Uint8Array.from(entry.bytes), { headers });
-  });
+  };
+  app.get('/artifacts/:id/content', (c) => artifactContent(c, false));
+  app.post('/artifacts/:id/original', (c) => artifactContent(c, true));
 
   // A file a scenario's files action saved, served as the service serves it.
-  app.get('/files/:id/content', (c) => {
+  const savedContent = (c: Context, original: boolean) => {
     if (getCookie(c, 'melete_mock_session') !== mockSession)
       return c.json(fail('unauthorized', 'A session is required.'), 401);
-    const entry = store.savedFiles.get(c.req.param('id'));
+    const entry = store.savedFiles.get(c.req.param('id') ?? '');
     if (!entry)
       return c.json(fail('not_found', 'This file is no longer the one that was saved.'), 404);
+    if (store.summariesOnly) {
+      if (!original) return c.json(summariesRefused(), 403);
+      noteActivity(summaries, 'original_opened', entry.name);
+    }
     const headers = fileHeaders(
       mimeForName(entry.name),
       entry.name,
@@ -540,7 +568,9 @@ export function createMockApp(deps: AppDeps) {
     );
     headers.set('content-length', String(entry.bytes.length));
     return new Response(Uint8Array.from(entry.bytes), { headers });
-  });
+  };
+  app.get('/files/:id/content', (c) => savedContent(c, false));
+  app.post('/files/:id/original', (c) => savedContent(c, true));
 
   // The person's files, as the service lists them: saved files and artifacts,
   // without the computer's and the browser's own captures.

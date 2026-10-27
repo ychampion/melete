@@ -31,6 +31,7 @@ import type { Transaction } from '../db/transaction.ts';
 import type { GatewayRoutes } from '../gateway/types.ts';
 import { SPACE_BEING_CLEARED, spaceAuthority } from '../principals/authority.ts';
 import { spacePolicy } from './schema.ts';
+import { mountSummariesOnly } from './summaries.ts';
 
 export type SpaceRules = {
   allowedModels: readonly string[];
@@ -197,6 +198,8 @@ async function standing(
  */
 export function mountSpacePolicy(app: Hono, deps: { db: Database }): void {
   const { db } = deps;
+  // "Show me only what needs me" is kept with the rules, and set beside them.
+  mountSummariesOnly(app, deps);
   const actorOf = (c: Context) => c.get('owner').id as string;
 
   app.get('/spaces/:id/policy', async (c) => {

@@ -1016,6 +1016,13 @@
       "when": 1789232400124,
       "tag": "0144_privacy_topic_origin",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1789232400125,
+      "tag": "0145_summaries_only_space",
+      "breakpoints": true
     }
   ]
 }

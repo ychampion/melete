@@ -233,3 +233,44 @@ export const spacePolicyResponse = z
   })
   .meta({ id: 'SpacePolicyResponse' });
 export type SpacePolicyResponse = z.infer<typeof spacePolicyResponse>;
+
+/**
+ * "Show me only what needs me": a space where Melete reads everything its
+ * connections hold and does the work, while the people in it see summaries and
+ * action cards rather than the messages and files themselves. An original is
+ * read only through its own "open the original" route, and each open, like
+ * each change of this setting, is noted in the space's activity. Off unless
+ * the space's owner turns it on.
+ */
+export const summariesOnlySetting = z
+  .object({
+    space_id: prefixedId(ID_PREFIXES.space),
+    on: z.boolean(),
+    /** Whether the person asking may turn it on or off: the space's maker alone. */
+    can_change: z.boolean(),
+    /**
+     * The latest notes, newest first: each original opened and each change of
+     * this setting, with who did it and when. Never what anything said.
+     */
+    recent: z
+      .array(
+        z.object({
+          note: z.enum(['original_opened', 'summaries_on', 'summaries_off']),
+          by: z.string().max(200),
+          /** The file's name, for an open. */
+          what: z.string().max(500).nullable(),
+          at: timestamp,
+        }),
+      )
+      .max(20),
+  })
+  .meta({ id: 'SummariesOnlySetting' });
+export type SummariesOnlySetting = z.infer<typeof summariesOnlySetting>;
+
+export const summariesOnlyChange = z
+  .strictObject({ on: z.boolean() })
+  .meta({ id: 'SummariesOnlyChange' });
+export type SummariesOnlyChange = z.infer<typeof summariesOnlyChange>;
+
+/** The error code a file's content route answers with in a summaries-only space. */
+export const SUMMARIES_ONLY_CODE = 'summaries_only';

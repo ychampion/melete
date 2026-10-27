@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { type FileHandle, realpath } from 'node:fs/promises';
-import { ID_PREFIXES, prefixedId } from '@melete/contracts';
+import { ID_PREFIXES, prefixedId, SUMMARIES_ONLY_CODE } from '@melete/contracts';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { FILE_TOOLS, fileHeaders, mimeForName, savedFile } from '../artifact/shown.ts';
 import { noLinks, openBeneath, segmentsFor } from '../connectors/files.ts';
@@ -11,6 +11,7 @@ import type { Database } from '../db/client.ts';
 import { action, artifact, job } from '../db/schema.ts';
 import { ownJob, spaceAuthority } from '../principals/authority.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
+import { noteInActivity, SUMMARIES_ONLY_REFUSAL, summariesOnlyIn } from '../spaces/summaries.ts';
 import { ServiceError } from './errors.ts';
 import type { SpaceResolver } from './reactions.ts';
 
@@ -219,13 +220,61 @@ async function fileResponse(
   return new Response(streamOf(handle, 0, size - 1), { headers });
 }
 
+/**
+ * How a file is asked for: `content` is the ordinary read, refused in a space
+ * set to summaries only; `original` is the person opening it on purpose, which
+ * is served everywhere and noted in that space's activity first.
+ */
+type Read = 'content' | 'original';
+
+/**
+ * Whether this read may go ahead in the file's space, and whether it is to be
+ * noted there once the file is open. Speech Melete made for a reply is its own
+ * words, not an original, so it plays as before.
+ */
+async function admitRead(
+  db: Database,
+  read: Read,
+  file: { spaceId: string; mime: string },
+): Promise<boolean> {
+  if (file.mime.startsWith('audio/')) return false;
+  if (!(await summariesOnlyIn(db, file.spaceId))) return false;
+  if (read === 'content') throw new ServiceError(SUMMARIES_ONLY_CODE, SUMMARIES_ONLY_REFUSAL, 403);
+  return true;
+}
+
+/**
+ * Notes an open in the space's activity before a byte of it is sent. When the
+ * note cannot be written the file is not sent either: an open nobody can see
+ * is exactly what the setting is there to prevent.
+ */
+async function noteOpen(
+  db: Database,
+  opened: Opened,
+  file: { spaceId: string; name: string; viewer: string | undefined },
+): Promise<void> {
+  try {
+    if (!file.viewer) throw notFound();
+    await noteInActivity(db, {
+      spaceId: file.spaceId,
+      principalId: file.viewer,
+      note: 'original_opened',
+      where: 'Files',
+      destination: file.name,
+    });
+  } catch (error) {
+    await opened.handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
 export function mountArtifacts(
   app: Hono,
   db: Database,
   roots: ArtifactRoots,
   resolveSpace: SpaceResolver,
 ): void {
-  app.get('/artifacts/:id/content', async (c) => {
+  const serveArtifact = async (c: Context, read: Read) => {
     const resolved = await resolveSpace(c);
     const id = prefixedId(ID_PREFIXES.artifact).safeParse(c.req.param('id'));
     if (!id.success) throw notFound();
@@ -260,18 +309,29 @@ export function mountArtifacts(
     // read it, checked now, and nobody else. Every other file follows its job.
     const found = row ?? (viewer ? await roomArtifact(db, id.data, viewer) : null);
     if (!found) throw notFound();
+    const name = found.artifact.path.split('/').at(-1) ?? 'artifact';
+    const noted = await admitRead(db, read, {
+      spaceId: found.artifact.spaceId,
+      mime: found.artifact.mime,
+    });
     const opened = await verified(
       () => openArtifact(roots, found.artifact.spaceId, found.artifact),
       { size: found.artifact.size, hash: found.artifact.contentHash, max: Number.MAX_SAFE_INTEGER },
       notFound,
     );
+    if (noted)
+      await noteOpen(db, opened, {
+        spaceId: found.artifact.spaceId,
+        name,
+        viewer: viewer ?? c.get('owner')?.id,
+      });
     return fileResponse(opened, {
       mime: found.artifact.mime,
-      name: found.artifact.path.split('/').at(-1) ?? 'artifact',
+      name,
       inline: c.req.query('disposition') === 'inline',
-      range: c.req.header('range'),
+      range: read === 'content' ? c.req.header('range') : undefined,
     });
-  });
+  };
 
   /**
    * A file one of the person's own conversations saved or moved with the
@@ -279,7 +339,7 @@ export function mountArtifacts(
    * the job's own principal, in the space the session names, gets it, and
    * only while it is still the content the receipt recorded.
    */
-  app.get('/files/:id/content', async (c) => {
+  const serveFile = async (c: Context, read: Read) => {
     const scope = await resolveSpace(c);
     const id = prefixedId(ID_PREFIXES.action).safeParse(c.req.param('id'));
     if (!scope || !id.success || !prefixedId(ID_PREFIXES.space).safeParse(scope.spaceId).success)
@@ -299,6 +359,8 @@ export function mountArtifacts(
       );
     const saved = row ? savedFile(row.action.kind, row.action.receipt) : null;
     if (!row || !saved) throw noFile();
+    const name = saved.path.split('/').at(-1) ?? 'file';
+    const noted = await admitRead(db, read, { spaceId: row.job.spaceId, mime: mimeForName(name) });
     const opened = await verified(
       () =>
         openArtifact(roots, row.job.spaceId, {
@@ -310,12 +372,23 @@ export function mountArtifacts(
       { size: null, hash: saved.contentHash, max: MAX_SERVED_BYTES },
       noFile,
     );
-    const name = saved.path.split('/').at(-1) ?? 'file';
+    if (noted)
+      await noteOpen(db, opened, {
+        spaceId: row.job.spaceId,
+        name,
+        viewer: scope.principalId ?? c.get('owner')?.id,
+      });
     return fileResponse(opened, {
       mime: mimeForName(name),
       name,
       inline: c.req.query('disposition') === 'inline',
-      range: c.req.header('range'),
+      range: read === 'content' ? c.req.header('range') : undefined,
     });
-  });
+  };
+
+  app.get('/artifacts/:id/content', (c) => serveArtifact(c, 'content'));
+  app.get('/files/:id/content', (c) => serveFile(c, 'content'));
+  // Opening an original on purpose: a POST, because each one is noted.
+  app.post('/artifacts/:id/original', (c) => serveArtifact(c, 'original'));
+  app.post('/files/:id/original', (c) => serveFile(c, 'original'));
 }
