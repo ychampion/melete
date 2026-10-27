@@ -316,6 +316,7 @@ export type LocalModelCheck = Success<Ok<paths['/privacy/local-model/check'], 'p
 export type LocalModelCheckRequest = Body<paths['/privacy/local-model/check'], 'post'>;
 export type ConversationPrivacy = Success<Ok<paths['/conversations/{id}/privacy'], 'get'>>;
 export type PrivacyReveal = Success<Ok<paths['/conversations/{id}/privacy/reveal'], 'post'>>;
+export type PrivacySeen = Success<Ok<paths['/conversations/{id}/privacy/seen'], 'post'>>;
 
 export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
 export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;

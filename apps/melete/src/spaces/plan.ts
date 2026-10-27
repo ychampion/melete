@@ -202,11 +202,13 @@ const SPACE_KEYED_OPERATIONAL = [
   'sandbox_work_file',
   'sandbox_work_read',
   'sandbox_work_removal',
-  // The privacy router's sealed vaults, its settings and its audit rows.
+  // The privacy router's sealed vaults, its settings, its audit rows and what
+  // cloud models were sent.
   'privacy_vault',
   'privacy_settings',
   'privacy_conversation',
   'privacy_request',
+  'privacy_seen',
   // The browser phase deletes these with the profile they describe. A
   // deployment with no browser worker has no profile, and any rows an earlier
   // configuration left go here, since an emptied space keeps its row and the

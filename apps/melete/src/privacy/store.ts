@@ -19,6 +19,7 @@ import {
 import type { Sql, TransactionSql } from 'postgres';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { LocalModel } from './local.ts';
+import type { SeenPart } from './seen.ts';
 import { type KnownValue, Vault, type VaultData } from './vault.ts';
 
 /** The choices a person makes, resolved against the defaults. */
@@ -255,6 +256,13 @@ export interface PrivacyStore {
   /** The answer given to the question an attempt asked, or null while it is open. */
   answer(attemptId: string): Promise<string | null>;
   log(entry: RequestLog): Promise<void>;
+  /**
+   * Keep what a cloud request carried from the person and from tools, as it
+   * left: redacted. A piece already kept for this conversation is skipped.
+   */
+  recordSeen(scope: Scope, parts: SeenPart[]): Promise<void>;
+  /** The pieces first sent in this turn, in the order they went. */
+  seen(conversationId: string, turnId: string): Promise<Omit<SeenPart, 'digest'>[]>;
   turns(
     conversationId: string,
   ): Promise<{ turnId: string; route: string; placeholders: string[] }[]>;
@@ -536,6 +544,34 @@ export class PostgresPrivacyStore implements PrivacyStore {
         ${receipt.local_detection ?? null})`;
   }
 
+  async recordSeen(scope: Scope, parts: SeenPart[]): Promise<void> {
+    const { spaceId, conversationId, turnId } = scope;
+    if (!spaceId || !conversationId || !turnId || !parts.length) return;
+    const rows = parts.map((part) => ({
+      space_id: spaceId,
+      conversation_id: conversationId,
+      turn_id: turnId,
+      source: part.source,
+      tool: part.tool,
+      digest: part.digest,
+      text: part.text,
+      truncated: part.truncated,
+    }));
+    await this.sql`insert into privacy_seen ${this.sql(rows)}
+      on conflict (conversation_id, digest) do nothing`;
+  }
+
+  async seen(conversationId: string, turnId: string) {
+    const rows = await this.sql`select source, tool, text, truncated from privacy_seen
+      where conversation_id = ${conversationId} and turn_id = ${turnId} order by id`;
+    return rows.map((row) => ({
+      source: row.source === 'tool' ? ('tool' as const) : ('you' as const),
+      tool: row.tool === null ? null : String(row.tool),
+      text: String(row.text),
+      truncated: row.truncated === true,
+    }));
+  }
+
   async turns(conversationId: string) {
     const rows = await this.sql`select turn_id, route, placeholders from privacy_request
       where conversation_id = ${conversationId} and turn_id is not null order by id`;
@@ -681,6 +717,26 @@ export class MemoryPrivacyStore implements PrivacyStore {
 
   async log(entry: RequestLog) {
     if (this.options.keepLogs !== false) this.logs.push(structuredClone(entry));
+  }
+
+  /** What cloud requests carried, per conversation, as `recordSeen` keeps it. */
+  readonly seenParts: (SeenPart & { conversationId: string; turnId: string })[] = [];
+
+  async recordSeen(scope: Scope, parts: SeenPart[]) {
+    const { conversationId, turnId } = scope;
+    if (this.options.keepLogs === false || !conversationId || !turnId) return;
+    for (const part of parts) {
+      const kept = this.seenParts.some(
+        (row) => row.conversationId === conversationId && row.digest === part.digest,
+      );
+      if (!kept) this.seenParts.push({ ...part, conversationId, turnId });
+    }
+  }
+
+  async seen(conversationId: string, turnId: string) {
+    return this.seenParts
+      .filter((row) => row.conversationId === conversationId && row.turnId === turnId)
+      .map(({ source, tool, text, truncated }) => ({ source, tool, text, truncated }));
   }
 
   async turns(conversationId: string) {

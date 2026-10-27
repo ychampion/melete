@@ -1016,6 +1016,13 @@
       "when": 1789232400124,
       "tag": "0144_privacy_topic_origin",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1793137697777,
+      "tag": "0145_privacy_seen",
+      "breakpoints": true
     }
   ]
 }

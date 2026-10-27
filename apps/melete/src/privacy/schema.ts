@@ -8,6 +8,9 @@
  * conversation was found sensitive and what the person answered when asked.
  * `privacy_request` is the audit trail: one row per model request with its
  * route and what was swapped, by category and placeholder name, never a value.
+ * `privacy_seen` is what a cloud model was sent from the person and from tools
+ * in each turn, as it left: redacted, so it holds placeholders, never the
+ * values behind them. Each piece is kept once per conversation.
  * Every row goes with its space.
  */
 import {
@@ -19,6 +22,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { space } from '../db/schema.ts';
 
@@ -90,4 +94,29 @@ export const privacyRequest = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('privacy_request_conversation_idx').on(t.conversationId, t.turnId)],
+);
+
+export const privacySeen = pgTable(
+  'privacy_seen',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    conversationId: text('conversation_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    /** you: the person's own message. tool: what a tool brought back. */
+    source: text('source').notNull(),
+    tool: text('tool'),
+    /** Of the whole piece as sent, so a piece re-sent in a later request is kept once. */
+    digest: text('digest').notNull(),
+    /** The redacted text, cut at a limit when it was longer. */
+    text: text('text').notNull(),
+    truncated: boolean('truncated').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('privacy_seen_piece_idx').on(t.conversationId, t.digest),
+    index('privacy_seen_turn_idx').on(t.conversationId, t.turnId),
+  ],
 );

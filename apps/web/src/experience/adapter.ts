@@ -107,6 +107,7 @@ import type {
   PlanCreate,
   PrivacyPreview,
   PrivacyReveal,
+  PrivacySeen,
   PrivacySettings,
   PrivacySettingsUpdate,
   ProcessOutput,
@@ -924,6 +925,11 @@ export const adapter = {
   revealPrivacy: (id: string, turnId: string) =>
     guard<PrivacyReveal>(() =>
       api.POST('/conversations/{id}/privacy/reveal', { ...path(id), body: { turn_id: turnId } }),
+    ),
+  /** One answer as the cloud model saw it, beside what the person sees, for this screen only. */
+  privacySeen: (id: string, turnId: string) =>
+    guard<PrivacySeen>(() =>
+      api.POST('/conversations/{id}/privacy/seen', { ...path(id), body: { turn_id: turnId } }),
     ),
 
   /* ---------- plans ---------- */
