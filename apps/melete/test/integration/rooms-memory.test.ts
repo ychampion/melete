@@ -7,8 +7,8 @@
  * detail forgotten from the room.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { randomBytes } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -38,8 +38,10 @@ import { recall } from '../../src/memory/recall.ts';
 import { restoreMemory } from '../../src/memory/restore.ts';
 import { runExtractionWork } from '../../src/memory/service.ts';
 import { startServiceMemory } from '../../src/memory/start.ts';
+import { HELD_BACK } from '../../src/rooms/memory.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { SUMMARIES_ONLY_INSTRUCTION } from '../../src/spaces/summaries.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 /** What the scripted extractor reads out of a message: a key and the exact words of its value. */
@@ -863,5 +865,98 @@ withDb('room memory', () => {
     await post(bob, roomId, opened.thread.id, 'Forget that.');
     await settle(roomId);
     expect(Object.keys(await items(carol))).toEqual([]);
+  }, 120_000);
+  test('a room set to show only what needs its people keeps originals back, and notes each open', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Grandma’s mail', [bob]);
+    // Carol is an owner too, but not the room's maker.
+    await ok(
+      send(alice.cookie, `/rooms/${roomId}/members`, 'POST', {
+        principal_id: carol.id,
+        role: 'owner',
+      }),
+      201,
+    );
+    const opened = await startThread(alice, roomId, 'The venue deposit is 300 euros.');
+    await settle(roomId);
+    expect(JSON.stringify(await roomMemory(bob, roomId))).toContain('300 euros');
+
+    // Only the maker turns it on or off: not a member, not another owner.
+    const turn = (person: Person, on: boolean) =>
+      send(person.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on });
+    expect((await turn(bob, true)).status).toBe(403);
+    expect((await turn(carol, true)).status).toBe(403);
+    expect(await ok<{ on: boolean; can_change: boolean }>(turn(alice, true))).toMatchObject({
+      on: true,
+      can_change: true,
+    });
+    expect(
+      await ok<{ on: boolean; can_change: boolean }>(
+        send(carol.cookie, `/spaces/${roomId}/summaries-only`),
+      ),
+    ).toMatchObject({ on: true, can_change: false });
+    expect((await turn(carol, false)).status).toBe(403);
+    expect((await turn(bob, false)).status).toBe(403);
+
+    // A member reads what the room remembers by its label, never its words.
+    const held = await roomMemory(bob, roomId);
+    expect(held.items.length).toBeGreaterThan(0);
+    expect(held.items.every((item) => item.content === HELD_BACK)).toBe(true);
+    expect(JSON.stringify(held)).not.toContain('300 euros');
+
+    // A room request's agent is told to answer with summaries and not to quote.
+    const asked = await ask(bob, roomId, 'what is due this week?');
+    const attempt = await attemptOf(asked.jobId);
+    expect(attempt.bundle.job.objective).toContain(SUMMARIES_ONLY_INSTRUCTION);
+    await attempt.finish();
+
+    // A file the room's request saved: its content route refuses, the original opens and is noted.
+    const text = 'Statement: $86.40 due Nov 12\n';
+    // A ULID's first character is at most 7.
+    const artifactId = `art_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    const folder = join(directory, 'spaces', roomId, 'artifacts', 'mail');
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, 'statement.txt'), text);
+    await sql`insert into artifact
+      (id, space_id, job_id, source_job_id, area, path, kind, content_hash, mime, size)
+      values (${artifactId}, ${roomId}, ${asked.jobId}, null, 'artifacts', 'mail/statement.txt',
+        'text', ${createHash('sha256').update(text).digest('hex')}, 'text/plain',
+        ${Buffer.byteLength(text)})`;
+    const refused = await send(bob.cookie, `/artifacts/${artifactId}/content`);
+    expect(refused.status).toBe(403);
+    expect(await refused.text()).not.toContain('86.40');
+    const before = Date.now();
+    const original = await send(bob.cookie, `/artifacts/${artifactId}/original`, 'POST');
+    expect(original.status).toBe(200);
+    expect(await original.text()).toBe(text);
+    const [note] = await sql`select principal_id, source, destination, happened_at
+      from activity_record where space_id = ${roomId} and kind = 'space.original_opened'`;
+    expect(note).toMatchObject({
+      principal_id: bob.id,
+      source: 'Bob',
+      destination: 'statement.txt',
+    });
+    expect(new Date(note?.happened_at).getTime()).toBeGreaterThanOrEqual(before - 1000);
+    // Everyone in the room sees who opened what and when, beside the switch.
+    const seen = await ok<{
+      recent: { note: string; by: string; what: string | null; at: string }[];
+    }>(send(alice.cookie, `/spaces/${roomId}/summaries-only`));
+    expect(seen.recent[0]).toMatchObject({
+      note: 'original_opened',
+      by: 'Bob',
+      what: 'statement.txt',
+    });
+
+    // Turning it off is noted too, and the room reads as before.
+    await ok(turn(alice, false));
+    const notes = await sql`select kind, principal_id from activity_record
+      where space_id = ${roomId} and kind like 'space.summaries_%' order by happened_at`;
+    expect(notes.map((row) => [row.kind, row.principal_id])).toEqual([
+      ['space.summaries_on', alice.id],
+      ['space.summaries_off', alice.id],
+    ]);
+    expect(JSON.stringify(await roomMemory(bob, roomId))).toContain('300 euros');
+    expect((await send(bob.cookie, `/artifacts/${artifactId}/content`)).status).toBe(200);
+    void opened;
   }, 120_000);
 });
