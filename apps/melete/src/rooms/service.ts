@@ -449,6 +449,13 @@ export class RoomService {
           : `${spaceId}:${actor}:${input.submission_id}`,
       )
       .digest('hex');
+    // Whether the room's model reads photos is the installation's word, not
+    // this message's, so it is read here: the transaction below holds the event
+    // order lock, and the model settings are read on the pool.
+    const readsPictures =
+      input.attachments?.length && this.deps.readsPictures
+        ? await this.deps.readsPictures(spaceId)
+        : true;
     const result = await this.deps.jobs.transaction(async (tx) => {
       const { role } = await this.access(tx, spaceId, actor, true);
       const [replayed] = await tx
@@ -545,12 +552,7 @@ export class RoomService {
         : [];
       if (files.length && role === 'guest' && !(await readRoomPolicy(tx, spaceId)).guests_may_ask)
         throw new ServiceError('guests_may_not_attach', GUESTS_MAY_NOT_ATTACH, 403);
-      if (
-        asks &&
-        files.some((file) => file.kind === 'image') &&
-        this.deps.readsPictures &&
-        !(await this.deps.readsPictures(spaceId))
-      )
+      if (asks && !readsPictures && files.some((file) => file.kind === 'image'))
         throw new ServiceError('room_model_reads_no_pictures', ROOM_READS_NO_PICTURES, 409);
       if (asks && !held) {
         if (await startRequest(tx, this.deps, message)) {

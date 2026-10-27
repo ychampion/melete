@@ -84,7 +84,9 @@ export function mountAttachments(
       );
     if (!/^multipart\/form-data/i.test(c.req.header('content-type') ?? ''))
       throw new ServiceError('invalid_request', 'Send the file as multipart/form-data.', 400);
-    const who = `${scope.spaceId}:${scope.principalId ?? 'owner'}`;
+    // One person's bounds, whichever space the file goes to: a room is not a
+    // fresh allowance. Without a principal, the space is the owner's own.
+    const who = scope.principalId ? `principal:${scope.principalId}` : `${scope.spaceId}:owner`;
     // Checked and counted together, before anything is awaited: parallel
     // uploads cannot all pass the check while none has been counted yet.
     const mine = underWay.get(who) ?? { count: 0, bytes: 0 };

@@ -20,9 +20,17 @@ import {
   roomThreadView,
 } from '@melete/contracts';
 import { loadSkills } from '@melete/skills';
+import { Hono } from 'hono';
 import { TINY_PNG } from '../../src/attachments/fixtures.ts';
+import { DEFAULT_ATTACHMENT_SETTINGS } from '../../src/attachments/limits.ts';
 import { gatewayAttachments } from '../../src/attachments/model.ts';
-import { AttachmentService } from '../../src/attachments/store.ts';
+import { roomAttachmentScope } from '../../src/attachments/rooms.ts';
+import { mountAttachments } from '../../src/attachments/routes.ts';
+import {
+  AttachmentService,
+  bindAttachments,
+  roomMessageFiles,
+} from '../../src/attachments/store.ts';
 import { filesManifest } from '../../src/connectors/files.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
@@ -37,6 +45,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
+import { MemoryLimitStore } from '../../src/ops/limiter.ts';
 import { ROOM_READS_NO_PICTURES, roomReadsPictures } from '../../src/rooms/pictures.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { LocalBlobStore } from '../../src/storage/local.ts';
@@ -206,7 +215,11 @@ function filesConnector() {
 }
 
 withDb('photos in a room', () => {
+  // Posting a message holds the event order lock: nothing it does may wait on the pool.
+  const lockGuard = process.env.MELETE_EVENT_LOCK_GUARD;
   afterAll(async () => {
+    if (lockGuard === undefined) delete process.env.MELETE_EVENT_LOCK_GUARD;
+    else process.env.MELETE_EVENT_LOCK_GUARD = lockGuard;
     await runner?.stop();
     await registry.close();
     await queue?.stop();
@@ -215,6 +228,7 @@ withDb('photos in a room', () => {
   }, 30_000);
 
   beforeAll(async () => {
+    process.env.MELETE_EVENT_LOCK_GUARD = 'throw';
     const { app } = database();
     const setup = await app.request('/setup', {
       method: 'POST',
@@ -440,5 +454,140 @@ withDb('photos in a room', () => {
       expect(bundle.skills.map((skill) => skill.name)).toContain('read-mail-photos');
     } else expect(bundle.skills.map((skill) => skill.name)).toContain('write-a-draft');
     await database().jobs.cancel(posted.request_job_id as string);
+  }, 60_000);
+
+  test("nobody takes back or reuses someone else's upload, and an upload stays in its own room", async () => {
+    const roomId = await makeRoom([bob]);
+    const other = await makeRoom([bob]);
+    const photo = await upload(bob, roomId);
+    // Alice is in the room, but the upload is Bob's: she cannot delete it.
+    expect(
+      (await send(alice.cookie, `/rooms/${roomId}/attachments/${photo.id}`, 'DELETE')).status,
+    ).toBe(404);
+    expect((await content(bob, roomId, photo.id)).status).toBe(200);
+    // Bob cannot carry it into another room of his, nor read it there or in his own space.
+    expect((await startThread(bob, other, 'Look', [photo.id])).status).toBe(409);
+    expect((await content(bob, other, photo.id)).status).toBe(404);
+    expect((await send(bob.cookie, `/attachments/${photo.id}/content`)).status).toBe(404);
+    // He can take it back himself while it is not posted.
+    expect(
+      (await send(bob.cookie, `/rooms/${roomId}/attachments/${photo.id}`, 'DELETE')).status,
+    ).toBe(200);
+    expect((await content(bob, roomId, photo.id)).status).toBe(404);
+  }, 60_000);
+
+  test("a deleted message's files are read by nobody", async () => {
+    const roomId = await makeRoom([bob]);
+    const photo = await upload(bob, roomId);
+    const posted = roomMessageResponse.parse(
+      await ok(startThread(bob, roomId, 'Our lease', [photo.id]), 201),
+    );
+    expect((await content(alice, roomId, photo.id)).status).toBe(200);
+    const { sql } = database();
+    await sql`update room_message set redacted_at = now(), text = '' where id = ${posted.message.id}`;
+    for (const person of [alice, bob])
+      expect((await content(person, roomId, photo.id)).status).toBe(404);
+    const thread = roomThreadView.parse(
+      await ok(send(alice.cookie, `/rooms/${roomId}/threads/${posted.thread.id}`)),
+    );
+    expect(thread.messages[0]?.attachments).toBeUndefined();
+  }, 60_000);
+
+  test('a guest attaches only where guests may ask, and reads nothing once their time is up', async () => {
+    const roomId = await makeRoom([bob, carol]);
+    const { sql } = database();
+    await sql`update space_membership set role = 'guest'
+      where space_id = ${roomId} and principal_id = ${carol.id}`;
+    await ok(send(alice.cookie, `/rooms/${roomId}/policy`, 'PUT', { guests_may_ask: false }));
+    const body = new FormData();
+    body.append('file', new File([TINY_PNG], 'g.png', { type: 'image/png' }));
+    const refused = await database().app.request(`/rooms/${roomId}/attachments`, {
+      method: 'POST',
+      headers: { Cookie: carol.cookie },
+      body,
+    });
+    expect(refused.status).toBe(403);
+    await ok(send(alice.cookie, `/rooms/${roomId}/policy`, 'PUT', { guests_may_ask: true }));
+    expect((await upload(carol, roomId)).kind).toBe('image');
+    // A guest reads what the room posts, until their time is up.
+    const photo = await upload(bob, roomId);
+    await ok(startThread(bob, roomId, 'For everyone', [photo.id]), 201);
+    expect((await content(carol, roomId, photo.id)).status).toBe(200);
+    await sql`update space_membership set expires_at = now() - interval '1 minute'
+      where space_id = ${roomId} and principal_id = ${carol.id}`;
+    expect((await content(carol, roomId, photo.id)).status).toBe(404);
+    // The store's own check says the same, without the route's.
+    const reader = attachments as AttachmentService;
+    await expect(
+      reader.visible({ spaceId: roomId, principalId: carol.id }, photo.id),
+    ).rejects.toThrow();
+    expect((await reader.visible({ spaceId: roomId, principalId: bob.id }, photo.id)).id).toBe(
+      photo.id,
+    );
+  }, 60_000);
+
+  test("one person's upload allowance is theirs across every room", async () => {
+    const first = await makeRoom([bob]);
+    const second = await makeRoom([bob]);
+    const { db, sql } = database();
+    const limited = new AttachmentService(sql, store, {
+      ...DEFAULT_ATTACHMENT_SETTINGS,
+      uploadRate: { count: 1, windowMs: 60_000 },
+    });
+    // A bare app with only the attachment routes, signed in as Bob.
+    const bare = new Hono<{ Variables: { owner: { id: string } } }>();
+    bare.use(async (c, next) => {
+      c.set('owner', { id: bob.id });
+      await next();
+    });
+    bare.onError((error) =>
+      Response.json({}, { status: (error as { status?: number }).status ?? 500 }),
+    );
+    mountAttachments(
+      bare as unknown as Hono,
+      limited,
+      async () => null,
+      new MemoryLimitStore(),
+      roomAttachmentScope(db),
+    );
+    const post = (roomId: string) => {
+      const form = new FormData();
+      form.append('file', new File([TINY_PNG], 'r.png', { type: 'image/png' }));
+      return bare.request(`/rooms/${roomId}/attachments`, { method: 'POST', body: form });
+    };
+    expect((await post(first)).status).toBe(201);
+    expect((await post(second)).status).toBe(429);
+  }, 60_000);
+
+  test("a posted file reaches only its own message's request", async () => {
+    await modelReadsPictures(true);
+    const roomId = await makeRoom([bob]);
+    const photo = await upload(bob, roomId);
+    // Posted without asking: the room holds it, and no request has it.
+    const posted = roomMessageResponse.parse(
+      await ok(startThread(bob, roomId, 'The meter reading', [photo.id]), 201),
+    );
+    const asked = roomMessageResponse.parse(
+      await ok(startThread(bob, roomId, '@Melete when is rent due?', []), 201),
+    );
+    const jobId = asked.request_job_id as string;
+    expect(jobId).toBeTruthy();
+    const { db, sql, jobs } = database();
+    const bind = (heldBy?: string) =>
+      serviceTransaction(db, async (tx) => {
+        const give = () =>
+          bindAttachments(tx, { jobId, spaceId: roomId, principalId: bob.id, ids: [photo.id] });
+        await (heldBy ? roomMessageFiles.run(heldBy, give) : give());
+        // Seen to bind, then undone: this test changes nothing.
+        throw new Error('bound');
+      });
+    // Not as a message of its own, nor as another message's file.
+    await expect(bind()).rejects.toMatchObject({ code: 'attachment_unavailable' });
+    await expect(bind(asked.message.id)).rejects.toMatchObject({ code: 'attachment_unavailable' });
+    // Only as its own message's.
+    await expect(bind(posted.message.id)).rejects.toThrow('bound');
+    const [row] = await sql`select job_id from attachment where id = ${photo.id}`;
+    expect(row?.job_id).toBeNull();
+    await jobs.cancel(jobId);
   }, 60_000);
 });

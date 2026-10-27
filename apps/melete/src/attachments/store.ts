@@ -240,7 +240,8 @@ export class AttachmentService {
                 and rm.redacted_at is null)
             and exists (select 1 from space_membership m
               where m.space_id = a.space_id and m.principal_id = ${scope.principalId}
-                and m.revoked_at is null and m.role <> 'agent'))
+                and m.revoked_at is null and m.role <> 'agent'
+                and (m.expires_at is null or m.expires_at > now())))
           or (a.room_message_id is null and a.job_id is null
             and a.principal_id is not distinct from ${scope.principalId})
           or (a.room_message_id is null and a.job_id is not null and j.space_id = ${scope.spaceId}
