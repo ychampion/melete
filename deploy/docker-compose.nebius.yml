@@ -1,0 +1,6 @@
+# Add with -f deploy/docker-compose.yml -f deploy/docker-compose.nebius.yml.
+# Pass the operator's Token Factory key to the API; app-stored keys need no override.
+services:
+  melete:
+    environment:
+      NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}

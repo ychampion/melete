@@ -619,6 +619,7 @@ export const SETTINGS_NOT_FROM_DEPLOY_ENV: Record<string, string> = {
   MELETE_BROWSER_SPACE: 'set by docker-compose.browser.yml',
   MELETE_BROWSER_TOKEN: 'set by docker-compose.browser.yml',
   MELETE_BROWSER_IDLE_MS: 'an empty value is not a number, so the five-minute default holds',
+  NEBIUS_API_KEY: 'set by docker-compose.nebius.yml',
 };
 
 /**

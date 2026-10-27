@@ -81,8 +81,8 @@ unset NEBIUS_API_KEY
 ### Pass the key to a Compose service
 
 Compose's `.env` file supplies substitutions; it does not pass every variable
-into the container. Add this override as `deploy/compose.nebius.yml` to pass the
-key to the Melete service:
+into the container. The shipped `deploy/docker-compose.nebius.yml` override
+passes the key to the Melete service:
 
 ```yaml
 services:
@@ -95,7 +95,7 @@ Use it alongside the standard file, including when recreating the service after
 changing the key:
 
 ```bash
-docker compose -f deploy/docker-compose.yml -f deploy/compose.nebius.yml up -d --wait
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.nebius.yml up -d --wait
 ```
 
 Keep using both files for later Compose commands. Only the Melete service needs
