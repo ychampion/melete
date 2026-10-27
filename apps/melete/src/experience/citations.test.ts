@@ -130,6 +130,42 @@ describe('citations an answer keeps', () => {
     expect(checked.text).toBe(answer);
   });
 
+  test('a hedge that says the answer is from what the agent knows stays as written', () => {
+    const answer =
+      "Your 1099-R usually arrives by the end of January (from what I know, Form 1099-R is mailed by January 31, and I didn't check that today).";
+    const checked = checkCitations(answer, []);
+    expect(checked.unbacked).toEqual([]);
+    expect(checked.text).toBe(answer);
+    for (const hedge of [
+      'from what I know',
+      'from what I remember',
+      'From what I recall',
+      'from what I’ve read',
+      "from what I've seen",
+      'from what I can tell',
+      'from memory',
+      'from my own knowledge',
+      'from general knowledge',
+      'from my experience',
+      'per what I know',
+      'according to what I remember',
+    ]) {
+      const line = `Medicare Part B costs about $185 a month (${hedge}, Form CMS-40B is the one to file; I didn't check that today).`;
+      expect(checkCitations(line, [])).toEqual({ text: line, unbacked: [] });
+    }
+  });
+
+  test('a source named after "from" is still checked, hedges aside', () => {
+    const checked = checkCitations('Rates rose (from Reuters, last week).', []);
+    expect(checked.unbacked).toEqual(['Reuters']);
+    expect(checked.text).not.toContain('(from Reuters');
+    // A source that only starts like a hedge is still a source.
+    const known = checkCitations('Rates rose (from what Reuters reported).', []);
+    expect(known.text.startsWith('Rates rose (from what Reuters reported).')).toBe(true);
+    const memory = checkCitations('Rates rose (from Memorial Hospital’s report).', []);
+    expect(memory.unbacked).toEqual(['Memorial Hospital’s report']);
+  });
+
   test('the same answer and reads always give the same result', () => {
     const answer = 'Rates rose (per Reuters). Sources: Reuters, aibriefs.news';
     const first = checkCitations(answer, aggregators);

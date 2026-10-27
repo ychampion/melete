@@ -212,6 +212,13 @@ const LIST_ITEM = /^\s*(?:[-*+]|\d{1,3}[.)])\s+/;
 /** A parenthesis, never the address half of a Markdown link ("[NIST](https://…)"). */
 const PARENTHESIS =
   /\s?(?<!\])\((?:(?:per|via|source:|sources:|according to|from)\s+)?([^()\n]{1,400})\)/gi;
+/**
+ * What a parenthesis says after "from", "per" or "according to" when it hedges instead of citing:
+ * the answer is from what the agent already knows ("from what I know", "from memory"), which
+ * names no source and stays as written.
+ */
+const HEDGE =
+  /^\s*(?:what\s+I\s+(?:know|knew|remember|recall|understand|can\s+tell|gather|(?:have|['’]ve)\s+(?:read|seen|heard|learned))|(?:my\s+)?(?:own\s+)?(?:memory|recollection|knowledge|understanding|experience|training(?:\s+data)?)|general\s+knowledge|background\s+knowledge)\b/i;
 const ATTRIBUTION =
   /\b(according to|as reported by|reported by)\s+((?:\[[^\]\n]{1,300}\]\([^)\s]{1,2000}\))|[^,.;:\n()]{1,120})/gi;
 
@@ -288,6 +295,7 @@ export function checkCitations(answer: string, read: readonly ReadSource[]): Cit
           inner.trim(),
         ) && !/\s/.test(inner.trim().replace(LINK, 'x'));
       if (!attributed && !onlySource) return whole;
+      if (attributed && HEDGE.test(inner)) return whole;
       // "(from 2019)" or "(per person)" names no source.
       const found = targets(inner, back);
       if (!found || found.every((target) => target.backed)) return whole;
