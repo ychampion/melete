@@ -68,8 +68,8 @@ describe('the first-week request set', () => {
     }));
     const all = [...skills, ...space];
     const indexed = indexSkills('', '', all, CONTEXT_LIMITS.skill_index_tokens);
-    // 27 skills do not fit in 500 tokens: 18 are named, and the rest are left to tool search.
-    expect(indexed).toHaveLength(18);
+    // 32 skills do not fit in 500 tokens: 22 are named, and the rest are left to tool search.
+    expect(indexed).toHaveLength(22);
     const score = scoreIndex(
       all,
       HELD_OUT_REQUESTS,
