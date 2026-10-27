@@ -297,7 +297,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
   };
 
   /** Who the board is read as: the person the request works for, or the room itself. */
-  const readerOf = async (tx: Transaction, job: JobFacts) =>
+  const readerOf = async (tx: Pick<Transaction, 'select'>, job: JobFacts) =>
     job.requested_by_principal_id ?? (await roomPrincipalOf(tx, job.space_id)).id;
 
   const compact = (item: BoardItem): JsonValue => ({
@@ -319,7 +319,8 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
   const failed = (reason: string) => ({ outcome: 'failed' as const, reason, retryable: false });
 
   async function list(action: Action, ctx: ConnectorContext) {
-    return serviceTransaction(db, async (tx) => {
+    // A read takes no part in the event order, so it holds none of its lock.
+    return db.transaction(async (tx) => {
       const job = await facts(options.sql, ctx);
       const reader = await readerOf(tx, job);
       const state = action.canonical_payload.state as BoardItem['state'] | undefined;

@@ -338,6 +338,10 @@ export async function seedSpace(
     (id, space_id, room_job_id, thread_id, action_id, target_principal_id, task_text, task_hash, expires_at)
     values (${newId('rho')}, ${spaceId}, ${jobId}, ${threadId}, ${newId('act')}, ${principalId},
       'Send the notes', ${'0'.repeat(64)}, now() + interval '7 days')`;
+  // A question on the room's board, asked in its thread.
+  await sql`insert into room_board_item
+    (id, space_id, kind, title, assignee_principal_id, source_thread_id, created_by)
+    values (${newId('rbi')}, ${spaceId}, 'question', 'Which day?', ${principalId}, ${threadId}, ${principalId})`;
   await sql`insert into memory_room_capture (message_id, space_id, outcome)
     values (${messageId}, ${spaceId}, 'skipped:asked')`;
   const claim = await sql<

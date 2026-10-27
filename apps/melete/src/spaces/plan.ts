@@ -220,6 +220,8 @@ const SPACE_KEYED_OPERATIONAL = [
   'room_handoff',
   'room_invite',
   'room_policy',
+  // The room's board; its items point at the room's threads, which go next.
+  'room_board_item',
   'room_message',
   'room_thread',
   // Files people sent in chat went with their chats; one uploaded and never
