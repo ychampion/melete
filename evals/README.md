@@ -1,12 +1,12 @@
 # Melete evaluations
 
-These evaluations run the actual Melete API, broker, Postgres authority, model gateway, pinned Hermes engine, and Melete plugin. The external destinations are fixtures: no scenario sends a real email, changes a real calendar, or modifies a real server. The destination records every acceptance without deduplicating it, so duplicate dispatches remain observable.
+These evaluations run the actual Melete API, broker, Postgres authority, model gateway, Melete's engine (built on Hermes, customised), and Melete plugin. The external destinations are fixtures: no scenario sends a real email, changes a real calendar, or modifies a real server. The destination records every acceptance without deduplicating it, so duplicate dispatches remain observable.
 
 The live benchmark, which drives a running install over its HTTP API with practice tasks on demo sites and real tasks on real sites and accounts, is described in [`live/README.md`](live/README.md).
 
 ## Run
 
-Install the repository's locked dependencies with `bun install --frozen-lockfile`. Docker must have the pinned runtime image available as `melete-runtime:local`, or set `EVALS_RUNTIME_IMAGE` to an existing image. The harness verifies the engine commit inside the image, then builds a small derivative with the current checked observer bridge and support module. Current plugin and entrypoint files are mounted read-only. To build an image on a machine with sufficient free disk:
+Install the repository's locked dependencies with `bun install --frozen-lockfile`. Docker must have the runtime image available as `melete-runtime:local`, or set `EVALS_RUNTIME_IMAGE` to an existing image. The harness verifies the engine commit inside the image, then builds a small derivative with the current checked observer bridge and support module. Current plugin and entrypoint files are mounted read-only. To build an image on a machine with sufficient free disk:
 
 ```sh
 docker build -t melete-runtime:local packages/runtime-hermes
@@ -80,7 +80,7 @@ Checks can count calls on the job, on every job in the space (`scope: "space"`),
 
 ## Engines, models and the baseline
 
-`--engine hermes` (the default) runs each attempt in the pinned engine's container, as above. `--engine light` needs no Docker: it runs the same API, broker, model gateway, ledger and destinations on a disposable database (`DATABASE_URL` when set, otherwise the embedded Postgres the test suite uses), and each attempt on an in-process engine (`engine.ts`) that serves the engine's run API to the real adapter and forwards every tool call to the broker as the Melete plugin does. It has no terminal of its own, no compaction and no engine hooks, so a light-engine result is evidence about a model with Melete's identity, catalog, broker and ledger, not about the pinned engine's loop. The campaign records which engine ran it. The light engine's database ends with the process, so a resumed light campaign keeps its finished cells and reruns unfinished ones.
+`--engine hermes` (the default) runs each attempt in the engine's container, as above. `--engine light` needs no Docker: it runs the same API, broker, model gateway, ledger and destinations on a disposable database (`DATABASE_URL` when set, otherwise the embedded Postgres the test suite uses), and each attempt on an in-process engine (`engine.ts`) that serves the engine's run API to the real adapter and forwards every tool call to the broker as the Melete plugin does. It has no terminal of its own, no compaction and no engine hooks, so a light-engine result is evidence about a model with Melete's identity, catalog, broker and ledger, not about the engine's loop. The campaign records which engine ran it. The light engine's database ends with the process, so a resumed light campaign keeps its finished cells and reruns unfinished ones.
 
 ```sh
 bun run evals -- --engine light --provider scripted --suite capability --runs 1 \

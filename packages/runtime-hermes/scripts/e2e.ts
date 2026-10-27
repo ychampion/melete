@@ -1,5 +1,5 @@
 /**
- * The local end-to-end: a real Hermes API server from the pinned tag, the real
+ * The local end-to-end: a real engine API server from the expected tag, the real
  * broker, the real model gateway with its fake provider, and the real adapter.
  *
  * Nothing here is a mock except the model itself, and the model is fake because
@@ -66,7 +66,7 @@ function merge(base: Record<string, unknown>, extra: Record<string, unknown>) {
 }
 
 /**
- * A HERMES_HOME with the thin config and the plugin, built fresh each run.
+ * A HERMES_HOME with the engine config and the plugin, built fresh each run.
  *
  * `overrides` is merged over the config so a proof that needs a different
  * engine setting states only that setting, and every other key stays the one

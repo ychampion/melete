@@ -1,11 +1,11 @@
-# 0026 - Engine surface probes: what the pinned engine actually does
+# 0026 - Engine surface probes: what the engine actually does
 
 Status: recorded (executed probes; the configuration has since moved to what
 they measured — see the addendum at the end)
 
 ## Problem
 
-The engine-forward direction rests on a read of the pinned engine's source: that
+The engine-forward direction rests on a read of the engine's source: that
 compaction, native tools, skills, tool discovery and session resumption behave in
 particular ways, and that a handful of keys in the shipped engine config either
 do nothing or do something other than their name suggests. A source read
@@ -14,7 +14,7 @@ say which claims survive contact with the code.
 
 ## Decision
 
-`packages/runtime-hermes/tests/test_engine_surface.py` drives the pinned engine's
+`packages/runtime-hermes/tests/test_engine_surface.py` drives the engine's
 own functions against temporary engine homes and a loopback capture server. No
 provider is contacted and no production code changes. Every probe that depends on
 configuration is parametrized `shipped` against `target`: the `shipped` case
@@ -24,7 +24,7 @@ file is green as it stands and records the gap.
 The probes skip themselves with a clear reason when the engine is not importable,
 so the default `bun run test:plugin` run (an isolated environment without it)
 stays green. `bun run test:engine-surface` in `packages/runtime-hermes` runs them
-with an interpreter that has the pinned engine, found from `MELETE_HERMES_PYTHON`,
+with an interpreter that has the engine, found from `MELETE_HERMES_PYTHON`,
 `MELETE_HERMES_VENV`, or a `.hermes-venv` directory at the repository root; with
 none of those it prints why it ran nothing. Nothing is wired into CI.
 
@@ -40,7 +40,7 @@ none of those it prints why it ran nothing. Nothing is wired into CI.
 
 ## Evidence
 
-All results below are from executed probes, at the pinned engine release. Engine
+All results below are from executed probes, at the engine commit this build expects. Engine
 paths are relative to that source tree.
 
 ### 1. The auxiliary compression client and the capability header — confirms
@@ -304,7 +304,7 @@ Items 1 and 2 are unchanged and still bind the work that turns on native tools.
 
 ```sh
 cd packages/runtime-hermes
-MELETE_HERMES_PYTHON=<interpreter with the pinned engine> bun run test:engine-surface
+MELETE_HERMES_PYTHON=<interpreter with the engine> bun run test:engine-surface
 ```
 
 The default `bun run test:plugin` collects the same file and skips it, naming the

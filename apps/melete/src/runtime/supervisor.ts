@@ -364,7 +364,9 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
   private async checkEngineRoot() {
     const pin = (await readFile(join(this.options.engineRoot, '.git', 'HEAD'), 'utf8')).trim();
     if (pin !== HERMES_PINNED_COMMIT)
-      throw new Error(`Hermes checkout must be pinned at ${HERMES_PINNED_COMMIT}`);
+      throw new Error(
+        `The engine checkout must be at ${HERMES_PINNED_COMMIT}, the commit this build expects`,
+      );
     // Process mode needs the same hash-checked observer bridge as the image.
     // Preparing it once before any owned engine starts avoids modifying a live import.
     this.observerBridge ??= exec(
@@ -796,7 +798,7 @@ export class DockerRuntimeSupervisor implements RuntimeSupervisor {
       Config?: { Labels?: Record<string, string> };
     }[];
     if (image[0]?.Config?.Labels?.['com.melete.hermes.commit'] !== HERMES_PINNED_COMMIT)
-      throw new Error('Runtime image does not carry the pinned Hermes commit');
+      throw new Error('Runtime image does not carry the engine commit this build expects');
     signal.throwIfAborted();
     await jobWorkspace(this.options.workRoot, bundle.attempt.job_id);
     await moveJobScreens(this.options.workRoot, bundle.attempt.job_id);

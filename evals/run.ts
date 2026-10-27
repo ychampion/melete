@@ -205,7 +205,7 @@ const meta: Metadata = {
         ? 'Fireworks agent inference and model-based rubric grading were not run. These are scripted-provider boundary checks, not evidence of real-model performance.'
         : null,
       engine === 'light'
-        ? 'Attempts ran on the light engine: the real adapter, broker, gateway, ledger and destinations around an in-process tool loop, not the pinned engine in a container.'
+        ? 'Attempts ran on the light engine: the real adapter, broker, gateway, ledger and destinations around an in-process tool loop, not the engine in a container.'
         : null,
     ]
       .filter(Boolean)

@@ -1,6 +1,6 @@
 """The prompt seam is applied only to the audited source, and fails closed otherwise.
 
-The pinned engine source is read from the local checkout named by
+The engine source is read from the local checkout named by
 ``MELETE_HERMES_ROOT`` (or ``.hermes-src`` at the repository root). Without one
 the tests that need it are skipped with the reason; the refusal test needs none.
 """
@@ -33,7 +33,7 @@ def engine_source() -> str:
     root = Path(os.environ.get("MELETE_HERMES_ROOT") or REPOSITORY / ".hermes-src")
     target = root / SEAM_FILE
     if not target.exists():
-        pytest.skip(f"No pinned engine checkout at {root}; set MELETE_HERMES_ROOT to run this.")
+        pytest.skip(f"No engine checkout at {root}; set MELETE_HERMES_ROOT to run this.")
     return target.read_text(encoding="utf-8")
 
 

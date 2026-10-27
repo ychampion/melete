@@ -490,7 +490,7 @@ when only the person can decide.
   credential once, stops on a revoked grant, repairs schema drift through a
   tested candidate, and never re-aims an effect. Safe stops are counted apart
   from completions.
-- **A pinned engine per attempt.** Hermes Agent `v2026.9.7` with a
+- **One engine per attempt.** Hermes Agent `v2026.9.7` with a
   hash-checked lifecycle observer patch, in a container with no route out; the service supervises one container per
   attempt on a Linux Docker host, mounting only the job's own workspace.
 - **Tool discovery.** A token-budgeted core catalog plus `search_tools` and

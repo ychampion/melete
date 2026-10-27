@@ -97,7 +97,7 @@ export interface GatewayOptions {
   maxRequestBytes?: number;
   maxResponseBytes?: number;
   /**
-   * The output limit given to a request that names none. The pinned engine
+   * The output limit given to a request that names none. The engine
    * sends none unless its configuration sets one, so this is the usual ceiling
    * on a reply. It never exceeds what the attempt may still spend.
    */

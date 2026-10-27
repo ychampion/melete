@@ -127,7 +127,7 @@ describe('pictures a request carries', () => {
     // Sent as is, the request is past the cap and refused.
     expect(MAX_REQUEST_IMAGES).toBe(3);
     expect(() => countImages({ messages: turn })).toThrow(new GatewayError(413, 'too_many_images'));
-    // The pinned engine retires every tool picture but the newest three on each
+    // The engine retires every tool picture but the newest three on each
     // request it sends (agent/context_compressor.py
     // evict_stale_outbound_tool_images, called from turn_request_assembly.py and
     // chat_completion_helpers.py), leaving the older result's text in its place.

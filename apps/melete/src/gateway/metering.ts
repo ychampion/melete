@@ -22,7 +22,7 @@ const CHARS_PER_TOKEN = 4;
  * This has to be the engine's own estimate, because the engine decides when to
  * compact by it: a stricter count here refuses a conversation before the engine
  * ever gets the chance to shorten it, and a looser one bills an attempt for more
- * input than its owner allowed. So it reproduces the pinned engine's
+ * input than its owner allowed. So it reproduces the engine's
  * `estimate_tokens_rough`: a whole token for each codepoint in the scripts a
  * tokenizer charges by the character, and four UTF-8 bytes to the token for
  * everything else. Counting bytes rather than characters for the remainder is

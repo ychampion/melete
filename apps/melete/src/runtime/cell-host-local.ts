@@ -297,7 +297,9 @@ export class LocalCellHost implements CellHost {
       !/^[a-f0-9]{64}$/.test(image.Config.Labels['com.melete.plugin.sha256'] ?? '') ||
       !/^sha256:[a-f0-9]{64}$/.test(image.Id)
     )
-      throw new Error('The runtime image must carry the pinned Hermes commit and plugin digest');
+      throw new Error(
+        'The runtime image must carry the engine commit this build expects and a plugin digest',
+      );
     // Resolve the mutable local tag once. Every child uses this exact image id.
     this.image = image.Id;
     return { engine: this.self, imageId: this.image };

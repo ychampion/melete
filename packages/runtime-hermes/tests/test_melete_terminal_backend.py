@@ -3,7 +3,7 @@
 Nothing here opens a socket or imports the engine: the engine's base classes
 are stood in for, and the broker is a client object that records what it was
 asked. The same backend is driven through the real broker over HTTP by
-`apps/melete/test/integration/sandbox-terminal.test.ts`, and through the pinned
+`apps/melete/test/integration/sandbox-terminal.test.ts`, and through the
 engine's own factory by `tests/test_engine_surface.py`.
 """
 

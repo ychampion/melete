@@ -1,4 +1,4 @@
-"""The registered handler must satisfy the pinned registry, not just our helper."""
+"""The registered handler must satisfy the engine's registry, not just our helper."""
 import json
 
 import pytest

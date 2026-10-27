@@ -89,7 +89,7 @@ export async function stageRuntimeAssets(source: string, target: string): Promis
   }
 }
 
-/** Which loop executes each attempt: the pinned engine in a container, or the in-process light engine. */
+/** Which loop executes each attempt: the engine in a container, or the in-process light engine. */
 export type EngineKind = 'hermes' | 'light';
 export type Stack = {
   engine: EngineKind;
@@ -233,7 +233,7 @@ export async function openStack(): Promise<Stack> {
     '/opt/hermes/.melete-hermes-commit',
   ]);
   if (commit !== HERMES_PINNED_COMMIT)
-    throw new Error('Runtime image does not match the pinned Hermes commit');
+    throw new Error('Runtime image does not carry the engine commit this build expects');
   const sourceFiles = ['evals/Dockerfile', 'packages/runtime-hermes/.dockerignore'];
   for (const pattern of [
     'packages/runtime-hermes/patches/*.py',
@@ -440,7 +440,7 @@ export class LightRuntime implements RuntimeAdapter {
   }
 }
 
-/** Lifecycle glue: every model turn is executed by the pinned engine and checked observer bridge. */
+/** Lifecycle glue: every model turn is executed by the engine and checked observer bridge. */
 export class ContainerRuntime implements RuntimeAdapter {
   last: { job: string; events: unknown[]; output: string } | null = null;
   observe?: (bundle: AttemptBundle, event: RuntimeEvent) => Promise<void>;

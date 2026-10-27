@@ -25,7 +25,7 @@ independent restriction journal before opening memory or starting job workers.
 Actual attempts receive bounded eligible context, with durable context evidence.
 The web image proxies `/api` to a fixed upstream on the browser's own origin.
 
-The runtime build asserts the pinned Hermes commit and plugin content hash,
+The runtime build asserts the engine commit this build expects and the plugin content hash,
 uses frozen dependencies, and writes a CycloneDX inventory. Deployment
 conformance runs real Hermes containers with the explicit scripted provider.
 The restore exercise replaces only the verified Postgres volume, retains the

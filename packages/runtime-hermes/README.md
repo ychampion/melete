@@ -168,7 +168,7 @@ starts and retires these containers itself when the Docker runtime is selected.
 ## What the thin configuration costs
 
 The local discovery end-to-end test captures the first actual provider request
-from pinned commit `2237be355906fbe6065ce1815711eee52b2d646e`. With a seven-tool
+from engine commit `2237be355906fbe6065ce1815711eee52b2d646e`. With a seven-tool
 core, it measured 7,708 system-prompt characters and 2,886 tool-schema characters:
 **2,649 estimated tokens**, using `ceil((system + schemas).length / 4)`, below
 the 4,000-token tripwire. The broker core itself was 714 estimated tokens
@@ -262,7 +262,7 @@ does anything with it. It costs 477 tokens of scaffolding when it is on, taking
 a thin attempt from 3,304 to 3,781; see `.agents/notes/0016`.
 
 `packages/runtime-hermes/scripts/e2e-exec.ts` runs the whole path against a real
-Hermes API server from the pinned tag.
+Hermes API server built from the tag this build expects.
 
 ## Discovery and continuations
 
@@ -272,7 +272,7 @@ the attempt's context and registers its forwarder. Loaded tools retain the same
 broker approval, scope, budget and receipt checks. Skill reads and the optional
 `compose` execution seam use `/tools/call`; connector effects use `/actions`.
 
-Pinned Hermes snapshots its toolset when constructing each active agent, so
+The engine snapshots its toolset when constructing each active agent, so
 registering a tool does not mutate that snapshot. The adapter verifies the new
 catalog through its service-owned `catalogState` callback, stops and drains the
 current run, then starts a continuation with the extended catalog. Model text

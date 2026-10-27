@@ -1,6 +1,6 @@
 /**
- * The local end-to-end for code execution: a real Hermes API server from the
- * pinned tag, the real broker, the real model gateway with its fake provider,
+ * The local end-to-end for code execution: a real engine API server from the
+ * expected tag, the real broker, the real model gateway with its fake provider,
  * the real adapter, and a real Python subprocess started inside the cell.
  *
  * The only thing that is not real is the model, and it is fake because the

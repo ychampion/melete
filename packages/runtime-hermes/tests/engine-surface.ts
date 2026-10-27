@@ -1,8 +1,8 @@
 /**
- * Runs `tests/test_engine_surface.py` against the pinned engine environment.
+ * Runs `tests/test_engine_surface.py` against the engine's environment.
  *
  * Those probes import engine modules directly, so they need an interpreter that
- * has the pinned engine installed — not the isolated environment
+ * has the engine installed — not the isolated environment
  * `bun run test:plugin` builds. The interpreter is found, in order, from
  * `MELETE_HERMES_PYTHON` (the interpreter itself), `MELETE_HERMES_VENV` (a
  * virtual environment holding it), or a `.hermes-venv` directory at the
@@ -42,7 +42,7 @@ function resolveInterpreter(): string | null {
 const interpreter = resolveInterpreter();
 if (interpreter === null) {
   process.stdout.write(
-    'The engine surface probes were NOT run: no interpreter with the pinned ' +
+    'The engine surface probes were NOT run: no interpreter with the ' +
       'engine was found.\n' +
       '  Set MELETE_HERMES_PYTHON to that interpreter, or MELETE_HERMES_VENV ' +
       'to a virtual environment holding it,\n' +

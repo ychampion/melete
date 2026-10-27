@@ -1,5 +1,5 @@
 /**
- * A typed client for the pinned Hermes release's HTTP surface. It builds
+ * A typed client for the engine's HTTP surface. It builds
  * requests and parses responses; it never opens a socket, so the whole thing is
  * testable without a container.
  *

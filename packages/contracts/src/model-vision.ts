@@ -145,7 +145,7 @@ export function listedVisionByModel(body: unknown): Map<string, boolean> {
 
 /**
  * Screenshots kept as pictures in what is sent to the model. Older ones are
- * replaced by their text receipt. This is the pinned engine's own number
+ * replaced by their text receipt. This is the engine's own number
  * (`_MAX_KEEP_TOOL_IMAGES` in agent/context_compressor.py), applied to every
  * request it sends; the gateway refuses a request carrying more than
  * `MAX_REQUEST_IMAGES`.
@@ -189,7 +189,7 @@ export const MAX_ATTACHED_IMAGE_BYTES = 1024 * 1024;
 export const MAX_ATTACHED_IMAGE_ENCODED_BYTES = Math.ceil(MAX_ATTACHED_IMAGE_BYTES / 3) * 4;
 
 /**
- * What a picture is charged as, in input tokens. It is the pinned engine's own
+ * What a picture is charged as, in input tokens. It is the engine's own
  * estimate (`DEFAULT_IMAGE_TOKEN_COST` in agent/image_token_cost.py), so the
  * gateway and the engine's compaction agree on how full a request is; a
  * 1280-pixel picture costs between about 800 and 1,600 tokens at the providers

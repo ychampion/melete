@@ -333,7 +333,7 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
     // a helper runs on the attempt's own model through the same gateway.
     delegation: { ...DELEGATION_LIMITS },
     checkpoints: { enabled: false },
-    // The engine is updated by pinning a new release. Its own check runs git
+    // The engine is updated by a new Melete build. Its own check runs git
     // against the source checkout, in the background of every start.
     updates: { check: false },
     agent: {

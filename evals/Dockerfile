@@ -1,4 +1,4 @@
-# Reuse the installed pinned engine and add only the repository's checked observer bridge.
+# Reuse the installed engine and add only the repository's checked observer bridge.
 ARG EVALS_RUNTIME_BASE=melete-runtime:local
 FROM ${EVALS_RUNTIME_BASE}
 USER root

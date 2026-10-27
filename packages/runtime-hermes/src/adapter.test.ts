@@ -1155,7 +1155,7 @@ describe('words the person sends while the turn runs', () => {
 });
 
 describe('a reply that hit the output limit', () => {
-  // The engine's own wording, as the pinned release writes it.
+  // The engine's own wording, exactly as it writes it.
   const THINKING =
     '⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning ' +
     'and had none left for the actual response.\n\nTo fix this:\n' +

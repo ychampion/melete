@@ -24,7 +24,7 @@ import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
-/** Opt in after preparing the pinned Python environment; ordinary suites need no Hermes install. */
+/** Opt in after preparing the engine's Python environment; ordinary suites need no Hermes install. */
 const realTest = process.env.MELETE_HERMES_E2E === '1' ? test : test.skip;
 
 realTest(

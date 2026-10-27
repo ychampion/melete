@@ -47,7 +47,7 @@ changed schema, effect class or approval policy cannot silently replace the
 loaded tool's execution policy. Skills resolve through the same filesystem
 space identifiers as the knowledge API; their frontmatter cannot grant scopes.
 
-## Pinned Hermes continuation
+## Engine continuation
 
 Hermes v2026.9.7 (`2237be355906fbe6065ce1815711eee52b2d646e`) snapshots the
 available tools when creating an agent. The plugin calls `ctx.register_tool`
@@ -60,7 +60,7 @@ The continuation uses the same native session, a distinct durable idempotency
 key, one shared wall/turn/output allowance and one continuous runtime event
 sequence. There is one public attempt outcome. The first input includes the
 broker's prior transcript. Subsequent runs use native session hydration because
-the pinned API's explicit `conversation_history` parser drops tool-call fields.
+the engine API's explicit `conversation_history` parser drops tool-call fields.
 After execution ends, a ledger lookup bounded by the broker client's timeout (30 seconds by default) preserves
 pending approvals when the model's wall allowance is exhausted. It cannot start
 new runtime work and aborts a stalled lookup. Timeout or unavailability emits
@@ -68,7 +68,7 @@ new runtime work and aborts a stalled lookup. Timeout or unavailability emits
 without scheduling an automatic retry. Configure `brokerParkedActions.timeoutMs`
 to match a customized broker timeout.
 
-`packages/runtime-hermes/scripts/discovery-e2e.ts` checks the relevant pinned
+`packages/runtime-hermes/scripts/discovery-e2e.ts` checks the relevant engine
 source hashes, starts the actual local server on 3140 with the broker on 3142,
 and scripts search, load, execution and receipt reporting through the model
 gateway. It measures the actual first request's system prompt and tool schemas,
@@ -135,7 +135,7 @@ its isolation verification land when W10a merges.
 Run full `bun test --max-concurrency=2` suites one at a time on a machine that
 other test processes share; focused runs need no such serialization. Run `bun run typecheck`, `bun run lint`,
 `bun run test:plugin`, `bun run compose:check`, and the discovery e2e script.
-The e2e needs an ignored `.hermes-src` at the pinned revision and an isolated
+The e2e needs an ignored `.hermes-src` at the engine commit this build expects and an isolated
 `.hermes-venv` with that source installed; it uses no real inference credentials.
 Postgres 17 runs locally when `DATABASE_URL` is unset, with real pg-boss and
 default WAL/fsync. Each fixture has its own database. Identical knowledge seeds

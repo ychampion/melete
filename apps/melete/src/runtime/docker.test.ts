@@ -426,7 +426,7 @@ describe('Docker attempt supervision', () => {
   test('refuses an image whose Hermes revision differs before mutating Docker state', async () => {
     const f = await setup();
     f.daemon.commit = 'c'.repeat(40);
-    await expect(f.runtime.initialize()).rejects.toThrow('pinned Hermes commit');
+    await expect(f.runtime.initialize()).rejects.toThrow('engine commit this build expects');
     expect(f.daemon.calls.filter((call) => call.method !== 'GET')).toHaveLength(0);
   });
 

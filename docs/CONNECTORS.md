@@ -916,7 +916,7 @@ own, so echoing the job earns it only the room no granted verb wanted
 Selection budgets serialised schemas rather than counting tools.
 The default core allowance is 750 estimated tokens of schemas, including
 the two discovery tools, plus at most 250 estimated tokens for a names-only
-index of every healthy tool left outside, carried on `load_tool`. The pinned
+index of every healthy tool left outside, carried on `load_tool`. The
 engine's scaffolding uses the rest of the 4,000-token tripwire.
 
 `Connector.catalog` supplies trusted source metadata: `connector`, `capability`,

@@ -21,7 +21,7 @@ export const RUNTIME_WAIT_TOOL: ToolSpec = {
   effect_class: 'write_reversible',
   connection_id: null,
   input_schema: {
-    // The pinned engine strips top-level unions from provider schemas. Keep
+    // The engine strips top-level unions from provider schemas. Keep
     // discoverable fields here; waitSpec enforces the discriminated union.
     type: 'object',
     properties: {

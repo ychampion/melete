@@ -320,7 +320,7 @@ server.serve_forever()
       );
     });
     await expect(supervisor.launch(bundle, new AbortController().signal)).rejects.toThrow(
-      'pinned Hermes commit',
+      'engine commit this build expects',
     );
     expect(commands.some((args) => args[0] === 'run')).toBe(false);
     await supervisor.close();
@@ -357,14 +357,14 @@ server.serve_forever()
       await rm(root, { recursive: true, force: true });
     }
   });
-  test('an unpinned process checkout is rejected before spawning', async () => {
+  test('a process checkout at another commit is rejected before spawning', async () => {
     const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-pin-'));
     try {
       await mkdir(join(root, '.git'));
       await writeFile(join(root, '.git', 'HEAD'), 'wrong');
       const supervisor = new ProcessRuntimeSupervisor({ ...options, engineRoot: root });
       await expect(supervisor.launch(bundle, new AbortController().signal)).rejects.toThrow(
-        'must be pinned',
+        'the commit this build expects',
       );
       await supervisor.close();
     } finally {

@@ -1,4 +1,4 @@
-"""List the pinned loader's hooks and literal dispatch sites without importing Hermes.
+"""List the engine loader's hooks and literal dispatch sites without importing Hermes.
 
 This is source evidence, not a claim that a branch executes on the HTTP run path.
 The audit note records those path and payload distinctions separately.
@@ -24,7 +24,7 @@ def main() -> None:
         and node.target.id == "VALID_HOOKS"
     ]
     if len(declarations) != 1:
-        raise ValueError("Expected one VALID_HOOKS declaration in the pinned loader")
+        raise ValueError("Expected one VALID_HOOKS declaration in the engine loader")
     hooks = ast.literal_eval(declarations[0].value)
     if not isinstance(hooks, set) or not all(isinstance(name, str) for name in hooks):
         raise ValueError("Expected a literal set of hook names")

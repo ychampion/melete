@@ -1,4 +1,4 @@
-"""Executed probes against the pinned engine's own functions.
+"""Executed probes against the engine's own functions.
 
 Every test here drives real engine code — no reimplementation, no mocks of the
 behaviour under test — against a temporary ``HERMES_HOME`` and, where a request
@@ -9,11 +9,11 @@ from ``packages/runtime-hermes/config/config.yaml``, so it asserts what the
 image actually produces rather than a copy of it; the paired case is the
 spelling that does nothing, kept because a key the engine ignores looks exactly
 like one it reads. Citations name the engine file and line the probe exercises,
-read at the pinned release.
+read at the engine commit this build expects.
 
 The probes are skipped with a clear reason when the engine is not importable, so
 the default plugin test run (an isolated environment without it) stays green.
-Run them with the pinned interpreter through ``bun run test:engine-surface``.
+Run them with the engine's interpreter through ``bun run test:engine-surface``.
 """
 from __future__ import annotations
 
@@ -27,15 +27,15 @@ from pathlib import Path
 
 import pytest
 
-try:  # The pinned engine, importable only from the pinned environment.
+try:  # The engine, importable only from its own environment.
     import hermes_constants as _hermes_constants  # noqa: F401
 except Exception as exc:  # pragma: no cover - the skip is the point
     pytest.skip(
-        "The pinned engine is not importable by this interpreter "
+        "The engine is not importable by this interpreter "
         f"({type(exc).__name__}: {exc}). These probes drive engine functions "
-        "directly, so they need the pinned environment: run "
+        "directly, so they need the engine's environment: run "
         "`bun run test:engine-surface` (or set MELETE_HERMES_PYTHON to the "
-        "pinned interpreter). The default `bun run test:plugin` run skips them.",
+        "engine's interpreter). The default `bun run test:plugin` run skips them.",
         allow_module_level=True,
     )
 
@@ -427,7 +427,7 @@ def test_registered_strip_env_keys_reach_only_some_child_environments(
         assert key not in _HERMES_PROVIDER_ENV_BLOCKLIST
         assert key in terminal, (
             f"{key} was expected to survive the native terminal builder at the "
-            "pinned release, because that builder passes no plugin strip set")
+            "engine commit this build expects, because that builder passes no plugin strip set")
 
 
 def test_execute_code_child_environment_drops_the_registered_keys(
@@ -1177,7 +1177,7 @@ def _parent_agent(base_url: str, toolsets: list):
 
 @pytest.mark.parametrize("sandbox", [False, True])
 def test_a_helper_is_melete_with_the_parents_tools_less_the_parent_only_ones(hermes_home, monkeypatch, sandbox):
-    """A helper built by the pinned engine with the delegation seam applied:
+    """A helper built by the engine with the delegation seam applied:
     the parent's toolsets less delegation, the question tool and memory
     (tools/delegate_tool_toolsets.py), less the broker tools that speak to the
     person, park the job or start more helpers; Melete's identity from the

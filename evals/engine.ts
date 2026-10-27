@@ -1,7 +1,7 @@
 /**
  * A light engine for evaluation hosts without Docker.
  *
- * It answers the five calls of the pinned engine's HTTP surface that the real
+ * It answers the five calls of the engine's HTTP surface that the real
  * `HermesRuntimeAdapter` uses (capabilities, start a run, its event stream,
  * stop, approval), so the adapter, broker, model gateway, ledger and fixture
  * destinations are exactly the ones the container path exercises. What it
@@ -14,7 +14,7 @@
  *
  * A campaign records which engine ran it. A light-engine number is evidence
  * about the model with Melete's identity, catalog, broker and ledger; it is
- * not evidence about the pinned engine's loop.
+ * not evidence about the engine's loop.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { IDENTITY } from '../packages/runtime-hermes/src/instructions.ts';

@@ -199,7 +199,7 @@ def test_registered_handler_keeps_runtime_context_out_of_admission_and_returns_j
     register(ctx, client)
     handler = ctx.tools[1]["handler"]
     result = handler({"query": "invoice"}, task_id="runtime-task", session_id="runtime-session", user_task="find it")
-    assert isinstance(result, str), "the pinned Hermes registry requires a JSON string"
+    assert isinstance(result, str), "the engine's registry requires a JSON string"
     assert json.loads(result)["status"] == "succeeded"
     proposal = next(request for request in broker.requests if request["method"] == "POST")
     assert proposal["body"]["payload"] == {"query": "invoice"}
@@ -624,7 +624,7 @@ def test_the_handler_takes_the_arguments_as_one_positional_dict(client, broker):
 
 
 def test_engine_execution_context_is_not_part_of_the_proposed_payload(client, broker):
-    # Pinned Hermes model_tools.py:758-767 passes model args separately from
+    # The engine's model_tools.py:758-767 passes model args separately from
     # task/session ids and user_task. These kwargs are execution context, not
     # fields of the tool's input schema or the content an owner approves.
     handler = build_handler(client, CATALOG[1])
@@ -724,7 +724,7 @@ def test_registered_react_forwards_to_reactions_with_the_attempt_token(client, b
     ctx = RecordingContext()
     assert register(ctx, client) == ["react"]
     arguments = {"message_id": "42", "emoji": "👍"}
-    # The pinned Hermes registry consumes JSON text, so the broker result is a string.
+    # The engine's registry consumes JSON text, so the broker result is a string.
     result = json.loads(ctx.tools[0]["handler"](arguments))
     assert result == {"status": "succeeded", "reaction": arguments}
     assert broker.requests[-1] == {

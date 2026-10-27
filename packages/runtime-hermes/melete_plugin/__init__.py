@@ -475,7 +475,7 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
     start: the model can still answer a question or ask one, and refusing to
     load would turn a scope-less job into a crash rather than a conversation.
     """
-    # The pinned HTTP bridge supplies a per-run queue; these observers never
+    # The engine's HTTP bridge supplies a per-run queue; these observers never
     # veto tools or return modified arguments. Enforcement stays in the broker.
     from melete_runtime_hooks import register_observers, when_attempt_arrives
     register_observers(ctx)

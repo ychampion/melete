@@ -1,4 +1,4 @@
-/** Pinned local Hermes, real broker/Postgres and a scripted inference provider. */
+/** The local engine, real broker/Postgres and a scripted inference provider. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -64,7 +64,7 @@ async function main() {
       .digest('hex');
     assert(
       actual === expected || actual === observerHashes[file],
-      `Pinned source differs: ${file}`,
+      `Engine source differs from the expected commit: ${file}`,
     );
     observedSourceHashes[file] = actual;
   }
