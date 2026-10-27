@@ -2,12 +2,12 @@
 name: read-mail-photos
 description: Turn photos of paper mail into a checklist of what to do and by when.
 triggers:
-  - my mail
   - paper mail
+  - photos of my mail
   - these letters
-  - this letter
-  - photos of
-  - in the post
+  - read this letter
+  - got a letter
+  - came in the post
 tools:
   - files.list
   - files.move
@@ -15,6 +15,8 @@ max_tokens: 400
 ---
 
 1. Read every photo before answering. One item per letter, bill or notice.
+A photo that reaches you only as a note: say "I can't see this photo", suggest
+a model that reads images, and never read from the note.
 
 2. For each: who sent it, what it is, any amounts and due dates, and reference
 or ID numbers copied exactly, digit for digit.
@@ -31,5 +33,5 @@ before any step on it.
 6. File the photos only when asked: files.save_attachment, then files.move
 into the folder the person already uses.
 
-The answer is the checklist, soonest due date first, then the items with
-nothing to do, then anything unreadable.
+Answer with the checklist: soonest due first, then nothing-to-do items, then
+anything unreadable.

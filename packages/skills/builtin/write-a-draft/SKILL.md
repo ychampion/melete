@@ -5,6 +5,8 @@ triggers:
   - write a
   - write me
   - draft a
+  - write this
+  - draft this
   - rewrite
   - proofread
   - reword

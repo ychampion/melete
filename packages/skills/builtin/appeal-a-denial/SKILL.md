@@ -2,9 +2,12 @@
 name: appeal-a-denial
 description: Appeal a denied insurance claim with the form, deadline and letter.
 triggers:
-  - denied
   - denial
-  - appeal
+  - claim denied
+  - my claim
+  - appeal this
+  - appeal a
+  - an appeal
   - not covered
   - explanation of benefits
 tools:
@@ -23,18 +26,18 @@ copied exactly.
 2. Plan type: Original Medicare, Medicare Advantage, Part D, or private or
 employer. Ask if unsure.
 
-3. Fetch and cite that type's appeal rules: for Medicare,
+3. Fetch and cite its appeal rules: for Medicare,
 medicare.gov/providers-services/claims-appeals-complaints/appeals; otherwise
 the plan's notice and healthcare.gov/appeal-insurance-company-decision. Give
-the level, the form, where to send it and the deadline.
+the level, form, address and deadline. Urgent care: ask for a fast
+(expedited) appeal. Medicaid: its own state process.
 
-4. To gather: the notice, the doctor's letter of medical necessity,
-and records.
+4. Gather the notice, the doctor's letter of medical necessity and records.
 
-5. Draft the letter and a short checklist with files.write.
+5. Draft the letter and a checklist with files.write.
 
-6. Someone acting for another person needs their signed permission; for
-Medicare, the Appointment of Representative form, CMS-1696, from cms.gov.
+6. Acting for someone else needs their signed permission; for Medicare,
+form CMS-1696 (Appointment of Representative) from cms.gov.
 
 7. Last, remind them a week before the deadline: job.wait, kind "timer".
 

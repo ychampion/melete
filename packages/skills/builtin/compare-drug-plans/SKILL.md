@@ -20,7 +20,8 @@ max_tokens: 400
 anything missing, and what they pay now if they know.
 
 2. browser.open https://www.medicare.gov/plan-compare/ and continue without
-logging in. Choose drug plans, enter the ZIP, then each medicine.
+logging in. Choose drug plans, enter the ZIP, then each medicine, then the
+pharmacy they use, since prices depend on it.
 
 3. If it asks to log in, checks for a person, or blocks you: stop and hand the
 browser to the person, saying what is left.

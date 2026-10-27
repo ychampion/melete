@@ -131,6 +131,15 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
     expect: ['compare-drug-plans'],
     tolerate: ['plan-a-responsibility'],
   },
+  // near misses: words the paperwork skills use, in requests that are not paperwork
+  { text: 'Write this letter to the council', expect: ['write-a-draft'] },
+  { text: 'Draft this letter to my landlord', expect: ['write-a-draft'] },
+  { text: 'Check my mail', expect: ['triage-the-inbox'] },
+  { text: 'Go through my mail', expect: ['triage-the-inbox'] },
+  { text: 'Make a slideshow of photos of the kids', expect: [] },
+  { text: 'My card was denied at the store', expect: [] },
+  { text: 'Does this logo appeal to you?', expect: [] },
+  { text: 'Is this a genuine leather bag?', expect: [] },
   // nothing to select
   { text: 'Thanks!', expect: [] },
   { text: 'Hi there', expect: [] },

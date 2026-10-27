@@ -5,7 +5,7 @@ triggers:
   - scam
   - is this real
   - is this legit
-  - genuine
+  - is this genuine
   - phishing
   - suspicious
 tools:
