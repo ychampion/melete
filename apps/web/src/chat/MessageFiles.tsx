@@ -17,7 +17,14 @@ const KIND_NAMES: Record<AttachmentView['kind'], string> = {
   text: 'Text',
 };
 
-export function MessageFiles({ files }: { files: readonly AttachmentView[] }) {
+export function MessageFiles({
+  files,
+  base = '',
+}: {
+  files: readonly AttachmentView[];
+  /** Where the files live when not in the person's own chat, as `attachmentUrl` takes it. */
+  base?: string;
+}) {
   if (!files.length) return null;
   return (
     <ul className="bubble-files" aria-label="Files sent">
@@ -35,14 +42,14 @@ export function MessageFiles({ files }: { files: readonly AttachmentView[] }) {
             <a
               className="bubble-file"
               data-picture={picture ? 'true' : undefined}
-              href={attachmentUrl(file.id)}
+              href={attachmentUrl(file.id, false, base)}
               target="_blank"
               rel="noopener noreferrer"
               title={`${file.name} · ${detail}`}
               aria-label={`Open ${file.name} (${detail})`}
             >
               {picture ? (
-                <img src={attachmentUrl(file.id, true)} alt={file.name} loading="lazy" />
+                <img src={attachmentUrl(file.id, true, base)} alt={file.name} loading="lazy" />
               ) : (
                 <>
                   <Icon name={file.kind === 'image' ? 'image' : 'fileText'} size={18} />

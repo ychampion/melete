@@ -138,6 +138,15 @@ resumes from `Last-Event-ID`. A room view says who is looking at it with a
 heartbeat (`POST /rooms/{id}/presence`); presence is shown, and decides
 nothing about who may read.
 
+A message can carry photos and files: upload each to `POST /rooms/{id}/attachments`
+and name it in the message's `attachments`. Everyone in the room reads them
+(`GET /rooms/{id}/attachments/{file}/content`); someone removed from the room, or
+never in it, does not. An ask hands them to its request, and the room's model
+reads a photo itself, or the operator's vision model (`MELETE_MODEL_VISION`)
+takes the call and answers it. Where neither can read photos, an ask with one is
+refused with a plain sentence saying so, and the photo can still be posted
+without asking. A guest attaches files only where guests may ask.
+
 ## Permissions in a room
 
 When a request needs permission (posting to people through the room's

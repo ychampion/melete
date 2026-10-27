@@ -134,6 +134,7 @@ export function mountRooms(
         submission_id: input.submission_id,
         title: input.title,
         ask_agent: input.ask_agent,
+        attachments: input.attachments,
       }),
       201,
     );
@@ -150,6 +151,7 @@ export function mountRooms(
         author: actor(c),
         text: input.text,
         submission_id: input.submission_id,
+        attachments: input.attachments,
       }),
     );
   });

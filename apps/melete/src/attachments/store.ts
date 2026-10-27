@@ -8,6 +8,7 @@
  * in the space they uploaded it to, can do that. Deleting the chat deletes the
  * rows and every blob no one else still needs.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   ATTACHMENT_LIMITS,
   ATTACHMENT_TYPES_SENTENCE,
@@ -21,6 +22,7 @@ import {
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import {
@@ -51,6 +53,13 @@ export const UNSENT_ATTACHMENT_MS = 24 * 60 * 60 * 1000;
 
 /** Picture types the gateway forwards to a model as they are. */
 const MODEL_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+/**
+ * The room message whose files a request is being given, while a room hands
+ * that message to its request (`rooms/release.ts`). A file posted in a room is
+ * bound only here, and only to its own message's request.
+ */
+export const roomMessageFiles = new AsyncLocalStorage<string>();
 
 /** Who is asking, as the session says: never a header or a body. */
 export type AttachmentScope = { spaceId: string; principalId: string | null };
@@ -214,13 +223,27 @@ export class AttachmentService {
     }
   }
 
-  /** A file the person may see: their own unsent one, or one sent in a chat of theirs. */
+  /**
+   * A file the person may see: their own unsent one, one sent in a chat of
+   * theirs, or one posted in a room they are in now. A room's file is read by
+   * its current members while its message stands; someone removed from the
+   * room, or never in it, reads nothing.
+   */
   async visible(scope: AttachmentScope, id: string): Promise<AttachmentRow> {
     const rows = await this.sql<AttachmentRecord[]>`select a.* from attachment a
       left join job j on j.id = a.job_id
       where a.id = ${id} and a.space_id = ${scope.spaceId}
-        and ((a.job_id is null and a.principal_id is not distinct from ${scope.principalId})
-          or (a.job_id is not null and j.space_id = ${scope.spaceId}
+        and ((a.room_message_id is not null
+            and ${scope.principalId}::text is not null
+            and exists (select 1 from room_message rm
+              where rm.id = a.room_message_id and rm.space_id = a.space_id
+                and rm.redacted_at is null)
+            and exists (select 1 from space_membership m
+              where m.space_id = a.space_id and m.principal_id = ${scope.principalId}
+                and m.revoked_at is null and m.role <> 'agent'))
+          or (a.room_message_id is null and a.job_id is null
+            and a.principal_id is not distinct from ${scope.principalId})
+          or (a.room_message_id is null and a.job_id is not null and j.space_id = ${scope.spaceId}
             and (${scope.principalId}::text is null
               or coalesce(j.principal_id, (select id from owner limit 1)) = ${scope.principalId})))`;
     const row = rows[0];
@@ -263,6 +286,12 @@ export class AttachmentService {
   /** Take back a file not sent yet. A sent one goes with its chat. */
   async remove(scope: AttachmentScope, id: string): Promise<void> {
     const row = await this.visible(scope, id);
+    if (row.roomMessageId !== null)
+      throw new ServiceError(
+        'attachment_sent',
+        'This file was posted in a room. Deleting the message hides it.',
+        409,
+      );
     if (row.jobId !== null)
       throw new ServiceError(
         'attachment_sent',
@@ -282,7 +311,7 @@ export class AttachmentService {
   async sweepUnsent(scope: AttachmentScope): Promise<number> {
     const cutoff = new Date(Date.now() - UNSENT_ATTACHMENT_MS);
     const rows = await this.sql<{ id: string }[]>`select id from attachment
-      where space_id = ${scope.spaceId} and job_id is null
+      where space_id = ${scope.spaceId} and job_id is null and room_message_id is null
         and principal_id is not distinct from ${scope.principalId} and created_at < ${cutoff.toISOString()}::timestamptz
       limit 100`;
     if (!rows.length) return 0;
@@ -323,7 +352,7 @@ export class AttachmentService {
     if (!ids.length) return [];
     const { gone, keys } = await this.sql.begin(async (tx) => {
       const deleted = await tx<{ id: string }[]>`delete from attachment
-        where id = any(${[...ids]}) and job_id is null returning id`;
+        where id = any(${[...ids]}) and job_id is null and room_message_id is null returning id`;
       const gone = deleted.map((row) => row.id);
       const refs = gone.length
         ? await tx<{ key: BlobKey }[]>`delete from blob_ref
@@ -371,10 +400,17 @@ export async function bindAttachments(
     .where(and(inArray(attachment.id, ids), isNull(attachment.jobId)))
     .for('update');
   const byId = new Map(rows.map((row) => [row.id, row]));
+  // A file posted in a room goes only with its own message, as the room hands it over.
+  const heldBy = roomMessageFiles.getStore() ?? null;
   const sent: SentAttachment[] = [];
   for (const [position, id] of ids.entries()) {
     const row = byId.get(id);
-    if (!row || row.spaceId !== input.spaceId || row.principalId !== input.principalId)
+    if (
+      !row ||
+      row.spaceId !== input.spaceId ||
+      row.principalId !== input.principalId ||
+      row.roomMessageId !== heldBy
+    )
       throw unavailable();
     await tx
       .update(attachment)
@@ -390,6 +426,76 @@ export async function bindAttachments(
     });
   }
   return sent;
+}
+
+/**
+ * Give these files to a room message being posted, inside that transaction.
+ * Each must be the poster's own upload, in this room, and not posted or sent
+ * before; one that is not refuses the message. Answers them in order.
+ */
+export async function holdForRoomMessage(
+  tx: Transaction,
+  input: {
+    messageId: string;
+    spaceId: string;
+    principalId: string;
+    ids: readonly string[];
+    perMessage?: number;
+  },
+): Promise<AttachmentRow[]> {
+  const ids = [...new Set(input.ids)];
+  const most = Math.min(
+    input.perMessage ?? ATTACHMENT_LIMITS.per_message,
+    ATTACHMENT_LIMITS.per_message_ceiling,
+  );
+  if (ids.length !== input.ids.length || ids.length > most)
+    throw new ServiceError(
+      'attachments_invalid',
+      `A message can carry up to ${most} files, each once.`,
+      400,
+    );
+  if (!ids.length) return [];
+  const rows = await tx
+    .select()
+    .from(attachment)
+    .where(
+      and(inArray(attachment.id, ids), isNull(attachment.jobId), isNull(attachment.roomMessageId)),
+    )
+    .for('update');
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const held: AttachmentRow[] = [];
+  for (const [position, id] of ids.entries()) {
+    const row = byId.get(id);
+    if (!row || row.spaceId !== input.spaceId || row.principalId !== input.principalId)
+      throw unavailable();
+    const [updated] = await tx
+      .update(attachment)
+      .set({ roomMessageId: input.messageId, sentAt: new Date(), position })
+      .where(eq(attachment.id, id))
+      .returning();
+    if (!updated) throw unavailable();
+    held.push(updated);
+  }
+  return held;
+}
+
+/** The files posted with each of these room messages, in the order they were posted. */
+export async function roomMessageAttachments(
+  reader: Pick<Database, 'select'> | Pick<Transaction, 'select'>,
+  messageIds: readonly string[],
+): Promise<Map<string, AttachmentView[]>> {
+  const byMessage = new Map<string, AttachmentView[]>();
+  if (!messageIds.length) return byMessage;
+  const rows = await reader
+    .select()
+    .from(attachment)
+    .where(inArray(attachment.roomMessageId, [...new Set(messageIds)]))
+    .orderBy(asc(attachment.position), asc(attachment.id));
+  for (const row of rows) {
+    const key = row.roomMessageId as string;
+    byMessage.set(key, [...(byMessage.get(key) ?? []), attachmentRowView(row)]);
+  }
+  return byMessage;
 }
 
 /** Name the turn a sent message's files belong to. */
@@ -510,6 +616,7 @@ type AttachmentRecord = {
   principal_id: string | null;
   job_id: string | null;
   turn_id: string | null;
+  room_message_id: string | null;
   position: number;
   name: string;
   media_type: string;
@@ -530,6 +637,7 @@ function fromRecord(record: AttachmentRecord): AttachmentRow {
     principalId: record.principal_id,
     jobId: record.job_id,
     turnId: record.turn_id,
+    roomMessageId: record.room_message_id,
     position: record.position,
     name: record.name,
     mediaType: record.media_type,
