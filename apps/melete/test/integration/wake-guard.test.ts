@@ -409,6 +409,15 @@ withDb('the wake guard', () => {
       message: backgroundLimitMessage('day', reset),
     });
     expect(limit.pushes).toHaveLength(1);
+    // Its line says why it rests and when it picks up again, not only that it will.
+    const day = reset.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+    expect((await required(runs).view(after)).status_line).toBe(
+      `Background work reached today's limit; picks up again on ${day} at 00:00 UTC`,
+    );
     // Once the limit resets, the work runs and the mail that came meanwhile reaches it.
     await required(handle).sql`delete from model_usage where principal_id = ${ownerId}`;
     await Bun.sleep(2_100);
