@@ -169,7 +169,7 @@ export class FakeComputers {
         };
       },
       status: async (ids) => {
-        this.calls.push('status');
+        this.calls.push(ids === 'all' ? 'status all' : `status ${ids.join(' ')}`);
         const wanted = ids === 'all' ? [...mine().keys()] : ids.filter((id) => mine().has(id));
         return {
           boot: boot(),

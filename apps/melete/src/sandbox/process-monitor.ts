@@ -269,7 +269,11 @@ export class ProcessMonitor {
     const reached = await this.reach(first.row);
     if (!reached) return;
     const budget = AbortSignal.any([signal, AbortSignal.timeout(COMPUTER_BUDGET_MS)]);
-    const status: ComputerStatus = await reached.computer.status('all', budget);
+    // Asked about its rows and the watched processes only, never everything it
+    // kept a record of, so the answer does not grow with the day's commands.
+    const known = await this.options.processes.forComputer(first.row.spaceId, first.row.agentId);
+    const ids = [...new Set([...known, ...members.map((each) => each.row)].map((row) => row.id))];
+    const status: ComputerStatus = await reached.computer.status(ids, budget);
     // The rows follow the computer first: an exit is recorded before it is told.
     const rows = await this.options.processes.reconcileWith(
       first.row.spaceId,
@@ -277,6 +281,7 @@ export class ProcessMonitor {
       reached.computer,
       status,
       budget,
+      known,
     );
     for (const each of members) {
       const row = rows.find((candidate) => candidate.id === each.row.id) ?? each.row;
@@ -438,6 +443,9 @@ export class ProcessMonitor {
       ended_because: row.endReason,
       tail: tail ?? terminalText(row.lastLine, PROCESS_LIMITS.wake_tail_bytes, 'last'),
     };
+    // Where a moved command's own traffic went, when its token was held to its end.
+    const seen = this.options.processes.egressSeen(row.id);
+    if (seen?.length) observation.egress_hosts = seen as unknown as JsonObject[];
     for (const watch of pending)
       await this.deliver(row, 'exit', `exited:${watch.id}`, { ...observation, watch: watch.id });
     await this.options.wakes.processEnded(row.id, observation);

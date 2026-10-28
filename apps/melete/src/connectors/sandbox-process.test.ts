@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { type Action, canonicalizePayload, type SandboxConnectionConfig } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
+import type { EgressAttribution } from '../egress/tokens.ts';
 import { awakeAllowanceNote } from '../experience/events.ts';
 import { PostgresComputerControls } from '../sandbox/computer-control.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
@@ -111,6 +112,7 @@ withDb('background processes in the agent computer', () => {
       runCommands?: boolean;
       /** A connection with no background processes, where every command runs as it always did. */
       noProcesses?: boolean;
+      egress?: SandboxConnectionConfig['egress'];
     } = {},
   ) => {
     if (!handle) throw new Error('Postgres is unavailable');
@@ -137,7 +139,11 @@ withDb('background processes in the agent computer', () => {
     const connector = createSandboxExecConnector({
       sessions,
       provider,
-      config: { ...config, ...(over.persistence ? { persistence: over.persistence } : {}) },
+      config: {
+        ...config,
+        ...(over.persistence ? { persistence: over.persistence } : {}),
+        ...(over.egress ? { egress: over.egress } : {}),
+      },
       connectionId: scope.connectionId,
       spaceId: scope.spaceId,
       project: 'sandbox-process-test',
@@ -1260,6 +1266,238 @@ withDb('background processes in the agent computer', () => {
       expect(stopped).toMatchObject({ timed_out: true, stopped_by: 'timeout' });
       expect(stopped.moved_to_background).toBeUndefined();
       expect(await rows(s.scope.agentId)).toHaveLength(0);
+    }, 60_000);
+
+    /** A guard that names each command: tokens minted, and when each was settled. */
+    const attribution = (provider: FakeSandboxProvider) => {
+      const tokens: { actionId: string | null; deadlineAt: number; settledAt: number | null }[] =
+        [];
+      Object.assign(provider, {
+        attributeCommand: (_handle: unknown, given: EgressAttribution) => {
+          const token = {
+            actionId: given.actionId,
+            deadlineAt: given.deadlineAt ?? 0,
+            settledAt: null as number | null,
+          };
+          tokens.push(token);
+          return {
+            env: {
+              HTTPS_PROXY: 'http://cmd:t@egress:3128',
+              https_proxy: 'http://cmd:t@egress:3128',
+              HTTP_PROXY: 'http://cmd:t@egress:3128',
+              http_proxy: 'http://cmd:t@egress:3128',
+            },
+            settle: () => {
+              token.settledAt ??= Date.now();
+              return [
+                { host: 'github.com', tunnels: 1, refused: 0, bytes_up: 512, bytes_down: 4096 },
+              ];
+            },
+          };
+        },
+      });
+      return tokens;
+    };
+    const sandboxOf = (s: { computers: FakeComputers }) =>
+      [...s.computers.processes.keys()][0] as string;
+
+    test('a moved command keeps its egress token until its process ends, then settles it', async () => {
+      const s = await setup({ runCommands: true, egress: 'open' });
+      const tokens = attribution(s.provider);
+      const moved = s.detail(
+        await s.run('terminal.run', {
+          command: 'echo begun; sleep 3; echo done',
+          yield_after_ms: 1_000,
+        }),
+      );
+      const id = String(moved.process_id);
+      expect(moved.moved_to_background).toBeDefined();
+      // Still running: its connected-account traffic still goes as this command.
+      expect(tokens).toHaveLength(1);
+      expect(tokens[0]?.settledAt).toBeNull();
+      // Held as long as the process may run, not the five minutes of a held step.
+      expect(tokens[0]?.deadlineAt ?? 0).toBeGreaterThan(Date.now() + 60 * 60_000);
+      // The process ends; the next look at the computer closes its row and settles the token.
+      const by = Date.now() + 20_000;
+      while (s.computers.get(sandboxOf(s), id)?.state === 'running' && Date.now() < by)
+        await Bun.sleep(50);
+      await s.processes.reconcile(
+        s.scope.spaceId,
+        s.scope.agentId,
+        s.computers.computerFor(s.provider, {
+          providerSandboxId: sandboxOf(s),
+          imageDigest: null,
+          region: null,
+        }),
+        AbortSignal.timeout(10_000),
+      );
+      expect(tokens[0]?.settledAt).not.toBeNull();
+      // Where it went is kept for the wake that tells of its end.
+      expect(s.processes.egressSeen(id)).toEqual([
+        expect.objectContaining({ host: 'github.com', bytes_up: 512 }),
+      ]);
+      // A command that ends in its step settles its own token as before.
+      const quick = s.detail(await s.run('terminal.run', { command: 'echo quick' }));
+      expect(quick.moved_to_background).toBeUndefined();
+      expect(tokens[1]?.settledAt).not.toBeNull();
+    }, 60_000);
+
+    test('a command that cannot move holds the turn and its receipt says why', async () => {
+      const s = await setup({ runCommands: true, limits: { maxPerComputer: 1 } });
+      s.detail(await s.run('process.start', { command: 'sleep 60', name: 'server' }));
+      const held = s.detail(await s.run('terminal.run', { command: 'echo held' }));
+      expect(held).toMatchObject({ output: 'held\n', exit_code: 0 });
+      expect(String(held.background_unavailable)).toStartWith('computer_full: ');
+      // One that could move says nothing of the kind.
+      await db()`truncate space cascade`;
+      const free = await setup({ runCommands: true });
+      const plain = free.detail(await free.run('terminal.run', { command: 'echo free' }));
+      expect(plain.background_unavailable).toBeUndefined();
+    }, 60_000);
+
+    test('a computer whose processes cannot be counted starts nothing, and says so', async () => {
+      const s = await setup({ runCommands: true });
+      s.detail(await s.run('process.start', { command: 'sleep 60', name: 'server' }));
+      const real = s.computers.computerFor.bind(s.computers);
+      s.computers.computerFor = (provider, target) => ({
+        ...real(provider, target),
+        status: async () => {
+          throw new Error('the connection to the database was reset');
+        },
+      });
+      const { result } = await s.run('terminal.run', { command: 'echo once >> ran.txt' });
+      expect(result).toMatchObject({ outcome: 'failed', retryable: true });
+      expect(JSON.stringify(result)).toContain('could not be counted, so nothing was started');
+      expect(s.computers.calls.filter((call) => call.startsWith('start'))).toHaveLength(1);
+    }, 60_000);
+
+    test('the same command proposed again while it runs is read back, not started again', async () => {
+      const s = await setup({ runCommands: true });
+      const command = 'echo once >> runs.txt; sleep 30';
+      const first = s.detail(await s.run('terminal.run', { command, yield_after_ms: 1_000 }));
+      const id = String(first.process_id);
+      const again = s.detail(await s.run('terminal.run', { command, yield_after_ms: 1_000 }));
+      expect(again).toMatchObject({
+        process_id: id,
+        moved_to_background: { process_id: id, already_running: true },
+        watch: { on: 'exit', wait_with: `process:${id}` },
+      });
+      expect(String(again.next_step)).toContain('so it was not started again');
+      expect(starts(s.computers)).toBe(1);
+      const sandbox = sandboxOf(s);
+      expect(
+        new TextDecoder().decode(
+          s.provider.engine.get(sandbox)?.fs.readFile('/work/runs.txt') ?? new Uint8Array(0),
+        ),
+      ).toBe('once\n');
+      // Another command still starts.
+      s.detail(await s.run('terminal.run', { command: 'echo other' }));
+      expect(starts(s.computers)).toBe(2);
+    }, 60_000);
+
+    test("a moved command keeps the timeout its caller asked for as its process's limit", async () => {
+      const s = await setup();
+      const asked = s.detail(
+        await s.run('terminal.run', {
+          command: 'npm test',
+          timeout_ms: 240_000,
+          yield_after_ms: 1_000,
+        }),
+      );
+      const [limited] = await db()`select expires_at from sandbox_process
+        where id = ${String(asked.process_id)}`;
+      const left = new Date(String(limited?.expires_at)).getTime() - Date.now();
+      expect(left).toBeGreaterThan(200_000);
+      expect(left).toBeLessThanOrEqual(240_000);
+      expect(asked.stops_at).toBe(new Date(String(limited?.expires_at)).toISOString());
+      expect(String(asked.next_step)).toContain(`It is stopped at ${String(asked.stops_at)}`);
+      // None asked for: a process's default limit.
+      const unasked = s.detail(
+        await s.run('terminal.run', { command: 'npm run build', yield_after_ms: 1_000 }),
+      );
+      const [open] = await db()`select expires_at from sandbox_process
+        where id = ${String(unasked.process_id)}`;
+      expect(new Date(String(open?.expires_at)).getTime() - Date.now()).toBeGreaterThan(
+        110 * 60_000,
+      );
+    }, 60_000);
+
+    test('a command found ended at the moment it would move is settled, not moved', async () => {
+      const s = await setup({ runCommands: true });
+      // The computer reports the command running until the test says otherwise:
+      // the last look before a move is what tells.
+      let truthful = false;
+      const real = s.computers.computerFor.bind(s.computers);
+      s.computers.computerFor = (provider, target) => {
+        const computer = real(provider, target);
+        return {
+          ...computer,
+          status: async (ids, signal) => {
+            const answer = await computer.status(ids, signal);
+            return truthful
+              ? answer
+              : {
+                  ...answer,
+                  processes: answer.processes.map((facts) => ({
+                    ...facts,
+                    state: 'running' as const,
+                    exit_code: null,
+                  })),
+                };
+          },
+        };
+      };
+      const running = s.run('terminal.run', {
+        command: 'echo begun; sleep 2; echo done',
+        yield_after_ms: 20_000,
+      });
+      const by = Date.now() + 20_000;
+      while (!(await rows(s.scope.agentId)).length && Date.now() < by) await Bun.sleep(20);
+      await Bun.sleep(4_000);
+      truthful = true;
+      expect(commandYields.promote(s.firstAttempt)).toBe(1);
+      const settled = s.detail((await running).result);
+      expect(settled.moved_to_background).toBeUndefined();
+      expect(settled).toMatchObject({ output: 'begun\ndone\n', exit_code: 0 });
+    }, 60_000);
+
+    test('a move whose exit watch is refused promises no wake', async () => {
+      const s = await setup({ limits: { maxPerComputer: 8 } });
+      for (const name of ['a', 'b', 'c', 'd'])
+        s.detail(
+          await s.run('process.start', { command: `serve ${name}`, name, notify: { on: 'exit' } }),
+        );
+      const moved = s.detail(
+        await s.run('terminal.run', { command: 'npm test', yield_after_ms: 1_000 }),
+      );
+      expect(moved.watch).toBeNull();
+      expect(String(moved.watch_refused)).toContain('already watches 4 processes');
+      const next = String(moved.next_step);
+      expect(next).toContain('Nothing will wake this conversation when it ends');
+      expect(next).toContain('process.wait');
+      expect(next).not.toContain('this conversation is woken when it ends');
+    }, 60_000);
+
+    test('a start that never reached the computer is not read back as moved', async () => {
+      const s = await setup();
+      const first = await s.run('terminal.run', { command: 'npm test', yield_after_ms: 1_000 });
+      const id = String(s.detail(first.result).process_id);
+      // As if the service had stopped after the row was written and before the start was sent.
+      await db()`update sandbox_process set state = 'starting', started_at = null where id = ${id}`;
+      s.computers.processes.get(sandboxOf(s))?.delete(id);
+      const verified = await s.connector.verify?.(first.action, first.ctx);
+      expect(verified?.decision).not.toBe('succeeded');
+      expect(JSON.stringify(verified)).not.toContain('moved_to_background');
+      const [row] = await db()`select state, end_reason from sandbox_process where id = ${id}`;
+      expect(row).toMatchObject({ state: 'lost', end_reason: END_REASONS.vanished });
+    }, 60_000);
+
+    test('a command asks the computer only about the processes it has rows for', async () => {
+      const s = await setup({ runCommands: true });
+      for (let index = 0; index < 3; index += 1)
+        s.detail(await s.run('terminal.run', { command: `echo ${index}` }));
+      // Each command ended in its step and left no row, so nothing asked for every process.
+      expect(s.computers.calls.filter((call) => call.startsWith('status all'))).toHaveLength(0);
     }, 60_000);
 
     test('a registry moves only the commands of the attempt the person spoke in', () => {

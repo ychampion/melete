@@ -20,7 +20,14 @@
  *
  * A command is never run twice. The marker is the action id, the row is
  * unique on it, and a second dispatch of the same action reads the process
- * back: still running, or settled from its marker once it has ended.
+ * back: still running, or settled from its marker once it has ended. The same
+ * command proposed again in the same directory while the first still runs is
+ * read back too, and nothing is started for it.
+ *
+ * A moved command keeps the timeout its caller asked for, as its process's
+ * time limit; one with none has a process's default limit. A command that
+ * cannot move (no helper, a full computer, the day's awake time used) holds
+ * the turn as before, and says why in a log line and on its receipt.
  */
 import {
   EXEC_LIMITS,
@@ -43,6 +50,7 @@ import {
 } from '../sandbox/marker.ts';
 import {
   type ProcessComputer,
+  ProcessHelperLost,
   ProcessHelperRefusal,
   ProcessHelperUnavailable,
 } from '../sandbox/process-helper.ts';
@@ -93,6 +101,9 @@ export const commandYields = new CommandYields();
 /** Why a command moved to the background. */
 export type MovedBecause = 'still_running' | 'person_spoke';
 
+/** The tool whose commands give way; a live process it started is what a re-proposal reads back. */
+export const TERMINAL_TOOL = 'terminal.run';
+
 export type YieldingRun = {
   provider: SandboxProvider;
   processes: SandboxProcesses;
@@ -110,6 +121,12 @@ export type YieldingRun = {
   /** Inside the computer. */
   cwdPath: string;
   timeoutMs: number;
+  /**
+   * The timeout the caller asked for, or null for none: a moved command is
+   * stopped at it, held to a process's longest time limit. Without one, a
+   * moved command has a process's default time limit.
+   */
+  limitMs: number | null;
   /** How long the command holds the step before it moves; Infinity to move only for the person. */
   yieldAfterMs: number;
   env: Readonly<Record<string, string>>;
@@ -119,17 +136,21 @@ export type YieldingRun = {
   signal: AbortSignal;
   yields?: CommandYields;
   limits?: RunOptions['limits'];
+  /** Where a command that held the turn because it could not move says why. */
+  log?: (line: string) => void;
 };
 
 /**
- * What came of it: settled from the marker like any command, moved to the
- * background with what to say about it, or not started here at all, so the
- * caller runs it through the provider's exec as before.
+ * What came of it: settled from the marker like any command; moved to the
+ * background with what to say about it (`started` false when the same command
+ * was already running and nothing was started for this action); or not
+ * started here at all, with why, so the caller runs it through the
+ * provider's exec as before and says why on the receipt.
  */
 export type YieldOutcome =
   | { kind: 'settled'; result: CommandResult }
-  | { kind: 'moved'; row: ProcessRow; detail: Record<string, JsonValue> }
-  | { kind: 'not_started' };
+  | { kind: 'moved'; row: ProcessRow; detail: Record<string, JsonValue>; started: boolean }
+  | { kind: 'not_started'; why: string };
 
 /** Computers found with no way to keep a process, so later commands do not ask again. */
 const NO_HELPER = new Set<string>();
@@ -142,6 +163,10 @@ const remember = (sandbox: string) => {
 export const canKeepProcesses = (session: SessionRow): boolean =>
   !NO_HELPER.has(`${session.adapter}:${session.providerSandboxId}`);
 
+/** What a receipt says when a command held the turn because its computer has no process helper. */
+export const NO_HELPER_REASON =
+  'this computer cannot keep background processes (its process helper is missing)';
+
 /** How long the start itself waits: long enough that a quick command ends in it. */
 const START_WAIT_MS = 1_000;
 
@@ -149,6 +174,12 @@ const START_WAIT_MS = 1_000;
 const POLL_MS = [100, 250, 500, 1_000, 1_000, 2_000];
 
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+/** The known ways a computer says it cannot keep or report processes. */
+const helperCannot = (error: unknown) =>
+  error instanceof ProcessHelperUnavailable ||
+  error instanceof ProcessHelperRefusal ||
+  error instanceof ProcessHelperLost;
 
 export async function runYielding(input: YieldingRun): Promise<YieldOutcome> {
   const { processes, provider, session, signal } = input;
@@ -169,6 +200,12 @@ export async function runYielding(input: YieldingRun): Promise<YieldOutcome> {
     signal,
     ...(input.limits ? { limits: input.limits } : {}),
   };
+  const heldTurn = (why: string): YieldOutcome => {
+    (input.log ?? ((line) => process.stderr.write(`${line}\n`)))(
+      `terminal command ${input.actionId} held the turn instead of moving to the background: ${why}`,
+    );
+    return { kind: 'not_started', why };
+  };
 
   const existing = await processes.byAction(input.actionId);
   if (existing) return readBack(input, computer, runOptions, existing);
@@ -176,14 +213,45 @@ export async function runYielding(input: YieldingRun): Promise<YieldOutcome> {
   if (input.dispatch === 'again') return { kind: 'settled', result: await runCommand(runOptions) };
 
   // Ended processes free their places before the caps are counted. A computer
-  // that cannot say runs the command the way it always did.
+  // that cannot keep processes runs the command the way it always did, and
+  // says why; anything else that stops the count starts nothing.
   try {
     await processes.reconcile(input.ctx.space_id, input.agentId, computer, signal);
   } catch (error) {
+    if (!helperCannot(error))
+      return {
+        kind: 'settled',
+        result: {
+          outcome: 'failed',
+          retryable: true,
+          reason: `the computer's background processes could not be counted, so nothing was started: ${(error as Error).message}`,
+        },
+      };
     if (error instanceof ProcessHelperUnavailable)
       remember(`${session.adapter}:${session.providerSandboxId}`);
-    return { kind: 'not_started' };
+    return heldTurn(`the computer's processes could not be read: ${(error as Error).message}`);
   }
+
+  // The same command, proposed again in the same directory while the first
+  // one still runs, is read back instead of started a second time.
+  const commandDigest = new Bun.CryptoHasher('sha256').update(input.command).digest('hex');
+  const twin = await processes.liveTwin({
+    spaceId: input.ctx.space_id,
+    agentId: input.agentId,
+    jobId: input.ctx.job_id,
+    commandDigest,
+    cwd: input.cwd,
+    kind: TERMINAL_TOOL,
+  });
+  // The count above brought its row up to date with the computer.
+  if (twin) {
+    const began = (twin.startedAt ?? twin.createdAt).getTime();
+    const moved = await moveOrSettle(input, computer, twin, 'still_running', began, {
+      twin: true,
+    });
+    if (moved) return moved;
+  }
+
   let row: ProcessRow;
   try {
     row = (
@@ -195,7 +263,7 @@ export async function runYielding(input: YieldingRun): Promise<YieldOutcome> {
         sessionId: session.id,
         jobId: input.ctx.job_id,
         command: terminalText(input.command, 2000, 'first') || '[hidden]',
-        commandDigest: new Bun.CryptoHasher('sha256').update(input.command).digest('hex'),
+        commandDigest,
         cwd: input.cwd,
         name:
           input.command
@@ -203,12 +271,13 @@ export async function runYielding(input: YieldingRun): Promise<YieldOutcome> {
             .trim()
             .slice(0, 80) || 'command',
         port: null,
-        ttlMinutes: null,
+        // A timeout the caller asked for still stops the command once it moves.
+        ttlMinutes: input.limitMs === null ? null : input.limitMs / 60_000,
       })
     ).row;
   } catch (error) {
     // A full computer still runs the command, the way it always did.
-    if (error instanceof ProcessRefusal) return { kind: 'not_started' };
+    if (error instanceof ProcessRefusal) return heldTurn(`${error.code}: ${error.message}`);
     throw error;
   }
 
@@ -221,7 +290,7 @@ export async function runYielding(input: YieldingRun): Promise<YieldOutcome> {
     // Nothing of it ran, so its row goes and the command runs the old way. An
     // env file left unread holds a token that ends when the command settles.
     await processes.forget(row.id);
-    return { kind: 'not_started' } as const;
+    return heldTurn(reason);
   };
   try {
     if (envFile)
@@ -326,6 +395,17 @@ const lost = (started: ExecOutcome['started']): ExecOutcome => ({
   captureLimited: false,
 });
 
+/** The row brought up to what the computer says now, when it answers. */
+async function refreshed(
+  input: YieldingRun,
+  computer: ProcessComputer,
+  row: ProcessRow,
+): Promise<ProcessRow> {
+  const status = await computer.status([row.id], input.signal).catch(() => null);
+  const facts = status?.processes.find((each) => each.id === row.id);
+  return status && facts ? input.processes.apply(row, facts, status.boot) : row;
+}
+
 /** Wait for the command until it ends, its time is up, or it moves to the background. */
 async function follow(
   input: YieldingRun,
@@ -405,9 +485,16 @@ async function follow(
     await processes.forget(stopped.id);
     return { kind: 'settled', result };
   }
-  if (moved && LIVE_STATES.includes(row.state))
-    return { kind: 'moved', row, detail: await movedDetail(input, computer, row, moved, began) };
-  return settleEnded(input, computer, runOptions, row, began);
+  // One last look before saying it moved: the row may be up to a poll old,
+  // and a command that ended meanwhile is settled, not moved.
+  if (moved && LIVE_STATES.includes(row.state)) row = await refreshed(input, computer, row);
+  if (moved && LIVE_STATES.includes(row.state)) {
+    const outcome = await moveOrSettle(input, computer, row, moved, began, {
+      twin: false,
+    });
+    if (outcome) return outcome;
+  }
+  return settleEnded(input, computer, runOptions, (await processes.get(row.id)) ?? row, began);
 }
 
 /** A command whose process has ended, settled from its marker; its row goes with it. */
@@ -453,42 +540,52 @@ async function readBack(
   runOptions: RunOptions,
   row: ProcessRow,
 ): Promise<YieldOutcome> {
+  const again = { ...runOptions, request: { ...runOptions.request, dispatch: 'again' as const } };
   let current = row;
   if (LIVE_STATES.includes(current.state)) {
     const status = await computer.status([current.id], input.signal).catch(() => null);
     const facts = status?.processes.find((each) => each.id === current.id);
     if (status && facts) current = await input.processes.apply(current, facts, status.boot);
+    else if (status || current.state === 'starting') {
+      // The computer has no record of it, or could not be asked about a start
+      // never seen to run: it is not a running command. A start the helper
+      // never received ran nothing, and its marker, if any, says the rest.
+      const neverReached = status !== null && current.state === 'starting';
+      if (status)
+        current =
+          (await input.processes.close(current.id, 'lost', END_REASONS.vanished)) ?? current;
+      return {
+        kind: 'settled',
+        result: await settleOutcome(again, lost(neverReached ? 'no' : 'unknown')),
+      };
+    }
   }
   const began = (current.startedAt ?? current.createdAt).getTime();
-  if (LIVE_STATES.includes(current.state))
-    return {
-      kind: 'moved',
-      row: current,
-      detail: await movedDetail(input, computer, current, 'still_running', began),
-    };
-  return settleEnded(
-    input,
-    computer,
-    { ...runOptions, request: { ...runOptions.request, dispatch: 'again' } },
-    current,
-    began,
-  );
+  if (LIVE_STATES.includes(current.state)) {
+    const outcome = await moveOrSettle(input, computer, current, 'still_running', began, {
+      twin: false,
+    });
+    if (outcome) return outcome;
+    current = (await input.processes.get(current.id)) ?? current;
+  }
+  return settleEnded(input, computer, again, current, began);
 }
 
-/** What the receipt of a command that moved to the background says. */
-async function movedDetail(
+/**
+ * The receipt of a command that moved to the background, with an exit watch
+ * for this job; or, when the watch finds the process already ended, null, for
+ * the caller to settle it from its marker (or, for a twin, to start this one).
+ */
+async function moveOrSettle(
   input: YieldingRun,
   computer: ProcessComputer,
   row: ProcessRow,
   why: MovedBecause,
   began: number,
-): Promise<Record<string, JsonValue>> {
-  const last = await computer
-    .read(row.id, -1, PROCESS_LIMITS.wake_tail_bytes, 0, input.signal)
-    .catch(() => null);
-  const soFar = last ? terminalText(decode(last.data), PROCESS_LIMITS.wake_tail_bytes, 'last') : '';
-  const printed = Math.max(row.outputCursor, last?.read.total ?? 0);
+  options: { twin: boolean },
+): Promise<YieldOutcome | null> {
   let watch: Record<string, JsonValue>;
+  let woken = true;
   try {
     const made = await createProcessWatch(input.sql, {
       jobId: input.ctx.job_id,
@@ -510,44 +607,66 @@ async function movedDetail(
     };
   } catch (error) {
     if (!(error instanceof ProcessWatchRefusal)) throw error;
+    // It ended between the last look and the watch: there is nothing to move.
+    if (error.code === 'process_ended') return null;
     watch = { watch: null, watch_refused: error.message };
+    woken = false;
   }
+  const last = await computer
+    .read(row.id, -1, PROCESS_LIMITS.wake_tail_bytes, 0, input.signal)
+    .catch(() => null);
+  const soFar = last ? terminalText(decode(last.data), PROCESS_LIMITS.wake_tail_bytes, 'last') : '';
+  const printed = Math.max(row.outputCursor, last?.read.total ?? 0);
   const keepsRunning = input.provider.capabilities.keepAwake;
   const elapsed = Math.max(0, Date.now() - began);
+  const stopsAt = row.expiresAt.toISOString();
+  const opening = options.twin
+    ? `The same command is already running in the background as ${row.id}, started earlier in this conversation, so it was not started again.`
+    : `The command is still running in the background as ${row.id}${
+        why === 'person_spoke' ? ', because the person sent a message' : ''
+      }.`;
+  const next = !keepsRunning
+    ? `${opening} On ${input.session.adapter} computers it stops when this turn ends. Do not run it again. Answer the person, then wait for it in this turn with process.wait.`
+    : woken
+      ? `${opening} Do not run it again. Tell the person it is running, then wait for it with process.wait, or end your turn with job.wait, kind event and event_name process:${row.id}: this conversation is woken when it ends, with its exit code and last lines. It is stopped at ${stopsAt} if it is still running then.`
+      : `${opening} Do not run it again. Nothing will wake this conversation when it ends (${String(watch.watch_refused)}): wait for it with process.wait, or read it with process.read. If you end your turn first, tell the person they will need to ask about it. It is stopped at ${stopsAt} if it is still running then.`;
   return {
-    language: 'shell',
-    command: input.command,
-    cwd: input.cwd,
-    exit_code: null,
-    signal: null,
-    timed_out: false,
-    stopped_by: null,
-    moved_to_background: {
+    kind: 'moved',
+    row,
+    started: !options.twin,
+    detail: {
+      language: 'shell',
+      command: input.command,
+      cwd: input.cwd,
+      exit_code: null,
+      signal: null,
+      timed_out: false,
+      stopped_by: null,
+      moved_to_background: {
+        process_id: row.id,
+        elapsed_ms: elapsed,
+        output_so_far: soFar,
+        output_so_far_bytes: printed,
+        why,
+        ...(options.twin ? { already_running: true } : {}),
+      },
       process_id: row.id,
-      elapsed_ms: elapsed,
-      output_so_far: soFar,
-      output_so_far_bytes: printed,
-      why,
+      output: soFar,
+      output_binary: false,
+      ...watch,
+      keeps_running_after_this_turn: keepsRunning,
+      stops_at: stopsAt,
+      next_step: next,
+      adapter: input.session.adapter,
+      sandbox_id: input.session.providerSandboxId,
+      session_id: input.session.id,
+      egress: input.session.egressPolicy.kind,
+      persistence: input.session.persistence,
+      duration_ms: elapsed,
+      output_bytes: printed,
+      digest_verified: false,
+      max_wait_ms: Number.isFinite(input.yieldAfterMs) ? input.yieldAfterMs : input.timeoutMs,
+      default_timeout_ms: EXEC_LIMITS.default_timeout_ms,
     },
-    process_id: row.id,
-    output: soFar,
-    output_binary: false,
-    ...watch,
-    keeps_running_after_this_turn: keepsRunning,
-    next_step: keepsRunning
-      ? `The command is still running in the background as ${row.id}${
-          why === 'person_spoke' ? ', because the person sent a message' : ''
-        }. Do not run it again. Tell the person it is running, then wait for it with process.wait, or end your turn with job.wait, kind event and event_name process:${row.id}: this conversation is woken when it ends, with its exit code and last lines.`
-      : `The command is still running as ${row.id}, because the person sent a message. On ${input.session.adapter} computers it stops when this turn ends. Do not run it again. Answer the person, then wait for it in this turn with process.wait.`,
-    adapter: input.session.adapter,
-    sandbox_id: input.session.providerSandboxId,
-    session_id: input.session.id,
-    egress: input.session.egressPolicy.kind,
-    persistence: input.session.persistence,
-    duration_ms: elapsed,
-    output_bytes: printed,
-    digest_verified: false,
-    max_wait_ms: Number.isFinite(input.yieldAfterMs) ? input.yieldAfterMs : input.timeoutMs,
-    default_timeout_ms: EXEC_LIMITS.default_timeout_ms,
   };
 }
