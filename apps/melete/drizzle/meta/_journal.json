@@ -1051,6 +1051,13 @@
       "when": 1789232400129,
       "tag": "0149_privacy_seen",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1789232400151,
+      "tag": "0151_earlier_chat_search",
+      "breakpoints": true
     }
   ]
 }

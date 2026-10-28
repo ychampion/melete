@@ -9,7 +9,7 @@ import {
   taskInput,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, ilike, inArray, isNotNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 import { builtinLabel } from '../connectors/builtin.ts';
 import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
@@ -425,7 +425,14 @@ export class ExperienceHome {
         and(
           eq(job.spaceId, spaceId),
           inArray(job.kind, ['chat', 'plan']),
-          ilike(job.title, pattern),
+          or(
+            ilike(job.title, pattern),
+            // A chat is found by its messages and answers too, through the
+            // index the agent's own search of earlier chats reads.
+            sql`(${job.kind} = 'chat' and exists (select 1 from experience_turn t
+              where t.job_id = ${job.id}
+                and to_tsvector('simple', t.text || ' ' || t.answer) @@ plainto_tsquery('simple', ${query})))`,
+          ),
           ownJob(),
         ),
       )

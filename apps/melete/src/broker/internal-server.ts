@@ -47,6 +47,7 @@ export function createInternalServer(options: {
   runs?: BrokerOptions['runs'];
   intents?: BrokerOptions['intents'];
   memorySearch?: BrokerOptions['memorySearch'];
+  conversations?: BrokerOptions['conversations'];
   autoReview?: BrokerOptions['autoReview'];
   sendHoldMs?: BrokerOptions['sendHoldMs'];
   proactiveThreshold?: BrokerOptions['proactiveThreshold'];
@@ -108,6 +109,7 @@ export function createInternalServer(options: {
       runs: options.runs,
       intents: options.intents,
       memorySearch: options.memorySearch,
+      conversations: options.conversations,
       autoReview: options.autoReview,
       sendHoldMs: options.sendHoldMs,
       proactiveThreshold: options.proactiveThreshold,

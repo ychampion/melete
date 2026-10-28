@@ -3,6 +3,7 @@ import {
   APPROVAL_OUTDATED_NOTE,
   type AttemptBundle,
   CONTEXT_LIMITS,
+  CONVERSATION_TOOLS,
   EMPTY_SINCE_LAST,
   MEMORY_SEARCH_TOOL,
   MEMORY_SEARCH_TOOL_NAME,
@@ -23,6 +24,7 @@ import {
   calendarStrip,
   DONE_WORDS,
   DUE_NOW_WORDS,
+  EARLIER_WORDS,
   HARD_LIMITS,
   instructionTokens,
   MEMORY_WORDS,
@@ -619,6 +621,13 @@ describe('context assembly', () => {
     expect(text).toContain(BACKGROUND_WORDS.join('\n'));
     expect(text).toContain('start it with run.start before');
     expect(text).toContain('one or two reads can settle here');
+  });
+
+  test('an agent offered earlier conversations is told to look there when the person points back', () => {
+    expect(renderInstructions(bundle)).not.toContain('conversations.search');
+    const text = renderInstructions({ ...bundle, tools: CONVERSATION_TOOLS });
+    expect(text).toContain(EARLIER_WORDS.join('\n'));
+    expect(text).toContain('is not a verified fact');
   });
 
   test('an agent that can search memory is told to search before it says it does not know', () => {

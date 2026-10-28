@@ -106,6 +106,52 @@ export const MEMORY_SEARCH_TOOL: ToolSpec = {
   connection_id: null,
 };
 
+/** The broker-owned tools an attempt finds and reads the person's earlier conversations with. */
+export const CONVERSATIONS_SEARCH_TOOL_NAME = 'conversations.search';
+export const CONVERSATIONS_READ_TOOL_NAME = 'conversations.read';
+export const CONVERSATION_TOOLS: ToolSpec[] = [
+  {
+    name: CONVERSATIONS_SEARCH_TOOL_NAME,
+    description:
+      "Search the person's earlier conversations with Melete: what they said, what Melete answered, and what it sent or made for them. Use it when they point back to something from another chat.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 200 },
+        limit: { type: 'integer', minimum: 1, maximum: 20 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    effect_class: 'read',
+    connection_id: null,
+  },
+  {
+    name: CONVERSATIONS_READ_TOOL_NAME,
+    description:
+      "Read part of an earlier conversation a search found, by its conversation_id. Pass a hit's position, or a phrase from it, as around to read the part near it.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        conversation_id: { type: 'string', minLength: 1, maxLength: 100 },
+        around: {
+          anyOf: [
+            { type: 'integer', minimum: 1 },
+            { type: 'string', minLength: 1, maxLength: 200 },
+          ],
+        },
+      },
+      required: ['conversation_id'],
+      additionalProperties: false,
+    },
+    effect_class: 'read',
+    connection_id: null,
+  },
+];
+export const CONVERSATION_TOOL_NAMES: readonly string[] = CONVERSATION_TOOLS.map(
+  (tool) => tool.name,
+);
+
 export const knowledgeExcerpt = z.object({
   path: z.string().min(1),
   excerpt: z.string(),
