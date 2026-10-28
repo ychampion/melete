@@ -24,6 +24,8 @@ import {
   roomThreadView,
 } from '@melete/contracts';
 import { BrokerService } from '../../src/broker/service.ts';
+import { boardManifest } from '../../src/connectors/board.ts';
+import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
@@ -31,6 +33,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { PushService } from '../../src/push/service.ts';
+import { RoomCalendarShareService } from '../../src/rooms/calendar-shares.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -150,6 +153,31 @@ async function claimJob(jobId: string) {
   });
   if (!claimed) throw new Error(`Request ${jobId} could not be claimed`);
   return claimed.claims as CapabilityClaims;
+}
+/** Claim a request's attempt as the runner does: its capability, and what its agent is handed. */
+async function claimWithBundle(jobId: string) {
+  const { sql, runner } = database();
+  const [row] = await sql`select lease_epoch, state_version from job where id = ${jobId}`;
+  const claimed = await runner.claim({
+    job_id: jobId,
+    expected_epoch: Number(row?.lease_epoch),
+    expected_version: Number(row?.state_version),
+    reason: 'input',
+  });
+  if (!claimed) throw new Error(`Request ${jobId} could not be claimed`);
+  return { claims: claimed.claims as CapabilityClaims, bundle: claimed.bundle };
+}
+/** A calendar in the person's own space that takes new events, as a CalDAV calendar does. */
+async function personalCalendar(person: Person) {
+  const { sql } = database();
+  const [own] = await sql`select id from space
+    where kind = 'personal' and owner_principal_id = ${person.id}`;
+  const id = `con_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+  await sql`insert into connection (id, space_id, provider, label, scopes, configuration)
+    values (${id}, ${own?.id}, 'caldav', 'Personal calendar',
+      ${JSON.stringify(calendarManifest.tools.map((entry) => entry.name))}::jsonb,
+      '{"kind":"caldav"}'::jsonb)`;
+  return id;
 }
 /** A request of the room's agent, asked by `person`, holding a live capability. */
 async function request(person: Person, roomId: string, text = '@Melete keep the board') {
@@ -799,5 +827,142 @@ withDb('room board', () => {
     const [hidden] = await sql`select count(*)::int as n from push_intent
       where principal_id = ${world.carol.id} and body = 'Owners question'`;
     expect(hidden?.n).toBe(0);
+  }, 90_000);
+  test('board.ask keeps a question with its person unless the agent says otherwise', async () => {
+    const ask = boardManifest.tools.find((entry) => entry.name === 'board.ask');
+    const properties = ask?.input_schema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.visibility?.default).toBe('assignee');
+    expect(String(properties.visibility?.description)).toContain('Leave this out');
+    // The agent is told to keep one person's calendar out of what others can read.
+    expect(ask?.description).toContain("never put anyone's calendar, free time or busy time");
+    const roomId = await makeRoom('Default');
+    const { claims } = await request(world.alice, roomId);
+    const asked = await tool(claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Can you take Thursday?',
+    });
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).not.toContain(asked.item);
+  }, 60_000);
+
+  test('an answer never repeats its question in the thread, even one everyone can read', async () => {
+    const roomId = await makeRoom('Open question');
+    const asking = await request(world.alice, roomId);
+    const asked = await tool(asking.claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Who brings the snacks on Friday?',
+      visibility: 'everyone',
+    });
+    await database().runner.commitOutcome(asking.claims, {
+      kind: 'completed',
+      summary: 'Asked.',
+      evidence: [],
+    });
+    const answered = boardAnswerResponse.parse(
+      await ok(
+        send(world.bob.cookie, `/rooms/${roomId}/board/${asked.item}/answer`, 'POST', {
+          answer: 'I will',
+        }),
+      ),
+    );
+    const thread = roomThreadView.parse(
+      await ok(send(world.carol.cookie, `/rooms/${roomId}/threads/${answered.thread_id}`)),
+    );
+    const said = JSON.stringify(thread.messages);
+    expect(said).toContain('I will');
+    expect(said).not.toContain('snacks');
+  }, 60_000);
+
+  test("a room's request that ends on a question in words reads as answered, and takes the reply", async () => {
+    const roomId = await makeRoom('Plans');
+    const asked = await request(world.alice, roomId, '@Melete plan the weekend');
+    await database().runner.commitOutcome(asked.claims, {
+      kind: 'waiting_for_input',
+      question: 'Saturday or Sunday?',
+    });
+    const thread = roomThreadView.parse(
+      await ok(send(world.carol.cookie, `/rooms/${roomId}/threads/${asked.threadId}`)),
+    );
+    // Nothing in the room is waiting for a decision: the asker replies in the thread.
+    expect(thread.requests.map((entry) => entry.status)).toEqual(['done']);
+    const reply = roomMessageResponse.parse(
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/threads/${asked.threadId}/messages`, 'POST', {
+          text: '@Melete Saturday',
+          submission_id: submission(),
+        }),
+      ),
+    );
+    expect(reply.request_job_id).toBe(asked.jobId);
+  }, 60_000);
+
+  test("the room's agent is told how to ask someone else, the calendars it can read, and the board answers it gets", async () => {
+    const roomId = await makeRoom('Pickups');
+    const shares = new RoomCalendarShareService({ db: database().db });
+    // Bob shares a calendar that takes new events; Carol shares free/busy only.
+    await shares.put(roomId, world.bob.id, await personalCalendar(world.bob), 'freebusy_add');
+    await shares.put(roomId, world.carol.id, await personalCalendar(world.carol), 'freebusy');
+    const bob = `Bob <${roomHandle(roomId, world.bob.id)}>`;
+    const carol = `Carol <${roomHandle(roomId, world.carol.id)}>`;
+    const opened = roomMessageResponse.parse(
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/threads`, 'POST', {
+          text: '@Melete who can do pickup on Thursday?',
+          submission_id: submission(),
+        }),
+        201,
+      ),
+    );
+    const asking = await claimWithBundle(opened.request_job_id ?? '');
+    const objective = asking.bundle.job.objective;
+    expect(objective).toContain('To ask anyone else, ask them with board.ask in this turn');
+    expect(objective).toContain('reading their shared calendar with room.member_freebusy');
+    expect(objective).toContain(
+      `- ${bob}: free/busy, and events can be added with room.add_to_member_calendar`,
+    );
+    expect(objective).toContain(`- ${carol}: free/busy only`);
+    const asked = await tool(asking.claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Can you do pickup on Thursday at 4?',
+    });
+    await database().runner.commitOutcome(asking.claims, {
+      kind: 'completed',
+      summary: 'I asked Bob on the board.',
+      evidence: [],
+    });
+    const answered = boardAnswerResponse.parse(
+      await ok(
+        send(world.bob.cookie, `/rooms/${roomId}/board/${asked.item}/answer`, 'POST', {
+          answer: 'Yes, I will do it',
+        }),
+      ),
+    );
+    // The answer's own request reads which question it answers, and that Bob's calendar takes events.
+    const answering = await claimWithBundle(answered.request_job_id ?? '');
+    expect(answering.bundle.job.objective).toContain(
+      `- ${bob} answered your question "Can you do pickup on Thursday at 4?". Their shared calendar takes new events`,
+    );
+    expect(answering.bundle.job.objective).toContain(
+      'offer to add it with room.add_to_member_calendar',
+    );
+    await database().runner.commitOutcome(answering.claims, {
+      kind: 'completed',
+      summary: 'Noted.',
+      evidence: [],
+    });
+    // A share that ends is no longer listed, and another request reads no board answer.
+    await shares.revoke(roomId, world.carol.id);
+    const later = roomMessageResponse.parse(
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/threads`, 'POST', {
+          text: '@Melete anything else?',
+          submission_id: submission(),
+        }),
+        201,
+      ),
+    );
+    const after = await claimWithBundle(later.request_job_id ?? '');
+    expect(after.bundle.job.objective).toContain(bob);
+    expect(after.bundle.job.objective).not.toContain(carol);
+    expect(after.bundle.job.objective).not.toContain('answered your question');
   }, 90_000);
 });

@@ -1898,9 +1898,19 @@ export class AttemptRunner {
       .where(eq(attempt.id, attemptId));
     // Where the turn ends up, decided once: the saved turn takes it, and the
     // event carries it so the conversation's stream says the same thing.
+    // A room shows a request's question only as the words of its answer, and
+    // its asker answers by replying in the thread, so a room's request waits
+    // on someone only for what the thread can show them to decide: a
+    // permission, or a step that may or may not have happened.
+    const answeredInWords =
+      row.audience === 'room' &&
+      (outcome.kind === 'completed' || outcome.kind === 'waiting_for_input') &&
+      !parked &&
+      !unconfirmed &&
+      wait.kind === 'user_input';
     const turnStatus =
       row.currentTurnId && !retrying
-        ? outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)
+        ? (outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)) || answeredInWords
           ? 'done'
           : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
             ? 'failed'

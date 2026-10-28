@@ -130,6 +130,12 @@ is under way waits its turn, and starts as soon as that request answers or
 stops to wait for something. The person who asked, or a room owner, can stop a
 request (`POST /rooms/{id}/requests/{request}/stop`).
 
+A request that ends on a question in words shows as answered, since its asker
+answers by replying in the thread. A request shows as waiting on someone only
+for what the thread shows them to decide: a permission, or a step whose outcome
+is not yet known. To ask anyone other than the asker, the agent puts the
+question on the board for them (see The board).
+
 A thread's page (`GET /rooms/{id}/threads/{thread}`) shows every message with
 its author, and each request with its answer, cards and receipts. Its live
 stream (`GET /rooms/{id}/threads/{thread}/events` with
@@ -250,7 +256,8 @@ or attendees. The `freebusy` mode permits only this read. With `freebusy_add`,
 `room.add_to_member_calendar` can add an event after that member approves the
 exact event. Other members and owners cannot approve for them, whatever the
 room's approval rules say. Read-only calendar feeds cannot allow additions.
-Sharing gives the room no other access to the connection.
+Sharing gives the room no other access to the connection. The room's own work
+is told which members share a calendar now and which of those take new events.
 
 `GET /rooms/{id}/calendar-shares` shows only the signed-in member's share and
 their own calendar choices. `DELETE /rooms/{id}/calendar-shares` revokes that
@@ -360,6 +367,12 @@ read by the people in the room. Everyone in the room can watch the room's
 computer (`GET /rooms/{id}/requests/{request}/computers` finds it), and only the
 room's owners take it over.
 
+The person who made a room can set it to show only what needs its people
+(`PUT /spaces/{id}/summaries-only`). Then the cards, receipts and live stream of
+its requests name what each step touched by its kind ("An email", "An event"),
+never an original's subject, address or words, for everyone but that person.
+The agent's own answers, and what it made itself, read as before.
+
 When the people in a room change, work under way in it starts again with the
 new roster, and permissions its requests were waiting on are withdrawn. The
 requests someone asked end when they leave, since only they could answer them
@@ -392,8 +405,10 @@ stands, and a second gets 409), mark it done (`.../done`) and answer a question
 put to them (`.../answer`). Guests read the board and change nothing on it.
 Only the person a question asks can answer it. The answer is posted in the
 room as that person's own message to the agent, in the thread the question was
-asked in, so the agent goes on as a new request of theirs. When the question
-was for one person, the message does not repeat its words in the thread.
+asked in, so the agent goes on as a new request of theirs. A question is always
+put to one person, so the message does not repeat its words in the thread; the
+agent reads the question with the answer, and when the person's shared calendar
+takes new events, it is told it can offer to add what they took on.
 
 The room's agent has five tools for the board: `board.list`, `board.add`,
 `board.update`, `board.ask` and `board.note`. They change only the room's own

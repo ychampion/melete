@@ -31,6 +31,7 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { roomBoardItem } from './board-schema.ts';
+import { roomMessage } from './schema.ts';
 import type { RoomService } from './service.ts';
 import { namesOf } from './transcript.ts';
 
@@ -41,6 +42,10 @@ type ItemRow = typeof roomBoardItem.$inferSelect;
 export const BOARD_PAGE = 500;
 /** The most frames one stream page carries. */
 export const BOARD_FRAME_PAGE = 100;
+/** The submission an answer is posted under, before the item's id. */
+const ANSWER_SUBMISSION = 'board-answer-';
+/** Added to it when the thread the question was asked in is gone. */
+const ANSWER_IN_NEW_THREAD = '-thread';
 
 const viewerPlace = alias(spaceMembership, 'board_viewer');
 const assigneePlace = alias(spaceMembership, 'board_assignee');
@@ -493,10 +498,11 @@ export class BoardService {
       throw new ServiceError('scope_denied', 'Only the person it asks can answer it.', 403);
     if (seen.state === 'answered' && seen.answer !== answer)
       throw new ServiceError('already_answered', 'You already answered this.', 409);
-    // A question meant for one person keeps its words off the room's thread.
-    const about = seen.visibility === 'everyone' ? `"${seen.title}"` : 'your question on the board';
-    const message = `@Melete ${answer}\n\n(My answer to ${about}.)`;
-    const submission = `board-answer-${seen.id}`;
+    // A question is always put to one person, so its words stay off the
+    // room's thread whoever else may read it on the board. The agent reads
+    // the question itself with the answer (`boardAnswersFor`).
+    const message = `@Melete ${answer}\n\n(My answer to your question on the board.)`;
+    const submission = `${ANSWER_SUBMISSION}${seen.id}`;
     const rooms = this.deps.rooms;
     const posted = await (seen.thread_id
       ? rooms
@@ -522,11 +528,8 @@ export class BoardService {
         rooms.post(
           spaceId,
           actor,
-          { text: message, submission_id: `${submission}-thread` },
-          {
-            title: seen.visibility === 'everyone' ? seen.title : 'An answer from the board',
-            askAgent: true,
-          },
+          { text: message, submission_id: `${submission}${ANSWER_IN_NEW_THREAD}` },
+          { title: 'An answer from the board', askAgent: true },
         ),
     );
     const item = await serviceTransaction(this.deps.db, async (tx) => {
@@ -581,4 +584,49 @@ export async function pushToAssignee(
           and (m.expires_at is null or m.expires_at > now())))
       and coalesce((select p.decisions from push_setting p where p.principal_id = ${row.assigneePrincipalId}), true)
     on conflict (dedup_key) do nothing`);
+}
+
+/**
+ * The board's questions whose answers reached one of the room's requests: the
+ * question, who answered it, and the answer. An answer posted to the thread
+ * does not repeat its question, so the request's agent reads it here. Each is
+ * found by the message it was posted as: the key `RoomService.post` keeps for
+ * the answer's own submission, made from the room, its author and the item,
+ * so it is there as soon as that message is.
+ */
+export async function boardAnswersFor(
+  reader: Pick<Transaction, 'select'>,
+  spaceId: string,
+  jobId: string,
+): Promise<{ title: string; answeredBy: string; answer: string | null }[]> {
+  const key = (suffix: string) =>
+    sql`encode(sha256(convert_to(${roomMessage.spaceId} || ':' || ${roomMessage.authorPrincipalId}
+      || ':' || ${ANSWER_SUBMISSION} || ${roomBoardItem.id} || ${suffix}, 'UTF8')), 'hex')`;
+  const rows = await reader
+    .select({
+      title: roomBoardItem.title,
+      answer: roomBoardItem.answer,
+      answeredBy: roomMessage.authorPrincipalId,
+    })
+    .from(roomMessage)
+    .innerJoin(
+      roomBoardItem,
+      and(
+        eq(roomBoardItem.spaceId, roomMessage.spaceId),
+        eq(roomBoardItem.kind, 'question'),
+        or(
+          eq(roomMessage.submissionId, key('')),
+          eq(roomMessage.submissionId, key(ANSWER_IN_NEW_THREAD)),
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(roomMessage.spaceId, spaceId),
+        eq(roomMessage.requestJobId, jobId),
+        isNull(roomMessage.redactedAt),
+      ),
+    )
+    .orderBy(asc(roomMessage.createdAt), asc(roomMessage.id));
+  return rows;
 }

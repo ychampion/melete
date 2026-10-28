@@ -6,19 +6,28 @@
  */
 import {
   conversationTurn,
+  type ExperienceEvent,
+  type ExperienceReceipt,
+  type ExperienceSource,
   type PermissionCard,
+  type ResultCard,
   type RoomMessage,
   type RoomRequest,
   type RoomThread,
   roomMessage as roomMessageContract,
   roomRequest,
   roomThread as roomThreadContract,
+  TOOL_TITLE_LIMIT,
+  type ToolCall,
 } from '@melete/contracts';
 import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import { action, approval, artifact, connection, experienceTurn, job } from '../db/schema.ts';
 import { answerStream } from '../experience/answer-filter.ts';
 import {
+  ACTION_VERBS,
+  type ActionRow,
+  actionLabel,
   answerText,
   meantForPerson,
   projectArtifact,
@@ -82,6 +91,8 @@ export async function requestView(
   names: ReadonlyMap<string, string>,
   /** The card of one of the room's waiting permissions; left out, none are shown. */
   permissionCard?: (approvalId: string) => Promise<PermissionCard>,
+  /** The viewer reads the room's steps kept back (see `keptBackCard`). */
+  keptBack = false,
 ): Promise<RoomRequest> {
   const turns = await db
     .select()
@@ -145,7 +156,8 @@ export async function requestView(
   }));
   const receipts = effects.flatMap(({ action: effect, connection: source }) => {
     const receipt = projectReceipt(effect, source);
-    return receipt ? [receipt] : [];
+    if (!receipt) return [];
+    return [keptBack ? keptBackReceipt(receipt, effect) : receipt];
   });
   return roomRequest.parse({
     job_id: row.id,
@@ -170,11 +182,13 @@ export async function requestView(
       // A file a files action saved opens only for that job's own principal,
       // so a room's people see its card without the buttons.
       ...effects.flatMap(({ action: effect, connection: source }) =>
-        projectCards(effect, source).map((card) =>
-          card.primary_action?.handle === effect.id
-            ? { ...card, primary_action: null, secondary_actions: [] }
-            : card,
-        ),
+        projectCards(effect, source).map((card) => {
+          const shown =
+            card.primary_action?.handle === effect.id
+              ? { ...card, primary_action: null, secondary_actions: [] }
+              : card;
+          return keptBack ? keptBackCard(shown, effect.kind) : shown;
+        }),
       ),
       ...files.filter(meantForPerson).map(projectArtifact),
     ],
@@ -182,4 +196,149 @@ export async function requestView(
     permissions,
     decisions,
   });
+}
+
+/*
+ * A room set to "Show me only what needs me" (spaces/summaries.ts) keeps its
+ * originals back from its people, its maker apart. What its steps touched is
+ * then named by its kind: a card, a receipt, a step in the live stream says
+ * "An email" or "An event", never the original's subject, address or words.
+ * What the agent made itself (an event it added, a file it wrote) keeps its
+ * own title, and so does its answer.
+ */
+
+/** What a step's card calls the original it touched, by the step's kind. */
+const KEPT_BACK_TITLES: Record<string, string> = {
+  'email.search': 'An email',
+  'email.read': 'An email',
+  'email.draft': 'A draft email',
+  'email.send': 'A sent email',
+  'email.discard': 'A draft email',
+  'calendar.list': 'An event',
+  'calendar.update': 'An event',
+  'calendar.delete': 'An event',
+  'files.move': 'A file',
+  'files.restore': 'A file',
+  'files.delete': 'A file',
+};
+
+/** What a source of the trail is called, by what it is. Pages and tasks are not originals. */
+const KEPT_BACK_SOURCES: Partial<Record<ExperienceSource['kind'], string>> = {
+  message: 'An email',
+  draft: 'A draft email',
+  event: 'An event',
+  file: 'A file',
+};
+
+/** The facts a kept-back card still shows: when, never where or to whom. */
+const KEPT_BACK_FACTS = new Set(['Starts', 'Ends']);
+
+/** Work outside the room's connections that can read an original by name. */
+const KEPT_BACK_TOOLS: Partial<Record<ToolCall['kind'], string>> = {
+  file: 'Worked with a file',
+  sandbox: 'Worked in its computer',
+  browser: 'Worked in its browser',
+};
+
+/** A step's card, as someone who may not read the originals sees it. */
+export function keptBackCard(card: ResultCard, kind: string): ResultCard {
+  const title = KEPT_BACK_TITLES[kind];
+  if (!title) return card;
+  return {
+    ...card,
+    title,
+    facts: card.facts.filter((fact) => KEPT_BACK_FACTS.has(fact.label)),
+    // An open goes to the original itself.
+    primary_action: null,
+    secondary_actions: [],
+  };
+}
+
+/** A receipt names the step, never what a server's tool acted on. A web search keeps its words. */
+export function keptBackReceipt(receipt: ExperienceReceipt, row: ActionRow): ExperienceReceipt {
+  if (row.kind === 'web.search') return receipt;
+  return { ...receipt, what: actionLabel(row, undefined, { target: false }) };
+}
+
+function keptBackSource(source: ExperienceSource): ExperienceSource {
+  const title = KEPT_BACK_SOURCES[source.kind];
+  if (!title) return source;
+  const { url: _url, ...rest } = source;
+  return { ...rest, title };
+}
+
+/** The action a tool entry stands for: its own, or the one it belongs under. */
+const actionOfTool = (tool: ToolCall, rows: ReadonlyMap<string, ActionRow>) => {
+  for (const id of [tool.id, tool.parent])
+    if (id?.startsWith('action:')) {
+      const row = rows.get(id.slice('action:'.length));
+      if (row) return row;
+    }
+  return undefined;
+};
+
+function keptBackTool(tool: ToolCall, rows: ReadonlyMap<string, ActionRow>): ToolCall {
+  const row = actionOfTool(tool, rows);
+  const verbs = row ? ACTION_VERBS[row.kind] : undefined;
+  const title = row
+    ? (verbs?.[tool.status === 'running' || tool.status === 'needs_approval' ? 0 : 1] ??
+      actionLabel(row, undefined, { target: false }))
+    : (KEPT_BACK_TOOLS[tool.kind] ?? tool.title);
+  const { input_excerpt: _input, output_excerpt: _output, ...rest } = tool;
+  return {
+    ...rest,
+    title: title.slice(0, TOOL_TITLE_LIMIT),
+    input_summary: null,
+    output_summary: null,
+    detail: null,
+  };
+}
+
+/** The action ids one stream item names, so they can be read before it is shown. */
+export function actionIdsOf(item: ExperienceEvent['item']): string[] {
+  const fromTool = (tool: ToolCall | undefined) =>
+    [tool?.id, tool?.parent].flatMap((id) =>
+      id?.startsWith('action:') ? [id.slice('action:'.length)] : [],
+    );
+  if (item.type === 'card') return [item.card.id.split(':')[0] ?? ''];
+  if (item.type === 'receipt') return [item.receipt.id];
+  if (item.type === 'tool') return fromTool(item.tool);
+  if (item.type === 'action') return fromTool(item.tool);
+  return [];
+}
+
+/**
+ * One item of a request's live stream, as someone who may not read the
+ * originals sees it, or null when it is not shown to them at all. The
+ * model's reasoning is its working, which may quote what it read; its
+ * answer is what it wrote for the room.
+ */
+export function keptBackItem(
+  item: ExperienceEvent['item'],
+  rows: ReadonlyMap<string, ActionRow>,
+): ExperienceEvent['item'] | null {
+  switch (item.type) {
+    case 'reasoning':
+      return null;
+    case 'card': {
+      const row = rows.get(item.card.id.split(':')[0] ?? '');
+      return row ? { ...item, card: keptBackCard(item.card, row.kind) } : item;
+    }
+    case 'receipt': {
+      const row = rows.get(item.receipt.id);
+      return row ? { ...item, receipt: keptBackReceipt(item.receipt, row) } : item;
+    }
+    case 'tool':
+      return { ...item, tool: keptBackTool(item.tool, rows) };
+    case 'action': {
+      const tool = item.tool ? keptBackTool(item.tool, rows) : undefined;
+      return {
+        ...item,
+        ...(tool ? { label: tool.title, meta: '', tool } : {}),
+        sources: item.sources.map(keptBackSource),
+      };
+    }
+    default:
+      return item;
+  }
 }
