@@ -36,7 +36,7 @@ databaseTest(
             id: message.id,
             error: {
               code: -32602,
-              message: 'Invalid arguments for tool read: due must be YYYY-MM-DD',
+              message: 'Invalid params: due must be YYYY-MM-DD',
             },
           });
         }

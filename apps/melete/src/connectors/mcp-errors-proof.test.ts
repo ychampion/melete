@@ -108,16 +108,84 @@ test('a -32602 saying the tool is not found is a missing tool, not refused argum
   }
 });
 
-test('a bare "Invalid params", or a -32602 behind a 5xx, does not prove nothing ran', async () => {
-  for (const call of [rpc('Invalid params'), rpc('Invalid arguments for tool write', 502)]) {
-    const { transport } = server(call);
+test('a -32602 refusing the input settles failed, whatever words the server used', async () => {
+  for (const said of [
+    'Invalid params: due must be YYYY-MM-DD',
+    'Invalid params',
+    'MCP error -32602: Input validation error: Invalid arguments for tool write: due: Invalid date',
+    'due: expected a date in YYYY-MM-DD form',
+    'title is required',
+    'Invalid params: token must be a string',
+    'Invalid params: page_size must be at most 50',
+    'Invalid params: project 42 not found',
+  ]) {
+    const effects: string[] = [];
+    const { transport } = server((params) => {
+      effects.push(String(params?.name));
+      return rpc(said)();
+    });
     const worker = await openMcpWorker(mcpFixtureConfig(), binding, { transport });
     try {
-      const action = writeAction({ title: 'A', due: '2026-11-06' });
-      expect((await worker.execute(action, context(action))).outcome).toBe('unknown');
+      const action = writeAction({ title: 'A', due: 'next Friday' });
+      const result = await worker.execute(action, context(action));
+      if (result.outcome !== 'failed') throw new Error(`expected failed for ${said}`);
+      expect(result.retryable).toBe(true);
+      expect(result.reason).toContain('refused the arguments; nothing was done');
+      expect(result.evidence).toMatchObject({
+        error_code: -32602,
+        server_said: said,
+        origin_trust: 'external_content',
+        input_schema: DUE_SCHEMA,
+      });
     } finally {
       await worker.close();
     }
+  }
+});
+
+test('every after-the-run -32602 wording the MCP SDK uses stays unknown, with its words kept', async () => {
+  for (const said of [
+    // McpServer's output check (server/mcp.js), now and in earlier releases.
+    'MCP error -32602: Output validation error: Tool write has an output schema but no structured content was provided',
+    'MCP error -32602: Output validation error: Invalid structured content for tool write: due: Expected string, received number',
+    'Tool write has an output schema but no structured content was provided',
+    'Invalid structured content for tool write: due: Expected string, received number',
+    // The low-level Server's check of what a tools/call handler returned (server/index.js).
+    'MCP error -32602: Invalid tools/call result: content: Required',
+    'MCP error -32602: Invalid task creation result: task: Required',
+    // A tool that asked the person mid-run and got an answer outside its schema.
+    'MCP error -32602: Elicitation response content does not match requested schema: due must be string',
+    // The SDK client's output check, passed on by a server that relays to another.
+    "MCP error -32602: Structured content does not match the tool's output schema: data/due must be string",
+    'MCP error -32602: Failed to validate structured content: schema could not be compiled',
+  ]) {
+    const effects: string[] = [];
+    const { transport } = server((params) => {
+      effects.push(String(params?.name));
+      return rpc(said)();
+    });
+    const worker = await openMcpWorker(mcpFixtureConfig(), binding, { transport });
+    try {
+      const action = writeAction({ title: 'A', due: '2026-11-06' });
+      const result = await worker.execute(action, context(action));
+      if (result.outcome !== 'unknown') throw new Error(`expected unknown for ${said}`);
+      expect(result.reason).not.toMatch(/tried again|retry|nothing was done/i);
+      expect(result.evidence).toMatchObject({ error_code: -32602, server_said: said });
+      expect(effects).toEqual(['write']);
+    } finally {
+      await worker.close();
+    }
+  }
+});
+
+test('a -32602 behind a 5xx does not prove nothing ran', async () => {
+  const { transport } = server(rpc('Invalid arguments for tool write', 502));
+  const worker = await openMcpWorker(mcpFixtureConfig(), binding, { transport });
+  try {
+    const action = writeAction({ title: 'A', due: '2026-11-06' });
+    expect((await worker.execute(action, context(action))).outcome).toBe('unknown');
+  } finally {
+    await worker.close();
   }
 });
 

@@ -176,14 +176,23 @@ const INVALID_REQUEST = -32600;
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 
-/** A server saying it has no such tool, whatever code it used. */
-const TOOL_MISSING = /\b(not found|unknown tool|no such tool|does not exist|disabled)\b/i;
-/** A server saying it turned the input down before running the tool. */
-const INPUT_REJECTED =
-  /\binvalid (arguments?|parameters?|input)\b|\binput (validation|schema)\b|\bvalidation (error|failed)\b.*\b(arguments?|input|params|parameters?)\b|\bmissing required\b/i;
 /**
- * Words about a tool's output, or about access. An error in these words says
- * nothing about the arguments, and an output check runs after the tool has.
+ * A server saying it has no such tool, whatever code it used. It must name the
+ * tool, so "project 42 not found" stays a refusal of the arguments.
+ */
+const TOOL_MISSING =
+  /\btool\b.*\b(not found|does not exist|disabled)\b|\b(unknown|no such) tool\b/i;
+/**
+ * The words of a -32602 sent once the tool had already run: a check of its
+ * output or structured content, of what its handler returned, or of an answer
+ * the person gave it mid-run. These are the shapes the MCP SDK uses, plus the
+ * SDK client's own output check, which a server relaying to another may pass on.
+ */
+const AFTER_THE_RUN =
+  /\b(output|result) (schema|validation)\b|\b(invalid|malformed|unexpected) (tool )?(output|result)\b|\bstructured ?content\b|\btools\/call result\b|\btask creation result\b|\belicitation\b|\bsampling (request|result)\b/i;
+/**
+ * Words about a tool's output, or about access. A tool's own error in these
+ * words says nothing about its arguments, so no schema is read for it.
  */
 const NOT_ABOUT_INPUT =
   /\boutput (schema|validation)\b|\bstructured ?content\b|\bauth\w*|\bpermission|\bforbidden\b|\bunauthori[sz]ed\b|\bcredential|\bapi key\b|\btoken\b|\bscopes?\b|\bquota\b|\brate limit/i;
@@ -191,9 +200,9 @@ const NOT_ABOUT_INPUT =
 /**
  * How a JSON-RPC error to `tools/call` settles the call. A malformed request
  * (-32600) or an unknown method (-32601) was answered before anything ran.
- * -32602 is sent both for refused input and, by some servers, for an output
- * check after the tool ran, so it is definite only when its words say the
- * tool is missing or the input was refused; otherwise whether it ran is not known.
+ * -32602 says the params were turned down, so it is definite too, unless its
+ * words are those of a check made after the tool ran: then whether it ran is
+ * not known. One saying the tool is missing is handled like -32601.
  */
 function rpcRefusal(error: McpProtocolError): 'request' | 'missing' | 'input' | null {
   // A 5xx came from something that may have passed the call on already.
@@ -201,9 +210,8 @@ function rpcRefusal(error: McpProtocolError): 'request' | 'missing' | 'input' | 
   const said = rpcText(error);
   if (error.code === METHOD_NOT_FOUND) return 'missing';
   if (error.code === INVALID_REQUEST) return 'request';
-  if (error.code !== INVALID_PARAMS || NOT_ABOUT_INPUT.test(said)) return null;
-  if (TOOL_MISSING.test(said)) return 'missing';
-  return INPUT_REJECTED.test(said) ? 'input' : null;
+  if (error.code !== INVALID_PARAMS || AFTER_THE_RUN.test(said)) return null;
+  return TOOL_MISSING.test(said) ? 'missing' : 'input';
 }
 
 /** Argument nouns a tool's own error uses when it turned the arguments down. */
