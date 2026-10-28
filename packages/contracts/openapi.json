@@ -11166,6 +11166,9 @@
                   "screenshots_paired_devices": {
                     "type": "boolean"
                   },
+                  "record_seen": {
+                    "type": "boolean"
+                  },
                   "model_on_device": {
                     "type": "boolean"
                   },
@@ -47248,6 +47251,9 @@
           },
           "screenshots_paired_devices": {
             "type": "boolean"
+          },
+          "record_seen": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -47263,7 +47269,8 @@
           "model_on_device",
           "sealed_vault",
           "screenshots_own_computer",
-          "screenshots_paired_devices"
+          "screenshots_paired_devices",
+          "record_seen"
         ],
         "additionalProperties": false
       },

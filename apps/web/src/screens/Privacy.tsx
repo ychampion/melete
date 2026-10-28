@@ -203,6 +203,7 @@ export function PrivacyTab() {
       | 'model_on_device'
       | 'screenshots_own_computer'
       | 'screenshots_paired_devices'
+      | 'record_seen'
     >,
   ) => {
     setSettings((current) => (current ? { ...current, ...change } : current));
@@ -504,6 +505,18 @@ export function PrivacyTab() {
           above and your Always protect list apply to text only. Private conversations never send
           screenshots to a cloud model; your private model sees them only if it reads images.
         </p>
+      </Section>
+
+      <Section
+        title="What the model saw"
+        sub="Keep the redacted text sent to cloud models so you can inspect it beside an answer. History is limited per conversation and per space; the oldest pieces are removed first."
+      >
+        <SwitchRow
+          label="Keep what the model saw"
+          hint="Turning this off stops keeping new pieces. Existing pieces stay until they leave the history."
+          on={settings.record_seen}
+          onChange={(next) => flip({ record_seen: next })}
+        />
       </Section>
 
       <Section

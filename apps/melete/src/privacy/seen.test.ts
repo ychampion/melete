@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { GatewayPrincipal, GatewayProvider } from '../gateway/types.ts';
 import { PrivacyRouter } from './router.ts';
-import { mountPrivacy } from './routes.ts';
+import { mountPrivacy, settingsView, updateSettings } from './routes.ts';
 import { SEEN_PART_LIMIT, sentParts } from './seen.ts';
 import { MemoryPrivacyStore } from './store.ts';
 
@@ -152,6 +152,90 @@ describe('what the model saw', () => {
     expect(second.parts.map((part) => part.segments)).toEqual([
       [{ text: 'Thanks. Remind me to read it tonight.' }],
     ]);
+  });
+
+  test('truncated pieces deduplicate across retries, resumed turns and fresh routers', async () => {
+    const { store, router } = setup();
+    const prefix = 'a'.repeat(SEEN_PART_LIMIT);
+    const first = { messages: [{ role: 'user', content: `${prefix} first tail` }] };
+    // A duplicate within one request and a duplicate in a later request both count once.
+    await send(router, { messages: [...first.messages, ...first.messages] });
+    await send(router, first);
+    store.scopes.set(CHAT, {
+      spaceId: SPACE,
+      conversationId: CHAT,
+      agentId: null,
+      turnId: 'trn_resumed',
+    });
+    const resumed = new PrivacyRouter({ store });
+    await send(resumed, first);
+    await send(resumed, { messages: [{ role: 'user', content: `${prefix} other tail` }] });
+    expect(store.seenParts).toHaveLength(2);
+    expect(store.seenParts.map(({ turnId, truncated, text }) => [turnId, truncated, text])).toEqual(
+      [
+        ['trn_1', true, prefix],
+        ['trn_resumed', true, prefix],
+      ],
+    );
+    expect(new Set(store.seenParts.map((part) => part.digest)).size).toBe(2);
+  });
+
+  test('recording is on by default and the saved setting controls the next request', async () => {
+    const { store, router } = setup();
+    expect((await settingsView(router, SPACE)).record_seen).toBe(true);
+    await send(router, { messages: [{ role: 'user', content: 'First piece' }] });
+    await updateSettings(router, SPACE, { record_seen: false });
+    expect((await settingsView(router, SPACE)).record_seen).toBe(false);
+    await send(router, { messages: [{ role: 'user', content: 'Do not keep this piece' }] });
+    expect(store.seenParts.map((part) => part.text)).toEqual(['First piece']);
+    await updateSettings(router, SPACE, { record_seen: true });
+    await send(new PrivacyRouter({ store }), {
+      messages: [{ role: 'user', content: 'Keep this piece again' }],
+    });
+    expect(store.seenParts.map((part) => part.text)).toEqual([
+      'First piece',
+      'Keep this piece again',
+    ]);
+  });
+
+  test('a conversation keeps the newest 240 pieces, including truncated pieces', async () => {
+    const { store } = setup();
+    const scope = await store.scope(CHAT, principal.attemptId);
+    const pieces = sentParts(
+      {
+        messages: Array.from({ length: 242 }, (_, i) => ({
+          role: 'user',
+          content: `${i} ${'a'.repeat(SEEN_PART_LIMIT)}`,
+        })),
+      },
+      'chat/completions',
+    );
+    await store.recordSeen(scope, pieces.slice(0, 240));
+    // A retry does not move a retained piece to the end or evict a newer one.
+    await store.recordSeen(scope, [...pieces.slice(0, 1), ...pieces.slice(240)]);
+    expect(store.seenParts).toHaveLength(240);
+    expect(store.seenParts.map((part) => part.digest)).toEqual(
+      pieces.slice(2).map((part) => part.digest),
+    );
+    expect(store.seenParts.every((part) => part.truncated)).toBe(true);
+  });
+
+  test('a space keeps the newest 2400 pieces across conversations without pruning another space', async () => {
+    const { store } = setup();
+    const scope = await store.scope(CHAT, principal.attemptId);
+    const pieces = sentParts(
+      {
+        messages: Array.from({ length: 240 }, (_, i) => ({ role: 'user', content: `Piece ${i}` })),
+      },
+      'chat/completions',
+    );
+    await store.recordSeen({ ...scope, spaceId: 'another-space' }, pieces);
+    for (let i = 0; i < 11; i++)
+      await store.recordSeen({ ...scope, conversationId: `chat_${i}` }, pieces);
+    expect(await store.seen('chat_0', 'trn_1')).toEqual([]);
+    expect(await store.seen('chat_1', 'trn_1')).toHaveLength(240);
+    expect(await store.seen(CHAT, 'trn_1')).toHaveLength(240);
+    expect(store.seenParts).toHaveLength(2640);
   });
 
   test('an answer with no record has no route and no pieces', async () => {

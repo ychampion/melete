@@ -18792,6 +18792,7 @@ export interface paths {
                         model_on_device?: boolean;
                         private_agent_ids?: components["schemas"]["__schema52"][];
                         private_space?: boolean;
+                        record_seen?: boolean;
                         remove_known_values?: components["schemas"]["__schema54"][];
                         screenshots_own_computer?: boolean;
                         screenshots_paired_devices?: boolean;
@@ -29594,6 +29595,7 @@ export interface components {
             model_on_device: boolean;
             private_agent_ids: components["schemas"]["__schema472"][];
             private_space: boolean;
+            record_seen: boolean;
             screenshots_own_computer: boolean;
             screenshots_paired_devices: boolean;
             sealed_vault: boolean;

@@ -30,6 +30,10 @@ export const SEEN_PART_LIMIT = 12_000;
  * record of earlier pieces from landing on the current turn all at once.
  */
 export const SEEN_PARTS_PER_REQUEST = 24;
+/** Bounded history: at most 2.88 million text characters in one conversation. */
+export const SEEN_PARTS_PER_CONVERSATION = 240;
+/** At most 28.8 million text characters across a space's conversations. */
+export const SEEN_PARTS_PER_SPACE = 2_400;
 
 const PLACEHOLDER = /⟦[A-Z][A-Z_]*_\d{1,6}⟧/g;
 

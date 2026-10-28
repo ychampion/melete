@@ -501,7 +501,12 @@ export class PrivacyRouter {
     await this.log(scope, receipt);
     // What the person and their sources said, as this request carried it, for
     // the answer's "what the model saw". Only an engine attempt's own turn.
-    if (principal.privacy.kind === 'job' && scope.conversationId && scope.turnId)
+    if (
+      settings.recordSeen &&
+      principal.privacy.kind === 'job' &&
+      scope.conversationId &&
+      scope.turnId
+    )
       await this.keepSeen(scope, redacted, protocol);
     return {
       body: redacted,

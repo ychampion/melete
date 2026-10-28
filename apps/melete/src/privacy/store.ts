@@ -19,7 +19,7 @@ import {
 import type { Sql, TransactionSql } from 'postgres';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { LocalModel } from './local.ts';
-import type { SeenPart } from './seen.ts';
+import { SEEN_PARTS_PER_CONVERSATION, SEEN_PARTS_PER_SPACE, type SeenPart } from './seen.ts';
 import { type KnownValue, Vault, type VaultData } from './vault.ts';
 
 /** The choices a person makes, resolved against the defaults. */
@@ -42,6 +42,8 @@ export type ResolvedSettings = {
   screenshotsOwn: boolean;
   /** Cloud models may see paired computers' screens. Off unless turned on. */
   screenshotsDevices: boolean;
+  /** Keep a bounded history of redacted pieces sent to cloud models. On by default. */
+  recordSeen: boolean;
 };
 
 /** What is stored in the plain `settings` column. */
@@ -56,6 +58,7 @@ export type PlainSettings = {
   model_on_device_url?: string | null;
   screenshots_own_computer?: boolean;
   screenshots_paired_devices?: boolean;
+  record_seen?: boolean;
 };
 
 /** What is sealed beside it. */
@@ -114,6 +117,7 @@ export function resolveSettings(
     onDeviceUrl: plain.model_on_device_url ?? null,
     screenshotsOwn: plain.screenshots_own_computer !== false,
     screenshotsDevices: plain.screenshots_paired_devices === true,
+    recordSeen: plain.record_seen !== false,
   };
 }
 
@@ -557,8 +561,19 @@ export class PostgresPrivacyStore implements PrivacyStore {
       text: part.text,
       truncated: part.truncated,
     }));
-    await this.sql`insert into privacy_seen ${this.sql(rows)}
-      on conflict (conversation_id, digest) do nothing`;
+    await this.sql.begin(async (tx) => {
+      // Serialize this space's writers, including different conversations, so
+      // inserts and oldest-first pruning commit together under concurrent requests.
+      await tx`select id from space where id = ${spaceId} for update`;
+      await tx`insert into privacy_seen ${tx(rows)}
+        on conflict (conversation_id, digest) do nothing`;
+      await tx`delete from privacy_seen where id in (
+        select id from privacy_seen where conversation_id = ${conversationId}
+        order by id desc offset ${SEEN_PARTS_PER_CONVERSATION})`;
+      await tx`delete from privacy_seen where id in (
+        select id from privacy_seen where space_id = ${spaceId}
+        order by id desc offset ${SEEN_PARTS_PER_SPACE})`;
+    });
   }
 
   async seen(conversationId: string, turnId: string) {
@@ -720,17 +735,33 @@ export class MemoryPrivacyStore implements PrivacyStore {
   }
 
   /** What cloud requests carried, per conversation, as `recordSeen` keeps it. */
-  readonly seenParts: (SeenPart & { conversationId: string; turnId: string })[] = [];
+  readonly seenParts: (SeenPart & { spaceId: string; conversationId: string; turnId: string })[] =
+    [];
 
   async recordSeen(scope: Scope, parts: SeenPart[]) {
-    const { conversationId, turnId } = scope;
-    if (this.options.keepLogs === false || !conversationId || !turnId) return;
+    const { spaceId, conversationId, turnId } = scope;
+    if (this.options.keepLogs === false || !spaceId || !conversationId || !turnId) return;
     for (const part of parts) {
       const kept = this.seenParts.some(
         (row) => row.conversationId === conversationId && row.digest === part.digest,
       );
-      if (!kept) this.seenParts.push({ ...part, conversationId, turnId });
+      if (!kept) this.seenParts.push({ ...part, spaceId, conversationId, turnId });
     }
+    const prune = (rows: typeof this.seenParts, limit: number) => {
+      const expired = new Set(rows.slice(0, -limit));
+      for (let i = this.seenParts.length - 1; i >= 0; i--) {
+        const row = this.seenParts[i];
+        if (row && expired.has(row)) this.seenParts.splice(i, 1);
+      }
+    };
+    prune(
+      this.seenParts.filter((row) => row.conversationId === conversationId),
+      SEEN_PARTS_PER_CONVERSATION,
+    );
+    prune(
+      this.seenParts.filter((row) => row.spaceId === spaceId),
+      SEEN_PARTS_PER_SPACE,
+    );
   }
 
   async seen(conversationId: string, turnId: string) {
