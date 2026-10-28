@@ -47,6 +47,8 @@ const WITHHELD_TABLES = new Set([
   'secret',
   // Written out on its own, as sites and usernames: see saved-sign-ins.json.
   'saved_sign_in',
+  // Names of secrets given to the agent; their values never leave sealed.
+  'space_secret',
   'session',
   'password_reset',
   'step_up',

@@ -142,12 +142,17 @@ const EXEC_ENV_ALLOWED: ReadonlySet<string> = new Set(EXEC_ENV_NAMES);
  * Why a per-command environment cannot be sent, or null when it can. A name
  * outside the allow-list, a value that is not text or holds a NUL byte, a
  * value above the size limit, and an environment above the total limit are
- * each refused.
+ * each refused. `sealed` names the secrets of the command's own space that
+ * this command was given: those names, and no others, are admitted beside
+ * the list.
  */
-export function execEnvRefusal(env: Readonly<Record<string, string>>): string | null {
+export function execEnvRefusal(
+  env: Readonly<Record<string, string>>,
+  sealed: readonly string[] = [],
+): string | null {
   let total = 0;
   for (const [name, value] of Object.entries(env)) {
-    if (!EXEC_ENV_ALLOWED.has(name))
+    if (!EXEC_ENV_ALLOWED.has(name) && !sealed.includes(name))
       return `the environment name ${JSON.stringify(name.slice(0, 64))} is not one a command may be given`;
     if (typeof value !== 'string') return `the value of ${name} is not text`;
     if (value.includes('\0')) return `the value of ${name} holds a NUL byte`;

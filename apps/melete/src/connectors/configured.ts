@@ -103,6 +103,7 @@ import { SignInVault } from './sign-in-vault.ts';
 import { type AccountClient, SignInEnded, signedInAccess } from './signed-in.ts';
 import { createSkillsConnector } from './skills.ts';
 import { SmsConnector } from './sms.ts';
+import { SpaceSecrets } from './space-secrets.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createTranscriptionConnector } from './transcribe.ts';
 import { createCapabilityConnector } from './tts.ts';
@@ -685,6 +686,7 @@ export class ConnectorFactory {
         maxConcurrent: sandbox.maxConcurrent,
         maxPerConnection: sandbox.maxPerConnection,
         ...(sandbox.processes ? { processes: sandbox.processes } : {}),
+        secrets: new SpaceSecrets(options.sql, this.secrets),
         close: opened.close,
       });
       // A sandbox runs whatever it is asked to, so it is never offered to a public compartment.

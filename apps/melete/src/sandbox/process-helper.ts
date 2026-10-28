@@ -63,6 +63,8 @@ export type StartRequest = {
   halfBytes: number;
   waitMs: number;
   firstMaxBytes: number;
+  /** Set on the process alone: the sealed secrets its start named. */
+  env?: Readonly<Record<string, string>>;
 };
 
 export type StartAnswer =
@@ -212,7 +214,12 @@ export function helperComputer(provider: SandboxProvider, handle: SandboxHandle)
   const root = processRoot(provider.capabilities);
   const key = `${provider.capabilities.adapter}:${handle.providerSandboxId}`;
 
-  const exec = async (argv: string[], timeoutMs: number, signal: AbortSignal) => {
+  const exec = async (
+    argv: string[],
+    timeoutMs: number,
+    signal: AbortSignal,
+    env?: Readonly<Record<string, string>>,
+  ) => {
     let outcome: Awaited<ReturnType<SandboxProvider['exec']>>;
     try {
       outcome = await provider.exec(
@@ -224,6 +231,8 @@ export function helperComputer(provider: SandboxProvider, handle: SandboxHandle)
           cwd: SANDBOX_WORKDIR,
           timeoutMs,
           maxOutputBytes: ANSWER_BYTES,
+          // The helper's supervisor hands its environment on to the command.
+          ...(env ? { env } : {}),
         },
         signal,
       );
@@ -242,10 +251,16 @@ export function helperComputer(provider: SandboxProvider, handle: SandboxHandle)
     args: string[],
     timeoutMs: number,
     signal: AbortSignal,
+    env?: Readonly<Record<string, string>>,
   ): Promise<{ code: number | null; answer: Record<string, unknown> }> => {
     const full = [root, ...args];
     if (modes.get(key) !== 'inline') {
-      const baked = await exec(['/bin/sh', '-c', BAKED, 'melete-proc', ...full], timeoutMs, signal);
+      const baked = await exec(
+        ['/bin/sh', '-c', BAKED, 'melete-proc', ...full],
+        timeoutMs,
+        signal,
+        env,
+      );
       if (baked.answer && baked.answer.v === PROCESS_HELPER_VERSION) {
         remember(key, 'baked');
         return { code: baked.code, answer: baked.answer };
@@ -269,6 +284,7 @@ export function helperComputer(provider: SandboxProvider, handle: SandboxHandle)
       ['/bin/sh', '-c', INLINE, 'melete-proc', text, ...full],
       timeoutMs,
       signal,
+      env,
     );
     if (inline.code === NO_PYTHON_EXIT && !inline.answer)
       throw new ProcessHelperUnavailable(
@@ -303,6 +319,7 @@ export function helperComputer(provider: SandboxProvider, handle: SandboxHandle)
         ],
         request.waitMs + CALL_MARGIN_MS,
         signal,
+        request.env,
       );
       if (result.code === REENTERED_EXIT && result.answer.ok === false)
         return { outcome: 'reentered' };

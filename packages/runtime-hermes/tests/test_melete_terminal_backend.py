@@ -267,6 +267,15 @@ def test_a_command_is_one_broker_action_and_its_output_comes_back():
     assert broker.reads == [ACTION]
 
 
+def test_the_names_a_command_refers_to_go_with_it_so_its_secrets_can_be_given():
+    broker = ScriptedBroker()
+    env = environment(broker)
+    env.execute('curl -H "Authorization: Bearer $WEATHER_API_KEY" "${BASE_URL}/x" $home $X1_')
+    assert broker.proposals[0]["payload"]["secret_refs"] == ["BASE_URL", "WEATHER_API_KEY", "X1_"]
+    env.execute("ls")
+    assert "secret_refs" not in broker.proposals[1]["payload"]
+
+
 def test_the_same_command_twice_is_two_runs():
     broker = ScriptedBroker()
     env = environment(broker)

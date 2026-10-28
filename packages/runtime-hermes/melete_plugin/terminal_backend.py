@@ -63,6 +63,14 @@ MIN_TIMEOUT_MS = 100
 DEFAULT_TIMEOUT_MS = 300_000
 MAX_TIMEOUT_MS = 600_000
 
+#: A `$NAME` or `${NAME}` reference in a command. The broker gives the command
+#: each sealed secret of its space a reference names, and leaves every other
+#: name alone. Mirrors SEALED_SECRET_NAME_PATTERN in packages/contracts.
+SECRET_REF = re.compile(r"\$\{?([A-Z][A-Z0-9_]{0,63})(?![A-Za-z0-9_])")
+
+#: Mirrors MAX_SECRET_REFS in apps/melete/src/connectors/command-secrets.ts.
+MAX_SECRET_REFS = 32
+
 #: Mirrors SANDBOX_SYNC_ALLOWANCE_MS in apps/melete/src/env.ts plus
 #: WORKSPACE_WAIT_MS in apps/melete/src/connectors/sandbox-exec.ts: the
 #: broker may take this long beyond the command's own timeout to wait for the
@@ -237,6 +245,9 @@ class SandboxTerminal:
         }
         if relative != ".":
             payload["cwd"] = relative
+        refs = sorted(set(SECRET_REF.findall(payload["command"])))[:MAX_SECRET_REFS]
+        if refs:
+            payload["secret_refs"] = refs
         scope = os.environ.get("MELETE_JOB_ID") or os.environ.get("MELETE_ATTEMPT_ID") or "job"
         answer = self._propose(payload, f"{scope}:{TERMINAL_TOOL}:{run}", timeout_ms)
         if "result" in answer:

@@ -105,6 +105,7 @@ import {
   useEffectsPool,
 } from './connectors/secrets.ts';
 import { SignInVault } from './connectors/sign-in-vault.ts';
+import { SpaceSecrets } from './connectors/space-secrets.ts';
 import type { CallVoice } from './connectors/speech-engine.ts';
 import { keylessSearchNotice, webSearchFromEnv } from './connectors/web-search.ts';
 import {
@@ -605,6 +606,15 @@ export function createApp(deps: AppDeps) {
   }
   const questions =
     deps.questions ?? (deps.jobs ? new QuestionService(deps.jobs, submissions) : undefined);
+  // A secret the person types into a question's sealed field is kept here, by name.
+  if (questions && deps.sql && !questions.secrets)
+    questions.secrets = new SpaceSecrets(
+      deps.sql,
+      new SealedSecretStore(
+        new PostgresSecretRepository(deps.sql),
+        () => deps.env.MELETE_MASTER_KEY,
+      ),
+    );
   if (questions) mountQuestions(app, questions);
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers, db);

@@ -3,6 +3,7 @@ import {
   namedOption,
   quickAnswerRequest,
   quickOptions,
+  sealedSecretList,
   unavailable,
 } from '@melete/contracts';
 import { and, eq, isNull, or } from 'drizzle-orm';
@@ -27,6 +28,8 @@ type QuestionRow = typeof question.$inferSelect;
  */
 const freeText = (row: QuestionRow): boolean =>
   row.source !== 'memory' &&
+  // A secret is typed into its sealed field, never into words.
+  !row.secret &&
   row.options
     .map((option) => option.id)
     .sort()
@@ -84,6 +87,15 @@ export class ExperienceQuestions {
             row.source === 'memory' ||
             row.blocksExternalEffect ||
             !settledByDismissal(holder, Boolean(this.stopRun)),
+          ...(row.secret
+            ? {
+                secret: {
+                  name: row.secret.name,
+                  purpose: plainText(row.secret.purpose, 'Needed for this work.'),
+                  host: row.secret.host ?? null,
+                },
+              }
+            : {}),
           created_at: row.createdAt.toISOString(),
         }),
       );
@@ -94,6 +106,12 @@ export class ExperienceQuestions {
     const request = quickAnswerRequest.parse(input);
     const [entry] = await this.find(spaceId, id);
     if (!entry) throw experienceMissing();
+    if (entry.question.secret)
+      throw new ServiceError(
+        'secret_question',
+        'This question asks for a secret. Enter it in the sealed field.',
+        409,
+      );
     let text: string;
     let offered: { id: string; label: string } | undefined;
     if ('option_id' in request) {
@@ -126,6 +144,39 @@ export class ExperienceQuestions {
       );
     return { status: 'ok' };
   }
+  /**
+   * The person typed a secret into a question's sealed field. It is sealed in
+   * the space and the conversation hears only that it was given; nothing here
+   * says the value back, in a response or an error.
+   */
+  async answerSecret(spaceId: string, id: string, input: unknown) {
+    const [entry] = await this.find(spaceId, id);
+    if (!entry) throw experienceMissing();
+    if (!this.questions) return unavailable('Answers are not connected yet.');
+    const result = await this.questions.answerSecret(id, input);
+    if (result.error)
+      throw new ServiceError(
+        'answer_not_accepted',
+        'The secret was saved, but the work could not be woken. Try again.',
+        409,
+      );
+    return { status: 'ok' as const };
+  }
+
+  /** The space's secrets by name and purpose. No value is ever listed. */
+  async secrets(spaceId: string) {
+    const kept = this.questions?.secrets;
+    if (!kept) return unavailable('Secrets are not connected yet.');
+    return sealedSecretList.parse({ secrets: await kept.list(spaceId) });
+  }
+
+  /** Removes one secret for good; a later command that names it is refused. */
+  async forgetSecret(spaceId: string, name: string) {
+    const kept = this.questions?.secrets;
+    if (!kept) return unavailable('Secrets are not connected yet.');
+    return { deleted: await kept.remove(spaceId, name) };
+  }
+
   /**
    * The person no longer wants to answer: the question leaves every list and
    * its card in the conversation closes. The conversation waits for their next

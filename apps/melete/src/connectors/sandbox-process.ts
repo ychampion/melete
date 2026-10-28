@@ -50,6 +50,7 @@ import {
   type ProcessRow,
   type SandboxProcesses,
 } from '../sandbox/processes.ts';
+import { redactBytes } from '../sandbox/secret-redaction.ts';
 import { type SessionRow, sessionHandle } from '../sandbox/sessions.ts';
 import type { SandboxProvider } from '../sandbox/types.ts';
 import {
@@ -58,6 +59,8 @@ import {
   syncIn,
   writeWorkspaceFile,
 } from '../sandbox/workspace.ts';
+import { commandSecrets, SECRETS_SCHEMA, sealedOutcome, secretNamesOf } from './command-secrets.ts';
+import { type CommandSecrets, SecretRefusal, type SpaceSecrets } from './space-secrets.ts';
 import type { ConnectorContext } from './types.ts';
 
 type ToolManifest = ConnectorManifest['tools'][number];
@@ -117,6 +120,7 @@ export const PROCESS_TOOLS: ToolManifest[] = [
         port: { type: 'integer', minimum: 1, maximum: 65535 },
         ttl_minutes: { type: 'integer', minimum: 1, maximum: PROCESS_LIMITS.max_ttl_minutes },
         notify: notifySchema,
+        secrets: SECRETS_SCHEMA,
       },
       ['command'],
     ),
@@ -386,6 +390,8 @@ export type ProcessToolOptions = {
   openSession(action: Action, ctx: ConnectorContext, signal: AbortSignal): Promise<SessionRow>;
   /** Renews the session's lease after the action, as a terminal command does. */
   renew(sessionId: string): Promise<unknown>;
+  /** The space's sealed secrets; without it a start that names one is refused. */
+  secrets?: SpaceSecrets;
 };
 
 type Failure = { outcome: 'failed'; reason: string; retryable: boolean };
@@ -642,6 +648,7 @@ export function createProcessTools(options: ProcessToolOptions) {
     computer: ProcessComputer,
     session: SessionRow,
     signal: AbortSignal,
+    env: Record<string, string>,
   ): Promise<DispatchResult> {
     const payload = action.canonical_payload as Payload;
     const command = string(payload, 'command', 20_000, true) as string;
@@ -729,6 +736,7 @@ export function createProcessTools(options: ProcessToolOptions) {
           halfBytes: Math.floor(processes.limits.outputMaxBytes / 2),
           waitMs: PROCESS_LIMITS.first_output_wait_ms,
           firstMaxBytes: PROCESS_LIMITS.first_output_max_bytes,
+          ...(Object.keys(env).length ? { env } : {}),
         },
         signal,
       );
@@ -792,6 +800,7 @@ export function createProcessTools(options: ProcessToolOptions) {
     row: ProcessRow,
     computer: ProcessComputer,
     signal: AbortSignal,
+    given: CommandSecrets,
   ): Promise<DispatchResult> {
     const payload = action.canonical_payload as Payload;
     const cursor = integer(payload, 'cursor', 0, Number.MAX_SAFE_INTEGER);
@@ -801,8 +810,10 @@ export function createProcessTools(options: ProcessToolOptions) {
     const wait = integer(payload, 'wait_seconds', 0, PROCESS_LIMITS.read_max_wait_seconds) ?? 0;
     const answer = await computer.read(row.id, cursor ?? -1, max, wait * 1000, signal);
     const current = await processes.apply(row, answer.process, answer.boot);
-    const path = await capture(ctx.job_id, row.id, answer.read.from, answer.data);
-    const text = shown(answer.data);
+    // The page kept in the workspace is the redacted one, as the receipt is.
+    const data = redactBytes(answer.data, given.values);
+    const path = await capture(ctx.job_id, row.id, answer.read.from, data);
+    const text = shown(data);
     return {
       outcome: 'succeeded',
       receipt: receipt(action, {
@@ -813,18 +824,40 @@ export function createProcessTools(options: ProcessToolOptions) {
         total_bytes: answer.read.total,
         output: text.text,
         output_binary: text.binary,
-        output_bytes: answer.data.byteLength,
-        output_digest: digest(answer.data),
+        output_bytes: data.byteLength,
+        output_digest: digest(data),
         output_path: path,
         digest_verified: true,
       }),
     };
   }
 
+  /**
+   * Every process action, with the space's secrets kept out of its receipt; a
+   * start gets the ones it names, and one this space has not sealed is
+   * refused before anything starts.
+   */
   async function execute(
     action: Action,
     ctx: ConnectorContext,
     signal: AbortSignal,
+  ): Promise<DispatchResult> {
+    let given: CommandSecrets;
+    try {
+      const named = action.kind === 'process.start' ? secretNamesOf(action.canonical_payload) : [];
+      given = await commandSecrets(options.secrets, ctx.space_id, { secrets: named });
+    } catch (error) {
+      if (error instanceof SecretRefusal) return refused(error.message);
+      return refused((error as Error).message, true);
+    }
+    return sealedOutcome(await run(action, ctx, signal, given), given);
+  }
+
+  async function run(
+    action: Action,
+    ctx: ConnectorContext,
+    signal: AbortSignal,
+    given: CommandSecrets,
   ): Promise<DispatchResult> {
     try {
       const agentId = await agentOf(ctx.job_id);
@@ -903,11 +936,11 @@ export function createProcessTools(options: ProcessToolOptions) {
       try {
         switch (action.kind) {
           case 'process.start':
-            return await start(action, ctx, agentId, computer, session, signal);
+            return await start(action, ctx, agentId, computer, session, signal, given.env);
           case 'process.list':
             return await list(action, ctx, agentId, computer, signal);
           case 'process.read':
-            return await read(action, ctx, row as ProcessRow, computer, signal);
+            return await read(action, ctx, row as ProcessRow, computer, signal, given);
           case 'process.wait':
             return await wait(action, row as ProcessRow, computer, signal);
           case 'process.write': {

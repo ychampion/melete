@@ -174,6 +174,8 @@ const SPACE_KEYED_OPERATIONAL = [
   // secrets of the space, which go with the space's other secrets.
   'saved_sign_in_use',
   'saved_sign_in',
+  // Secrets a person gave the agent, by name; their sealed values go with the space's other secrets.
+  'space_secret',
   'experience_profile',
   // How the person lets auto-review answer for them, and what it decided.
   // The decisions went with their jobs; named again so the phase is whole.

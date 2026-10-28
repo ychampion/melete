@@ -13,6 +13,7 @@ import {
   type EventSink,
   type RuntimeAdapter,
 } from './runtime.ts';
+import { sealedSecretRequest } from './sealed-secrets.ts';
 
 export const submissionId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/);
 export const inputDigest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -71,6 +72,11 @@ export const questionSpec = z.object({
   options: quickOptions.optional(),
   /** Why the agent is asking, in its own words, shown under the question. */
   why: z.string().min(1).max(1000).optional(),
+  /**
+   * Set when the answer is a secret: the person types it into a sealed field,
+   * and it is kept under this name instead of being sent as a message.
+   */
+  secret: sealedSecretRequest.optional(),
 });
 export type QuestionSpec = z.infer<typeof questionSpec>;
 /** What a caller may hand in: the two ranking fields have defaults. */

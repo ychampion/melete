@@ -82,6 +82,15 @@ import {
   syncIn,
   syncOut,
 } from '../sandbox/workspace.ts';
+import {
+  commandSecrets,
+  SECRET_REFS_SCHEMA,
+  SECRETS_SCHEMA,
+  sealedOutcome,
+  sealedReceipt,
+  secretNamesOf,
+  secretRefsOf,
+} from './command-secrets.ts';
 import { type FileRecords, loadFileRecords, personGivenReason } from './files-ownership.ts';
 import {
   COMPUTER_TOOL_NAMES,
@@ -101,6 +110,7 @@ import {
   PROCESS_TOOLS,
   processDispatchBudgetMs,
 } from './sandbox-process.ts';
+import { type CommandSecrets, SecretRefusal, type SpaceSecrets } from './space-secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 /** At most this many paths are named on a receipt; the count says the rest. */
@@ -275,6 +285,8 @@ export type SandboxExecOptions = {
   challengeWaitMs?: number;
   /** The most one conversation's trash holds, in bytes (`MELETE_TRASH_MAX_MB`). */
   trashMaxBytes?: number;
+  /** The space's sealed secrets; without it a command that names one is refused. */
+  secrets?: SpaceSecrets;
 };
 
 /**
@@ -357,6 +369,8 @@ const runSchema = {
       description:
         'Names this run, so running the same command again later is a new run rather than a repeat of the first.',
     },
+    secrets: SECRETS_SCHEMA,
+    secret_refs: SECRET_REFS_SCHEMA,
   },
 };
 
@@ -429,7 +443,14 @@ function refusedBefore(error: unknown) {
 /** How long one computer action may take, the desktop's own wait for a page included. */
 const COMPUTER_BUDGET_MS = 60_000;
 
-type Payload = { command: string; cwd?: string; timeout_ms?: number; run?: string };
+type Payload = {
+  command: string;
+  cwd?: string;
+  timeout_ms?: number;
+  run?: string;
+  secrets?: string[];
+  secret_refs?: string[];
+};
 
 function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
   const payload = action.canonical_payload as Record<string, unknown>;
@@ -451,11 +472,15 @@ function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
   const run = payload.run;
   if (run !== undefined && (typeof run !== 'string' || !RUN_PATTERN.test(run)))
     throw new Error('a run name is 8 to 64 letters, digits, dashes or underscores');
+  const secrets = secretNamesOf(payload);
+  const refs = secretRefsOf(payload);
   return {
     command,
     ...(typeof cwd === 'string' ? { cwd } : {}),
     ...(typeof timeout === 'number' ? { timeout_ms: timeout } : {}),
     ...(typeof run === 'string' ? { run } : {}),
+    ...(secrets.length ? { secrets } : {}),
+    ...(refs.length ? { secret_refs: refs } : {}),
   };
 }
 
@@ -1093,6 +1118,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
           return renewed;
         },
         renew: (id) => sessions.renew(id),
+        ...(options.secrets ? { secrets: options.secrets } : {}),
       })
     : null;
   const NO_PROCESSES = {
@@ -1117,8 +1143,11 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     const session = dispatched ? await sessions.get(dispatched.session_id as string) : null;
     if (!session) return { decision: 'undecided', reason: 'this command has no session to ask' };
     let payload: Payload;
+    let given: CommandSecrets;
     try {
       payload = payloadOf(action);
+      // What it printed is read back redacted, as it was the first time.
+      given = await commandSecrets(options.secrets, ctx.space_id, payload);
     } catch (error) {
       return { decision: 'undecided', reason: (error as Error).message };
     }
@@ -1136,6 +1165,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       workRoot: options.workRoot,
       jobId: ctx.job_id,
       signal,
+      redact: given.values,
     });
     if (result.outcome === 'succeeded') {
       const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
@@ -1156,7 +1186,10 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       return {
         decision: 'succeeded',
         evidence,
-        receipt: receiptFor(action, detail, result.record.outputDigest, result.late),
+        receipt: sealedReceipt(
+          receiptFor(action, detail, result.record.outputDigest, result.late),
+          given,
+        ),
       };
     }
     if (result.outcome === 'failed' && result.retryable) {
@@ -1186,6 +1219,16 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       if (COMPUTER_TOOL_NAMES.has(action.kind)) return computer(action, ctx, signal);
       if (PROCESS_TOOL_NAMES.has(action.kind))
         return processTools ? processTools.execute(action, ctx, signal) : NO_PROCESSES;
+      // A secret the command names, and every value of the space's to keep
+      // out of what it prints, before any computer is opened.
+      let given: CommandSecrets;
+      try {
+        given = await commandSecrets(options.secrets, ctx.space_id, payloadOf(action));
+      } catch (error) {
+        if (error instanceof SecretRefusal)
+          return { outcome: 'failed' as const, reason: error.message, retryable: false };
+        return refusedBefore(error);
+      }
       let payload: Payload;
       let session: SessionRow;
       let timeZone: string | null = null;
@@ -1249,12 +1292,14 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
             cwd: sandboxCwd(payload.cwd),
             timeoutMs,
             dispatch,
-            env: { ...commandEnv(timeZone), ...attributed?.env },
+            env: { ...commandEnv(timeZone), ...attributed?.env, ...given.env },
+            sealed: given.used,
             forget,
           },
           workRoot: options.workRoot,
           jobId: ctx.job_id,
           signal,
+          redact: given.values,
         });
       } finally {
         seen = attributed?.settle() ?? null;
@@ -1271,14 +1316,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
             before: began,
           }).catch(() => null)
         : null;
-      const outcome = await finish(
-        action,
-        ctx,
-        payload,
-        session,
-        result,
-        egressHosts(session, seen),
-        newHosts,
+      const outcome = sealedOutcome(
+        await finish(action, ctx, payload, session, result, egressHosts(session, seen), newHosts),
+        given,
       );
       // A recorded outcome no longer needs its marker; an unknown one keeps it
       // as the only evidence a later check can read. A command that never

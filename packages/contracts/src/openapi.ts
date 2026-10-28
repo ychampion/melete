@@ -341,6 +341,7 @@ import {
   sandboxViewerRequest,
   sandboxViewerResponse,
 } from './sandbox-computer.ts';
+import { sealedSecretAnswer } from './sealed-secrets.ts';
 import {
   savedSignIn,
   savedSignInCheck,
@@ -2469,6 +2470,25 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Answer delivered as input', questionAnswerResponse),
               '409': problem('The question is no longer open'),
+            },
+          },
+        },
+        '/questions/{id}/secret': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Answer a question that asked for a secret, sealing the value under its name',
+            description:
+              'The value is sealed in the space under the name the question gave and never ' +
+              'becomes a message: the conversation records only that a secret was provided, ' +
+              'and later commands use it by name.',
+            requestParams: idParam('id', 'Question id'),
+            requestBody: json(sealedSecretAnswer),
+            responses: {
+              '200': jsonResponse(
+                'Secret sealed and the responsibility woken',
+                questionAnswerResponse,
+              ),
+              '409': problem('The question is no longer open, or did not ask for a secret'),
             },
           },
         },
