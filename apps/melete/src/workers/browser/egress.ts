@@ -12,6 +12,7 @@ import {
   type LiveSiteScope,
   siteOf,
 } from './live-protocol.ts';
+import { downloadName } from './teach.ts';
 
 export type BrowserNetworkPolicy = {
   public_compartment: boolean;
@@ -309,6 +310,8 @@ export type BrowserHumanWindow = {
   /** Redirect hops one navigation chain may follow before it is refused. */
   redirectHops: number;
   notice: LiveNotify;
+  /** A download the person asked for, by file name and type, for a teaching takeover's steps. */
+  downloaded?: (file: string, type: string) => void;
 };
 
 export type BrowserCommitBinding = {
@@ -1073,6 +1076,10 @@ export function createBrowserEgress(
       const responseHeaders = relayHeaders(response.headers, maxHeaderBytes, false);
       if (crossSite || anonymous) delete responseHeaders['set-cookie'];
       if (human && /^\s*attachment/i.test(responseHeaders['content-disposition'] ?? '')) {
+        human.downloaded?.(
+          downloadName(responseHeaders['content-disposition'], url.href),
+          responseHeaders['content-type'] ?? '',
+        );
         human.notice('download_refused');
         networkError('download_refused', 'browser downloads are refused during a takeover');
       }

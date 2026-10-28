@@ -121,6 +121,21 @@ export function handbackLabel(label: string): string {
 }
 
 /**
+ * A control's name or a page title in steps a person showed (`teach.ts`). The same filter as
+ * `handbackLabel` but for short digit runs, which there name a year or a day the person picked
+ * ("October 2026") far more often than a code; six digits or more still go.
+ */
+export function teachingLabel(label: string): string {
+  return patterns(label)
+    .replace(
+      LETTER_CODE,
+      (_, lead: string, rest: string) =>
+        `${lead}${REDACTED}${rest.replace(/[A-Z]{5,}/g, REDACTED)}`,
+    )
+    .replace(WORD, (word) => (mixedToken(word) ? REDACTED : word));
+}
+
+/**
  * Where a handed-back page is, as the agent may see it: scheme, host and a path whose segments
  * went through the same filter as a control's name, with no query, fragment or credentials. A
  * magic link or a reset code can sit in a path segment as easily as in a query.

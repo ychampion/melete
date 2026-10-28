@@ -68,12 +68,28 @@ export class BrowserWorkerClient {
   end(jobId: string): Promise<{ ended: boolean }> {
     return this.request('/end', { job_id: jobId });
   }
-  takeover(sessionId: string): Promise<BrowserSession> {
-    return this.request('/takeover', { session_id: sessionId });
+  /** `teach` also records the person's steps for this takeover (`teach.ts`). */
+  takeover(
+    sessionId: string,
+    options: { teach?: boolean } = {},
+  ): Promise<BrowserSession & { teaching?: true }> {
+    return this.request('/takeover', {
+      session_id: sessionId,
+      ...(options.teach ? { teach: true } : {}),
+    });
   }
-  /** A handback also reports the site the person ended on, when the profile holds its cookies. */
-  handback(sessionId: string): Promise<BrowserSession & { site?: string }> {
-    return this.request('/handback', { session_id: sessionId });
+  /**
+   * A handback also reports the site the person ended on, when the profile holds its cookies,
+   * and the steps of a teaching takeover unless `discard` throws them away.
+   */
+  handback(
+    sessionId: string,
+    options: { discard?: boolean } = {},
+  ): Promise<BrowserSession & { site?: string; shown?: unknown }> {
+    return this.request('/handback', {
+      session_id: sessionId,
+      ...(options.discard ? { discard: true } : {}),
+    });
   }
   forgetSite(domain: string): Promise<{ domain: string; cookies: number; origins: string[] }> {
     return this.request('/profile/forget', { domain });

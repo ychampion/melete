@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readdir, readFile, realpath, rename } from 'node:fs
 import { dirname, join, resolve } from 'node:path';
 import { type BrowserContext, chromium, type Page } from 'playwright';
 import { hostOf, siteOf } from './live-protocol.ts';
+import { type ShownSteps, StepLog } from './teach.ts';
 
 /** A host is matched literally, so every character a pattern would read is spelled out. */
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -177,6 +178,8 @@ export class BrowserSessions {
   private timer?: ReturnType<typeof setInterval>;
   private recordPath?: string;
   private persistQueue: Promise<void> = Promise.resolve();
+  /** The step log of a takeover the person chose to teach with, bound to its epoch. */
+  private teachingLog?: StepLog;
 
   constructor(readonly options: BrowserSessionsOptions) {
     if (!/^sp_[A-Za-z0-9_-]+$/.test(options.spaceId)) throw new BrowserFault('invalid_space');
@@ -356,22 +359,59 @@ export class BrowserSessions {
     this.touch();
   }
 
-  /** Takeover does not wait behind queued actions. The bump happens synchronously at receipt. */
-  async takeover(id: string): Promise<BrowserSession> {
+  /**
+   * Takeover does not wait behind queued actions. The bump happens synchronously at receipt.
+   * `teach` also starts a step log for the new epoch; any log before it is sealed and dropped.
+   */
+  async takeover(
+    id: string,
+    options: { teach?: boolean } = {},
+  ): Promise<BrowserSession & { teaching?: true }> {
     const session = this.requireSession(id);
     session.control_epoch++;
     session.control = 'human';
+    this.teachingLog?.seal();
+    const teaching = options.teach ? new StepLog(session.control_epoch) : undefined;
+    this.teachingLog = teaching;
     this.observedEpoch = null;
     this.humanActiveAt = this.now();
     this.touch();
     const notified = this.notify('takeover', session);
     await this.persist();
     await notified;
-    return { ...session };
+    return { ...session, ...(teaching ? { teaching: true as const } : {}) };
   }
 
-  async handback(id: string): Promise<BrowserSession & { site?: string }> {
+  /**
+   * The step log of the teaching takeover holding `epoch`, for the live channel opened under it.
+   * Nothing else in the worker reads it, and it leaves the worker only through `handback`.
+   */
+  teaching(id: string, epoch: number): StepLog | undefined {
+    this.checkHumanControl(id, epoch);
+    return this.teachingLog?.epoch === epoch ? this.teachingLog : undefined;
+  }
+
+  /**
+   * `discard` throws the steps of a teaching takeover away. Otherwise they come back with the
+   * handback that ends their own epoch, and with nothing else: a log whose epoch has passed
+   * (the context closed, another takeover began) was sealed then and is never handed over.
+   */
+  async handback(
+    id: string,
+    options: { discard?: boolean } = {},
+  ): Promise<BrowserSession & { site?: string; shown?: ShownSteps }> {
     const session = this.requireSession(id);
+    const log = this.teachingLog;
+    this.teachingLog = undefined;
+    const sealed = log?.seal();
+    const shown =
+      sealed &&
+      !options.discard &&
+      session.control === 'human' &&
+      log?.epoch === session.control_epoch &&
+      sealed.steps.length > 0
+        ? sealed
+        : undefined;
     session.control_epoch++;
     session.control = 'automation';
     this.observedEpoch = null;
@@ -381,7 +421,7 @@ export class BrowserSessions {
     await notified;
     // Read after the listeners have settled the pages, so this is the page the person ended on.
     const site = await this.signedInSite().catch(() => undefined);
-    return { ...session, ...(site ? { site } : {}) };
+    return { ...session, ...(site ? { site } : {}), ...(shown ? { shown } : {}) };
   }
 
   /**
@@ -495,6 +535,8 @@ export class BrowserSessions {
     this.context = undefined;
     this.page = undefined;
     this.observedEpoch = null;
+    this.teachingLog?.seal();
+    this.teachingLog = undefined;
     if (this.session) {
       this.session.control_epoch++;
       this.session.job_id = null;
