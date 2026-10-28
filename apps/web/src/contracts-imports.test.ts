@@ -14,18 +14,12 @@ import ts from 'typescript';
 // The contracts barrel also exports server code that runs node:crypto when it loads, so a value
 // import from it breaks the browser bundle. The web app takes values from a subpath instead
 // ('@melete/contracts/model-presets', '@melete/contracts/attachments', and so on); types are fine.
-function valuesFromBarrel(source: string): boolean {
-  return runtimeImports(source).includes('@melete/contracts');
+function valuesFromBarrel(source: string, file?: string): boolean {
+  return runtimeImports(source, file).includes('@melete/contracts');
 }
 
-function runtimeImports(source: string): string[] {
-  const tree = ts.createSourceFile(
-    'source.tsx',
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX,
-  );
+function runtimeImports(source: string, file = 'source.tsx'): string[] {
+  const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const imports: string[] = [];
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node)) {
@@ -71,7 +65,7 @@ function runtimeImports(source: string): string[] {
 function nodeDependencies(entry: string, visited = new Set<string>()): string[][] {
   if (visited.has(entry)) return [];
   visited.add(entry);
-  return runtimeImports(readFileSync(entry, 'utf8')).flatMap((specifier) => {
+  return runtimeImports(readFileSync(entry, 'utf8'), entry).flatMap((specifier) => {
     if (specifier.startsWith('node:')) return [[entry, specifier]];
     if (
       !specifier.startsWith('.') &&
@@ -96,7 +90,7 @@ function sources(dir: string): string[] {
 
 test('the web app takes no values from the contracts barrel', () => {
   const offenders = sources(join(import.meta.dir)).filter((path) =>
-    valuesFromBarrel(readFileSync(path, 'utf8')),
+    valuesFromBarrel(readFileSync(path, 'utf8'), path),
   );
   expect(offenders).toEqual([]);
 });
@@ -140,10 +134,25 @@ test.each([
   expect(valuesFromBarrel(source)).toBe(false);
 });
 
+test('checks imports after a generic arrow function in a TypeScript file', () => {
+  expect(
+    valuesFromBarrel(
+      "const identity = <T>(value: T) => value; export * from '@melete/contracts';",
+      'source.ts',
+    ),
+  ).toBe(true);
+});
+
+test('ignores import-looking JSX text in a TSX file', () => {
+  expect(valuesFromBarrel("const note = <p>import '@melete/contracts'</p>;", 'source.tsx')).toBe(
+    false,
+  );
+});
+
 test('the contracts subpaths used by the web app have no Node dependencies', () => {
   const subpaths = new Set(
     sources(import.meta.dir).flatMap((path) =>
-      runtimeImports(readFileSync(path, 'utf8')).filter((specifier) =>
+      runtimeImports(readFileSync(path, 'utf8'), path).filter((specifier) =>
         specifier.startsWith('@melete/contracts/'),
       ),
     ),
@@ -173,6 +182,7 @@ test.each([
   "export { value } from './bridge.ts';",
   "export * from './bridge.ts';",
   "const load = () => import('./bridge.ts');",
+  "const identity = <T>(value: T) => value; import './bridge.ts';",
 ])('follows a transitive runtime dependency: %s', (source) => {
   const entry = fixtureModule('model-presets.ts', source);
   const bridge = fixtureModule('bridge.ts', "export * from './server.ts';");
