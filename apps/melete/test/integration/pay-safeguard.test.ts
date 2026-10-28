@@ -332,7 +332,9 @@ describe('the agent’s own computer', () => {
       const typed = await s.step('computer.type', { text: `${VISA} 12/27 737` });
       const shown = JSON.stringify(await s.card(typed.action_id));
       expect(shown).not.toContain('4111');
-      expect(shown).not.toContain('737');
+      // Whole tokens only: the card also carries hashes, whose hex digits can spell 737.
+      expect(shown).not.toMatch(/\b737\b/);
+      expect(shown).not.toContain('12/27');
       expect(shown).toContain('[card ending 1111]');
       // Nor the events of the work.
       const events = await s.sql`select payload::text as text from event
