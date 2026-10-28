@@ -22,6 +22,8 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { GUESTS_MAY_NOT_ATTACH, readsFilesAsTheyAre } from '../attachments/rooms.ts';
+import { holdForRoomMessage, roomMessageAttachments } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import {
   action,
@@ -47,6 +49,7 @@ import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.
 import { summariesOnlyIn } from '../spaces/summaries.ts';
 import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
+import { ROOM_READS_NO_PICTURES } from './pictures.ts';
 import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
 import { actionIdsOf, keptBackItem, messageView, requestView, threadView } from './projection.ts';
@@ -112,6 +115,8 @@ export type RoomDeps = RoomWork & {
   events?: ExperienceEvents;
   /** Permission cards and answers, for the room's own permissions. */
   permissions?: ExperiencePermissions;
+  /** Whether this room's requests are shown photos (`rooms/pictures.ts`); left out, they are. */
+  readsPictures?: (spaceId: string) => Promise<boolean>;
 };
 
 export class RoomService {
@@ -420,6 +425,11 @@ export class RoomService {
         request.requestedByPrincipalId ? [request.requestedByPrincipalId] : [],
       ),
     ]);
+    const files = await roomMessageAttachments(
+      this.deps.db,
+      messages.map((message) => message.id),
+      await readsFilesAsTheyAre(this.deps.db, spaceId, actor),
+    );
     const views = [];
     const permissions = this.deps.permissions;
     const card = permissions
@@ -429,7 +439,7 @@ export class RoomService {
       views.push(await requestView(this.deps.db, request, names, card, keptBack));
     return {
       thread: threadView(row, names),
-      messages: messages.map((message) => messageView(message, names)),
+      messages: messages.map((message) => messageView(message, names, files.get(message.id))),
       requests: views,
     };
   }
@@ -444,7 +454,7 @@ export class RoomService {
   async post(
     spaceId: string,
     actor: string,
-    input: { text: string; submission_id: string },
+    input: { text: string; submission_id: string; attachments?: readonly string[] },
     target: { threadId: string } | { title?: string; askAgent?: boolean },
     /** Where the message was written, when not on the web: the platform and its id for it. */
     origin?: { surface: string; external_ref?: string },
@@ -459,6 +469,13 @@ export class RoomService {
           : `${spaceId}:${actor}:${input.submission_id}`,
       )
       .digest('hex');
+    // Whether the room's model reads photos is the installation's word, not
+    // this message's, so it is read here: the transaction below holds the event
+    // order lock, and the model settings are read on the pool.
+    const readsPictures =
+      input.attachments?.length && this.deps.readsPictures
+        ? await this.deps.readsPictures(spaceId)
+        : true;
     const result = await this.deps.jobs.transaction(async (tx) => {
       const { role } = await this.access(tx, spaceId, actor, true);
       const [replayed] = await tx
@@ -540,6 +557,23 @@ export class RoomService {
         .set({ lastActivityAt: new Date() })
         .where(eq(roomThread.id, thread.id));
       let message = await touchMessage(tx, inserted);
+      // Files posted with it: the poster's own uploads to this room. A photo
+      // an ask carries is read by the model that does the request; where the
+      // room's model reads none, the ask is refused and says so, rather than
+      // leave the model to guess at a photo it cannot see.
+      const files = input.attachments?.length
+        ? await holdForRoomMessage(tx, {
+            messageId: inserted.id,
+            spaceId,
+            principalId: actor,
+            ids: input.attachments,
+            perMessage: this.deps.jobs.attachmentsPerMessage,
+          })
+        : [];
+      if (files.length && role === 'guest' && !(await readRoomPolicy(tx, spaceId)).guests_may_ask)
+        throw new ServiceError('guests_may_not_attach', GUESTS_MAY_NOT_ATTACH, 403);
+      if (asks && !readsPictures && files.some((file) => file.kind === 'image'))
+        throw new ServiceError('room_model_reads_no_pictures', ROOM_READS_NO_PICTURES, 409);
       if (asks && !held) {
         if (await startRequest(tx, this.deps, message)) {
           const [current] = await tx
@@ -564,9 +598,14 @@ export class RoomService {
       result.thread.createdBy,
       result.message.authorPrincipalId,
     ]);
+    const files = await roomMessageAttachments(
+      this.deps.db,
+      [result.message.id],
+      await readsFilesAsTheyAre(this.deps.db, spaceId, actor),
+    );
     return {
       thread: threadView(result.thread, names),
-      message: messageView(result.message, names),
+      message: messageView(result.message, names, files.get(result.message.id)),
       request_job_id: result.message.requestJobId,
     };
   }
@@ -987,12 +1026,19 @@ export class RoomService {
           .where(and(inArray(action.id, named), eq(job.spaceId, spaceId))))
           steps.set(step.id, step);
     }
+    // Each viewer's stream is read for that viewer, so a file is shown as
+    // this person may see it, never as the poster or the maker does.
+    const files = await roomMessageAttachments(
+      this.deps.db,
+      messages.map((message) => message.id),
+      await readsFilesAsTheyAre(this.deps.db, spaceId, actor),
+    );
     const frames: RoomStreamFrame[] = [
       ...messages.map((message) =>
         roomStreamFrame.parse({
           seq: message.streamSeq,
           kind: 'message',
-          message: messageView(message, names),
+          message: messageView(message, names, files.get(message.id)),
         }),
       ),
       ...projected.flatMap((row) => {

@@ -45,7 +45,7 @@ import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { activityRecord, job, principal } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
-import { newId } from '../memory/db.ts';
+import { newId, stableEntityId } from '../memory/db.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { spacePolicy } from './schema.ts';
 
@@ -122,15 +122,20 @@ export async function noteInActivity(
     where: string;
     /** What kind of file was opened, never its name (`originalKind`). */
     destination?: string | null;
+    /**
+     * Notes with the same key are one note: the first is kept and the rest
+     * add nothing. Only a digest of it is stored.
+     */
+    once?: string;
   },
 ): Promise<void> {
   const at = new Date();
-  await writer.insert(activityRecord).values({
+  const insert = writer.insert(activityRecord).values({
     id: newId('act'),
     spaceId: input.spaceId,
     principalId: input.principalId,
     // Not an action: a note has its own id here, so it never meets an action's.
-    actionId: newId('note'),
+    actionId: input.once ? stableEntityId('note', input.once) : newId('note'),
     kind: SUMMARY_NOTES[input.note],
     effectClass: input.note === 'original_opened' ? 'read' : 'setting',
     connectionLabel: input.where.slice(0, 200),
@@ -141,6 +146,7 @@ export async function noteInActivity(
     happenedAt: at,
     recordedAt: at,
   });
+  await (input.once ? insert.onConflictDoNothing({ target: activityRecord.actionId }) : insert);
 }
 
 /** How many notes the setting shows beside itself. */
