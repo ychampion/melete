@@ -85,6 +85,15 @@ export const execElisionLine = (
 `;
 
 /**
+ * The line put at the end of what the model is shown when only the first
+ * bytes of a long output were kept: what is shown last is not how it ended.
+ */
+export const execCutLine = (path: string | null): string =>
+  `
+⟦melete: the output went on past this, and the rest was not kept${path ? `; what was kept is at ${path}` : ''}⟧
+`;
+
+/**
  * Background processes in the agent's computer: work that outlives one
  * command and one attempt, such as a test suite or a dev server. The caps and
  * time limits are defaults an operator may change; the rest are fixed shapes.

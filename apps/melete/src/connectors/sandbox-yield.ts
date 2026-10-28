@@ -278,7 +278,7 @@ async function startAndFollow(
         command: launchScript(
           provider.capabilities.markerRoot,
           { marker: input.actionId, argv: runOptions.request.argv, forget: input.forget },
-          { keep: keptFor(runOptions), envFile, echo: true },
+          { keep: keptFor(runOptions), envFile },
         ),
         halfBytes: Math.floor(processes.limits.outputMaxBytes / 2),
         // Short, so a command the person speaks during is moved soon after.

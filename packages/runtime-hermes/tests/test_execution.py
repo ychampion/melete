@@ -311,3 +311,19 @@ def test_a_kill_for_memory_is_told_apart_from_any_other_kill(workspace, monkeypa
     record = run_in_cell("python", {"code": "raise SystemExit(137)", "timeout_ms": 30_000})["record"]
     assert record["stopped_by"] == "exit"
     assert "memory_limit_bytes" not in record
+
+
+def test_a_preview_with_its_line_never_goes_past_the_cap():
+    # Every byte the same: the start, the line and the end fill the cap exactly.
+    shown, elided, _ = execution.preview_of(b"0" * 70_000, False, ".melete/exec/x.log")
+    assert len(shown.encode("utf-8")) == MAX_OUTPUT_BYTES
+    assert elided > 70_000 - MAX_OUTPUT_BYTES
+    seed = 7
+    alphabet = "ab\n€é"
+    for round_ in range(200):
+        seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+        size = seed % 30_000
+        data = "".join(alphabet[(seed + index * 7919) % len(alphabet)] for index in range(size)).encode()
+        for gap in (False, True):
+            shown, _, _ = execution.preview_of(data, gap, None if round_ % 2 else ".melete/exec/a.log")
+            assert len(shown.encode("utf-8")) <= MAX_OUTPUT_BYTES

@@ -298,18 +298,43 @@ def elision_line(elided: int, lines: int, path: Optional[str], at_least: bool) -
 
 
 def preview_of(kept: bytes, gap: bool, path: Optional[str]) -> Tuple[str, int, int]:
-    """The start and the end of the output, with one line saying what was left out between them."""
+    """The start and the end of the output, with one line saying what was left out between them.
+
+    Mirrors `previewOf` in apps/melete/src/sandbox/marker.ts: the whole preview,
+    the line included, fits `MAX_OUTPUT_BYTES`, since the line's own bytes come
+    out of the end's room.
+    """
     if len(kept) <= MAX_OUTPUT_BYTES and not gap:
         return kept.decode("utf-8", errors="replace"), 0, 0
     head = _head_end(kept, PREVIEW_HEAD_BYTES)
-    tail = max(head, _tail_start(kept, PREVIEW_TAIL_BYTES))
-    middle = kept[head:tail]
-    elided = len(middle) + (1 if gap else 0)
-    lines = middle.count(b"\n")
-    line = elision_line(elided, lines, path, gap)
-    if head == 0 or kept[head - 1 : head] == b"\n":
-        line = line[1:]
-    shown = kept[:head].decode("utf-8", errors="replace") + line + kept[tail:].decode("utf-8", errors="replace")
+    own_line = head == 0 or kept[head - 1 : head] == b"\n"
+
+    def separator_for(tail: int) -> Tuple[int, int, bytes]:
+        middle = kept[head:tail]
+        elided = len(middle) + (1 if gap else 0)
+        lines = middle.count(b"\n")
+        line = elision_line(elided, lines, path, gap)
+        return elided, lines, (line[1:] if own_line else line).encode("utf-8")
+
+    # The line's digits only grow as the end shrinks, so this settles.
+    reserved = 0
+    tail = len(kept)
+    elided, lines, separator = separator_for(tail)
+    for _ in range(8):
+        tail = max(head, _tail_start(kept, max(0, PREVIEW_TAIL_BYTES - reserved)))
+        elided, lines, separator = separator_for(tail)
+        if len(separator) <= reserved:
+            break
+        reserved = len(separator)
+    # Only a cap smaller than the line itself leaves no room for it: the start alone, then.
+    if head + len(separator) + len(kept) - tail > MAX_OUTPUT_BYTES:
+        start = _head_end(kept, MAX_OUTPUT_BYTES)
+        return kept[:start].decode("utf-8", errors="replace"), len(kept) - start, 0
+    shown = (
+        kept[:head].decode("utf-8", errors="replace")
+        + separator.decode("utf-8")
+        + kept[tail:].decode("utf-8", errors="replace")
+    )
     return shown, elided, lines
 
 

@@ -6,12 +6,16 @@ import { FAKE_CAPABILITIES, FakeSandboxProvider } from './fake.ts';
 import {
   checkMarker,
   checkMarkerRoot,
+  keptFor,
+  launchScript,
   MARKER_RETENTION_DAYS,
   MARKER_SETUP_EXIT,
   markCommand,
+  previewOf,
   REENTERED_EXIT,
   reattachByMarker,
   runCommand,
+  settleOutcome,
   VAR_TMP_MARKER_ROOT,
 } from './marker.ts';
 import {
@@ -22,6 +26,8 @@ import {
 } from './types.ts';
 
 const MARKER = 'act_01J0MARKERTEST0000000000';
+/** The exec wrapper as the recorded provider fixtures hold it, for the inputs in its test. */
+const EXEC_WRAPPER_SHA256 = '42f6d2d930783b2e400c2dedd8bf26a108b82a0fa0e09881b1af5160aa71fef6';
 const MARKER_ROOT = FAKE_CAPABILITIES.markerRoot;
 const signal = () => AbortSignal.timeout(10_000);
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
@@ -393,6 +399,16 @@ test("a command's kept output never exceeds the capture limit, and the rest is r
   expect(listed.map((entry) => entry.path).sort()).toEqual(['exit', 'out']);
   // The command was not cut short by the cap: it went on past its output.
   expect(text(await provider.getFile(handle, '/work/after', 16, signal()))).toBe('done');
+  // What is shown last is not how it ended, and a last line says so, within the cap.
+  expect(result.record.truncated).toBe(true);
+  expect(result.record.preview.byteLength).toBeLessThanOrEqual(1_000);
+  expect(
+    text(result.record.preview)
+      .trimEnd()
+      .endsWith(
+        'the rest was not kept; what was kept is at .melete/exec/act_01J0MARKERTEST0000000000.out⟧',
+      ),
+  ).toBe(true);
 });
 
 test("a command's marker is removed by the next command once its outcome is recorded", async () => {
@@ -450,19 +466,47 @@ test('every command prunes markers untouched for the retention period, and never
 });
 
 test("the stage that keeps a command's output runs in a session of its own, so a timeout's kill spares it", () => {
-  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sleep', '9'], {
-    keep: { head: 4, tail: 6 },
-  });
+  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sleep', '9'], { keepBytes: 10 });
   const line = (script ?? '').split('\n').find((each) => each.includes('"$d/status"; }'));
   expect(line).toBeDefined();
   // The command and its status on the left; the keeping stage, in a new session, on the right.
   expect(line?.split(' | ')[1]).toBe(
-    `setsid -w sh -c 'head -c "$1"; exec tail -c "$2"' melete-keep 4 7; } > "$d/out"`,
+    `setsid -w sh -c 'head -c "$1"; exec cat > /dev/null' melete-keep 10; } > "$d/out"`,
   );
   // `out` is opened by the group around both stages, before the command starts, and by
   // nothing else: no stage creates a file in the marker while the command can remove it.
   expect(line?.startsWith('{ { ( ')).toBe(true);
   expect((script ?? '').match(/"\$d\/out"/g)).toHaveLength(1);
+});
+
+test("the wrapper a provider's exec runs is the one its recorded fixtures hold", () => {
+  // Recorded exchanges match on a hash of the request body, so a byte changed
+  // here would make every recorded command unmatched.
+  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sh', '-c', 'echo hi'], {
+    keepBytes: 4_194_305,
+    forget: ['act_01J0MARKERTEST0000000003'],
+  });
+  expect(new Bun.CryptoHasher('sha256').update(script ?? '').digest('hex')).toBe(
+    EXEC_WRAPPER_SHA256,
+  );
+  expect(script).not.toContain('/dev/fd/3');
+  expect(script).not.toContain('memory.events');
+});
+
+test("a process's wrapper keeps the start and the end", () => {
+  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sleep', '9'], {
+    asProcess: { head: 4, tail: 6 },
+  });
+  const line = (script ?? '').split('\n').find((each) => each.includes('"$d/status"; }'));
+  // Descriptor 3 is the launcher's output: the keeping stage copies to it.
+  expect(line?.startsWith(`{ { ( 'sleep' '9' ) 2>&1; `)).toBe(true);
+  expect(line?.split(' | ').slice(1).join(' | ')).toBe(
+    `setsid -w sh -c 'trap '\\'''\\'' PIPE; tee /dev/fd/3 | { head -c "$1"; exec tail -c "$2"; }' melete-keep 4 7; } 3>&1 > "$d/out"`,
+  );
+  // Its layout is said by a file made before the command starts, as `out` is.
+  const lines = (script ?? '').split('\n');
+  expect(lines.indexOf(': > "$d/ends"')).toBeGreaterThan(-1);
+  expect(lines.indexOf(': > "$d/ends"')).toBeLessThan(lines.indexOf(line ?? ''));
 });
 
 test('a command that removes its own marker leaves it removed, with no status written after it', async () => {
@@ -492,6 +536,11 @@ async function seed(
   );
 }
 
+/**
+ * Run a command as a process's launcher does: its wrapper (`launchScript`)
+ * run whole, then settled from its marker. The provider's exec stands in for
+ * the launcher, and what the launcher saw goes to `settleOutcome`.
+ */
 const runIn = async (
   provider: FakeSandboxProvider,
   handle: SandboxHandle,
@@ -499,20 +548,36 @@ const runIn = async (
   more: { timeoutMs?: number; limits?: { maxCaptureBytes?: number; maxOutputBytes?: number } } = {},
 ) => {
   const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-marker-'));
-  const result = await runCommand({
+  const options = {
     provider,
     handle,
     request: {
       marker: MARKER,
       argv: ['sh', '-c', script],
       timeoutMs: more.timeoutMs ?? 5_000,
-      dispatch: 'first',
+      dispatch: 'first' as const,
     },
     workRoot,
     jobId: 'job_UNUSED',
     signal: signal(),
     ...(more.limits ? { limits: more.limits } : {}),
-  });
+  };
+  const launched = await provider.exec(
+    handle,
+    {
+      marker: MARKER,
+      argv: [
+        '/bin/sh',
+        '-c',
+        launchScript(MARKER_ROOT, options.request, { keep: keptFor(options), envFile: null }),
+      ],
+      cwd: '/work',
+      timeoutMs: options.request.timeoutMs,
+      maxOutputBytes: 4096,
+    },
+    signal(),
+  );
+  const result = await settleOutcome(options, launched);
   if (result.outcome !== 'succeeded') throw new Error(`not recorded: ${JSON.stringify(result)}`);
   return { record: result.record, workRoot };
 };
@@ -623,4 +688,41 @@ test('an exit 137 the memory count does not explain is an ordinary exit', async 
   });
   const { record } = await runIn(provider, handle, 'exit 137');
   expect(record).toMatchObject({ exitCode: 137, stoppedBy: 'exit', memoryLimitBytes: null });
+});
+
+test('a preview, the line between its parts included, never goes past the cap', () => {
+  // Every byte the same, as the conformance check prints: the parts fill the cap exactly.
+  const zeros = previewOf(new Uint8Array(70_000), {
+    maxOutputBytes: 16_384,
+    gap: false,
+    path: '.melete/exec/x.out',
+  });
+  expect(zeros.preview.byteLength).toBe(16_384);
+  expect(zeros.elidedBytes + zeros.preview.byteLength).toBeGreaterThan(70_000 - 16_384);
+  let seed = 7;
+  const next = () => {
+    seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+    return seed;
+  };
+  const alphabet = new TextEncoder().encode('ab\n€é');
+  for (let round = 0; round < 300; round += 1) {
+    const size = next() % 60_000;
+    const bytes = new Uint8Array(size);
+    for (let index = 0; index < size; index += 1)
+      bytes[index] = alphabet[next() % alphabet.byteLength] ?? 0x61;
+    const max = [200, 1_000, 16_384][round % 3] ?? 16_384;
+    for (const flags of [
+      { gap: false, cut: false },
+      { gap: true, cut: false },
+      { gap: false, cut: true },
+    ]) {
+      const { preview } = previewOf(bytes, {
+        maxOutputBytes: max,
+        ...flags,
+        path: round % 2 ? '.melete/exec/act.out' : null,
+      });
+      expect(preview.byteLength).toBeLessThanOrEqual(max);
+      if (size <= max && !flags.gap && !flags.cut) expect(preview).toEqual(bytes);
+    }
+  }
 });
