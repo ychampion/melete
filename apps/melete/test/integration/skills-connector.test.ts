@@ -278,11 +278,19 @@ suite("the person's own skills", () => {
     const [receipt] = await s.db`select receipt from action where id = ${again.action_id}`;
     expect(receipt?.receipt.detail.provenance).toBe('shown by the person');
 
-    // A change keeps where it came from.
-    expect(
-      (await s.call('skills.update', { name: 'statement-download', body: 'Shorter steps.' }))
-        .status,
-    ).toBe('succeeded');
+    // A change in the attempt the steps were shown to asks too, and keeps where it came from.
+    const changed = await s.call('skills.update', {
+      name: 'statement-download',
+      body: 'Shorter steps.',
+    });
+    expect(changed.status).toBe('needs_approval');
+    await s.broker.decide(changed.action_id, {
+      decision: 'approved',
+      payload_hash: changed.payload_hash,
+    });
+    await s.broker.admit(s.claims, changed.action_id, changed.payload_hash);
+    expect((await s.broker.dispatch(changed.action_id)).status).toBe('succeeded');
+    expect(await file('statement-download')).toContain('Shorter steps.');
     expect(await file('statement-download')).toContain('provenance: "shown by the person"');
 
     // That demonstration has its skill now: the next one in the same work is an ordinary save.
@@ -354,6 +362,49 @@ suite("the person's own skills", () => {
     expect(afterwards.status).toBe('succeeded');
     const [unmarked] =
       await s.db`select canonical_payload from action where id = ${afterwards.action_id}`;
+    expect(unmarked?.canonical_payload.shown).toBeUndefined();
+  });
+
+  test('a change to an existing skill by the attempt given shown steps asks the person every time, and records where it came from', async () => {
+    const s = await setup('personal', {
+      resolveStandingGrant: async () => true,
+      resolveScopedGrant: async () => 'apr_standing',
+    });
+    const file = () => readFile(path.join(s.skillsDir, 'weekly-review', 'SKILL.md'), 'utf8');
+    expect((await s.call('skills.create', WEEKLY)).status).toBe('succeeded');
+    await showSteps(s);
+    const folded = { name: 'weekly-review', body: STATEMENT.body };
+    // The agent cannot leave the mark off, nor fold the steps in unasked.
+    const asked = await s.call('skills.update', folded);
+    expect(asked.status).toBe('needs_approval');
+    const [row] = await s.db`select canonical_payload from action where id = ${asked.action_id}`;
+    expect(row?.canonical_payload.shown).toBe('shown_brws_fixture_3');
+    expect(await file()).not.toContain('Download PDF');
+    await s.broker.decide(asked.action_id, {
+      decision: 'approved',
+      payload_hash: asked.payload_hash,
+    });
+    await s.broker.admit(s.claims, asked.action_id, asked.payload_hash);
+    expect((await s.broker.dispatch(asked.action_id)).status).toBe('succeeded');
+    expect(await file()).toContain('Download PDF');
+    expect(await file()).toContain('provenance: "shown by the person"');
+    const [receipt] = await s.db`select receipt from action where id = ${asked.action_id}`;
+    expect(receipt?.receipt.detail.provenance).toBe('shown by the person');
+
+    // Every time in that attempt, not once: the next change asks too.
+    const again = await s.call('skills.update', { name: 'weekly-review', body: 'Shorter steps.' });
+    expect(again.status).toBe('needs_approval');
+
+    // A later attempt was not given the steps: its change is an ordinary one, whatever it claims.
+    const later = await nextAttempt(s);
+    const plain = await s.broker.propose(later, {
+      kind: 'skills.update',
+      connection_id: s.connectionId,
+      payload: { name: 'weekly-review', body: 'Only the list.', shown: 'shown_made_up_1' },
+    });
+    expect(plain.status).toBe('succeeded');
+    const [unmarked] =
+      await s.db`select canonical_payload from action where id = ${plain.action_id}`;
     expect(unmarked?.canonical_payload.shown).toBeUndefined();
   });
 
