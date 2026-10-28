@@ -83,6 +83,7 @@ import { withSharedItems } from '../rooms/shares.ts';
 import { roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
+import { SUMMARIES_ONLY_INSTRUCTION, summariesOnlyIn } from '../spaces/summaries.ts';
 import { CARRIES_ON } from './answer-join.ts';
 import { attemptContextBudget } from './context-budget.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
@@ -1665,6 +1666,8 @@ export async function buildAttemptSkeleton(
         room
           ? `Asked by ${JSON.stringify(room.requester)}. Only ${JSON.stringify(room.requester)} can answer this request's questions. ${room.approvers}`
           : '',
+        // Read from the space's rules on every attempt, so turning it on or off applies from the next.
+        (await summariesOnlyIn(tx, row.spaceId)) ? SUMMARIES_ONLY_INSTRUCTION : '',
       ]
         .filter(Boolean)
         .join('\n\n'),

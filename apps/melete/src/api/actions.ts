@@ -14,6 +14,7 @@ import { actionFromRow } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { Database } from '../db/client.ts';
 import { requestPrincipal, visibleJob } from '../principals/authority.ts';
+import { keptBackReceipt, summariesOnlyJobs } from '../spaces/summaries.ts';
 import { ServiceError } from './errors.ts';
 
 /** The list in the shape asked for: every field, or the lean summary a person is shown. */
@@ -63,7 +64,20 @@ export function mountActions(app: Hono, db: Database, broker?: BrokerService) {
         ${own ? query`and ${own}` : query``}
       order by (a.status in ('unknown', 'unresolved')) desc, a.created_at desc, a.id
       limit ${filter.limit}`);
-    return c.json(listed([...rows].map(actionFromRow), filter.view));
+    const actions = [...rows].map(actionFromRow);
+    // In a summaries-only space a receipt names what was touched, never what it said.
+    const held = await summariesOnlyJobs(
+      db,
+      actions.map((row) => row.job_id),
+    );
+    return c.json(
+      listed(
+        actions.map((row) =>
+          held.has(row.job_id) ? { ...row, receipt: keptBackReceipt(row.receipt) } : row,
+        ),
+        filter.view,
+      ),
+    );
   });
 }
 
@@ -92,7 +106,17 @@ export function createActionReadApi(options: {
         and (${query.effect_class ?? null}::text is null or a.effect_class = ${query.effect_class ?? null})
       order by (a.status in ('unknown', 'unresolved')) desc, a.created_at desc, a.id
       limit ${query.limit}`;
-    return c.json(listed(rows.map(actionFromRow), query.view));
+    const [policy] = await options.sql`select summaries_only from space_policy
+      where space_id = ${spaceId}`;
+    const actions = rows.map(actionFromRow);
+    return c.json(
+      listed(
+        policy?.summaries_only === true
+          ? actions.map((row) => ({ ...row, receipt: keptBackReceipt(row.receipt) }))
+          : actions,
+        query.view,
+      ),
+    );
   });
   return app;
 }

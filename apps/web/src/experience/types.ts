@@ -44,6 +44,8 @@ export type SpaceMember = SpaceMembers['members'][number];
 /** What work in a space may use, and whether the person asking may change it. */
 export type SpaceRulesView = Ok<paths['/spaces/{id}/policy'], 'get'>;
 export type SpaceRulesChange = Body<paths['/spaces/{id}/policy'], 'put'>;
+/** Whether a space shows only what needs its people, and whether this person may change it. */
+export type SummariesOnlyView = Ok<paths['/spaces/{id}/summaries-only'], 'get'>;
 export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
 /** A page of a chat's turns: `next_cursor` is absent when the service sent every turn. */
 export type TurnPage = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>;

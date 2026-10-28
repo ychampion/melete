@@ -30,7 +30,10 @@ export function sourceLine(entry: {
   source: string;
   reference?: string | null;
   undone_at?: string | null;
+  note?: string;
 }): string {
+  // A note the space keeps names who did it, not a deleted chat.
+  if (entry.note) return `${entry.where} · by ${entry.source}`;
   return [
     entry.where,
     `from “${entry.source}”, since deleted`,
@@ -61,7 +64,8 @@ export function ActivityTab() {
       <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
         What {assistantName()} did for you in chats and plans you have since deleted: what it was,
         where it went and when. What the messages said is not kept here. A chat you still have keeps
-        this in its own work log.
+        this in its own work log. In a space set to show only what needs you, each original opened,
+        and each time that setting changed, is listed here for everyone in the space.
       </p>
       {activity.error ? (
         <LoadError what="your activity" error={activity.error} onRetry={activity.reload} />
@@ -73,8 +77,10 @@ export function ActivityTab() {
             className="list-row"
             style={{ minHeight: 60, ...(index === 0 ? { borderTop: 0 } : {}) }}
           >
-            <span style={{ color: 'var(--success)', display: 'flex' }}>
-              <Icon name="circleCheck" size={18} />
+            <span
+              style={{ color: entry.note ? 'var(--muted)' : 'var(--success)', display: 'flex' }}
+            >
+              <Icon name={entry.note ? 'lock' : 'circleCheck'} size={18} />
             </span>
             <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
               <span

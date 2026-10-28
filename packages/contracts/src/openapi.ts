@@ -362,6 +362,8 @@ import {
   spaceRemoval,
   spaceRemovalPreview,
   spaceRemovalReport,
+  summariesOnlyChange,
+  summariesOnlySetting,
 } from './spaces.ts';
 import { needsYouItemResponse, needsYouList } from './triage.ts';
 import { healthDetailResponse, myUsageResponse, usageResponse } from './usage.ts';
@@ -2250,6 +2252,34 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/spaces/{id}/summaries-only': {
+          get: {
+            tags: ['spaces'],
+            summary: 'Whether a space shows only what needs its people',
+            description:
+              'Off by default. When on, Melete still reads everything the space holds and does ' +
+              'the work, but the people in it see summaries and action cards: the content routes ' +
+              'of its files refuse with `summaries_only`, and an original is read only through ' +
+              'its `original` route, which notes the open in the space’s activity.',
+            requestParams: idParam('id', 'Space id'),
+            responses: {
+              '200': jsonResponse('The setting', summariesOnlySetting),
+              '403': problem('No such space, or not one this person can see'),
+            },
+          },
+          put: {
+            tags: ['spaces'],
+            summary: 'Turn summaries only on or off for a space',
+            description:
+              "Set by the space's owner. Turning it on or off is noted in the space's activity.",
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(summariesOnlyChange),
+            responses: {
+              '200': jsonResponse('The setting', summariesOnlySetting),
+              '403': problem("Only the space's owner turns it on or off"),
+            },
+          },
+        },
         '/spaces/{id}/removal/preview': {
           get: {
             tags: ['spaces'],
@@ -3653,6 +3683,29 @@ export function buildOpenApiDocument() {
             responses: { '200': jsonResponse('Skills', skillListResponse) },
           },
         },
+        '/artifacts/{id}/original': {
+          post: {
+            tags: ['artifacts'],
+            summary: 'Open the original of an artifact, noted in the space’s activity',
+            description:
+              'The same file `GET /artifacts/{id}/content` serves, read on purpose. In a space set to summaries only this is the one way to read it, and each open is noted in the space’s activity for everyone in it.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'Artifact id from the action receipt'),
+              query: fileDisposition,
+            },
+            responses: {
+              '200': {
+                description: 'File bytes',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person, or it has changed since it was saved'),
+            },
+          },
+        },
         '/artifacts/{id}/content': {
           get: {
             tags: ['artifacts'],
@@ -3681,6 +3734,7 @@ export function buildOpenApiDocument() {
                 },
               },
               '401': problem('A session is required'),
+              '403': problem('This space shows summaries only; open the original instead'),
               '404': problem('No matching artifact in this space'),
               '416': { description: 'Requested range is outside the artifact' },
             },
@@ -3732,6 +3786,29 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/files/{id}/original': {
+          post: {
+            tags: ['artifacts'],
+            summary: 'Open the original of a saved file, noted in the space’s activity',
+            description:
+              'The same file `GET /files/{id}/content` serves, read on purpose. In a space set to summaries only this is the one way to read it, and each open is noted in the space’s activity for everyone in it.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'The files action, from a result card'),
+              query: fileDisposition,
+            },
+            responses: {
+              '200': {
+                description: 'File bytes',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person, or it has changed since it was saved'),
+            },
+          },
+        },
         '/files/{id}/content': {
           get: {
             tags: ['artifacts'],
@@ -3758,6 +3835,7 @@ export function buildOpenApiDocument() {
                 },
               },
               '401': problem('A session is required'),
+              '403': problem('This space shows summaries only; open the original instead'),
               '404': problem('No such file for this person, or it has changed since it was saved'),
               '416': { description: 'Requested range is outside the file' },
             },

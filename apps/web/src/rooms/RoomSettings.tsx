@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Select, Toggle } from '../design/primitives.tsx';
 import { href } from '../router.ts';
 import { AddConnection } from '../screens/ConnectionInstall.tsx';
+import { SummariesOnlySetting } from '../screens/SummariesOnly.tsx';
 import { toast } from '../shell/Shell.tsx';
 import {
   type RoomCalendarMode,
@@ -166,6 +167,7 @@ export function RoomSettings({
             onChange={(next) => void save({ guests_may_ask: next })}
           />
         </div>
+        <SummariesOnlySetting spaceId={detail.room.id} room />
         <div className="col" style={{ gap: 8 }}>
           <span className="people-field-label">Accounts the room uses</span>
           <span className="people-hint">
