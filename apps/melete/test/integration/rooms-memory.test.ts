@@ -1096,6 +1096,7 @@ withDb('room memory', () => {
           dedupKey: `${id}:succeeded`,
         });
       });
+      return id;
     };
     await step(
       'email.search',
@@ -1110,12 +1111,18 @@ withDb('room memory', () => {
       { message: { subject, from: sender, text: words } },
     );
     // A reply through a mail app's own tool: its receipt would name what it acted on.
-    await step(
+    const replied = await step(
       'mcp_mail.reply_to_message',
       'write_external',
       { subject: `Re: ${subject}`, to: sender, body: 'Thank you' },
       { sent: true },
     );
+    // The reviewer passed it, in words that name the mail.
+    await sql`insert into action_review (id, action_id, job_id, space_id, tier, decided_by,
+        outcome, risk, reason)
+      values (${`arv_${randomBytes(8).toString('hex')}`}, ${replied}, ${asked.jobId}, ${roomId},
+        'reviewable', 'reviewer', 'approved', 'low',
+        ${`A short thank-you to ${sender} about "${subject}".`})`;
     await attempt.finish();
     const reads = async (person: Person) => {
       const thread = await ok(send(person.cookie, `/rooms/${roomId}/threads/${asked.threadId}`));
@@ -1133,10 +1140,18 @@ withDb('room memory', () => {
       expect(surface).toContain('An email');
     }
     expect(member.thread).toContain('Ran reply to message');
-    // The room's maker reads each step as it is.
+    expect(member.live).toContain('The reviewer checked this step before it ran.');
+    // The room's maker reads each step as it is, the reviewer's words too.
     const maker = await reads(alice);
     expect(maker.thread).toContain(subject);
     expect(maker.live).toContain(subject);
+    expect(maker.live).toContain('A short thank-you to');
+    // A room from before makers were recorded on it is still its maker's.
+    await sql`update space set owner_principal_id = null where id = ${roomId}`;
+    const unrecorded = await reads(alice);
+    expect(unrecorded.thread).toContain(subject);
+    expect(unrecorded.live).toContain(subject);
+    await sql`update space set owner_principal_id = ${alice.id} where id = ${roomId}`;
     await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: false }));
     expect((await reads(bob)).thread).toContain(subject);
   }, 120_000);

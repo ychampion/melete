@@ -47,6 +47,7 @@ import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
 import { summariesOnlyIn } from '../spaces/summaries.ts';
+import { answerAskedInThread, isBoardAnswer } from './board.ts';
 import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
 import { ROOM_READS_NO_PICTURES } from './pictures.ts';
@@ -134,7 +135,13 @@ export class RoomService {
     });
     if (granted.space.kind !== 'shared' || granted.role === 'agent') throw missing();
     const room = await roomPrincipalOf(reader, spaceId);
-    return { role: granted.role as RoomRole, roomPrincipal: room.id, space: granted.space };
+    return {
+      role: granted.role as RoomRole,
+      roomPrincipal: room.id,
+      space: granted.space,
+      // The room's maker, read as every summaries-only check reads it.
+      ownerId: granted.ownerId,
+    };
   }
 
   private async kindOf(actor: string) {
@@ -389,14 +396,9 @@ export class RoomService {
    * Whether this person reads the room's steps kept back: the room is set to
    * show only what needs its people, and they are not the person who made it.
    */
-  private async keepsBack(
-    spaceId: string,
-    actor: string,
-    access: { space: { ownerPrincipalId: string | null } },
-  ) {
-    return (
-      access.space.ownerPrincipalId !== actor && (await summariesOnlyIn(this.deps.db, spaceId))
-    );
+  private async keepsBack(spaceId: string, actor: string, access: { ownerId: string | null }) {
+    const maker = access.ownerId !== null && access.ownerId === actor;
+    return !maker && (await summariesOnlyIn(this.deps.db, spaceId));
   }
 
   /** A thread with every message and author, and each request's answer, cards and receipts. */
@@ -477,7 +479,7 @@ export class RoomService {
         ? await this.deps.readsPictures(spaceId)
         : true;
     const result = await this.deps.jobs.transaction(async (tx) => {
-      const { role } = await this.access(tx, spaceId, actor, true);
+      const { role, roomPrincipal } = await this.access(tx, spaceId, actor, true);
       const [replayed] = await tx
         .select()
         .from(roomMessage)
@@ -557,6 +559,17 @@ export class RoomService {
         .set({ lastActivityAt: new Date() })
         .where(eq(roomThread.id, thread.id));
       let message = await touchMessage(tx, inserted);
+      // A reply in the thread by the person its agent asked answers the
+      // question, as an answer from the board does (that one is marked there).
+      if (origin || !isBoardAnswer(input.submission_id))
+        await answerAskedInThread(tx, {
+          spaceId,
+          threadId: thread.id,
+          author: actor,
+          roomPrincipal,
+          text: input.text,
+          messageId: inserted.id,
+        });
       // Files posted with it: the poster's own uploads to this room. A photo
       // an ask carries is read by the model that does the request; where the
       // room's model reads none, the ask is refused and says so, rather than

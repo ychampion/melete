@@ -25,6 +25,7 @@ import {
   type BoardStreamFrame,
   type BoardVisibility,
   boardItem,
+  TERMINAL_STATES,
 } from '@melete/contracts';
 import { and, asc, eq, gt, inArray, isNull, or, type SQL, sql } from 'drizzle-orm';
 import { type AnyPgColumn, alias } from 'drizzle-orm/pg-core';
@@ -502,6 +503,10 @@ export class BoardService {
       throw new ServiceError('scope_denied', 'Only the person it asks can answer it.', 403);
     if (seen.state === 'answered' && seen.answer !== answer)
       throw new ServiceError('already_answered', 'You already answered this.', 409);
+    // A question its request let go of takes no answer: nothing is posted and
+    // no request starts.
+    if (seen.state !== 'open' && seen.state !== 'answered')
+      throw new ServiceError('question_closed', 'This question is closed.', 409);
     // A question is always put to one person, so its words stay off the
     // room's thread whoever else may read it on the board. The agent reads
     // the question itself with the answer (`boardAnswersFor`).
@@ -623,6 +628,89 @@ export async function askOnBoard(
   return made;
 }
 
+/**
+ * The open questions the room's agent put to one person with ask_person in a
+ * thread. A question asked with board.ask has its action, and stays until it
+ * is answered: other people may still be asked to answer it.
+ */
+function askedOf(spaceId: string, threadId: string, person: string, roomPrincipal: string) {
+  return and(
+    eq(roomBoardItem.spaceId, spaceId),
+    eq(roomBoardItem.kind, 'question'),
+    eq(roomBoardItem.state, 'open'),
+    isNull(roomBoardItem.actionId),
+    eq(roomBoardItem.sourceThreadId, threadId),
+    eq(roomBoardItem.assigneePrincipalId, person),
+    eq(roomBoardItem.createdBy, roomPrincipal),
+  );
+}
+
+/**
+ * The person a question asks replied in its thread instead of on the board:
+ * the reply is their answer, so the question leaves their "Waiting on you".
+ */
+export async function answerAskedInThread(
+  tx: Transaction,
+  reply: {
+    spaceId: string;
+    threadId: string;
+    author: string;
+    roomPrincipal: string;
+    text: string;
+    messageId: string;
+  },
+) {
+  const answered = await tx
+    .update(roomBoardItem)
+    .set({
+      state: 'answered',
+      answer: reply.text.trim().slice(0, BOARD_ANSWER_MAX) || null,
+      answeredAt: new Date(),
+      answerMessageId: reply.messageId,
+    })
+    .where(askedOf(reply.spaceId, reply.threadId, reply.author, reply.roomPrincipal))
+    .returning();
+  for (const row of answered) await touchItem(tx, row);
+}
+
+/**
+ * The transition hook: a room request that ends, stopped or finished, closes
+ * the questions it put on the board for its person, so none waits on them for
+ * a request that will never read the answer. A request waiting for an answer
+ * has not ended.
+ */
+export function closeAskedOnEnd() {
+  return async (
+    tx: Transaction,
+    _before: unknown,
+    after: {
+      audience: string;
+      state: string;
+      spaceId: string;
+      principalId: string | null;
+      roomThreadId: string | null;
+      requestedByPrincipalId: string | null;
+    },
+  ) => {
+    if (after.audience !== 'room' || !(TERMINAL_STATES as readonly string[]).includes(after.state))
+      return;
+    if (!after.roomThreadId || !after.requestedByPrincipalId || !after.principalId) return;
+    const closed = await tx
+      .update(roomBoardItem)
+      .set({ state: 'done' })
+      .where(
+        askedOf(after.spaceId, after.roomThreadId, after.requestedByPrincipalId, after.principalId),
+      )
+      .returning();
+    for (const row of closed) await touchItem(tx, row);
+  };
+}
+
+/** Whether a submission is the board's own posting of an answer. */
+export function isBoardAnswer(submissionId: string) {
+  return submissionId.startsWith(ANSWER_SUBMISSION);
+}
+
 /** Items assigned to someone, unanswered, whose push goes to them alone. */
 export async function pushToAssignee(
   tx: Transaction,
@@ -675,6 +763,8 @@ export async function boardAnswersFor(
       and(
         eq(roomBoardItem.spaceId, roomMessage.spaceId),
         eq(roomBoardItem.kind, 'question'),
+        // Only the person a question asks answers it, whatever a message names.
+        eq(roomBoardItem.assigneePrincipalId, roomMessage.authorPrincipalId),
         or(
           eq(roomMessage.submissionId, key('')),
           eq(roomMessage.submissionId, key(ANSWER_IN_NEW_THREAD)),

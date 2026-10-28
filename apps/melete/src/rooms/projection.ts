@@ -260,9 +260,18 @@ export function keptBackCard(card: ResultCard, kind: string): ResultCard {
 }
 
 /** A receipt names the step, never what a server's tool acted on. A web search keeps its words. */
+/** The reviewer's own sentence can name what it reviewed; this says only that it was reviewed. */
+export const KEPT_BACK_REVIEW = 'The reviewer checked this step before it ran.';
+
 export function keptBackReceipt(receipt: ExperienceReceipt, row: ActionRow): ExperienceReceipt {
-  if (row.kind === 'web.search') return receipt;
-  return { ...receipt, what: actionLabel(row, undefined, { target: false }) };
+  // A fixed rule's reason is the service's own words; the reviewer's are not.
+  const review =
+    receipt.review?.by === 'reviewer'
+      ? { ...receipt.review, reason: KEPT_BACK_REVIEW }
+      : receipt.review;
+  const kept = review ? { ...receipt, review } : receipt;
+  if (row.kind === 'web.search') return kept;
+  return { ...kept, what: actionLabel(row, undefined, { target: false }) };
 }
 
 function keptBackSource(source: ExperienceSource): ExperienceSource {
