@@ -20012,6 +20012,38 @@
                             "default": false,
                             "type": "boolean"
                           },
+                          "elided_bytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "elided_lines": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "stopped_by": {
+                            "type": "string",
+                            "enum": [
+                              "exit",
+                              "timeout",
+                              "memory_limit",
+                              "signal",
+                              "person"
+                            ]
+                          },
+                          "memory_limit_bytes": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "output_path": {
                             "default": null,
                             "anyOf": [
@@ -44644,6 +44676,9 @@
           },
           "started_at": {
             "$ref": "#/components/schemas/__schema370"
+          },
+          "background": {
+            "type": "boolean"
           }
         },
         "required": [

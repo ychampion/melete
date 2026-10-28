@@ -92,13 +92,40 @@ export function terminalText(value: unknown, limit: number, keep: 'first' | 'las
   return text;
 }
 
-function command(row: ActionRow): ComputerCommand {
+/**
+ * Where a command that moved to the background stands, from the process it
+ * became: running while that process lives, done once it exited, and unclear
+ * when it was stopped, ran out of time, was lost, or is no longer listed.
+ */
+function backgroundStatus(process: ComputerProcessRow | undefined): ComputerCommand['status'] {
+  if (process && LIVE.has(process.state)) return 'running';
+  return process?.state === 'exited' ? 'done' : 'unknown';
+}
+
+function command(
+  row: ActionRow,
+  processes: ReadonlyMap<string, ComputerProcessRow>,
+): ComputerCommand {
   const payload = object(row.canonicalPayload);
   const detail = object(object(row.receipt).detail);
   const status = actionToolStatus(row.status);
-  return {
+  const moved = object(detail.moved_to_background).process_id;
+  const base = {
     id: row.id,
     command: terminalText(payload.command, 2000, 'first'),
+    started_at: row.createdAt.toISOString(),
+  };
+  // Its action succeeded when it moved; the process it became says whether it is still running.
+  if (status === 'done' && typeof moved === 'string')
+    return {
+      ...base,
+      output: terminalText(detail.output, 4000, 'last'),
+      status: backgroundStatus(processes.get(moved)),
+      exit_code: null,
+      background: true,
+    };
+  return {
+    ...base,
     output:
       status === 'done' && detail.output_binary !== true
         ? terminalText(detail.output, 4000, 'last')
@@ -108,7 +135,6 @@ function command(row: ActionRow): ComputerCommand {
       typeof detail.exit_code === 'number' && Number.isInteger(detail.exit_code)
         ? detail.exit_code
         : null,
-    started_at: row.createdAt.toISOString(),
   };
 }
 
@@ -201,10 +227,11 @@ export function projectComputer(input: {
     (latest, next) => (!latest || touched(next) > touched(latest) ? next : latest),
     undefined,
   );
+  const known = new Map((input.processes ?? []).map((process) => [process.id, process]));
   const terminal = input.rows
     .filter((row) => TERMINAL_KINDS.has(row.kind))
     .slice(-COMPUTER_TERMINAL_LIMIT)
-    .map(command);
+    .map((row) => command(row, known));
   return agentComputer.parse({
     browser: binding ? browser(binding, input.rows) : null,
     terminal,

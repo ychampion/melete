@@ -187,6 +187,57 @@ test('a key with slashes behind a path, and a webhook address, stay hidden', () 
     expect(terminalText(line, 4000, 'first')).toBe('[hidden]');
 });
 
+test('a command that moved to the background shows as its process stands, not as done', () => {
+  const moved = (process_id: string) =>
+    row(
+      'terminal.run',
+      {
+        process_id,
+        output: 'compiling 1 of 40\n',
+        exit_code: null,
+        moved_to_background: {
+          process_id,
+          elapsed_ms: 10_000,
+          output_so_far: 'compiling 1 of 40\n',
+        },
+      },
+      { command: 'npm run build' },
+    );
+  const process = (id: string, state: 'running' | 'exited' | 'stopped') => ({
+    id,
+    name: 'npm run build',
+    state,
+    started_at: at(1),
+    created_at: at(1),
+    port: null,
+    last_line: null,
+  });
+  const view = projectComputer({
+    rows: [
+      moved('prc_live'),
+      moved('prc_done'),
+      moved('prc_stopped'),
+      moved('prc_gone'),
+      row('terminal.run', { output: 'ok\n', exit_code: 0 }, { command: 'echo ok' }),
+    ],
+    bindings: [],
+    processes: [
+      process('prc_live', 'running'),
+      process('prc_done', 'exited'),
+      process('prc_stopped', 'stopped'),
+    ],
+    available: { browser: false, terminal: true },
+  });
+  expect(view.terminal.map((each) => [each.status, each.background ?? false])).toEqual([
+    ['running', true],
+    ['done', true],
+    ['unknown', true],
+    ['unknown', true],
+    ['done', false],
+  ]);
+  expect(view.terminal[0]).toMatchObject({ output: 'compiling 1 of 40', exit_code: null });
+});
+
 test("the agent's processes show the running ones first, with a scrubbed last line", () => {
   const process = (
     id: string,

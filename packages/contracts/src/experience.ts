@@ -1475,6 +1475,12 @@ export const computerCommand = z.strictObject({
   status: z.enum(['running', 'done', 'failed', 'unknown']),
   exit_code: z.number().int().nullable(),
   started_at: date,
+  /**
+   * True when the command moved to the background instead of holding the
+   * turn: its status is then the process it became, and its output what it
+   * printed before it moved.
+   */
+  background: z.boolean().optional(),
 });
 export type ComputerCommand = z.infer<typeof computerCommand>;
 /** The page the agent's browser was last seen on, and who holds the browser now. */
