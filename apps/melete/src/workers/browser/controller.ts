@@ -1928,7 +1928,9 @@ export function notObservedNote(reason: string): string {
       ? 'the page it led to shows a field for a code, a card or another secret, which is the person’s to fill'
       : reason === 'observation_too_large'
         ? 'the page it led to is too large to observe'
-        : `the page after it could not be observed (${reason})`;
+        : reason === 'observe_failed'
+          ? 'the page after it could not be observed'
+          : `the page after it could not be observed (${reason})`;
   return `The step ran, so do not repeat it, but ${why}. Nothing of that page was seen: do not describe it.`;
 }
 
@@ -1947,17 +1949,26 @@ export async function observedAfterStep(
   try {
     return await look();
   } catch (error) {
-    if (!(error instanceof BrowserFault)) throw error;
-    if (error.reason !== 'human_control')
+    // The step has run whatever went wrong with the look: a page torn down by
+    // a redirect, a closed target or a failed screenshot is a page not seen,
+    // never a step that failed.
+    if (!(error instanceof BrowserFault) || error.reason !== 'human_control') {
+      const reason = error instanceof BrowserFault ? error.reason : 'observe_failed';
+      if (!(error instanceof BrowserFault))
+        console.error(
+          'browser look after a step failed:',
+          error instanceof Error ? error.message : String(error),
+        );
       return {
         ...unobserved,
         result: {
           ...unobserved.result,
           observed: false,
-          not_observed: error.reason,
-          note: notObservedNote(error.reason),
+          not_observed: reason,
+          note: notObservedNote(reason),
         },
       };
+    }
     const now = current();
     return {
       session_id: now.id,

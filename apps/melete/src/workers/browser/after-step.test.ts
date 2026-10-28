@@ -73,14 +73,20 @@ test('a person who took the browser during the step is said so, with the epoch t
   });
 });
 
-test('anything else still fails the step', async () => {
-  await expect(
-    observedAfterStep(
-      async () => {
-        throw new Error('worker gone');
-      },
-      now,
-      unobserved,
-    ),
-  ).rejects.toThrow('worker gone');
+test('a look that fails in any other way leaves the step done, and says the page was not seen', async () => {
+  const done = await observedAfterStep(
+    async () => {
+      throw new Error('Execution context was destroyed, most likely because of a navigation');
+    },
+    now,
+    { ...unobserved, result: { changed: true } },
+  );
+  expect(done).toMatchObject({
+    session_id: 'brws_1',
+    control_epoch: 3,
+    result: { changed: true, observed: false, not_observed: 'observe_failed' },
+  });
+  expect(String(done.result?.note)).toContain('do not repeat it');
+  // What the error said is the page's business, not the model's.
+  expect(JSON.stringify(done)).not.toContain('Execution context');
 });
