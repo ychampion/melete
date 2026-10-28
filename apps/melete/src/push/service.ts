@@ -482,7 +482,8 @@ export class PushService {
         })
         .onConflictDoNothing({ target: pushIntent.dedupKey });
     }
-    // Decided while it waited: nothing to tell any more.
+    // Decided while it waited: nothing to tell any more. This pass drops only
+    // the decisions it collects; a room board's push to its person is not one.
     const openKeys = open.map((row) => `decision:${row.key}`);
     await this.db
       .update(pushIntent)
@@ -491,6 +492,7 @@ export class PushService {
         and(
           eq(pushIntent.principalId, principalId),
           eq(pushIntent.kind, 'decision'),
+          sql`${pushIntent.dedupKey} like 'decision:%'`,
           isNull(pushIntent.sentAt),
           isNull(pushIntent.droppedAt),
           openKeys.length

@@ -45,9 +45,14 @@ export function RoomsScreen() {
             </p>
           </div>
           {guest ? null : (
-            <Button icon="plus" onClick={() => setMaking(true)}>
-              New room
-            </Button>
+            <div className="row" style={{ gap: 8 }}>
+              <a className="btn btn-md btn-outline" href={href('/board')}>
+                <span>This week</span>
+              </a>
+              <Button icon="plus" onClick={() => setMaking(true)}>
+                New room
+              </Button>
+            </div>
           )}
         </div>
         {rooms.error ? (

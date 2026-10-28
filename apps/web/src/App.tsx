@@ -36,6 +36,7 @@ import { ChatsScreen } from './screens/Chats.tsx';
 import { CompaniesScreen } from './screens/Companies.tsx';
 import { FilesScreen } from './screens/Files.tsx';
 import { HomeScreen } from './screens/Home.tsx';
+import { HouseholdScreen } from './screens/Household.tsx';
 import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
 import { PasswordResetScreen } from './screens/PasswordReset.tsx';
 import { PlansScreen } from './screens/Plans.tsx';
@@ -470,6 +471,8 @@ export function App() {
     screen = <PlansScreen selected={second ?? null} />;
   } else if (head === 'rooms' && capabilities.multiplayer) {
     screen = <RoomsRoute parts={route.parts} />;
+  } else if (head === 'board' && capabilities.multiplayer) {
+    screen = <HouseholdScreen />;
   } else if (head === 'companies' && featureOn(capabilities, 'companies')) {
     screen = <CompaniesScreen />;
   } else if (head === 'runs') {

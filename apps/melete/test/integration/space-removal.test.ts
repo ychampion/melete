@@ -408,6 +408,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   room_handoff: 'operational',
   room_invite: 'operational',
   room_policy: 'operational',
+  room_board_item: 'operational',
   room_message: 'operational',
   room_thread: 'operational',
   space_policy: 'operational',

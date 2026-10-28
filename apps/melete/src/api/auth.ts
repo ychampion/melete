@@ -215,6 +215,8 @@ export const INVITE_PUBLIC_PATHS = ['/invites/view', '/invites/accept'];
  */
 export function guestMayUse(method: string, path: string): boolean {
   if (path === '/rooms' || path.startsWith('/rooms/')) return true;
+  // The boards of the rooms they are in, each as that room lets them see it.
+  if (path === '/board') return method === 'GET';
   if (path === '/me') return method === 'GET' || method === 'PATCH';
   // Their own linked chat platform accounts, to see and to unlink.
   if (path === '/me/linked-accounts') return method === 'GET';

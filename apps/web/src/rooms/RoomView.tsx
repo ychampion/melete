@@ -9,6 +9,7 @@ import { Button } from '../design/primitives.tsx';
 import { href, navigate } from '../router.ts';
 import { Shell } from '../shell/Shell.tsx';
 import { type Me, type RoomDetail, type RoomThread, roomsApi } from './api.ts';
+import { Board } from './Board.tsx';
 import { People } from './People.tsx';
 import { PersonAvatar } from './parts.tsx';
 import { RoomMemory } from './RoomMemory.tsx';
@@ -195,6 +196,14 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
               <Icon name="plus" size={16} />
               <span>New thread</span>
             </a>
+            <a
+              className="room-thread-new"
+              href={href(`/rooms/${roomId}/board`)}
+              aria-current={threadId === 'board' ? 'page' : undefined}
+            >
+              <Icon name="calendar" size={16} />
+              <span>Board</span>
+            </a>
             {(threads ?? []).map((thread) => (
               <a
                 key={thread.id}
@@ -215,7 +224,9 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
             ) : null}
           </nav>
           <section className="room-thread" aria-label="Thread">
-            {!detail ? null : threadId && threadId !== 'new' ? (
+            {!detail ? null : threadId === 'board' ? (
+              <Board roomId={roomId} me={me?.id ?? null} />
+            ) : threadId && threadId !== 'new' ? (
               <Thread
                 key={threadId}
                 roomId={roomId}
