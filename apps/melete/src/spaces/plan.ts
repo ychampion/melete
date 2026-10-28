@@ -214,6 +214,7 @@ const SPACE_KEYED_OPERATIONAL = [
   'browser_site_profile',
   // A room's threads, the messages said in them and who was looking. An
   // emptied room keeps its space row, so the cascade from it never fires.
+  'room_calendar_share',
   'room_presence',
   // What a room handed one of its people, its guest invites, used or not, and
   // how the room works. The handoffs point at the room's own rows, which go next.

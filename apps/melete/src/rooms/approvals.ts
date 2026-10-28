@@ -13,6 +13,8 @@
  * every room has) follows the room's team-account rule instead: any member who
  * is not a guest, the person who asked included (the default), or the room's
  * owners. `approverRuleFor` is the one place that picks the rule for an action.
+ * Adding to a member's explicitly shared calendar instead asks that member
+ * alone, while their exact consent still allows adding events.
  *
  * Guests, the room's own principal, the service's own key and anyone outside
  * the room never decide. The check runs when an answer is recorded, inside the
@@ -20,8 +22,10 @@
  * change to a room's roster also takes, so a person removed a moment earlier
  * is already not a member here.
  */
-import type { RoomApprovers, RoomTeamAccountApprovers } from '@melete/contracts';
+import type { JsonObject, RoomApprovers, RoomTeamAccountApprovers } from '@melete/contracts';
+import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
+import { resolveRoomCalendarShare } from './calendar-shares.ts';
 import { personLabel } from './transcript.ts';
 
 export const ROOM_POLICY_DEFAULTS = {
@@ -58,14 +62,23 @@ export type RoomAuthority = {
   /** Null when nothing records who asked; then no one is the requester. */
   requestedBy: string | null;
   approvers: RoomApprovers;
-  /** Which of the room's rules named `approvers`: its general one, or its team-account one. */
-  rule: 'room' | 'team_accounts';
+  /** Member calendar consent takes precedence over both of the room's rules. */
+  rule: 'room' | 'team_accounts' | 'member_calendar';
+  /** Exact consent bound before the member was asked, never a room-wide permission. */
+  calendarMember?: {
+    principalId: string;
+    connectionId: string;
+    sharedAt: string;
+    membershipGeneration: number;
+  } | null;
 };
 
 /** What one permission is about, as far as choosing its rule goes. */
 export type ApprovalSubject = {
   /** The connection the action goes through, if any. */
   connectionId: string | null;
+  kind: string;
+  payload: JsonObject;
 };
 
 /**
@@ -147,6 +160,29 @@ export async function roomAuthorityOf(
           : null;
   if (!request) return null;
   const spaceId = String(row.space_id);
+  if (subject?.kind === 'room.add_to_member_calendar') {
+    const payload = subject.payload;
+    return {
+      spaceId,
+      requestJobId: request.id,
+      threadId: request.threadId,
+      requestedBy: request.requestedBy,
+      approvers: 'requester',
+      rule: 'member_calendar',
+      calendarMember:
+        typeof payload?.member === 'string' &&
+        typeof payload.calendar_connection_id === 'string' &&
+        typeof payload.share_created_at === 'string' &&
+        typeof payload.membership_generation === 'number'
+          ? {
+              principalId: payload.member,
+              connectionId: payload.calendar_connection_id,
+              sharedAt: payload.share_created_at,
+              membershipGeneration: payload.membership_generation,
+            }
+          : null,
+    };
+  }
   const policy = await roomPolicyIn(tx, spaceId);
   return {
     spaceId,
@@ -177,6 +213,26 @@ async function guestAsked(tx: Query, requestedBy: string | null): Promise<boolea
  * narrowed by the room's rule.
  */
 export async function eligibleApprovers(tx: Query, authority: RoomAuthority): Promise<string[]> {
+  if (authority.rule === 'member_calendar') {
+    const member = authority.calendarMember;
+    if (!member) return [];
+    try {
+      const { share } = await resolveRoomCalendarShare(
+        tx,
+        authority.spaceId,
+        member.principalId,
+        true,
+      );
+      return share.connectionId === member.connectionId &&
+        share.membershipGeneration === member.membershipGeneration &&
+        share.createdAt.toISOString() === member.sharedAt
+        ? [member.principalId]
+        : [];
+    } catch (error) {
+      if (error instanceof BrokerFault && error.code === 'scope_denied') return [];
+      throw error;
+    }
+  }
   const rows = await tx`select m.principal_id from space_membership m
     join principal p on p.id = m.principal_id
     join space s on s.id = m.space_id
@@ -202,6 +258,13 @@ export async function mayDecide(
 
 /** Who the room is waiting for, in a person's words. */
 export function waitingFor(authority: RoomAuthority, names: ReadonlyMap<string, string>): string {
+  if (authority.rule === 'member_calendar') {
+    const member = authority.calendarMember;
+    const name = member ? names.get(member.principalId) : undefined;
+    return name
+      ? `Waiting for ${name}, whose calendar this adds to. Only they can answer it.`
+      : 'Only the member who shared this calendar can answer it while that share allows adding events.';
+  }
   if (authority.rule === 'team_accounts')
     return authority.approvers === 'owners'
       ? "It goes through an account the room uses. Waiting for one of the room's owners to answer it."

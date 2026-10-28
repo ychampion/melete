@@ -50,6 +50,7 @@ const VISION_FAMILIES: Record<string, RegExp[]> = {
   chatgpt: [/^gpt-[5-9]/i, /^codex-/i],
   google: [/^(models\/)?gemini-/i, /^(models\/)?gemma-?[34]/i],
   fireworks: OPEN_WEIGHT_VISION,
+  nebius: OPEN_WEIGHT_VISION,
   'openai-compatible': [...OPEN_WEIGHT_VISION, /^gpt-4o/i, /^gpt-[5-9]/i, /^claude-/i, /gemini-/i],
 };
 

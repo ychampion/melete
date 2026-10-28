@@ -181,7 +181,9 @@ changes through one of them follows the room's team-account rule
   person who asked included;
 - `owners`: the room's owners.
 
-Everything else a request asks permission for follows the general rule above.
+Adding an event to a member's explicitly shared personal calendar asks only
+that member, whatever either room rule says. Everything else a request asks
+permission for follows the general rule above.
 Guests never answer under either rule, auto-review never answers, and the card,
 the decision push and the agent all name the people the rule for that action
 names. A room created before this setting existed keeps `owners` for its team
@@ -226,7 +228,8 @@ is waiting for.
 
 ## Connections in a room
 
-A room's requests act only through the connections marked for the room. Its own
+A room's requests use the connections marked for the room and the limited
+calendar shares its members explicitly allow. Its own
 tools (files, the web, its computer) are marked so from the start. A connection
 an owner installs into the room's space (`space_id` set to the room's space)
 serves the room from the start too: everyone's requests in the room can use it
@@ -239,6 +242,22 @@ room also sees the ones kept for them. Only the person who made the room changes
 serves, since one kept back serves only their work. Changing what a connection
 serves starts work under way in the room again and withdraws the permissions
 waiting in it.
+
+Each member can share one calendar connection from their own space in the
+room's settings (`PUT /rooms/{id}/calendar-shares`). The room reads it through
+`room.member_freebusy` as busy time blocks only, without event titles, locations
+or attendees. The `freebusy` mode permits only this read. With `freebusy_add`,
+`room.add_to_member_calendar` can add an event after that member approves the
+exact event. Other members and owners cannot approve for them, whatever the
+room's approval rules say. Read-only calendar feeds cannot allow additions.
+Sharing gives the room no other access to the connection.
+
+`GET /rooms/{id}/calendar-shares` shows only the signed-in member's share and
+their own calendar choices. `DELETE /rooms/{id}/calendar-shares` revokes that
+share. Leaving the room ends access too. Each tool call checks the share and
+membership again, so requests already running cannot keep reading or adding
+events after access ends. Rejoining requires a new share. Guests cannot share
+a personal calendar.
 
 A room's connections are held to public addresses, because its requests come
 from everyone in it. A team that runs its own MCP servers, calendars or mail on
@@ -256,12 +275,14 @@ For a request, the agent reads:
 - the room's memory: what people said in the room, with who said it;
 - details people chose to share into the room from their own memory, each
   marked with who shared it;
+- free/busy blocks from calendars members explicitly shared with the room;
 - the request itself, and who asked it.
 
-Beyond the details people shared, it reads nothing from anyone's personal
-space: no personal memory, no personal files, no personal chats and no personal
-connections. A room's own tools and the connections marked for the room are the
-only ones its requests use.
+Beyond the memory details and revocable calendar shares people explicitly
+allow, it reads nothing from anyone's personal space: no other personal memory,
+files, chats or connections. A shared personal calendar is read as free/busy
+only. Its event titles, locations and attendees stay private, and adding an
+event requires the calendar member's approval.
 
 ## Memory in a room
 

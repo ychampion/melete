@@ -1,6 +1,6 @@
 ---
 name: plan-a-responsibility
-description: Turn a responsibility into a short plan with a first action and a clear finish line.
+description: Turn a responsibility into a short plan with a first step.
 triggers:
   - plan
   - take care of

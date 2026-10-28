@@ -45,6 +45,7 @@ import { provisionMemorySpace } from '../../src/memory/db.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.ts';
 import { replayForNewMemory } from '../../src/memory/start.ts';
 import { refusedForRemoval, spaceAuthority } from '../../src/principals/authority.ts';
+import { resolveRoomCalendarShare } from '../../src/rooms/calendar-shares.ts';
 import { sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
@@ -402,6 +403,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   privacy_vault: 'operational',
   skill: 'operational',
   task: 'operational',
+  room_calendar_share: 'operational',
   room_presence: 'operational',
   room_handoff: 'operational',
   room_invite: 'operational',
@@ -732,6 +734,20 @@ describe.if(handle !== null)('removing a space', () => {
 
   test('every_space_table_is_removed_by_its_named_phase — measured one phase at a time, against the catalog', async () => {
     const seeded = await seed('shared');
+    // The share belongs to the room, while its calendar stays in the member's personal space.
+    const calendarSpaceId = newId('sp');
+    const calendarId = newId('conn');
+    await sql`insert into space (id, name, kind, audience, owner_principal_id, git_path)
+      values (${calendarSpaceId}, 'Personal calendar', 'personal', 'owner',
+        ${seeded.principalId}, ${join(spacesRoot, calendarSpaceId)})`;
+    await sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${calendarId}, ${calendarSpaceId}, 'caldav', 'Calendar', '["calendar.freebusy"]'::jsonb)`;
+    await sql`insert into room_calendar_share
+        (space_id, principal_id, connection_id, mode, membership_generation)
+      values (${seeded.spaceId}, ${seeded.principalId}, ${calendarId}, 'freebusy', 0)`;
+    expect(
+      (await resolveRoomCalendarShare(sql, seeded.spaceId, seeded.principalId)).connection.id,
+    ).toBe(calendarId);
     // A sandbox session already closed at its provider, so the sandboxes phase
     // has nothing to end and the row is left for the phase that deletes it.
     await sql`insert into sandbox_session (id, connection_id, space_id, adapter,
@@ -880,6 +896,10 @@ describe.if(handle !== null)('removing a space', () => {
       if (phase === 'space') expect(outcome(halted)).toBe('complete');
     }
     expect(removedBy).toEqual(REMOVED_BY);
+    expect(await countOf(sql, 'connection', sql`id = ${calendarId}`)).toBe(1);
+    await expect(resolveRoomCalendarShare(sql, seeded.spaceId, seeded.principalId)).rejects.toThrow(
+      /not shared/,
+    );
   });
 
   test('removal_goes_round_again_after_a_late_write — a row landing behind its phase is swept on the next pass', async () => {
@@ -1939,6 +1959,31 @@ describe.if(handle !== null)('removing a space', () => {
       spacesRoot,
       workRoot,
     });
+    const roomId = newId('sp');
+    const calendarId = newId('conn');
+    await sql`insert into space (id, name, kind, audience, owner_principal_id, git_path)
+      values (${roomId}, 'Calendar room', 'shared', 'space', ${seeded.principalId},
+        ${join(spacesRoot, roomId)})`;
+    await sql`insert into space_membership (space_id, principal_id, role)
+      values (${roomId}, ${seeded.principalId}, 'owner')`;
+    const installCalendar = async () => {
+      await sql`insert into connection (id, space_id, provider, label, scopes)
+        values (${calendarId}, ${seeded.spaceId}, 'caldav', 'Calendar', '["calendar.freebusy"]'::jsonb)`;
+      await sql`insert into room_calendar_share
+          (space_id, principal_id, connection_id, mode, membership_generation)
+        values (${roomId}, ${seeded.principalId}, ${calendarId}, 'freebusy', 0)`;
+    };
+    await installCalendar();
+    expect((await resolveRoomCalendarShare(sql, roomId, seeded.principalId)).connection.id).toBe(
+      calendarId,
+    );
+    // Deleting the connection cascades the share, without needing to remove the room.
+    await sql`delete from connection where id = ${calendarId}`;
+    expect(await countOf(sql, 'room_calendar_share', sql`space_id = ${roomId}`)).toBe(0);
+    await expect(resolveRoomCalendarShare(sql, roomId, seeded.principalId)).rejects.toThrow(
+      /not shared/,
+    );
+    await installCalendar();
     const { finished } = await removeCompletely(seeded);
     expect(outcome(finished)).toBe('complete');
     expect(finished.kind).toBe('emptied');
@@ -1948,6 +1993,11 @@ describe.if(handle !== null)('removing a space', () => {
     expect(parent?.id).toBe(seeded.spaceId);
     expect(parent?.removedAt).toBeNull();
     expect(await countOf(sql, 'principal', sql`id = ${seeded.principalId}`)).toBe(1);
+    expect(await countOf(sql, 'space', sql`id = ${roomId}`)).toBe(1);
+    expect(await countOf(sql, 'room_calendar_share', sql`space_id = ${roomId}`)).toBe(0);
+    await expect(resolveRoomCalendarShare(sql, roomId, seeded.principalId)).rejects.toThrow(
+      /not shared/,
+    );
     // Still signed in: the selection was cleared, the session was not deleted.
     const [session] = await sql<{ space_id: string | null }[]>`select space_id from session
       where principal_id = ${seeded.principalId}`;

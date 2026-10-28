@@ -10,9 +10,13 @@
  * - `POST /api/v1/computers` is get-or-create by `externalUserId`: 201 with a
  *   new computer, 200 with the one that exists. A new computer is awake.
  * - `exec` runs its command through `sh -c` as the desktop user `desk` in
- *   `/home/desk`, with no stdin, and answers `{exitCode, stdout, stderr}`. At
- *   `timeoutS` the command is killed and `exitCode` is null. A process the
- *   command started in the background keeps running after `exec` answers.
+ *   `/home/desk`, with no stdin, and answers `{exitCode, stdout, stderr}`.
+ *   `exitCode` is null for every command and `stdout` comes back with its
+ *   leading and trailing whitespace trimmed, as the live API answered on
+ *   2026-10-28; `exitCodes: true`
+ *   gives the documented exit code instead, null only for a command killed at
+ *   `timeoutS`. A process the command started in the background keeps running
+ *   after `exec` answers.
  * - The files API reaches `/data` and `/home/desk` only (400 `bad_path`
  *   elsewhere or with `..`), 8 MiB at most per read or write (413), answers
  *   404 `not_found` for a missing file and 400 for a directory, and makes a
@@ -95,8 +99,9 @@ function pngOfSize(width: number, height: number): Uint8Array {
  */
 export const RELEASE_GRACE_MS = 60_000;
 
-export function createMaritimeStandin(options: { now?: () => number } = {}) {
+export function createMaritimeStandin(options: { now?: () => number; exitCodes?: boolean } = {}) {
   const now = options.now ?? Date.now;
+  const exitCodes = options.exitCodes ?? false;
   const engine = new FakeSandboxEngine();
   const records = new Map<string, Held>();
   let refuseSleep = false;
@@ -218,9 +223,10 @@ export function createMaritimeStandin(options: { now?: () => number } = {}) {
     }, timeoutS * 1000);
     const result = await child.done;
     clearTimeout(timer);
+    const text = new TextDecoder().decode(Buffer.concat(stdout.map((chunk) => Buffer.from(chunk))));
     return json(200, {
-      exitCode: timedOut || result.killed ? null : result.exitCode,
-      stdout: new TextDecoder().decode(Buffer.concat(stdout.map((chunk) => Buffer.from(chunk)))),
+      exitCode: exitCodes && !timedOut && !result.killed ? result.exitCode : null,
+      stdout: text.trim(),
       stderr: '',
     });
   }

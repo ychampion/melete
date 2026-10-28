@@ -106,6 +106,7 @@ export const MODEL_PROVIDER_LABELS: Record<ModelProvider, string> = {
   openai: 'OpenAI',
   google: 'Google',
   fireworks: 'Fireworks',
+  nebius: 'Nebius Token Factory',
   'openai-compatible': 'OpenAI-compatible endpoint',
   chatgpt: 'ChatGPT',
 };
@@ -231,6 +232,8 @@ export class ModelSettingsService {
         return env.ANTHROPIC_API_KEY || undefined;
       case 'google':
         return env.GOOGLE_API_KEY || undefined;
+      case 'nebius':
+        return env.NEBIUS_API_KEY || undefined;
       case OPENAI_COMPATIBLE: {
         const base = this.operatorBaseUrl();
         if (!base) return undefined;

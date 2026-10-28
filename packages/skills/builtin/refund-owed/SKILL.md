@@ -1,6 +1,6 @@
 ---
 name: refund-owed
-description: Get back money a company has already agreed it owes, in the person's own words.
+description: Get back money a company already agreed it owes, in the person's own words.
 triggers:
   - refund-owed
   - refund
