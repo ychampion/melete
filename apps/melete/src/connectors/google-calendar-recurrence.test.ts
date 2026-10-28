@@ -2,7 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import { GoogleCalendarConnector } from './google-calendar.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 
-async function list(recurrence: string[], now = '2026-10-28T12:00:00Z') {
+async function list(
+  recurrence: string[],
+  now = '2026-10-28T12:00:00Z',
+  payload: Record<string, unknown> = { time_zone: 'America/Los_Angeles' },
+) {
   const connector = new GoogleCalendarConnector({
     id: 'con_test',
     spaceId: 'spc_test',
@@ -23,7 +27,7 @@ async function list(recurrence: string[], now = '2026-10-28T12:00:00Z') {
         ],
       })) as typeof fetch,
   });
-  return connector.execute(mailAction('calendar.list'), mailContext());
+  return connector.execute(mailAction('calendar.list', payload), mailContext());
 }
 
 describe('Google Calendar series dates', () => {

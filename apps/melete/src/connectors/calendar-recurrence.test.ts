@@ -115,7 +115,7 @@ describe('the next date of a calendar series', () => {
       'RRULE:FREQ=WEEKLY;BYDAY=TU',
     ];
     expect(project(properties, '2026-10-25T00:00:00Z')?.start).toBe('2026-10-27T16:00:00.000Z');
-    expect(project(properties, '2026-10-28T00:00:00Z')).toMatchObject({
+    expect(project(properties, '2026-10-28T00:00:00Z', 'America/Los_Angeles')).toMatchObject({
       start: '2026-11-03T17:00:00.000Z',
       end: '2026-11-03T18:00:00.000Z',
       recurrence_summary: 'Every Tuesday at 9:00',
@@ -313,5 +313,118 @@ describe('the next date of a calendar series', () => {
     expect(
       project(['DTSTART:20000101T090000Z', 'RRULE:FREQ=DAILY;COUNT=6000'], '2026-10-28T12:00:00Z'),
     ).toMatchObject({ start: '', recurrence_status: 'ended' });
+  });
+
+  test('a long COUNT series resolves without walking from its first day', () => {
+    const rule = ['DTSTART;TZID=America/New_York:20000101T090000', 'RRULE:FREQ=DAILY;COUNT=9999'];
+    const began = performance.now();
+    const view = project(rule, '2026-10-28T12:00:00Z', 'America/New_York');
+    expect(performance.now() - began).toBeLessThan(200);
+    expect(view).toMatchObject({
+      start: '2026-10-28T13:00:00.000Z',
+      recurrence_summary: 'Every day at 9:00, 9999 times',
+      recurrence_status: 'active',
+    });
+    // The 9999th day is May 17, 2027, and nothing comes after it.
+    expect(project(rule, '2027-05-17T12:00:00Z', 'America/New_York')).toMatchObject({
+      start: '2027-05-17T13:00:00.000Z',
+    });
+    expect(project(rule, '2027-05-18T12:00:00Z', 'America/New_York')).toMatchObject({
+      start: '',
+      recurrence_status: 'ended',
+    });
+  });
+
+  test("the rule is said on the person's clock, as the card shows it", () => {
+    const pacific = (properties: string[]) =>
+      project(properties, '2026-10-28T12:00:00Z', 'America/Los_Angeles');
+    expect(pacific(['DTSTART:20260908T170000Z', 'RRULE:FREQ=WEEKLY;BYDAY=TU'])).toMatchObject({
+      start: '2026-11-03T17:00:00.000Z',
+      recurrence_summary: 'Every Tuesday at 9:00',
+    });
+    expect(
+      pacific(['DTSTART;TZID=America/New_York:20260908T120000', 'RRULE:FREQ=WEEKLY;BYDAY=TU']),
+    ).toMatchObject({
+      start: '2026-11-03T17:00:00.000Z',
+      recurrence_summary: 'Every Tuesday at 9:00',
+    });
+    // 02:00 UTC on a Wednesday is Tuesday evening in California.
+    expect(pacific(['DTSTART:20260909T020000Z', 'RRULE:FREQ=WEEKLY;BYDAY=WE'])).toMatchObject({
+      start: '2026-11-04T02:00:00.000Z',
+      recurrence_summary: 'Every Tuesday at 18:00',
+    });
+  });
+
+  test('a yearly February 29th waits for the next leap year', () => {
+    expect(
+      project(['DTSTART:20240229T090000Z', 'RRULE:FREQ=YEARLY'], '2026-10-28T12:00:00Z'),
+    ).toMatchObject({ start: '2028-02-29T09:00:00.000Z', recurrence_status: 'active' });
+  });
+
+  test('a date-only UNTIL on a timed series runs through that local date', () => {
+    const properties = [
+      'DTSTART;TZID=America/Los_Angeles:20261001T090000',
+      'RRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261103',
+    ];
+    expect(project(properties, '2026-11-01T12:00:00Z', 'America/Los_Angeles')).toMatchObject({
+      start: '2026-11-03T17:00:00.000Z',
+      recurrence_summary: 'Every 3 days at 9:00, until November 3, 2026',
+      recurrence_status: 'active',
+    });
+    expect(project(properties, '2026-11-04T12:00:00Z', 'America/Los_Angeles')).toMatchObject({
+      start: '',
+      recurrence_status: 'ended',
+    });
+  });
+
+  test('a meeting under way is the current occurrence', () => {
+    expect(
+      project(
+        ['DTSTART:20260908T090000Z', 'DTEND:20260908T100000Z', 'RRULE:FREQ=WEEKLY;BYDAY=TU'],
+        '2026-11-03T09:30:00Z',
+      ),
+    ).toMatchObject({ start: '2026-11-03T09:00:00.000Z', end: '2026-11-03T10:00:00.000Z' });
+  });
+
+  test('a rule ical.js cannot finish or refuses leaves the rest of the list intact', () => {
+    const vevent = (uid: string, rule: string) => [
+      'BEGIN:VEVENT',
+      `UID:${uid}`,
+      `SUMMARY:${uid}`,
+      'DTSTART:20261028T150000Z',
+      'DTEND:20261028T160000Z',
+      `RRULE:${rule}`,
+      'END:VEVENT',
+    ];
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      ...vevent('never', 'FREQ=SECONDLY;BYMONTH=2;BYMONTHDAY=30'),
+      ...vevent('never-reached', 'FREQ=DAILY;INTERVAL=7;BYDAY=TH'),
+      ...vevent('huge', 'FREQ=DAILY;INTERVAL=99999999999999'),
+      ...vevent('refused', 'FREQ=YEARLY;INTERVAL=99999999'),
+      ...vevent('weekly', 'FREQ=WEEKLY'),
+      'END:VCALENDAR',
+    ].join('\r\n');
+    const listed = eventsInWindow(
+      parseIcs(ics),
+      { from: '2026-10-28T00:00:00.000Z', to: '2026-11-28T00:00:00.000Z' },
+      10,
+      { now: Date.parse('2026-10-28T12:00:00Z') },
+    );
+    const unread = {
+      start: '2026-10-28T15:00:00.000Z',
+      end: '2026-10-28T16:00:00.000Z',
+      recurrence_summary: 'Repeats',
+      recurrence_status: 'unknown',
+    };
+    expect(Object.fromEntries(listed.events.map((event) => [event.uid, event]))).toMatchObject({
+      never: unread,
+      'never-reached': unread,
+      huge: unread,
+      refused: unread,
+      weekly: { start: '2026-10-28T15:00:00.000Z', recurrence_status: 'active' },
+    });
+    expect(listed.truncated).toBe(true);
   });
 });

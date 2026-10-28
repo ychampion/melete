@@ -230,7 +230,9 @@ describe('what one calendar read may cost', () => {
 
   test('a series with a COUNT walked from long ago stops at the step budget', async () => {
     const refused = await expandIcs(
-      [series(5, 'FREQ=SECONDLY;COUNT=100000', '20200101T000000Z')],
+      // BYSECOND gives each minute two instances, so the series cannot be
+      // moved ahead by whole periods and is walked from its start.
+      [series(5, 'FREQ=SECONDLY;BYSECOND=0,30;COUNT=100000', '20200101T000000Z')],
       WINDOW,
     ).catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(CalendarTooLarge);

@@ -1073,8 +1073,10 @@ export function projectCards(
           label: 'Status',
           value: status === 'ended' ? 'Series ended' : 'Next occurrence unavailable',
         });
+      // A series whose rule could not be read says only "Repeats", which
+      // its status line already covers.
       const repeats = plainText(event.recurrence_summary, '');
-      if (repeats) facts.push({ label: 'Repeats', value: repeats });
+      if (repeats && repeats !== 'Repeats') facts.push({ label: 'Repeats', value: repeats });
     }
     if (source.kind === 'draft') facts.push({ label: 'To', value: recipientText(payload) });
     // A file a files action saved or moved opens from that action's own route.

@@ -149,6 +149,29 @@ test('ended and unreadable series do not present the original start as the next 
     expect(JSON.stringify(card)).not.toContain('2026-09-08');
   }
 });
+
+test('a series whose rule could not be read is not labelled "Repeats: Repeats"', () => {
+  const [card] = projectCards(
+    {
+      ...base,
+      receipt: {
+        detail: {
+          events: [
+            {
+              summary: 'Planning',
+              start: '2026-09-08T16:00:00.000Z',
+              end: '2026-09-08T17:00:00.000Z',
+              recurrence_status: 'unknown',
+              recurrence_summary: 'Repeats',
+            },
+          ],
+        },
+      },
+    },
+    { id: 'calendar-connection', label: 'My calendar', provider: 'caldav' },
+  );
+  expect(card?.facts).toEqual([{ label: 'Status', value: 'Next occurrence unavailable' }]);
+});
 test('source content cannot smuggle backend labels or credential URLs', () => {
   expect(plainText('{"canonical_payload": {"to": "a@b.c"}}', 'Event')).toBe('Event');
   expect(plainText('Lunch, key sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs', 'Event')).toBe(

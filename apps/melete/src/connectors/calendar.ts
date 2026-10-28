@@ -6,7 +6,7 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
-import { parseRecurrence, recurrenceWords } from '@melete/contracts';
+import { parseRecurrence, type Recurrence, recurrenceWords } from '@melete/contracts';
 import { XMLParser } from 'fast-xml-parser';
 import ICAL from 'ical.js';
 import { z } from 'zod';
@@ -19,6 +19,7 @@ import {
   instantMs,
   MAX_EXPANSION_STEPS,
   startNearWindow,
+  wallTime,
   zonedToUtc,
 } from '../signals/occurrences.ts';
 import {
@@ -438,8 +439,9 @@ export function importIcs(
   etag: string | null = null,
   reference: CalendarReference = {},
 ): EventView[] {
+  const budget = readBudget();
   return parseIcs(ics, etag).map(({ view, event }) =>
-    nextEventView(view, event, reference.now ?? Date.now(), reference.timeZone ?? 'UTC'),
+    nextEventView(view, event, reference.now ?? Date.now(), reference.timeZone ?? 'UTC', budget),
   );
 }
 
@@ -448,16 +450,134 @@ const propertyZone = (event: ICAL.Event, field: string): string | null => {
   return typeof zone === 'string' ? zone : null;
 };
 
+const pad = (value: number, length = 2) => String(value).padStart(length, '0');
+
 /** A date-only event fills the person's day, independent of the server's clock. */
 function dateInZone(at: number, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(at));
-  const part = (name: string) => parts.find((value) => value.type === name)?.value ?? '';
-  return `${part('year')}-${part('month')}-${part('day')}`;
+  const wall = wallTime(at, timeZone) ?? wallTime(at, 'UTC');
+  return wall ? `${pad(wall.year, 4)}-${pad(wall.month)}-${pad(wall.day)}` : '';
+}
+
+/**
+ * How much ical.js may work on one read's series, in calls to its iterator's
+ * stepping functions, across the read and for any one series. Its iterator
+ * can loop without end on a rule no date satisfies (a February 30th) and
+ * never yields in between, so the guard is inside those calls.
+ */
+const READ_STEPS = 200_000;
+const SERIES_STEPS = 50_000;
+/** Larger intervals make ical.js normalise its dates for a very long time. */
+const MAX_INTERVAL = 999;
+
+type ReadBudget = { steps: number };
+const readBudget = (): ReadBudget => ({ steps: READ_STEPS });
+
+class SeriesTooCostly extends Error {}
+let iteratorSteps = Number.POSITIVE_INFINITY;
+{
+  const stepping = ICAL.RecurIterator.prototype as unknown as Record<
+    string,
+    (...args: unknown[]) => unknown
+  >;
+  for (const name of [
+    'next_second',
+    'next_minute',
+    'next_hour',
+    'next_day',
+    'next_week',
+    'next_month',
+    'next_year',
+    'increment_month',
+    'increment_year',
+  ]) {
+    const original = stepping[name];
+    if (typeof original !== 'function') continue;
+    stepping[name] = function (this: unknown, ...args: unknown[]) {
+      if (--iteratorSteps < 0) throw new SeriesTooCostly();
+      return original.apply(this, args);
+    };
+  }
+}
+
+/** Run `work` with at most `steps` iterator steps; returns what it used. */
+function withinSteps<T>(steps: number, work: () => T): { value: T; used: number } {
+  const outer = iteratorSteps;
+  iteratorSteps = steps;
+  try {
+    const value = work();
+    return { value, used: steps - iteratorSteps };
+  } finally {
+    iteratorSteps = outer;
+  }
+}
+
+const daysOf = (wall: { year: number; month: number; day: number }) =>
+  Math.floor(Date.UTC(wall.year, wall.month - 1, wall.day) / 86_400_000);
+
+/**
+ * A rule said in words on the person's own clock, as the card shows its
+ * time. `shown` is the instance the words are read from, at `wall` on the
+ * series' own clock. When the person's date differs from the series' (a
+ * Tuesday 17:00 in UTC is Tuesday morning in California, but 02:00 UTC on
+ * Wednesday is Tuesday evening), plain weekdays move with it; a rule tied to
+ * dates of the month is said on the series' dates, without a time.
+ */
+function ruleWords(
+  rule: Recurrence,
+  shown: number,
+  wall: ICAL.Time,
+  timeZone: string,
+  seriesZone: string,
+): string {
+  if (wall.isDate) return recurrenceWords(rule, wall, { zone: seriesZone, includeTime: false });
+  const local = wallTime(shown, timeZone);
+  if (!local) return recurrenceWords(rule, wall, { zone: seriesZone });
+  const shift = daysOf(local) - daysOf(wall);
+  if (!shift) return recurrenceWords(rule, local, { zone: timeZone });
+  const weekdaysOnly =
+    !rule.byMonthDay.length &&
+    rule.byDay.every((day) => day.nth === null) &&
+    (rule.freq === 'DAILY' ||
+      rule.freq === 'WEEKLY' ||
+      (rule.freq === 'MONTHLY' && rule.byDay.length > 0));
+  if (!weekdaysOnly) return recurrenceWords(rule, wall, { zone: seriesZone, includeTime: false });
+  const byDay = rule.byDay.map((day) => ({
+    ...day,
+    weekday: (((day.weekday + shift) % 7) + 7) % 7,
+  }));
+  return recurrenceWords({ ...rule, byDay }, local, { zone: timeZone });
+}
+
+/**
+ * Whether an instance is on a date its rule allows. ical.js rolls a date that
+ * does not exist into the next month, so a yearly February 29th would come
+ * round on March 1st; such an instance is skipped instead (RFC 5545 3.3.10).
+ */
+function onRuleDate(time: ICAL.Time, rule: ICAL.Recur, first: ICAL.Time): boolean {
+  if (rule.freq !== 'MONTHLY' && rule.freq !== 'YEARLY') return true;
+  const parts = rule.parts ?? {};
+  if (parts.BYDAY?.length || parts.BYYEARDAY?.length || parts.BYWEEKNO?.length) return true;
+  const monthDays = (parts.BYMONTHDAY as number[] | undefined) ?? [];
+  const months = (parts.BYMONTH as number[] | undefined) ?? [];
+  const length = ICAL.Time.daysInMonth(time.month, time.year);
+  const days = monthDays.length
+    ? monthDays.map((day) => (day < 0 ? length + 1 + day : day))
+    : [first.day];
+  if (!days.includes(time.day)) return false;
+  if (months.length) return months.includes(time.month);
+  return rule.freq !== 'YEARLY' || monthDays.length > 0 || time.month === first.month;
+}
+
+/** Whether a rule's month days fall in none of its months (February 30th). */
+function neverOnDate(rule: ICAL.Recur): boolean {
+  const parts = rule.parts ?? {};
+  const monthDays = (parts.BYMONTHDAY as number[] | undefined) ?? [];
+  if (!monthDays.length) return false;
+  const months = (parts.BYMONTH as number[] | undefined) ?? [];
+  const longest = (month: number) => (month === 2 ? 29 : ICAL.Time.daysInMonth(month, 2001));
+  return (months.length ? months : [1, 3, 5, 7, 8, 10, 12]).every((month) =>
+    monthDays.every((day) => Math.abs(day) > longest(month)),
+  );
 }
 
 function eventInstant(value: string, timeZone: string): number {
@@ -471,31 +591,119 @@ function eventInstant(value: string, timeZone: string): number {
  * The existing iCalendar iterator applies RRULE, COUNT, UNTIL, RDATE, EXDATE
  * and changed instances; the shared timezone conversion preserves wall time
  * across daylight saving changes. Exhaustion and an unfinished read differ.
+ *
+ * A series that cannot be read within its share of the read's budget, or
+ * that ical.js refuses, keeps its first start and says only "Repeats", so
+ * one bad invitation never fails the whole list.
  */
 export function nextEventView(
   view: EventView,
   event: ICAL.Event,
   from: number,
   timeZone = 'UTC',
+  budget: ReadBudget = readBudget(),
 ): EventView {
   const zone = propertyZone(event, 'dtstart') ?? timeZone;
   const endZone = propertyZone(event, 'dtend') ?? zone;
   const start = icalInstant(event.startDate, zone);
   const end = icalInstant(event.endDate, endZone);
   if (!event.isRecurring()) return { ...view, start, end };
+  const unread: EventView = {
+    ...view,
+    start,
+    end,
+    series_start: start,
+    recurrence_summary: 'Repeats',
+    recurrence_status: 'unknown',
+  };
+  const huge = event.component
+    .getAllProperties('rrule')
+    .some((property) => (property.getFirstValue() as ICAL.Recur).interval > MAX_INTERVAL);
+  if (huge || budget.steps <= 0) return unread;
+  const steps = Math.min(budget.steps, SERIES_STEPS);
+  let used = steps;
+  try {
+    const projected = withinSteps(steps, () =>
+      projectSeries(view, event, from, timeZone, zone, endZone, start),
+    );
+    used = projected.used;
+    return projected.value ?? unread;
+  } catch {
+    return unread;
+  } finally {
+    budget.steps -= used;
+  }
+}
+
+function projectSeries(
+  view: EventView,
+  event: ICAL.Event,
+  from: number,
+  timeZone: string,
+  zone: string,
+  endZone: string,
+  start: string,
+): EventView | null {
   const rule = view.recurrence?.split(/\r?\n/).find((line) => /^RRULE:/i.test(line));
   const parsed = parseRecurrence(rule ?? view.recurrence ?? '');
-  const recurrence_summary = parsed.ok
-    ? recurrenceWords(parsed.value, event.startDate, { zone, includeTime: !event.startDate.isDate })
-    : 'On a set schedule';
-  const series = { ...view, series_start: start, recurrence_summary };
+  // The rule's clock: UTC for a time written in UTC, the person's for a
+  // floating one, otherwise its own zone.
+  const seriesZone = event.startDate.zone?.tzid === 'UTC' ? 'UTC' : zone;
+  const words = (shown: number, wall: ICAL.Time) =>
+    parsed.ok ? ruleWords(parsed.value, shown, wall, timeZone, seriesZone) : 'On a set schedule';
+  const series = { ...view, series_start: start };
+  const ended = (): EventView => ({
+    ...series,
+    recurrence_summary: words(instantMs(start), event.startDate),
+    start: '',
+    end: '',
+    recurrence_status: 'ended',
+  });
   const today = dateInZone(from, timeZone);
-  const eligible = (value: string) =>
-    /^\d{4}-\d{2}-\d{2}$/.test(value) ? value >= today : instantMs(value) >= from;
+  // An instance still under way is the current one.
+  const eligible = (begins: string, ends: string) => {
+    const last = instantMs(ends) > instantMs(begins) ? ends : begins;
+    return /^\d{4}-\d{2}-\d{2}$/.test(last)
+      ? last > today || begins >= today
+      : instantMs(last) > from || instantMs(begins) >= from;
+  };
   // startNearWindow changes the event's anchor. Preserve the parsed series so
   // projecting it a second time still counts from the original DTSTART.
   const component = new ICAL.Component(structuredClone(event.component.toJSON()));
   component.parent = event.component.parent;
+  const recurs = component
+    .getAllProperties('rrule')
+    .map((property) => property.getFirstValue() as ICAL.Recur);
+  // A date-only UNTIL on a timed series runs through that whole local date.
+  // ical.js would stop at its midnight, so it is given two days' slack and
+  // the exact end is checked here.
+  let until =
+    parsed.ok && parsed.value.until && 'at' in parsed.value.until
+      ? parsed.value.until.at.getTime()
+      : null;
+  const rrule = recurs.length === 1 ? recurs[0] : undefined;
+  if (rrule?.until?.isDate && !event.startDate.isDate) {
+    const date = rrule.until;
+    // Midnight after the date, on the series' clock (UTC for a zone only the
+    // calendar defines), less a millisecond.
+    const after = date.clone();
+    after.adjust(1, 0, 0, 0);
+    until =
+      zonedToUtc(
+        { year: after.year, month: after.month, day: after.day, hour: 0, minute: 0, second: 0 },
+        wallTime(0, seriesZone) ? seriesZone : 'UTC',
+      ) - 1;
+    const slack = date.clone();
+    slack.adjust(2, 0, 0, 0);
+    rrule.until = slack;
+  }
+  if (recurs.some(neverOnDate)) return null;
+  // Only a lone rule without extra dates is checked for rolled-over dates.
+  const checkDates = rrule && !component.getFirstProperty('rdate') ? rrule : null;
+  // An instance that ended two days before `from` cannot be the next one in
+  // any zone. An instance someone changed is weighed on its own below.
+  const length = Math.max(0, instantMs(icalInstant(event.endDate, endZone)) - instantMs(start));
+  const stale = (original: string) => instantMs(original) + length + 2 * 86_400_000 < from;
   // Compare exclusions as instants. An IANA-only TZID is floating to ical.js,
   // so its iterator alone cannot match an EXDATE written in UTC to that zone.
   const excluded = new Set(
@@ -510,62 +718,62 @@ export function nextEventView(
   component.removeAllProperties('exdate');
   const projected = new ICAL.Event(component, { exceptions: Object.values(event.exceptions) });
   startNearWindow(projected, zone, from);
-  let best: EventView | null = null;
+  // The best instance so far, and the regular time its rule gave it, which
+  // the rule's words are read from even when this one instance was moved.
+  type Shown = { view: EventView; regular: ICAL.Time; at: number };
+  let best: Shown | null = null;
   const consider = (
     item: ICAL.Event,
     begins: ICAL.Time,
     ends: ICAL.Time,
-    current: EventView | null,
-  ): EventView | null => {
-    if (item.component.getFirstPropertyValue('status') === 'CANCELLED') return current;
+    regular: ICAL.Time,
+    at: number,
+  ): void => {
+    if (item.component.getFirstPropertyValue('status') === 'CANCELLED') return;
     const start = icalInstant(begins, propertyZone(item, 'dtstart') ?? zone);
-    if (!eligible(start) || (current && instantMs(current.start) <= instantMs(start)))
-      return current;
-    return {
-      ...series,
-      summary: item.summary ?? view.summary,
-      location: item.location ?? view.location,
-      start,
-      end: icalInstant(ends, propertyZone(item, 'dtend') ?? endZone),
-      recurrence_status: 'active',
+    const end = icalInstant(ends, propertyZone(item, 'dtend') ?? endZone);
+    if (!eligible(start, end) || (best && instantMs(best.view.start) <= instantMs(start))) return;
+    best = {
+      view: {
+        ...series,
+        summary: item.summary ?? view.summary,
+        location: item.location ?? view.location,
+        start,
+        end,
+        recurrence_status: 'active',
+      },
+      regular,
+      at,
     };
+  };
+  const found = (): EventView => {
+    const shown = best as Shown | null;
+    if (!shown) return ended();
+    return { ...shown.view, recurrence_summary: words(shown.at, shown.regular) };
   };
   // An exception can move into the window from beyond the iterator's next
   // date, or move that next date later than the following regular instance.
   for (const exception of Object.values(projected.exceptions)) {
     const id = exception.component.getFirstPropertyValue('recurrence-id');
-    if (
-      id instanceof ICAL.Time &&
-      excluded.has(icalInstant(id, propertyZone(exception, 'recurrence-id') ?? zone))
-    )
-      continue;
-    best = consider(exception, exception.startDate, exception.endDate, best);
+    const regular = id instanceof ICAL.Time ? id : exception.startDate;
+    const key = icalInstant(regular, propertyZone(exception, 'recurrence-id') ?? zone);
+    if (id instanceof ICAL.Time && excluded.has(key)) continue;
+    consider(exception, exception.startDate, exception.endDate, regular, instantMs(key));
   }
   const iterator = projected.iterator();
-  // Supported COUNT values are bounded by the shared parser. Walk through
-  // that count once more to distinguish a long exhausted series from a read
-  // that hit the ordinary search limit.
-  const steps =
-    parsed.ok && parsed.value.count !== null
-      ? Math.max(MAX_EXPANSION_STEPS, parsed.value.count + 1)
-      : MAX_EXPANSION_STEPS;
-  for (let step = 0; step < steps; step++) {
+  for (let step = 0; step < MAX_EXPANSION_STEPS; step++) {
     const next = iterator.next();
-    if (!next) return best ?? { ...series, start: '', end: '', recurrence_status: 'ended' };
+    if (!next) return found();
+    if (step > 0 && checkDates && !onRuleDate(next, checkDates, event.startDate)) continue;
     const original = icalInstant(next, zone);
-    if (
-      parsed.ok &&
-      parsed.value.until &&
-      'at' in parsed.value.until &&
-      instantMs(original) > parsed.value.until.at.getTime()
-    )
-      return best ?? { ...series, start: '', end: '', recurrence_status: 'ended' };
-    if (best && instantMs(original) >= instantMs(best.start)) return best;
-    if (excluded.has(original)) continue;
+    if (until !== null && instantMs(original) > until) return found();
+    const current = best as Shown | null;
+    if (current && instantMs(original) >= instantMs(current.view.start)) return found();
+    if (excluded.has(original) || stale(original)) continue;
     const details = projected.getOccurrenceDetails(next);
-    best = consider(details.item, details.startDate, details.endDate, best);
+    consider(details.item, details.startDate, details.endDate, next.clone(), instantMs(original));
   }
-  return { ...series, start: '', end: '', recurrence_status: 'unknown' };
+  return null;
 }
 
 /** The events in a window, earliest first, and whether any were left out. */
@@ -578,9 +786,10 @@ export function eventsInWindow(
   const from = Date.parse(window.from);
   const to = Date.parse(window.to);
   const zone = reference.timeZone ?? 'UTC';
+  const budget = readBudget();
   const inside = parsed
     .flatMap(({ view, event }) => {
-      const projected = nextEventView(view, event, reference.now ?? from, zone);
+      const projected = nextEventView(view, event, reference.now ?? from, zone, budget);
       if (projected.recurrence_status === 'ended')
         return reference.includeEnded ? [{ view: projected, at: Number.POSITIVE_INFINITY }] : [];
       if (projected.recurrence_status === 'unknown') return [{ view: projected, at: from }];

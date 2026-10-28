@@ -26,37 +26,73 @@ export const MAX_EXPANSION_STEPS = 5000;
 /** Most occurrences one read hands back, whatever the calendar holds. */
 export const MAX_OCCURRENCES = 2000;
 
-function validZone(zone: string): boolean {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: zone });
-    return true;
-  } catch {
-    return false;
+/**
+ * One formatter per zone, or null for a zone Intl does not know. Building a
+ * formatter costs far more than using one, and a series walk converts a time
+ * on every step.
+ */
+const zoneFormats = new Map<string, Intl.DateTimeFormat | null>();
+function zoneFormat(zone: string): Intl.DateTimeFormat | null {
+  let format = zoneFormats.get(zone);
+  if (format === undefined) {
+    try {
+      format = new Intl.DateTimeFormat('en-US', {
+        timeZone: zone,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    } catch {
+      format = null;
+    }
+    if (zoneFormats.size > 500) zoneFormats.clear();
+    zoneFormats.set(zone, format);
   }
+  return format;
+}
+
+function validZone(zone: string): boolean {
+  return zoneFormat(zone) !== null;
+}
+
+/** The wall clock in an IANA zone at an instant, or null for an unknown zone. */
+export function wallTime(
+  at: number,
+  zone: string,
+): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} | null {
+  const format = zoneFormat(zone);
+  if (!format) return null;
+  const parts = format.formatToParts(new Date(at));
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return {
+    year: value('year'),
+    month: value('month'),
+    day: value('day'),
+    hour: value('hour'),
+    minute: value('minute'),
+    second: value('second'),
+  };
 }
 
 /** The zone's offset from UTC at `at`, in milliseconds. */
 function zoneOffset(zone: string, at: number): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: zone,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(new Date(at));
-  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
-  const wall = Date.UTC(
-    value('year'),
-    value('month') - 1,
-    value('day'),
-    value('hour'),
-    value('minute'),
-    value('second'),
+  const wall = wallTime(at, zone);
+  if (!wall) throw new RangeError(`Unknown time zone ${zone.slice(0, 100)}`);
+  return (
+    Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second) -
+    Math.floor(at / 1000) * 1000
   );
-  return wall - Math.floor(at / 1000) * 1000;
 }
 
 /**
@@ -268,35 +304,49 @@ const SECONDS: Record<string, number> = {
  * by a whole number of its periods, so an old daily meeting is walked from
  * this week rather than from the year it began. The instances it yields are
  * the same ones, at the same wall-clock times, under the same recurrence ids.
- * A rule with COUNT is left alone: its last instance depends on where it began.
+ * A rule with COUNT moves only when each period holds exactly one instance
+ * (no BY parts), and its COUNT shrinks by the periods skipped. It stops at
+ * the last instance, so an exhausted series still ends where it did.
  */
 export function startNearWindow(event: ICAL.Event, zone: string | null, from: number): void {
   const rules = event.component.getAllProperties('rrule');
   if (rules.length !== 1) return;
   const rule = rules[0]?.getFirstValue() as ICAL.Recur | undefined;
-  if (!rule || rule.count || !rule.freq) return;
+  if (!rule?.freq) return;
+  const count = rule.count || null;
+  if (
+    count !== null &&
+    Object.values(rule.parts ?? {}).some((part) => (Array.isArray(part) ? part.length : part))
+  )
+    return;
   const interval = Math.max(1, rule.interval || 1);
   const start = event.startDate;
   const began = instantMs(icalInstant(start, zone));
   // Two days of margin, for a change of offset and for an instance under way.
   const gap = from - began - 2 * 86_400_000;
   if (!(gap > 0)) return;
+  // Whole intervals to skip, never past a counted rule's last instance.
+  const skip = (intervals: number) => (count === null ? intervals : Math.min(intervals, count - 1));
   const moved = start.clone();
   const unit = SECONDS[rule.freq];
+  let skipped: number;
   if (unit) {
-    const periods = Math.floor(gap / (unit * 1000 * interval)) * interval;
+    skipped = skip(Math.floor(gap / (unit * 1000 * interval)));
+    const periods = skipped * interval;
     if (periods <= 0) return;
     if (unit >= 86_400) moved.adjust((periods * unit) / 86_400, 0, 0, 0);
     else moved.adjust(0, 0, 0, periods * unit);
   } else if (rule.freq === 'MONTHLY' || rule.freq === 'YEARLY') {
     if (start.day > 28) return;
     const step = rule.freq === 'YEARLY' ? 12 * interval : interval;
-    const months = Math.floor(gap / (31 * 86_400_000) / step) * step;
+    skipped = skip(Math.floor(gap / (31 * 86_400_000) / step));
+    const months = skipped * step;
     if (months <= 0) return;
     const total = start.month - 1 + months;
     moved.year = start.year + Math.floor(total / 12);
     moved.month = (total % 12) + 1;
   } else return;
+  if (count !== null) rule.count = count - skipped;
   const duration = event.duration;
   const endZone = tzidOf(event.component, 'dtend');
   const hadEnd = Boolean(event.component.getFirstProperty('dtend'));
