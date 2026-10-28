@@ -163,6 +163,25 @@ describe('a computer that keeps sealed values out of what a process printed', ()
     expect(status.processes[0]?.last_line).toBe('a'.repeat(234));
   });
 
+  test('a last line longer than the window the helper reads it from loses the end of a value at its start', async () => {
+    const { state, computer, print } = oneProcess();
+    // The helper reads the last 4 KiB: a longer line starts wherever that window does.
+    print(`${'a'.repeat(5000)}PK0123456789ABCDEF${'b'.repeat(4090)}`);
+    state.lastLine = `CDEF${'b'.repeat(236)}`;
+    const sealed = sealedComputer(computer, async () => VALUES);
+    const status = await sealed.status('all', AbortSignal.timeout(1000));
+    expect(status.processes[0]?.last_line).toBe('b'.repeat(236));
+    // A short output's last line was never cut, and is left as it is.
+    const short = oneProcess();
+    short.print('CDEF and the rest\n');
+    short.state.lastLine = 'CDEF and the rest';
+    const answered = await sealedComputer(short.computer, async () => VALUES).status(
+      'all',
+      AbortSignal.timeout(1000),
+    );
+    expect(answered.processes[0]?.last_line).toBe('CDEF and the rest');
+  });
+
   test('output cut off at the capture limit loses a value it cut in two', () => {
     expect(decode(redactCutBytes(encode('ok PK0123456789ABCDEF then PK01'), VALUES))).toBe(
       'ok [redacted] then ',

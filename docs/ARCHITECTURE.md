@@ -201,9 +201,14 @@ NAME is saved. A `terminal.run` or `process.start` that names it in `secrets`
 (or, from the agent's terminal, refers to it as `$NAME`, sent as
 `secret_refs`) gets it as an environment variable for that command alone. Every
 value the space keeps for commands is redacted from captured output, previews,
-stored output and receipts, and from a background process's output, last line
-and wake lines, and the receipt lists `secrets_used` by name. A file a command
-writes into `/work` is copied back as written, without redaction. A
+stored output and receipts, from a background process's output, last line
+and wake lines, and from the pages, headers and output a process preview
+shows, and the receipt lists `secrets_used` by name. A file a command writes
+into `/work` is copied back as written, without redaction. Output printed
+before a secret was deleted or replaced is redacted only for the values kept
+now, so it can still show the old value. Cursors a process read or wait
+reports after a `[redacted]` mark are approximate, since the mark is not as
+long as the value. A
 name the space has not sealed is refused before the command runs. Settings list
 and delete secrets by name (`GET /secrets`, `DELETE /secrets/{name}`); no route
 returns a value. A secret saved with `host` is never put in a command's

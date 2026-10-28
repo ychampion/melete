@@ -21,6 +21,8 @@ const MARK = Buffer.from('[redacted]');
 const EMPTY = Buffer.alloc(0);
 /** The longest line the helper reports, in characters (`LINE_LIMIT` in deploy/sandbox/melete-proc). */
 const HELPER_LINE_CHARS = 240;
+/** How much of the end of the output the helper finds that line in (`Ring.last_line`). */
+const HELPER_LINE_WINDOW = 4096;
 
 /** The bytes with every occurrence of every value replaced. */
 export function redactBytes(bytes: Uint8Array, values: readonly string[]): Uint8Array {
@@ -37,6 +39,24 @@ export function redactCutBytes(bytes: Uint8Array, values: readonly string[]): Ui
   const redacted = redactBytes(bytes, values);
   const held = heldBack(Buffer.from(redacted), sealedBytes(values));
   return held ? redacted.subarray(0, redacted.byteLength - held) : redacted;
+}
+
+/** A body passed on as it arrives, with every occurrence replaced, across chunks too. */
+export function redactStream(
+  body: ReadableStream<Uint8Array>,
+  values: readonly string[],
+): ReadableStream<Uint8Array> {
+  if (!values.length) return body;
+  const redactor = new ByteRedactor(values);
+  const pass = (bytes: Buffer, controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (bytes.byteLength) controller.enqueue(new Uint8Array(bytes));
+  };
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform: (chunk, controller) => pass(redactor.feed(chunk), controller),
+      flush: (controller) => pass(redactor.end(), controller),
+    }),
+  );
 }
 
 /** A receipt's detail, or any JSON, with every string in it redacted. */
@@ -136,12 +156,22 @@ function heldBack(data: Buffer, secrets: readonly Buffer[]): number {
   return held;
 }
 
-/** A line the helper reports, redacted; a line it cut short loses a value's start at its end. */
-function sealedLine(line: string, secrets: readonly Buffer[]): string {
+/**
+ * The last line a process reports, redacted. The helper cuts it twice before
+ * the service sees it: at the start of the window it reads it from, and at
+ * its length limit. A line it cut short loses what may be a value's start at
+ * its end; a line that may have begun before the window, which only a line at
+ * least as long as the limit can be, loses what may be a value's end at its
+ * start, as output cut at the capture limit does.
+ */
+function sealedLine(process: ProcessFacts, line: string, secrets: readonly Buffer[]): string {
   const redacted = new ByteRedactor(secrets.map((secret) => secret.toString('utf8'))).text(line);
   if ([...line].length < HELPER_LINE_CHARS) return redacted;
-  const bytes = Buffer.from(redacted, 'utf8');
-  return bytes.subarray(0, bytes.length - heldBack(bytes, secrets)).toString('utf8');
+  let bytes = Buffer.from(redacted, 'utf8');
+  bytes = bytes.subarray(0, bytes.length - heldBack(bytes, secrets));
+  if (Math.max(process.oldest, process.cursor - HELPER_LINE_WINDOW) > 0)
+    bytes = bytes.subarray(leadingInside(bytes, secrets));
+  return bytes.toString('utf8');
 }
 
 type Piece = { from: number; data: Uint8Array };
@@ -216,7 +246,7 @@ export function sealedComputer(
   };
   const facts = (process: ProcessFacts, sealed: readonly Buffer[]): ProcessFacts =>
     sealed.length && process.last_line
-      ? { ...process, last_line: sealedLine(process.last_line, sealed) || null }
+      ? { ...process, last_line: sealedLine(process, process.last_line, sealed) || null }
       : process;
   const around = (id: string, abort: AbortSignal) => async (cursor: number, maxBytes: number) => {
     const answer = await computer.read(id, cursor, maxBytes, 0, abort);

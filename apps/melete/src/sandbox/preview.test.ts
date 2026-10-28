@@ -29,6 +29,9 @@ const BIG_SCRIPT = `import "/src/a.js";
 //${'x'.repeat(6 * 1024 * 1024)}
 `;
 
+/** A secret the process was given, which its pages may print. */
+const SEALED = 'PK0123456789ABCDEFGH';
+
 let declared: ReturnType<typeof Bun.serve>;
 let other: ReturnType<typeof Bun.serve>;
 const reached: Seen[] = [];
@@ -74,6 +77,25 @@ beforeAll(() => {
         return new Response(new Uint8Array(51 * 1024 * 1024), {
           headers: { 'content-type': 'application/octet-stream' },
         });
+      if (url.pathname === '/sealed.html')
+        return new Response(`<!doctype html><p>key=${SEALED}</p>`, {
+          headers: { 'content-type': 'text/html', etag: `"${SEALED}"` },
+        });
+      if (url.pathname === '/sealed-streamed')
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              // The value is cut in two across the chunks it arrives in.
+              const bytes = new TextEncoder().encode(`key=${SEALED}\n`);
+              controller.enqueue(bytes.slice(0, 10));
+              controller.enqueue(bytes.slice(10));
+              controller.close();
+            },
+          }),
+          { headers: { 'content-type': 'application/octet-stream' } },
+        );
+      if (url.pathname === '/sealed-away')
+        return Response.redirect(`http://localhost:${declared.port}/next?key=${SEALED}`, 302);
       if (url.pathname === '/big.js')
         return new Response(BIG_SCRIPT, { headers: { 'content-type': 'text/javascript' } });
       if (url.pathname === '/big-streamed.js')
@@ -462,6 +484,31 @@ test('a page, script or style past the rewrite limit is passed on unchanged as i
     expect(text.length).toBe(BIG_SCRIPT.length);
     expect(text.startsWith('import "/src/a.js";')).toBe(true);
   }
+});
+
+test("the space's secrets are kept out of a previewed page, its headers and its output", async () => {
+  const sealed = { valuesOf: async (spaceId: string) => (spaceId === 'spc_1' ? [SEALED] : []) };
+  const printing = {
+    ...helper,
+    read: async () => ({
+      boot: 'b',
+      process: { id: world.row.id, state: 'running', cursor: 30, oldest: 0, last_line: null },
+      read: { from: 0, next: 30, dropped: 0, total: 30 },
+      data: new TextEncoder().encode(`listening, key ${SEALED}\n`),
+    }),
+  } as unknown as ProcessComputer;
+  const service = new SandboxPreviews(access, { computerFor: () => printing, secrets: sealed });
+  const { path } = await service.open(world.row.id, PERSON, DIGEST);
+  const app = serviceWith(service);
+  const shown: string[] = [];
+  for (const file of ['sealed.html', 'sealed-streamed', 'sealed-away']) {
+    const answer = await app.request(`${path}${file}`, { headers: { 'sec-fetch-dest': 'iframe' } });
+    shown.push(JSON.stringify([...answer.headers]), await answer.text());
+  }
+  shown.push(JSON.stringify(await service.output(world.row.id, PERSON)));
+  expect(shown.join('\n')).not.toContain(SEALED.slice(0, 8));
+  expect(shown[1]).toContain('key=[redacted]');
+  expect(shown[3]).toBe('key=[redacted]\n');
 });
 
 test('a preview lasts half an hour from when it was opened, and is refused after', async () => {

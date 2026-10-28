@@ -219,6 +219,11 @@ export class SandboxProcesses {
     this.say = options.log ?? ((line) => process.stderr.write(`${line}\n`));
   }
 
+  /** Every value the space keeps for commands; none where this installation keeps no secrets. */
+  async valuesOf(spaceId: string): Promise<string[]> {
+    return this.secrets ? this.secrets.valuesOf(spaceId) : [];
+  }
+
   /** Keeps the sealed secrets of each space out of what its processes print, from now on. */
   useSecrets(secrets: SealedValues): void {
     this.secrets = secrets;
