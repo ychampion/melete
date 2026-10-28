@@ -34,6 +34,14 @@ export const EXEC_LIMITS = {
   /** The most a caller may ask for. A longer job is several commands. */
   max_timeout_ms: 600_000,
   /**
+   * How long a command holds its step before it moves to the background and
+   * goes on running as a process, where the computer keeps processes; a call
+   * may ask for less or more, up to the most. A command moved there is no
+   * longer held to its timeout, only to a process's time limit.
+   */
+  default_yield_ms: 30_000,
+  max_yield_ms: 120_000,
+  /**
    * How much combined output the model is shown. Output that does not fit is
    * shown as its start and its end, `preview_head_bytes` and
    * `preview_tail_bytes`, with one line between them that says how many bytes

@@ -348,6 +348,32 @@ def test_a_command_killed_for_memory_is_said_to_have_run_out_of_it():
     assert "killed because it used all the memory of 512 MiB its computer allows" in result["output"]
 
 
+def test_a_command_that_moved_to_the_background_is_said_to_be_running_not_ended():
+    broker = ScriptedBroker()
+    broker.receipt = receipt(
+        output="suite 1 of 9",
+        exit_code=None,
+        process_id="prc_1",
+        moved_to_background={
+            "process_id": "prc_1",
+            "elapsed_ms": 30_412,
+            "output_so_far": "suite 1 of 9",
+            "output_so_far_bytes": 13,
+            "why": "still_running",
+        },
+        next_step="Wait for it with process.wait.",
+    )
+    result = environment(broker).execute("npm test")
+    # Settled early, and not a failure: no exit status is read as a signal.
+    assert result["returncode"] == 0
+    output = result["output"]
+    assert output.startswith("[the command is still running: it moved to the background after 30 s")
+    assert "as process prc_1. Do not run it again." in output
+    assert "Wait for it with process.wait." in output
+    assert output.endswith("[its output so far]\nsuite 1 of 9")
+    assert "without an exit status" not in output
+
+
 def test_a_command_with_no_exit_status_is_not_reported_as_success():
     broker = ScriptedBroker()
     broker.receipt = receipt(exit_code=None, signal="SIGTERM")

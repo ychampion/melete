@@ -139,6 +139,14 @@ export const SOURCE_ENV_FILE =
  */
 const KEEP_STAGE = 'head -c "$1"; exec tail -c "$2"';
 
+/**
+ * The same, for a command whose output is also watched as it runs: every byte
+ * goes on to descriptor 3 as well, the output of the process that started the
+ * wrapper. A reader there that goes away is not the command's end: the copy
+ * to it stops, and the marker still keeps what the command prints.
+ */
+const ECHO_KEEP_STAGE = `trap '' PIPE; tee /dev/fd/3 | { ${KEEP_STAGE}; }`;
+
 /** What the wrapper keeps of a command's output: its start, and its newest bytes after that. */
 export type KeptOutput = { head: number; tail: number };
 
@@ -184,6 +192,10 @@ export const ROOT_UNUSABLE_MESSAGE = 'melete_exec_root_unusable';
  * command neither stalls nor dies on a closed pipe, and a runaway command
  * cannot fill the disk with a record nobody reads.
  *
+ * With `echo`, the output also goes on to the wrapper's own output as the
+ * command prints it, for a launcher that keeps it (a background process's
+ * output ring), while the marker keeps its own copy as above.
+ *
  * Before the command starts, the wrapper removes the markers named in
  * `forget` (earlier commands whose outcome the service has recorded) and any
  * marker untouched for `MARKER_RETENTION_DAYS`, so a computer that keeps its
@@ -193,7 +205,7 @@ export function markCommand(
   root: string,
   marker: string,
   argv: readonly string[],
-  options: { keep?: KeptOutput; forget?: readonly string[] } = {},
+  options: { keep?: KeptOutput; forget?: readonly string[]; echo?: boolean } = {},
 ): string[] {
   checkMarkerRoot(root);
   checkMarker(marker);
@@ -235,7 +247,7 @@ export function markCommand(
     // `out` is opened by the enclosing group before either stage starts, so
     // nothing creates a file in the marker while the command runs: a command
     // that removes its own marker leaves it removed.
-    `{ { ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(KEEP_STAGE)} melete-keep ${keep.head} ${keep.tail + 1}; } > "$d/out"`,
+    `{ { ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(options.echo ? ECHO_KEEP_STAGE : KEEP_STAGE)} melete-keep ${keep.head} ${keep.tail + 1}; }${options.echo ? ' 3>&1' : ''} > "$d/out"`,
     `[ -e "$m" ] && cat "$m" ${MEMORY_MAX} 2>/dev/null >> "$d/mem"`,
     'ec=',
     `read ec < "$d/status" 2>/dev/null`,
@@ -617,6 +629,41 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
       started === 'no' ? 'unknown' : started,
     );
   }
+  return settleOutcome(options, outcome);
+}
+
+/**
+ * The script a launcher with no channel of its own for the environment runs:
+ * the wrapper of `markCommand`, after the file `envFile` names is read and
+ * removed, when there is one. The file gone means nothing ran (exit 112).
+ */
+export function launchScript(
+  root: string,
+  request: Pick<CommandRequest, 'marker' | 'argv' | 'forget'>,
+  options: { keep: KeptOutput; envFile: string | null; echo?: boolean },
+): string {
+  const [, , script] = markCommand(root, request.marker, request.argv, {
+    keep: options.keep,
+    ...(request.forget ? { forget: request.forget } : {}),
+    ...(options.echo ? { echo: true } : {}),
+  });
+  if (!script) throw new Error('the wrapper has no script');
+  if (!options.envFile) return script;
+  const file = shellQuote(options.envFile);
+  return `e=${file}; [ -f "$e" ] || exit ${MARKER_SETUP_EXIT}; . "$e"; rm -f "$e"\n${script}`;
+}
+
+/**
+ * What a command that was started came to, from what its launcher saw of it
+ * and from its marker: the rules in the table at the top of this file. The
+ * launcher is the provider's own exec, or anything else that ran the
+ * wrapped command and saw it end, be killed or be lost.
+ */
+export async function settleOutcome(
+  options: RunOptions,
+  outcome: ExecOutcome,
+): Promise<CommandResult> {
+  const { provider, handle, request } = options;
   if (outcome.state === 'lost')
     return fromMarker(options, 'the sandbox lost track of the command', outcome.started);
   if (reentered(outcome))

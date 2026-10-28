@@ -52,6 +52,7 @@ import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { personQuestionKey } from '../broker/ask-person.ts';
 import { redactSecrets } from '../connectors/faults.ts';
+import { type CommandYields, commandYields } from '../connectors/sandbox-yield.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -1459,20 +1460,25 @@ export class AttemptRunner {
   /**
    * Hand the conversation's running attempt the words the person sent during
    * it, when this process runs that attempt. What it cannot take is carried
-   * when the turn ends (`carrySteers`).
+   * when the turn ends (`carrySteers`). A command the attempt is waiting on
+   * moves to the background, so its step ends and the words are read then
+   * rather than after the command.
    */
-  async steer(jobId: string): Promise<void> {
+  async steer(jobId: string, yields: CommandYields = commandYields): Promise<void> {
     const running = [...this.active.values()].find((entry) => entry.jobId === jobId);
-    if (!running || !this.runtime.steer) return;
+    if (!running) return;
     const [current] = await this.jobs.db
       .select({ cursor: attempt.inputCursor })
       .from(attempt)
       .where(eq(attempt.id, running.attemptId));
     if (!current) return;
-    const waiting = await pendingSteers(this.jobs.db, jobId);
-    for (const message of waiting)
-      if (message.seq > current.cursor)
+    const waiting = (await pendingSteers(this.jobs.db, jobId)).filter(
+      (message) => message.seq > current.cursor,
+    );
+    if (this.runtime.steer)
+      for (const message of waiting)
         await this.runtime.steer(running.attemptId, { id: message.id, text: message.text });
+    if (waiting.length) yields.promote(running.attemptId);
   }
 
   /**

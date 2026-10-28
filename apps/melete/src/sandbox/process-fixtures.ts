@@ -3,7 +3,12 @@
  * what the service records and wakes: each sandbox's processes, their output,
  * ports and exits, and each sandbox's boot. The real helper is tested in
  * `process-helper.test.ts`.
+ *
+ * Given a fake provider, a start runs its command for real in that provider's
+ * sandbox, through the fake shell, and the process ends when the command does;
+ * without one, a process runs until a test ends it.
  */
+import type { FakeSandboxProvider, FakeProcess as FakeShellProcess } from './fake.ts';
 import type { ProcessComputer, ProcessFacts, StartRequest } from './process-helper.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
@@ -20,6 +25,8 @@ type FakeProcess = {
   input: string;
   started: number;
   ports: number[];
+  /** The command running in the fake shell, when the processes run for real. */
+  child?: FakeShellProcess;
 };
 
 /** The computers' side, held in memory: processes by sandbox, and each sandbox's boot. */
@@ -27,6 +34,8 @@ export class FakeComputers {
   readonly boots = new Map<string, string>();
   readonly processes = new Map<string, Map<string, FakeProcess>>();
   readonly calls: string[] = [];
+
+  constructor(private readonly options: { run?: FakeSandboxProvider } = {}) {}
 
   private of(sandbox: string) {
     if (!this.boots.has(sandbox)) this.boots.set(sandbox, `boot-${sandbox}-1`);
@@ -103,12 +112,14 @@ export class FakeComputers {
         process.state = 'exited';
         process.exitCode = code;
       }
+      process.child?.kill();
     };
+    const run = this.options.run;
     return {
       start: async (request: StartRequest) => {
         this.calls.push(`start ${request.id}`);
         if (mine().has(request.id)) return { outcome: 'reentered' };
-        const out = encode(`started ${request.command}\n`);
+        const out = run ? new Uint8Array(0) : encode(`started ${request.command}\n`);
         const process: FakeProcess = {
           id: request.id,
           boot: boot(),
@@ -122,12 +133,39 @@ export class FakeComputers {
           ports: [],
         };
         mine().set(request.id, process);
+        const sandboxRow = run?.engine.get(sandbox);
+        if (run && sandboxRow) {
+          process.child = run.engine.spawn(sandboxRow, ['/bin/sh', '-c', request.command], {
+            cwd: request.cwd,
+            onOutput: (bytes) => {
+              process.out = new Uint8Array([...process.out, ...bytes]);
+            },
+          });
+          void process.child.done.then((done) => {
+            if (process.state !== 'running') return;
+            process.state = 'exited';
+            process.exitCode = done.killed ? 137 : done.exitCode;
+          });
+          // As the helper does: back once the command ends, or prints enough, or the wait is up.
+          const by = Date.now() + request.waitMs;
+          while (
+            process.state === 'running' &&
+            process.out.byteLength < request.firstMaxBytes &&
+            Date.now() < by
+          )
+            await Bun.sleep(10);
+        }
         return {
           outcome: 'started',
           boot: boot(),
           process: this.facts(sandbox, process),
-          read: { from: 0, next: out.byteLength, dropped: 0, total: out.byteLength },
-          data: out,
+          read: {
+            from: 0,
+            next: process.out.byteLength,
+            dropped: 0,
+            total: process.out.byteLength,
+          },
+          data: process.out,
         };
       },
       status: async (ids) => {

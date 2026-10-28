@@ -357,6 +357,16 @@ export const COMMAND_WORDS: readonly string[] = [
 ];
 
 /**
+ * What a command that moved to the background is. Its result arrives before
+ * it ends, and a model that took that for the end ran it again or reported a
+ * result it did not have yet. Shown only where `terminal.run` is offered.
+ */
+export const MOVED_COMMAND_WORDS: readonly string[] = [
+  'A command that moved to the background is still running: tell the person, do not run it',
+  'again, and wait for it with process.wait or end your turn to be woken when it ends.',
+];
+
+/**
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
@@ -385,7 +395,9 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
     ...(bundle.tools.some((tool) => tool.name === 'run.start' && tool.connection_id === null)
       ? BACKGROUND_WORDS
       : []),
-    ...(bundle.tools.some((tool) => tool.name === 'terminal.run') ? COMMAND_WORDS : []),
+    ...(bundle.tools.some((tool) => tool.name === 'terminal.run')
+      ? [...COMMAND_WORDS, ...MOVED_COMMAND_WORDS]
+      : []),
     ...OUTSIDE_WORDS,
     ...ASKING,
     ...LOOKING_UP,

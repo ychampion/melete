@@ -310,6 +310,16 @@ export class SandboxProcesses {
   }
 
   /**
+   * Remove the row of a process that has ended and that nobody needs to see:
+   * a command that was waited for to its end, whose result says it all. A
+   * live row stays.
+   */
+  async forget(id: string): Promise<void> {
+    await this.sql`delete from sandbox_process
+      where id = ${id} and state not in ('starting', 'running')`;
+  }
+
+  /**
    * Bring one row up to what the computer says about its process. The row is
    * changed only while it is still in the state it was read in: a copy read
    * before a stop, an expiry or a cancellation closed it never reopens it, and

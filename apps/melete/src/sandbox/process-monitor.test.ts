@@ -109,7 +109,8 @@ withDb('waking a job from its background process', () => {
     await handle.sql`truncate "owner", "space", event_retention cascade`;
   });
 
-  const setup = async () => {
+  /** `runCommands`: processes run their commands for real, in the fake provider's shell. */
+  const setup = async (over: { runCommands?: boolean } = {}) => {
     if (!handle || !jobs) throw new Error('Postgres is unavailable');
     const sql = handle.sql;
     const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), { key });
@@ -127,7 +128,7 @@ withDb('waking a job from its background process', () => {
       leaseSeconds: 300,
       workspaceRetentionSeconds: 3_600,
     });
-    const computers = new FakeComputers();
+    const computers = new FakeComputers(over.runCommands ? { run: provider } : {});
     const processes = new SandboxProcesses(sql, {
       limits: {
         maxPerComputer: 8,
@@ -305,6 +306,48 @@ withDb('waking a job from its background process', () => {
       watchesOf,
     };
   };
+
+  test('a terminal command that moved to the background wakes the conversation when it ends', async () => {
+    const s = await setup({ runCommands: true });
+    const row = await s.conversation('Run the slow tests');
+    const first = await s.claim(row);
+    const moved = s.detail(
+      await s.run(first.claims, 'terminal.run', {
+        command: 'echo suite 1 of 2; sleep 3; echo 1 failed, 1 passed; exit 1',
+        yield_after_ms: 1_000,
+      }),
+    );
+    const id = String(moved.process_id);
+    expect(moved).toMatchObject({
+      exit_code: null,
+      moved_to_background: { process_id: id, why: 'still_running' },
+      watch: { on: 'exit', wait_with: `process:${id}` },
+    });
+    const waiting = await s.waitOn(first.claims, id);
+    expect(waiting.state).toBe('waiting_for_event_or_time');
+    await s.pass();
+    expect((await s.job(row.id)).state).toBe('waiting_for_event_or_time');
+
+    // The command ends on its own, in its computer.
+    const sandbox = await s.sandboxOf();
+    const by = Date.now() + 20_000;
+    while (s.computers.get(sandbox, id)?.state !== 'exited' && Date.now() < by) await Bun.sleep(50);
+    await s.pass();
+    expect((await s.job(row.id)).state).toBe('queued');
+    const next = await s.claim(row);
+    expect(next.bundle.inputs.trigger_events).toEqual([
+      expect.objectContaining({
+        event_name: 'process.exited',
+        payload: expect.objectContaining({
+          process_id: id,
+          state: 'exited',
+          exit_code: 1,
+          tail: expect.stringContaining('1 failed, 1 passed'),
+        }),
+      }),
+    ]);
+    expect(await s.attempts(row.id)).toBe(2);
+  }, 60_000);
 
   test('a process exit wakes the waiting job with its exit code and last lines', async () => {
     const s = await setup();

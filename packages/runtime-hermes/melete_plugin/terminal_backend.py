@@ -328,6 +328,9 @@ def _signal_status(name: Any) -> int:
 
 def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
     """The engine's `{"output", "returncode"}` from the receipt the broker wrote."""
+    moved = detail.get("moved_to_background")
+    if isinstance(moved, dict):
+        return _moved(detail, moved)
     output = str(detail.get("output") or "")
     notes: List[str] = []
     if not output:
@@ -385,6 +388,34 @@ def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
     if notes:
         output = (output + "\n" if output else "") + "\n".join(notes)
     return _result(output, returncode)
+
+
+def _moved(detail: Dict[str, Any], moved: Dict[str, Any]) -> Dict[str, Any]:
+    """A command that moved to the background: settled early, and still running.
+
+    Said first, so it is not read as a command that ended: it has no exit
+    status yet, and running it again would start a second copy.
+    """
+    process = moved.get("process_id")
+    seconds = moved.get("elapsed_ms")
+    ran = (
+        f" after {int(seconds) // 1000} s"
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
+        else ""
+    )
+    why = (
+        " because the person sent a message"
+        if moved.get("why") == "person_spoke"
+        else ""
+    )
+    head = (
+        f"[the command is still running: it moved to the background{ran}{why}, "
+        f"as process {process}. Do not run it again. "
+        f"{detail.get('next_step') or 'Wait for it with process.wait, or end the turn.'}]"
+    )
+    so_far = str(moved.get("output_so_far") or "")
+    body = f"{head}\n[its output so far]\n{so_far}" if so_far else f"{head}\n[no output so far]"
+    return _result(body, 0)
 
 
 def engine_classes(provider_base: Any = None, environment_base: Any = None) -> Any:
