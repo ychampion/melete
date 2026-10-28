@@ -184,6 +184,8 @@ export class RoomGate {
     thread?: string;
     title?: string;
     ask_agent?: boolean;
+    /** Files the person uploaded to the room for this message. */
+    attachments?: readonly string[];
     /** The platform's own id for the message. */
     external_ref?: string;
   }) {
@@ -193,7 +195,11 @@ export class RoomGate {
     return this.deps.rooms.post(
       input.room,
       actor,
-      { text: input.text, submission_id: input.submission_id },
+      {
+        text: input.text,
+        submission_id: input.submission_id,
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      },
       input.thread !== undefined
         ? { threadId: input.thread }
         : { title: input.title, askAgent: input.ask_agent },

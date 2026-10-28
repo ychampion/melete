@@ -1037,6 +1037,13 @@
       "when": 1789232400127,
       "tag": "0147_room_board",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1789232400128,
+      "tag": "0148_room_attachments",
+      "breakpoints": true
     }
   ]
 }
