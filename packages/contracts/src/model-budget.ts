@@ -24,6 +24,7 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'nvidia/nemotron-3-super-120b-a12b': 262_144,
   'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B': 262_144,
   'nvidia/Nemotron-3-Ultra-550b-a55b': 1_048_576,
+  'nvidia/Nemotron-3.5-Super-VL': 1_048_576,
   // Anthropic's current models, as its Messages API names them. Unlisted, a
   // Claude model fell back to 128,000, below the 128,000-token output cap the
   // engine asks of every current Claude model, so every call was refused.

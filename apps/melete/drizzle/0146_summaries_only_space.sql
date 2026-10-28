@@ -1,0 +1,1 @@
+ALTER TABLE "space_policy" ADD COLUMN "summaries_only" boolean DEFAULT false NOT NULL;

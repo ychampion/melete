@@ -29,6 +29,12 @@ const PRESETS: Readonly<Record<string, readonly ModelPreset[]>> = {
       supportsTools: true,
       supportsVision: false,
     },
+    {
+      id: 'nvidia/Nemotron-3.5-Super-VL',
+      label: 'NVIDIA Nemotron 3.5 Super VL',
+      supportsTools: true,
+      supportsVision: true,
+    },
   ],
 };
 

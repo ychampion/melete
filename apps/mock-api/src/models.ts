@@ -55,6 +55,7 @@ const FIXTURE_MODELS: Record<string, string[]> = {
     'nvidia/nemotron-3-super-120b-a12b',
     'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
     'nvidia/Nemotron-3-Ultra-550b-a55b',
+    'nvidia/Nemotron-3.5-Super-VL',
   ],
 };
 

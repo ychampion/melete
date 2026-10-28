@@ -689,7 +689,7 @@ withDb('room board', () => {
     const push = new PushService(db, { keys: null, subject: null, extraOrigins: [] });
     await push.collectDecisions(world.bob.id, new Date(0));
     const [waiting] = await sql`select principal_id, body, dropped_at from push_intent
-      where dedup_key = ${`board:${note.item}`}`;
+      where dedup_key = ${`board:${note.item}:${world.bob.id}`}`;
     expect(waiting).toMatchObject({
       principal_id: world.bob.id,
       body: 'Bring the permission slip',
@@ -707,4 +707,97 @@ withDb('room board', () => {
     expect(told?.n).toBe(0);
     expect(titles(await listOf(world.alice, roomId))).toEqual(['Bring the permission slip']);
   }, 60_000);
+  test('the agent changes the board only as the person it works for could', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Rules');
+    const owner = await request(world.alice, roomId);
+    const bobsTask = await tool(owner.claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Bob task',
+      assignee: world.bob.id,
+    });
+    const openTask = await tool(owner.claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Anyone task',
+    });
+    const question = await tool(owner.claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Bob question',
+      visibility: 'everyone',
+    });
+    const carols = await request(world.carol, roomId, '@Melete tidy the board');
+    const succeeded = async (claims: CapabilityClaims, payload: Record<string, unknown>) =>
+      (await tool(claims, roomId, 'board.update', payload)).status === 'succeeded';
+    // What is someone else's stays theirs: not done, edited or given away by another member.
+    expect(await succeeded(carols.claims, { item_id: bobsTask.item, state: 'done' })).toBe(false);
+    expect(await succeeded(carols.claims, { item_id: bobsTask.item, title: 'Mine now' })).toBe(
+      false,
+    );
+    expect(
+      await succeeded(carols.claims, { item_id: bobsTask.item, assignee: world.carol.id }),
+    ).toBe(false);
+    // Nobody's task: a member takes it on, but gives it to no one else.
+    expect(await succeeded(carols.claims, { item_id: openTask.item, assignee: world.bob.id })).toBe(
+      false,
+    );
+    expect(
+      await succeeded(carols.claims, { item_id: openTask.item, assignee: world.carol.id }),
+    ).toBe(true);
+    expect(await succeeded(carols.claims, { item_id: openTask.item, state: 'done' })).toBe(true);
+    // Only an owner keeps an item for the owners, on a new item or a change.
+    expect(await succeeded(carols.claims, { item_id: openTask.item, visibility: 'owners' })).toBe(
+      false,
+    );
+    expect(
+      (
+        await tool(carols.claims, roomId, 'board.add', {
+          kind: 'event',
+          title: 'Carol hides this',
+          visibility: 'owners',
+        })
+      ).status,
+    ).not.toBe('succeeded');
+    // Only an answer closes a question, whoever asks.
+    for (const claims of [carols.claims, owner.claims])
+      expect(await succeeded(claims, { item_id: question.item, state: 'done' })).toBe(false);
+    // The person on it, and an owner, change it.
+    const bobs = await request(world.bob, roomId, '@Melete I did my task');
+    expect(await succeeded(bobs.claims, { item_id: bobsTask.item, state: 'done' })).toBe(true);
+    expect(await succeeded(owner.claims, { item_id: bobsTask.item, state: 'open' })).toBe(true);
+    const items = await listOf(world.alice, roomId);
+    const by = (id: string | null) => items.find((item) => item.id === id);
+    expect([by(bobsTask.item)?.title, by(bobsTask.item)?.state]).toEqual(['Bob task', 'open']);
+    expect([by(openTask.item)?.assignee?.principal_id, by(openTask.item)?.visibility]).toEqual([
+      world.carol.id,
+      'everyone',
+    ]);
+    expect([by(question.item)?.state, by(question.item)?.answer]).toEqual(['open', null]);
+    expect(titles(items)).not.toContain('Carol hides this');
+    // Someone newly given a note is told, and a question only the owners see goes to no member.
+    await sql`insert into push_subscription (id, principal_id, endpoint, p256dh, auth)
+      values (${`ps${randomBytes(6).toString('hex')}`}, ${world.carol.id},
+        ${`https://push.example.test/${randomBytes(6).toString('hex')}`}, 'key', 'auth')`;
+    const note = await tool(owner.claims, roomId, 'board.note', {
+      assignee: world.bob.id,
+      title: 'Passed on note',
+    });
+    expect(await succeeded(owner.claims, { item_id: note.item, assignee: world.carol.id })).toBe(
+      true,
+    );
+    const [told] = await sql`select body from push_intent
+      where principal_id = ${world.carol.id} and dedup_key = ${`board:${note.item}:${world.carol.id}`}`;
+    expect(told?.body).toBe('Passed on note');
+    const ownersQuestion = await tool(owner.claims, roomId, 'board.ask', {
+      assignee: world.alice.id,
+      title: 'Owners question',
+      visibility: 'owners',
+    });
+    expect(ownersQuestion.status).toBe('succeeded');
+    expect(
+      await succeeded(owner.claims, { item_id: ownersQuestion.item, assignee: world.carol.id }),
+    ).toBe(false);
+    const [hidden] = await sql`select count(*)::int as n from push_intent
+      where principal_id = ${world.carol.id} and body = 'Owners question'`;
+    expect(hidden?.n).toBe(0);
+  }, 90_000);
 });

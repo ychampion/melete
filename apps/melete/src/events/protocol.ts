@@ -10,6 +10,7 @@ import { action, event, eventRetention, job } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { jobView } from '../jobs/service.ts';
 import { requireJobAccess, visibleJob } from '../principals/authority.ts';
+import { keptBackReceipt, summariesOnlyJobs } from '../spaces/summaries.ts';
 
 type Position = { cursor: number; epoch: number | null; retainedAfter: number };
 export type StreamHandshake = Position & { frames: string[] };
@@ -51,6 +52,11 @@ export class EventProtocol {
       .where(
         and(jobId ? eq(action.jobId, jobId) : undefined, visibleJob(action.jobId, principalId)),
       );
+    // In a summaries-only space a receipt names what was touched, never what it said.
+    const held = await summariesOnlyJobs(
+      tx,
+      actions.map((row) => row.jobId),
+    );
     return responsibilitySnapshot.parse({
       cursor: position.cursor,
       epoch: position.epoch,
@@ -60,7 +66,9 @@ export class EventProtocol {
         job_id: row.jobId,
         status: row.status,
         dispatched_at: row.dispatchedAt?.toISOString() ?? null,
-        receipt: row.receipt,
+        receipt: held.has(row.jobId)
+          ? keptBackReceipt(row.receipt as Record<string, unknown> | null)
+          : row.receipt,
       })),
     });
   }

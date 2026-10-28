@@ -17,6 +17,7 @@ import { href } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import './files.css';
 import { assistantName } from '../experience/instance.ts';
+import { SummariesOnlyBanner, useSummariesOnly } from './SummariesOnly.tsx';
 
 type Filter = 'all' | PersonFile['place'];
 
@@ -76,29 +77,66 @@ function when(iso: string, now: number): string {
   });
 }
 
-/** Opens a file here: a PDF, a picture or text, read from the service. */
-function Preview({ file, onClose }: { file: PersonFile; onClose: () => void }) {
+/** Whether a file is one the space keeps behind "Open the original": anything but what the person sent. */
+export const keptBack = (file: Pick<PersonFile, 'place'>, summaries: boolean): boolean =>
+  summaries && file.place !== 'sent';
+
+/** What a file is, in words, for its summary card. */
+export function kindWords(file: Pick<PersonFile, 'mime'>): string {
+  const type = file.mime.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (type === 'application/pdf') return 'A PDF document';
+  if (type.startsWith('image/')) return 'A picture';
+  if (type.startsWith('audio/')) return 'A recording';
+  if (type === 'text/csv') return 'A spreadsheet';
+  if (type.startsWith('text/') || type === 'application/json') return 'A text document';
+  return 'A file';
+}
+
+/**
+ * Opens a file here: a PDF, a picture or text, read from the service. In a
+ * space that shows only what needs the person, it opens on a summary instead,
+ * and the original is read only when they ask for it, which the service notes.
+ */
+function Preview({
+  file,
+  summaries,
+  onClose,
+}: {
+  file: PersonFile;
+  summaries: boolean;
+  onClose: () => void;
+}) {
+  const held = keptBack(file, summaries);
   const [shown, setShown] = useState<SavedFilePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [asked, setAsked] = useState(!held);
   const link = adapter.fileUrl(file.id);
   useEffect(() => {
+    if (!asked) return;
     let live = true;
     let made: SavedFilePreview | null = null;
-    void adapter.filePreview(file.id).then((result) => {
+    void (held ? adapter.openOriginal(file.id) : adapter.filePreview(file.id)).then((result) => {
       if (!live) {
         if (result.data && result.data.kind !== 'text') URL.revokeObjectURL(result.data.url);
         return;
       }
       made = result.data;
-      if (result.data) setShown(result.data);
-      else setError(result.error ?? result.unavailable ?? 'Couldn’t open this file.');
+      if (result.data) {
+        setShown(result.data);
+        if (held)
+          toast({
+            kind: 'ok',
+            title: 'Original opened',
+            sub: 'This open is noted in the space’s activity.',
+          });
+      } else setError(result.error ?? result.unavailable ?? 'Couldn’t open this file.');
     });
     // A picture or PDF is held at a local address while it is shown, and let go after.
     return () => {
       live = false;
       if (made && made.kind !== 'text') URL.revokeObjectURL(made.url);
     };
-  }, [file.id]);
+  }, [file.id, asked, held]);
   return (
     <Dialog
       open
@@ -113,23 +151,60 @@ function Preview({ file, onClose }: { file: PersonFile; onClose: () => void }) {
               Open the chat
             </a>
           ) : null}
-          <a className="btn btn-md btn-outline" href={link} download={file.name}>
-            Download
-          </a>
+          {held ? (
+            asked ? null : (
+              <Button variant="outline" onClick={() => setAsked(true)}>
+                Open the original
+              </Button>
+            )
+          ) : (
+            <a className="btn btn-md btn-outline" href={link} download={file.name}>
+              Download
+            </a>
+          )}
           <Button onClick={onClose}>Close</Button>
         </>
       }
     >
-      {error ? (
+      {!asked ? (
+        <SummaryCard file={file} />
+      ) : error ? (
         <p role="alert" className="permission-why">
           {error}
         </p>
       ) : shown === null ? (
         <p className="permission-why">Opening…</p>
       ) : (
-        <SavedFileShown shown={shown} name={file.name} href={link} />
+        <SavedFileShown
+          shown={shown}
+          name={file.name}
+          href={held && shown.kind !== 'text' ? shown.url : link}
+        />
       )}
     </Dialog>
+  );
+}
+
+/** A file in a summaries-only space, before its original is opened: what it is, never what it says. */
+function SummaryCard({ file }: { file: PersonFile }) {
+  const now = useNow(false, 60_000);
+  return (
+    <div className="col summaries-card" style={{ gap: 10 }}>
+      <dl className="summaries-facts">
+        <dt>What it is</dt>
+        <dd>
+          {kindWords(file)}, {attachmentSize(file.size)}
+        </dd>
+        <dt>Where it came from</dt>
+        <dd>{file.chat ? `Saved in “${file.chat.title}”` : `Saved by ${assistantName()}`}</dd>
+        <dt>When</dt>
+        <dd>{when(file.saved_at, now)}</dd>
+      </dl>
+      <p className="summaries-sub">
+        {assistantName()} has read this for you. Ask in the chat for what it says or what to do
+        next. Open the original only if you need it; the open is noted in the space’s activity.
+      </p>
+    </div>
   );
 }
 
@@ -138,12 +213,16 @@ export function FileRow({
   now,
   onOpen,
   onDelete,
+  summaries = false,
 }: {
   file: PersonFile;
   now: number;
   onOpen: (file: PersonFile) => void;
   onDelete: (file: PersonFile) => void;
+  /** The space shows only what needs the person: the file opens on its summary, with no download. */
+  summaries?: boolean;
 }) {
+  const held = keptBack(file, summaries);
   const link = adapter.fileUrl(file.id);
   const name = (
     <>
@@ -158,12 +237,12 @@ export function FileRow({
   );
   return (
     <li className="list-row files-row">
-      {opensHere(file) ? (
+      {held || opensHere(file) ? (
         <button
           type="button"
           className="files-open"
           onClick={() => onOpen(file)}
-          aria-label={`Open ${file.name}`}
+          aria-label={held ? `Summary of ${file.name}` : `Open ${file.name}`}
         >
           {name}
         </button>
@@ -178,16 +257,18 @@ export function FileRow({
         </a>
       ) : null}
       <span className="files-actions">
-        <a
-          className="icon-btn icon-ghost"
-          style={{ width: 32, height: 32 }}
-          href={link}
-          download={file.name}
-          aria-label={`Download ${file.name}`}
-          title="Download"
-        >
-          <Icon name="download" size={16} />
-        </a>
+        {held ? null : (
+          <a
+            className="icon-btn icon-ghost"
+            style={{ width: 32, height: 32 }}
+            href={link}
+            download={file.name}
+            aria-label={`Download ${file.name}`}
+            title="Download"
+          >
+            <Icon name="download" size={16} />
+          </a>
+        )}
         {file.deletable ? (
           <IconButton name="trash" label={`Delete ${file.name}`} onClick={() => onDelete(file)} />
         ) : null}
@@ -237,6 +318,7 @@ export function StorageUse({ storage }: { storage: PersonStorage }) {
 
 export function FilesScreen() {
   const loaded = useLoad(() => adapter.files(), []);
+  const summaries = useSummariesOnly().on;
   const [filter, setFilter] = useState<Filter>('all');
   const [opened, setOpened] = useState<PersonFile | null>(null);
   const [deleting, setDeleting] = useState<PersonFile | null>(null);
@@ -297,6 +379,7 @@ export function FilesScreen() {
             <RailToggle />
           </div>
         </div>
+        {summaries ? <SummariesOnlyBanner /> : null}
         {loaded.data?.storage ? <StorageUse storage={loaded.data.storage} /> : null}
         {files.length > 0 ? (
           <div className="files-filter">
@@ -344,6 +427,7 @@ export function FilesScreen() {
                     now={now}
                     onOpen={setOpened}
                     onDelete={setDeleting}
+                    summaries={summaries}
                   />
                 ))}
               </ul>
@@ -353,7 +437,9 @@ export function FilesScreen() {
           </div>
         ) : null}
       </div>
-      {opened ? <Preview file={opened} onClose={() => setOpened(null)} /> : null}
+      {opened ? (
+        <Preview file={opened} summaries={summaries} onClose={() => setOpened(null)} />
+      ) : null}
       <Dialog
         open={deleting !== null}
         onClose={() => setDeleting(null)}
