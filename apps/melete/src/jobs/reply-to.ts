@@ -66,8 +66,8 @@ export async function replyTarget(
   }
   if (target.type !== 'text_delta' || !isAssistantMessage(target) || !target.attemptId)
     throw refused();
-  // The answer is the text streamed from this piece on, until the attempt
-  // stopped to call a tool: the message that piece starts.
+  // The answer is the text the attempt streamed from this piece on: one bubble
+  // in the chat, whatever tools it called between its words.
   const pieces = await tx
     .select({ type: event.type, payload: event.payload })
     .from(event)
@@ -81,12 +81,31 @@ export async function replyTarget(
     )
     .orderBy(asc(event.seq))
     .limit(PIECES_READ);
-  let said = '';
-  for (const piece of pieces) {
-    if (piece.type !== 'text_delta') break;
-    said += textOf(piece.payload);
-  }
-  const text = quoteOf(said);
+  const text = quoteOf(
+    answerText(pieces.map((piece) => ({ ...piece, text: textOf(piece.payload) }))),
+  );
   if (!text) throw refused();
   return { message_id: parsed.data, by: 'assistant', text };
+}
+
+/**
+ * An answer's words from its streamed pieces in order. A tool call between two
+ * runs of text separates them with a line break, so the quote does not run the
+ * words before and after it together.
+ */
+export function answerText(pieces: readonly { type: string; text: string }[]): string {
+  let said = '';
+  let broken = false;
+  for (const piece of pieces) {
+    if (piece.type !== 'text_delta') {
+      broken = said.length > 0;
+      continue;
+    }
+    if (broken && piece.text) {
+      said = `${said.trimEnd()}
+${piece.text.trimStart()}`;
+      broken = false;
+    } else said += piece.text;
+  }
+  return said;
 }
