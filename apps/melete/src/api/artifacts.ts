@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { type FileHandle, realpath } from 'node:fs/promises';
-import { ID_PREFIXES, prefixedId, SUMMARIES_ONLY_CODE } from '@melete/contracts';
+import { ID_PREFIXES, originalKind, prefixedId, SUMMARIES_ONLY_CODE } from '@melete/contracts';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { ArtifactRoots } from '../artifact/content.ts';
@@ -276,7 +276,7 @@ async function generatedSpeech(
 async function noteOpen(
   db: Database,
   opened: Opened,
-  file: { spaceId: string; name: string; viewer: string | undefined },
+  file: { spaceId: string; mime: string; viewer: string | undefined },
 ): Promise<void> {
   try {
     if (!file.viewer) throw notFound();
@@ -285,7 +285,7 @@ async function noteOpen(
       principalId: file.viewer,
       note: 'original_opened',
       where: 'Files',
-      destination: file.name,
+      destination: originalKind(file.mime),
     });
   } catch (error) {
     await opened.handle.close().catch(() => undefined);
@@ -347,7 +347,7 @@ export function mountArtifacts(
     if (noted)
       await noteOpen(db, opened, {
         spaceId: found.artifact.spaceId,
-        name,
+        mime: found.artifact.mime,
         viewer: viewer ?? c.get('owner')?.id,
       });
     return fileResponse(opened, {
@@ -401,7 +401,7 @@ export function mountArtifacts(
     if (noted)
       await noteOpen(db, opened, {
         spaceId: row.job.spaceId,
-        name,
+        mime: mimeForName(name),
         viewer: scope.principalId ?? c.get('owner')?.id,
       });
     return fileResponse(opened, {

@@ -158,5 +158,5 @@ export function seedSummariesOnly(deps: SummariesDeps): void {
       savedAt: new Date(now - file.hoursAgo * 3_600_000).toISOString(),
     });
   noteActivity(deps, 'summaries_on', null, new Date(now - 80 * 3_600_000));
-  noteActivity(deps, 'original_opened', 'Health plan letter.txt', new Date(now - 74 * 3_600_000));
+  noteActivity(deps, 'original_opened', 'A text document', new Date(now - 74 * 3_600_000));
 }

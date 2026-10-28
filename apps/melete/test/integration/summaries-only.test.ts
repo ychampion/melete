@@ -17,9 +17,14 @@ import { recordId } from '../../src/broker/records.ts';
 import { job } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
+import { EventProtocol } from '../../src/events/protocol.ts';
 import { createApp } from '../../src/index.ts';
 import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
-import { SUMMARIES_ONLY_INSTRUCTION, summariesOnlyIn } from '../../src/spaces/summaries.ts';
+import {
+  RECEIPT_KEPT_BACK,
+  SUMMARIES_ONLY_INSTRUCTION,
+  summariesOnlyIn,
+} from '../../src/spaces/summaries.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -209,9 +214,12 @@ databaseTest(
 
     const notes = await openedNotes();
     expect(notes).toHaveLength(already + 2);
-    expect(notes.map((entry) => entry.destination)).toEqual(
-      expect.arrayContaining(['appeal.txt', 'eob.txt']),
-    );
+    // Noted by kind, never by name: a name can say what the file holds.
+    expect(notes.slice(0, 2).map((entry) => entry.destination)).toEqual([
+      'A text document',
+      'A text document',
+    ]);
+    expect(JSON.stringify(notes)).not.toContain('appeal.txt');
     expect(notes[0]).toMatchObject({
       what: 'Opened the original',
       where: 'Files',
@@ -273,6 +281,50 @@ databaseTest(
     expect(await played.text()).toBe(said);
     expect(await opens()).toBe(already + 1);
     await turn(false);
+  },
+);
+
+databaseTest(
+  'a step’s receipt names what it read, never what it said, while the setting is on',
+  async () => {
+    const id = recordId('act');
+    const payload = JSON.stringify({ uid: '7' });
+    const receipt = {
+      action_id: id,
+      connection_id: connectionId,
+      external_ref: null,
+      detail: {
+        message: { subject: 'Rent notice', text: 'Pay 1,250 to account 5566' },
+        path: 'inbox',
+      },
+      received_at: new Date().toISOString(),
+      late: false,
+    };
+    await sql()`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+      canonical_payload, payload_hash, status, idempotency_key, receipt, resolved_at)
+    values (${id}, ${jobId}, ${attemptId}, ${connectionId}, 'email.read', 'read',
+      ${payload}::jsonb, ${hash(payload)}, 'succeeded', ${id}, ${JSON.stringify(receipt)}::jsonb, now())`;
+    const listed = async () => {
+      const response = await read('/actions?effect_class=read&limit=200');
+      expect(response.status).toBe(200);
+      const { actions } = (await response.json()) as {
+        actions: { id: string; receipt: { detail: Record<string, unknown> } | null }[];
+      };
+      return actions.find((entry) => entry.id === id)?.receipt?.detail;
+    };
+    expect(await listed()).toEqual(receipt.detail);
+    await turn(true);
+    expect(await listed()).toEqual({
+      kept_back: RECEIPT_KEPT_BACK,
+      path: 'inbox',
+      message: { subject: 'Rent notice' },
+    });
+    const snapshot = await new EventProtocol(fixture?.db as never).snapshot(jobId);
+    const seen = JSON.stringify(snapshot.actions.find((entry) => entry.id === id));
+    expect(seen).toContain(RECEIPT_KEPT_BACK);
+    expect(seen).not.toContain('5566');
+    await turn(false);
+    expect(await listed()).toEqual(receipt.detail);
   },
 );
 

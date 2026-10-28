@@ -48,7 +48,7 @@ test('the fixture shows a summaries-only space with saved files and the notes th
   expect((await activity())[0]).toMatchObject({
     note: 'original_opened',
     what: 'Opened the original',
-    destination: 'Electric bill, October.txt',
+    destination: 'A text document',
   });
 
   const off = await call(`/spaces/${mock.spaceId}/summaries-only`, {

@@ -10,14 +10,25 @@
  *
  * - the content routes of the space's files refuse (`api/artifacts.ts`), and an
  *   original is read only through its `original` route, which notes the open
- *   here first;
+ *   here first; only speech Melete made itself plays as before;
+ * - a room's memory shows each detail's label, never its words (`rooms/memory.ts`);
+ * - a step's receipt, as `/actions` and the snapshot routes return it, names
+ *   what was read (a path, a subject) and marks the rest as kept back;
  * - the agent's instructions say to answer with summaries and action cards and
  *   not to quote (`jobs/bundle.ts`);
  * - turning it on or off is noted too, so the person being helped can see in
  *   the space's activity what was opened, by whom and when.
  *
+ * In a room, a request's work belongs to the room, so its members and other
+ * owners never read its steps, screenshots or live browser at all. In a
+ * personal space the person whose work it is still sees, outside this
+ * setting: the agent's own words (answers, run reports, drafts it proposes),
+ * its screenshots and live browser, its computer's output, and the account
+ * export.
+ *
  * The notes are activity records, the same log the space already keeps of what
- * was done in a person's name. They name what was opened, never what it said.
+ * was done in a person's name. They name the kind of file opened, never its
+ * name or what it said.
  */
 import {
   type SummariesOnlySetting,
@@ -28,7 +39,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { activityRecord, principal } from '../db/schema.ts';
+import { activityRecord, job, principal } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../memory/db.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -105,7 +116,7 @@ export async function noteInActivity(
     note: SummaryNote;
     /** Where it happened, such as "Files". */
     where: string;
-    /** The file's name, for an open. */
+    /** What kind of file was opened, never its name (`originalKind`). */
     destination?: string | null;
   },
 ): Promise<void> {
@@ -220,4 +231,44 @@ export function mountSummariesOnly(app: Hono, deps: { db: Database }): void {
     });
     return c.json(await view(db, spaceId, true));
   });
+}
+
+/** What a receipt's words read as in a summaries-only space. */
+export const RECEIPT_KEPT_BACK = 'Kept back: this space shows only what needs you.';
+
+/** The detail fields that say what a step touched, never what anything said. */
+const NAMING = ['path', 'to', 'area', 'artifact_id', 'content_hash', 'mime', 'bytes', 'message_id'];
+
+const subjectOf = (value: unknown) =>
+  value && typeof value === 'object' && typeof (value as { subject?: unknown }).subject === 'string'
+    ? { subject: (value as { subject: string }).subject }
+    : {};
+
+/**
+ * A step's receipt as the people in a summaries-only space read it: what was
+ * touched, by path and subject, and a marker where the rest was. Fields not
+ * named here are dropped, so a connector's new field is kept back by default.
+ */
+export function keptBackReceipt<R extends Record<string, unknown> | null>(receipt: R): R {
+  if (!receipt) return receipt;
+  const detail = (receipt.detail ?? {}) as Record<string, unknown>;
+  const kept: Record<string, unknown> = { kept_back: RECEIPT_KEPT_BACK };
+  for (const field of NAMING) if (field in detail) kept[field] = detail[field];
+  if (detail.message !== undefined) kept.message = subjectOf(detail.message);
+  if (Array.isArray(detail.messages)) kept.messages = detail.messages.map(subjectOf);
+  return { ...receipt, detail: kept };
+}
+
+/** Which of these jobs are in a space set to summaries only. */
+export async function summariesOnlyJobs(
+  reader: Database | Transaction,
+  jobIds: readonly string[],
+): Promise<Set<string>> {
+  if (!jobIds.length) return new Set();
+  const rows = await reader
+    .select({ id: job.id })
+    .from(job)
+    .innerJoin(spacePolicy, eq(spacePolicy.spaceId, job.spaceId))
+    .where(and(inArray(job.id, [...new Set(jobIds)]), eq(spacePolicy.summariesOnly, true)));
+  return new Set(rows.map((row) => row.id));
 }

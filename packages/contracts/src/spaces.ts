@@ -272,5 +272,19 @@ export const summariesOnlyChange = z
   .meta({ id: 'SummariesOnlyChange' });
 export type SummariesOnlyChange = z.infer<typeof summariesOnlyChange>;
 
+/**
+ * What an opened original is noted as in a summaries-only space: its kind,
+ * never its name, since a name can say what the file holds.
+ */
+export function originalKind(mime: string): string {
+  const type = mime.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (type === 'application/pdf') return 'A PDF document';
+  if (type.startsWith('image/')) return 'A picture';
+  if (type.startsWith('audio/')) return 'A recording';
+  if (type === 'text/csv') return 'A spreadsheet';
+  if (type.startsWith('text/') || type === 'application/json') return 'A text document';
+  return 'A file';
+}
+
 /** The error code a file's content route answers with in a summaries-only space. */
 export const SUMMARIES_ONLY_CODE = 'summaries_only';

@@ -49,6 +49,7 @@ import {
   knowledgeRecordResponse,
   knowledgeSearchQuery,
   knowledgeSearchResponse,
+  originalKind,
   ownerResponse,
   type PersonFile,
   personFileDeleted,
@@ -541,7 +542,7 @@ export function createMockApp(deps: AppDeps) {
     const name = entry.artifact.path.split('/').at(-1) ?? 'artifact';
     if (store.summariesOnly && !entry.artifact.mime.startsWith('audio/')) {
       if (!original) return c.json(summariesRefused(), 403);
-      noteActivity(summaries, 'original_opened', name);
+      noteActivity(summaries, 'original_opened', originalKind(entry.artifact.mime));
     }
     const headers = fileHeaders(entry.artifact.mime, name, c.req.query('disposition') === 'inline');
     headers.set('content-length', String(entry.bytes.length));
@@ -559,7 +560,7 @@ export function createMockApp(deps: AppDeps) {
       return c.json(fail('not_found', 'This file is no longer the one that was saved.'), 404);
     if (store.summariesOnly) {
       if (!original) return c.json(summariesRefused(), 403);
-      noteActivity(summaries, 'original_opened', entry.name);
+      noteActivity(summaries, 'original_opened', originalKind(mimeForName(entry.name)));
     }
     const headers = fileHeaders(
       mimeForName(entry.name),
