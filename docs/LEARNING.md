@@ -40,6 +40,10 @@ A late completion cannot recreate learning evidence from removed inputs or a job
 
 If an opaque source version cannot be represented by the memory handle format, the operational job can still complete, but no learning episode is created from that evidence.
 
+## Skills shown by the person
+
+A person can also teach by doing a browser task once. In the live view they choose "Show Melete how" (`POST /browser/sessions/{id}/teach`), a takeover that records their own steps: pages, controls by role and name, field labels with placeholders, and downloads, never a typed value or a password, code or card field. Done hands back and gives the steps to the conversation as one record marked `shown_by_person`; Discard (`POST /browser/sessions/{id}/teach/discard`) hands back without them. The agent drafts a skill from them with `skills.create`. While the work holds steps no saved skill has come from, admission marks that skill as shown by the person whatever the model sent, and the person confirms it on an approval card before it is saved, or declines it there. A saved skill keeps `provenance: "shown by the person"` in its file, is one of the person's own skills that later attempts load by their triggers, and grants nothing: a replay goes through the broker, and submits, payments and sends ask as before. Only the browser offers this; a desktop computer's input is not read as steps.
+
 ## Generation and Hermes
 
 The durable proposal worker processes corrected, classified episodes. It reserves one gateway call per episode, with a 2,048-token request reservation and a maximum 512 output tokens. Failed or abandoned calls remain recorded and are not silently retried. `POST /episodes/{id}/propose` with `space_id` exposes the same idempotent operation.
