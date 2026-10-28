@@ -1500,6 +1500,18 @@ withDb('background processes in the agent computer', () => {
       expect(s.computers.calls.filter((call) => call.startsWith('status all'))).toHaveLength(0);
     }, 60_000);
 
+    test('the terminal says a long command holds the turn where nothing can move it', async () => {
+      type ToolLike = { name: string; description: string };
+      const runTool = (s: { connector: { manifest: { tools: readonly ToolLike[] } } }) =>
+        s.connector.manifest.tools.find((tool) => tool.name === 'terminal.run');
+      const moving = await setup();
+      expect(runTool(moving)?.description).toContain('moves to the background');
+      await db()`truncate space cascade`;
+      const held = await setup({ noProcesses: true });
+      expect(runTool(held)?.description).toContain('holds the turn until it ends');
+      expect(runTool(held)?.description).not.toContain('moves to the background');
+    }, 60_000);
+
     test('a registry moves only the commands of the attempt the person spoke in', () => {
       const yields = new CommandYields();
       const moved: string[] = [];

@@ -362,8 +362,8 @@ export const COMMAND_WORDS: readonly string[] = [
  * result it did not have yet. Shown only where `terminal.run` is offered.
  */
 export const MOVED_COMMAND_WORDS: readonly string[] = [
-  'A command that moved to the background is still running: tell the person, do not run it',
-  'again, and wait for it with process.wait or end your turn to be woken when it ends.',
+  'A command whose result says it moved to the background is still running: tell the person,',
+  'do not run it again, and take the next step its result gives.',
 ];
 
 /**

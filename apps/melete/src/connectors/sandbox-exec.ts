@@ -380,7 +380,7 @@ export const sandboxTerminalManifest: ConnectorManifest = {
     {
       name: 'terminal.run',
       description:
-        'Run a shell command in the job workspace in a remote sandbox; the result shows the start and end of its output. One still running after 30 s (yield_after_ms) keeps running in the background: the result gives its process id and output so far, and the conversation is woken when it ends. timeout_ms (5 min unless set) stops one that has not moved. For a server use process.start; never use & or nohup.',
+        'Run a shell command in the job workspace in a remote sandbox; the result shows the start and end of its output. One still running after 30 s (yield_after_ms) moves to the background: the result gives its process id, output so far and next step. timeout_ms (5 min unless set) stops a command; once it moved, only a set one does. For a server use process.start; never use & or nohup.',
       input_schema: runSchema,
       effect_class: 'write_reversible',
       required_scopes: ['terminal.run'],
@@ -400,14 +400,50 @@ export const sandboxExecManifest: ConnectorManifest = {
   tools: [...sandboxTerminalManifest.tools, ...COMPUTER_TOOLS],
 };
 
-/** What one provider's sandboxes can do: a desktop only where the adapter has one. */
-export function sandboxManifestFor(provider: SandboxProvider): ConnectorManifest {
+/**
+ * `terminal.run` where commands do not move to the background after a wait:
+ * the computer ends its processes when it is suspended, or this installation
+ * keeps none. Only a message from the person can move one, until the turn ends.
+ */
+const heldRunTool: ConnectorManifest['tools'][number] = {
+  ...(sandboxTerminalManifest.tools[0] as ConnectorManifest['tools'][number]),
+  description:
+    'Run a shell command in the job workspace in a remote sandbox; the result shows the start and end of its output. Here a command holds the turn until it ends or timeout_ms (5 min unless set) stops it. If the person sends a message meanwhile it may move to the background for the rest of the turn; the result then says so. For a server use process.start; never use & or nohup.',
+  input_schema: {
+    ...runSchema,
+    properties: {
+      ...runSchema.properties,
+      yield_after_ms: {
+        ...runSchema.properties.yield_after_ms,
+        description: 'Has no effect on this computer: a command here holds the turn until it ends.',
+      },
+    },
+  },
+};
+
+/**
+ * What one provider's sandboxes can do: a desktop only where the adapter has
+ * one, and a `terminal.run` that says whether a long command moves to the
+ * background (`moves`: the computer keeps its processes awake, unless the
+ * caller knows this installation keeps none).
+ */
+export function sandboxManifestFor(
+  provider: SandboxProvider,
+  moves: boolean = provider.capabilities.keepAwake,
+): ConnectorManifest {
   const desktop = desktopOf(provider);
-  if (!desktop) return sandboxTerminalManifest;
-  if (isDesktopProvider(provider)) return sandboxExecManifest;
+  const manifest = !desktop
+    ? sandboxTerminalManifest
+    : isDesktopProvider(provider)
+      ? sandboxExecManifest
+      : {
+          ...sandboxExecManifest,
+          tools: [...sandboxTerminalManifest.tools, ...computerToolsOf(desktop)],
+        };
+  if (moves) return manifest;
   return {
-    ...sandboxExecManifest,
-    tools: [...sandboxTerminalManifest.tools, ...computerToolsOf(desktop)],
+    ...manifest,
+    tools: manifest.tools.map((tool) => (tool.name === 'terminal.run' ? heldRunTool : tool)),
   };
 }
 
@@ -1238,7 +1274,12 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
   };
 
   return {
-    manifest: sandboxManifestFor(provider),
+    manifest: sandboxManifestFor(
+      provider,
+      provider.capabilities.keepAwake &&
+        Boolean(options.processes) &&
+        options.config.persistence !== 'ephemeral',
+    ),
     catalog: { audience: 'owner' },
 
     dispatchBudgetMs: sandboxDispatchBudgetMs,
