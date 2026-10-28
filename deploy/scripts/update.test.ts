@@ -34,6 +34,15 @@ const STUB_GIT = `#!/usr/bin/env bash
 printf 'git %s\\n' "$*" >> "$STUB_LOG"
 exit "\${STUB_GIT_EXIT:-0}"
 `;
+// `bun run melete quiet`, which waits for a quiet moment and drains, or cancels the drain.
+const STUB_BUN = `#!/usr/bin/env bash
+printf 'bun %s\\n' "$*" >> "$STUB_LOG"
+case "$*" in
+  *"quiet --cancel") exit 0 ;;
+  *" quiet"*) exit "\${STUB_QUIET_EXIT:-0}" ;;
+esac
+exit 0
+`;
 
 let directory = '';
 afterEach(() => {
@@ -49,6 +58,7 @@ function run(env: Record<string, string>, args: string[] = []) {
   for (const [name, body] of [
     ['docker', STUB_DOCKER],
     ['git', STUB_GIT],
+    ['bun', STUB_BUN],
   ] as const) {
     writeFileSync(join(directory, name), body);
     chmodSync(join(directory, name), 0o755);
@@ -121,6 +131,39 @@ describe.skipIf(!bash)('update.sh', () => {
     const { code, calls } = run({ STUB_GIT_EXIT: '1' });
     expect(code).not.toBe(0);
     expect(changes(calls)).toEqual([]);
+  });
+
+  test('--when-quiet waits and drains before the checkout moves, and ends the drain on exit', () => {
+    const { code, calls } = run({}, [
+      '--when-quiet',
+      '--at',
+      '03:00',
+      '--max-wait',
+      '90',
+      '--profile',
+      'sandbox',
+    ]);
+    expect(code).toBe(0);
+    const waited = calls.indexOf('bun run melete quiet --at 03:00 --max-wait 90');
+    expect(waited).toBeGreaterThan(calls.indexOf('docker info --format {{.DockerRootDir}}'));
+    expect(waited).toBeLessThan(calls.indexOf('git pull --ff-only'));
+    expect(calls.at(-1)).toBe('bun run melete quiet --cancel');
+    // The timing options are not Compose's.
+    expect(changes(calls)[0]).toBe('compose --profile sandbox pull');
+  });
+
+  test('--when-quiet with no quiet moment changes nothing', () => {
+    const { code, stderr, calls } = run({ STUB_QUIET_EXIT: '1' }, ['--when-quiet']);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain('no quiet moment came in time');
+    expect(calls.some((line) => line.startsWith('git '))).toBe(false);
+    expect(changes(calls)).toEqual([]);
+  });
+
+  test('--at without --when-quiet is refused', () => {
+    const { code, calls } = run({}, ['--at', '03:00']);
+    expect(code).toBe(2);
+    expect(calls).toEqual([]);
   });
 
   test('keeps computers made before the switch on the published image', () => {

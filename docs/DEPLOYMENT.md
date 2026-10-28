@@ -3099,7 +3099,7 @@ The service checks its own health every `MELETE_ALERT_INTERVAL_SECONDS`
 | `MELETE_ALERT_SMTP_URL` | The SMTP server alert email is sent through, for example `smtps://alerts%40example.com:app-password@smtp.example.com:465`. As with `MELETE_SMTP_URL`, a plain `smtp://` server elsewhere must upgrade to TLS with STARTTLS; add `?requireTLS=false` only for a relay that cannot, and never `?opportunisticTLS=true` or `?ignoreTLS=true`, which send in plain text without saying so |
 | `MELETE_ALERT_REPEAT_MINUTES` | While unhealthy, how often the alert is sent again (default `60`) |
 | `MELETE_ALERT_DISK_MIN_FREE_MB` | The free space, in MB, below which the `disk` check fails (default `2048`; `0` turns it off) |
-| `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail` |
+| `MELETE_OPERATOR_TOKEN` | A bearer token, at least 24 characters, that opens `GET /health/detail`, and `GET /health/busy` and `/operator/drain`, which `melete deploy --when-quiet` uses ([Updating when it is quiet](UPGRADING.md#updating-when-it-is-quiet)) |
 | `MELETE_ALERT_SPEND_HOURLY_MULTIPLE` | Alert when the last hour's spending is above this many times the usual hour (off unless set) |
 | `MELETE_ALERT_SPEND_PERSON_PERCENT` | Alert when one person is above this percent of today's spending (off unless set) |
 | `MELETE_ALERT_SPEND_MIN_USD` | The fewest dollars either spending alert fires at (default `1`) |

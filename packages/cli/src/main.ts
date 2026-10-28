@@ -29,6 +29,10 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
   logs --attempts [id]       Attempt containers, or one's logs; --computers [name] for agents' computers
   deploy [--tag <tag>]       Update to published images: plan, back up, pull one at a time, switch, verify
          [--dry-run] [--checkout | --allow-compose-mismatch] [--skip-backup | --backup-to ssh://host:/path]
+         [--when-quiet [--at HH:MM] [--max-wait <minutes>]]
+                             With --when-quiet, first wait until nothing runs and nobody is active, then drain
+  quiet [--at HH:MM] [--max-wait <minutes>]
+                             Wait for that quiet moment and drain, for deploy/scripts/update.sh; --cancel ends a drain
   rollback [--dry-run]       Back to the images before the last deploy, or the restore steps if migrations ran
   backup [--estimate]        Back up the database, journal, settings, files and agents' computers to backup.dir
          [--database-only | --offline] [--dir <path>] [--to ssh://host:/path]
@@ -196,6 +200,8 @@ export async function main(
       return (await import('./commands/init.ts')).runInit(context, parsed.rest);
     case 'deploy':
       return (await import('./commands/deploy.ts')).runDeploy(context, parsed.rest, parsed.json);
+    case 'quiet':
+      return (await import('./quiet.ts')).runQuiet(context, parsed.rest);
     case 'rollback':
       return (await import('./commands/rollback.ts')).runRollback(
         context,
