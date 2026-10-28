@@ -20687,9 +20687,73 @@ export interface paths {
         };
         /**
          * Read a file posted in the room
-         * @description For everyone in the room once it is posted, and for its uploader before. `variant=preview` reads the small copy a picture has.
+         * @description For everyone in the room once it is posted, and for its uploader before. `variant=preview` reads the small copy a picture has. In a room set to summaries only, only the person who posted it and the room’s maker read it here; everyone else opens the original.
          */
         get: {
+            parameters: {
+                query?: {
+                    variant?: components["schemas"]["__schema61"];
+                };
+                header?: never;
+                path: {
+                    fileId: components["schemas"]["__schema60"];
+                    id: components["schemas"]["__schema59"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The bytes */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/octet-stream": string;
+                    };
+                };
+                /** @description The room shows only what needs you (`summaries_only`) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema268"];
+                    };
+                };
+                /** @description Not in this room, or no such file */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema268"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rooms/{id}/attachments/{fileId}/original": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open the original of a file posted in the room, noted in its activity
+         * @description The same bytes `GET /rooms/{id}/attachments/{fileId}/content` serves, read on purpose. In a room set to summaries only this is how its people read a file someone else posted, and each open is noted in the room’s activity before it is sent.
+         */
+        post: {
             parameters: {
                 query?: {
                     variant?: components["schemas"]["__schema61"];
@@ -20723,8 +20787,6 @@ export interface paths {
                 };
             };
         };
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;

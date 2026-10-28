@@ -933,7 +933,30 @@ function roomAttachmentPaths(room: ReturnType<typeof idParam>, notIn: ReturnType
         summary: 'Read a file posted in the room',
         description:
           'For everyone in the room once it is posted, and for its uploader before. ' +
-          '`variant=preview` reads the small copy a picture has.',
+          '`variant=preview` reads the small copy a picture has. In a room set to summaries ' +
+          'only, only the person who posted it and the room’s maker read it here; everyone ' +
+          'else opens the original.',
+        requestParams: { ...file, query: attachmentContentQuery },
+        responses: {
+          '200': {
+            description: 'The bytes',
+            content: {
+              'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+            },
+          },
+          '403': problem('The room shows only what needs you (`summaries_only`)'),
+          '404': problem('Not in this room, or no such file'),
+        },
+      },
+    },
+    '/rooms/{id}/attachments/{fileId}/original': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Open the original of a file posted in the room, noted in its activity',
+        description:
+          'The same bytes `GET /rooms/{id}/attachments/{fileId}/content` serves, read on ' +
+          'purpose. In a room set to summaries only this is how its people read a file someone ' +
+          'else posted, and each open is noted in the room’s activity before it is sent.',
         requestParams: { ...file, query: attachmentContentQuery },
         responses: {
           '200': {

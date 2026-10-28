@@ -12563,7 +12563,74 @@
           "rooms"
         ],
         "summary": "Read a file posted in the room",
-        "description": "For everyone in the room once it is posted, and for its uploader before. `variant=preview` reads the small copy a picture has.",
+        "description": "For everyone in the room once it is posted, and for its uploader before. `variant=preview` reads the small copy a picture has. In a room set to summaries only, only the person who posted it and the room’s maker read it here; everyone else opens the original.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "$ref": "#/components/schemas/__schema59"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "fileId",
+            "schema": {
+              "$ref": "#/components/schemas/__schema60"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "variant",
+            "schema": {
+              "$ref": "#/components/schemas/__schema61"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The room shows only what needs you (`summaries_only`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema268"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not in this room, or no such file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema268"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rooms/{id}/attachments/{fileId}/original": {
+      "post": {
+        "tags": [
+          "rooms"
+        ],
+        "summary": "Open the original of a file posted in the room, noted in its activity",
+        "description": "The same bytes `GET /rooms/{id}/attachments/{fileId}/content` serves, read on purpose. In a room set to summaries only this is how its people read a file someone else posted, and each open is noted in the room’s activity before it is sent.",
         "parameters": [
           {
             "in": "path",

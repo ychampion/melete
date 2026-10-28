@@ -24,7 +24,7 @@ import { Hono } from 'hono';
 import { TINY_PNG } from '../../src/attachments/fixtures.ts';
 import { DEFAULT_ATTACHMENT_SETTINGS } from '../../src/attachments/limits.ts';
 import { gatewayAttachments } from '../../src/attachments/model.ts';
-import { roomAttachmentScope } from '../../src/attachments/rooms.ts';
+import { roomAttachments } from '../../src/attachments/rooms.ts';
 import { mountAttachments } from '../../src/attachments/routes.ts';
 import {
   AttachmentService,
@@ -548,7 +548,7 @@ withDb('photos in a room', () => {
       limited,
       async () => null,
       new MemoryLimitStore(),
-      roomAttachmentScope(db),
+      roomAttachments(db),
     );
     const post = (roomId: string) => {
       const form = new FormData();
@@ -589,5 +589,115 @@ withDb('photos in a room', () => {
     const [row] = await sql`select job_id from attachment where id = ${photo.id}`;
     expect(row?.job_id).toBeNull();
     await jobs.cancel(jobId);
+  }, 60_000);
+
+  test('in a room that shows only what needs you, a file is read as it is only by its poster and the maker', async () => {
+    await modelReadsPictures(true);
+    const roomId = await makeRoom([bob, carol]);
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: true }));
+    const photo = await upload(bob, roomId);
+    const posted = roomMessageResponse.parse(
+      await ok(
+        startThread(bob, roomId, '@Melete what does this letter ask us to do?', [photo.id]),
+        201,
+      ),
+    );
+    const { sql, db, jobs } = database();
+    const opens = () => sql`select principal_id, connection_label, destination from activity_record
+      where space_id = ${roomId} and kind = 'space.original_opened' order by happened_at, id`;
+
+    // Someone else in the room is refused the file, and its small copy.
+    const refused = await content(carol, roomId, photo.id);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
+      'summaries_only',
+    );
+    expect(
+      (await send(carol.cookie, `/rooms/${roomId}/attachments/${photo.id}/content?variant=preview`))
+        .status,
+    ).toBe(403);
+    // Whoever posted it, and the room's maker, read it as it is, and nothing is noted.
+    for (const person of [bob, alice]) {
+      const read = await content(person, roomId, photo.id);
+      expect(read.status).toBe(200);
+      expect(new Uint8Array(await read.arrayBuffer())).toEqual(TINY_PNG);
+    }
+    expect([...(await opens())]).toEqual([]);
+
+    // Opening the original on purpose serves it, noted first with who opened what kind of file.
+    const original = (person: Person) =>
+      send(person.cookie, `/rooms/${roomId}/attachments/${photo.id}/original`, 'POST');
+    const opened = await original(carol);
+    expect(opened.status).toBe(200);
+    expect(new Uint8Array(await opened.arrayBuffer())).toEqual(TINY_PNG);
+    expect((await original(alice)).status).toBe(200);
+    expect([...(await opens())]).toEqual([
+      { principal_id: carol.id, connection_label: 'Room', destination: 'A picture' },
+      { principal_id: alice.id, connection_label: 'Room', destination: 'A picture' },
+    ]);
+    // The route is still the room's: someone not in it opens nothing, and nothing is noted.
+    const outsider = await makeRoom([]);
+    await ok(
+      send(alice.cookie, `/rooms/${outsider}/members`, 'POST', { principal_id: carol.id }),
+      201,
+    );
+    expect(
+      (await send(carol.cookie, `/rooms/${outsider}/attachments/${photo.id}/original`, 'POST'))
+        .status,
+    ).toBe(404);
+    expect(await opens()).toHaveLength(2);
+
+    // The room's request still reads the photo itself.
+    const jobId = posted.request_job_id as string;
+    expect(jobId).toBeTruthy();
+    const row = await jobs.get(jobId);
+    const bundle = await serviceTransaction(db, (tx) =>
+      buildAttemptSkeleton(
+        tx,
+        row,
+        { id: newId('att'), epoch: 1, revision: row.revision, token: 'fixture-only' },
+        { provider: PROVIDER, model: MODEL, fallback: null },
+        0,
+      ),
+    );
+    const input = bundle.inputs.new_user_messages.at(-1)?.content ?? '';
+    expect(input).toContain(`[[melete-file ${photo.id} `);
+    const outbound = await withAttachedFiles({
+      body: { model: MODEL, messages: [{ role: 'user', content: input }] },
+      protocol: 'chat/completions',
+      provider: PROVIDER,
+      model: MODEL,
+      principal: { jobId, privacy: { kind: 'job' } } as unknown as GatewayPrincipal,
+      route: { kind: 'cloud', private: false },
+      source: gatewayAttachments(sql, store, async () => true),
+      maxRequestBytes: 8 * 1024 * 1024,
+    });
+    const parts = (
+      outbound.messages as { content: { type: string; image_url?: { url: string } }[] }[]
+    )[0]?.content;
+    expect(parts?.find((part) => part.type === 'image_url')?.image_url?.url).toBe(
+      `data:image/png;base64,${Buffer.from(TINY_PNG).toString('base64')}`,
+    );
+
+    // Turned off, everyone in the room reads it as before, and opens are not noted.
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: false }));
+    expect((await content(carol, roomId, photo.id)).status).toBe(200);
+    expect((await original(carol)).status).toBe(200);
+    expect(await opens()).toHaveLength(2);
+    await jobs.cancel(jobId);
+  }, 60_000);
+
+  test('in a room that shows only what needs you, the uploader reads their own file before and after posting it', async () => {
+    const roomId = await makeRoom([bob, carol]);
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: true }));
+    const photo = await upload(carol, roomId);
+    expect((await content(carol, roomId, photo.id)).status).toBe(200);
+    await ok(startThread(carol, roomId, 'The water bill', [photo.id]), 201);
+    expect((await content(carol, roomId, photo.id)).status).toBe(200);
+    expect((await content(bob, roomId, photo.id)).status).toBe(403);
+    const { sql } = database();
+    const [noted] = await sql`select count(*)::int as n from activity_record
+      where space_id = ${roomId} and kind = 'space.original_opened'`;
+    expect(noted?.n).toBe(0);
   }, 60_000);
 });

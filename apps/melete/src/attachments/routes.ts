@@ -23,7 +23,7 @@ import {
   UPLOAD_FORM_OVERHEAD,
   uploadBounds,
 } from './limits.ts';
-import type { RoomAttachmentScope } from './rooms.ts';
+import type { RoomAttachments } from './rooms.ts';
 import type { AttachmentScope, AttachmentService } from './store.ts';
 
 export function mountAttachments(
@@ -33,7 +33,7 @@ export function mountAttachments(
   /** Where upload counts are kept, shared by every instance; left out, this process counts. */
   limits: LimitStore = new MemoryLimitStore(),
   /** Who may use a room's files; left out, rooms take no files. */
-  rooms?: RoomAttachmentScope,
+  rooms?: RoomAttachments,
 ): void {
   const { fileBytes, uploadRate, serverUploads } = attachments.settings;
   // Room for at least one file at the largest size, whatever the setting, and
@@ -152,9 +152,16 @@ export function mountAttachments(
     return c.json(attachmentResponse.parse({ attachment: view }), 201);
   };
 
-  const read = async (c: Context, scope: AttachmentScope, id: string) => {
+  /** One file's bytes; `admit`, when given, decides first whether they may be sent. */
+  const read = async (
+    c: Context,
+    scope: AttachmentScope,
+    id: string,
+    admit?: (row: { principalId: string | null; mediaType: string }) => Promise<void>,
+  ) => {
     const query = attachmentContentQuery.safeParse(c.req.query());
     if (!query.success) throw new ServiceError('invalid_request', 'Unknown variant.', 400);
+    if (admit) await admit(await attachments.visible(scope, id));
     const { row, bytes, mediaType } = await attachments.content(
       scope,
       id,
@@ -184,12 +191,25 @@ export function mountAttachments(
   if (!rooms) return;
   const room = (c: Context) => c.req.param('id') ?? '';
   const file = (c: Context) => c.req.param('fileId') ?? '';
-  app.post('/rooms/:id/attachments', async (c) => take(c, await rooms(c, room(c), 'upload')));
-  app.get('/rooms/:id/attachments/:fileId/content', async (c) =>
-    read(c, await rooms(c, room(c), 'read'), file(c)),
-  );
+  app.post('/rooms/:id/attachments', async (c) => take(c, await rooms.scope(c, room(c), 'upload')));
+  /** A room's file, read as it is (`content`) or opened on purpose (`original`). */
+  const roomRead = async (c: Context, how: 'content' | 'original') => {
+    const scope = await rooms.scope(c, room(c), 'read');
+    return read(c, scope, file(c), (row) =>
+      rooms.admit({
+        roomId: scope.spaceId,
+        viewer: scope.principalId as string,
+        uploader: row.principalId,
+        mediaType: row.mediaType,
+        read: how,
+      }),
+    );
+  };
+  app.get('/rooms/:id/attachments/:fileId/content', (c) => roomRead(c, 'content'));
+  // Opening an original on purpose: a POST, because each one is noted.
+  app.post('/rooms/:id/attachments/:fileId/original', (c) => roomRead(c, 'original'));
   app.delete('/rooms/:id/attachments/:fileId', async (c) => {
-    await attachments.remove(await rooms(c, room(c), 'read'), file(c));
+    await attachments.remove(await rooms.scope(c, room(c), 'read'), file(c));
     return c.json({ ok: true as const });
   });
 }

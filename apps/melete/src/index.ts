@@ -61,7 +61,7 @@ import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-compa
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
 import { attachmentSettingsFromEnv } from './attachments/limits.ts';
-import { roomAttachmentScope } from './attachments/rooms.ts';
+import { roomAttachments } from './attachments/rooms.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
 import { defaultLevels } from './broker/autonomy.ts';
@@ -542,7 +542,7 @@ export function createApp(deps: AppDeps) {
       deps.attachments,
       personalSpace,
       limits,
-      multiplayer && deps.db ? roomAttachmentScope(deps.db) : undefined,
+      multiplayer && deps.db ? roomAttachments(deps.db) : undefined,
     );
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.
