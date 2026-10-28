@@ -50,6 +50,7 @@ import { summariesOnlyIn } from '../spaces/summaries.ts';
 import { answerAskedInThread, isBoardAnswer } from './board.ts';
 import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
+import { nameTaken } from './name-taken.ts';
 import { ROOM_READS_NO_PICTURES } from './pictures.ts';
 import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
@@ -80,31 +81,6 @@ const connectionView = (row: typeof connection.$inferSelect) => ({
 });
 const roomOwnerOnly = () =>
   new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
-
-/**
- * Whether a name is another account's: its chosen name, or the part before the
- * @ of its email, ignoring case. A name is how a room, and its agent, tell
- * people apart at a glance; the handle after it is what settles it. A room's
- * own account carries the room's name and is no one's, so it never counts:
- * otherwise anyone could learn the names of rooms they are not in.
- */
-export async function nameTaken(db: Database, name: string, except?: string): Promise<boolean> {
-  const [taken] = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .where(
-      and(
-        except ? ne(principal.id, except) : undefined,
-        ne(principal.kind, 'room'),
-        or(
-          sql`lower(${principal.displayName}) = lower(${name})`,
-          sql`lower(split_part(${principal.email}, '@', 1)) = lower(${name})`,
-        ),
-      ),
-    )
-    .limit(1);
-  return Boolean(taken);
-}
 
 export type RoomDeps = RoomWork & {
   db: Database;
@@ -337,14 +313,14 @@ export class RoomService {
 
   /**
    * Set the name a person shows in rooms. It must read as one line, and it
-   * must not be another person's name, or the part before the @ of another
-   * person's email, ignoring case: a name is how a room, and its agent, tell
-   * people apart.
+   * must not read as the name, or the part before the @ of the email, of
+   * anyone they share a space with (see `nameTaken`): a name is how a room,
+   * and its agent, tell people apart.
    */
   async rename(actor: string, name: string | null) {
     if (name !== null) {
       displayNameText.parse(name);
-      if (await nameTaken(this.deps.db, name, actor))
+      if (await nameTaken(this.deps.db, name, { person: actor }))
         throw new ServiceError(
           'name_taken',
           'Someone here already goes by that name. Choose another.',

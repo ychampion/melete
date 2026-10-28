@@ -68,6 +68,12 @@ describe('chosen names', () => {
       'Alice \u27E8k7q2mx3a\u27E9',
       'Alice \u3008k7q2mx3a\u3009',
       'Alice \uFF20home',
+      // Characters that show as nothing.
+      'Alice\u034F',
+      'Alice\uFE0F',
+      'Alice\u3164',
+      '\u115FAlice',
+      'Al\uFFA0ice',
     ])
       expect([name, displayNameText.safeParse(name).success]).toEqual([name, false]);
   });
