@@ -1,16 +1,23 @@
 /**
  * Room → Settings: who answers the permissions the room's requests ask for,
  * whether guests may ask the room's agent, and the accounts the room uses as
- * its own, with who approves what they send. Everyone in the room reads them; owners change them. A change
- * applies to permissions already waiting.
+ * its own, with who approves what they send. Owners change the room's policy;
+ * each member chooses whether to share their own calendar as free/busy.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Dialog, Toggle } from '../design/primitives.tsx';
+import { Button, Dialog, Select, Toggle } from '../design/primitives.tsx';
 import { href } from '../router.ts';
 import { AddConnection } from '../screens/ConnectionInstall.tsx';
 import { SummariesOnlySetting } from '../screens/SummariesOnly.tsx';
 import { toast } from '../shell/Shell.tsx';
-import { type RoomConnection, type RoomDetail, type RoomPolicy, roomsApi } from './api.ts';
+import {
+  type RoomCalendarMode,
+  type RoomCalendarSettings,
+  type RoomConnection,
+  type RoomDetail,
+  type RoomPolicy,
+  roomsApi,
+} from './api.ts';
 
 export const APPROVER_CHOICES: readonly {
   value: RoomPolicy['approvers'];
@@ -105,8 +112,8 @@ export function RoomSettings({
       title={`How ${detail.room.name} works`}
       sub={
         owner
-          ? 'Everyone in the room can read these. Only owners change them.'
-          : 'The room’s owners choose these.'
+          ? 'Owners choose the room’s policy. Each member chooses their own calendar share.'
+          : 'Owners choose the room’s policy. You choose your own calendar share.'
       }
       width={520}
       footer={<Button onClick={onClose}>Done</Button>}
@@ -165,8 +172,8 @@ export function RoomSettings({
           <span className="people-field-label">Accounts the room uses</span>
           <span className="people-hint">
             The team’s own accounts, such as a shared mailbox or a team GitHub.{' '}
-            {detail.room.agent_name} uses them for the room’s requests. A person’s own accounts stay
-            theirs: the room hands them the task instead.
+            {detail.room.agent_name} uses them for the room’s requests. Members can also choose to
+            share their own calendar as free/busy below.
           </span>
           {accounts === null ? null : accounts.length ? (
             <ul className="col" style={{ gap: 4, margin: 0, padding: 0, listStyle: 'none' }}>
@@ -217,7 +224,125 @@ export function RoomSettings({
             )
           ) : null}
         </div>
+        {detail.room.my_role !== 'guest' ? (
+          <MyCalendarShare roomId={detail.room.id} agentName={detail.room.agent_name} />
+        ) : null}
       </div>
     </Dialog>
+  );
+}
+
+/** These settings belong to the signed-in member, including when they are not an owner. */
+function MyCalendarShare({ roomId, agentName }: { roomId: string; agentName: string }) {
+  const [settings, setSettings] = useState<RoomCalendarSettings | null>(null);
+  const [connectionId, setConnectionId] = useState('');
+  const [mode, setMode] = useState<RoomCalendarMode>('freebusy');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void roomsApi.calendarShares(roomId).then((result) => {
+      if (!live) return;
+      if (!result.data) {
+        setError(result.error ?? result.unavailable ?? 'Couldn’t read your calendar sharing');
+        return;
+      }
+      setSettings(result.data);
+      setConnectionId(result.data.share?.connection_id ?? result.data.connections[0]?.id ?? '');
+      setMode(result.data.share?.mode ?? 'freebusy');
+    });
+    return () => {
+      live = false;
+    };
+  }, [roomId]);
+
+  const share = async (enabled: boolean, nextId = connectionId, nextMode = mode) => {
+    if (!settings || saving) return;
+    setSaving(true);
+    const result = enabled
+      ? await roomsApi.shareCalendar(roomId, nextId, nextMode)
+      : await roomsApi.revokeCalendarShare(roomId);
+    setSaving(false);
+    if (!result.data) {
+      toast({
+        kind: 'err',
+        title: result.error ?? result.unavailable ?? 'Couldn’t save your share',
+      });
+      return;
+    }
+    setSettings({
+      ...settings,
+      share: 'share' in result.data ? result.data.share : null,
+    });
+    setConnectionId(nextId);
+    setMode(nextMode);
+    toast({ kind: 'ok', title: enabled ? 'Calendar shared' : 'Calendar share revoked' });
+  };
+
+  const selected = settings?.connections.find((entry) => entry.id === connectionId);
+  return (
+    <fieldset className="settings-group" disabled={saving || !settings}>
+      <legend className="people-field-label">My calendar</legend>
+      <span className="people-hint">
+        Share when you are busy with {agentName}. Event titles, locations and attendees stay
+        private. You can revoke access at any time. Leaving the room ends access too.
+      </span>
+      {error ? (
+        <p className="rooms-error" role="alert">
+          {error}
+        </p>
+      ) : !settings ? (
+        <span className="people-hint">Loading your calendars…</span>
+      ) : settings.connections.length ? (
+        <>
+          <Select
+            label="My calendar to share"
+            value={connectionId}
+            options={settings.connections.map((entry) => ({ value: entry.id, label: entry.label }))}
+            onChange={(id) => {
+              const next = settings.connections.find((entry) => entry.id === id);
+              const nextMode = next?.can_add ? mode : 'freebusy';
+              if (settings.share) void share(true, id, nextMode);
+              else {
+                setConnectionId(id);
+                setMode(nextMode);
+              }
+            }}
+          />
+          <div className="settings-switch">
+            <span className="settings-choice-title">Share my free/busy</span>
+            <Toggle
+              label="Share my calendar free/busy with this room"
+              on={Boolean(settings.share)}
+              disabled={saving}
+              onChange={(enabled) => void share(enabled)}
+            />
+          </div>
+          <div className="settings-switch">
+            <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
+              <span className="settings-choice-title">Let the room add events</span>
+              <span className="people-hint">
+                {selected?.can_add
+                  ? 'Only you approve each event added to your calendar.'
+                  : 'This calendar is read-only.'}
+              </span>
+            </span>
+            <Toggle
+              label="Let the room add events to my calendar with my approval"
+              on={mode === 'freebusy_add'}
+              disabled={saving || !selected?.can_add}
+              onChange={(enabled) => {
+                const nextMode = enabled ? 'freebusy_add' : 'freebusy';
+                if (settings.share) void share(true, connectionId, nextMode);
+                else setMode(nextMode);
+              }}
+            />
+          </div>
+        </>
+      ) : (
+        <span className="people-hint">Connect a calendar in your own space to share it here.</span>
+      )}
+    </fieldset>
   );
 }

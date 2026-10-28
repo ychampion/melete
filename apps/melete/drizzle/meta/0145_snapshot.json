@@ -1,5 +1,5 @@
 {
-  "id": "cd4476db-ceb3-4f7e-921d-4dad6616dd6c",
+  "id": "9837c8f5-8bd2-44b8-936e-ae999341053b",
   "prevId": "4c03cdb3-7e1f-45da-9b01-359ca16a6224",
   "version": "7",
   "dialect": "postgresql",
@@ -15197,13 +15197,6 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "summaries_only": {
-          "name": "summaries_only",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "updated_by": {
           "name": "updated_by",
           "type": "text",
@@ -19375,6 +19368,119 @@
         "principal_identity_external_id": {
           "name": "principal_identity_external_id",
           "value": "length(\"principal_identity\".\"external_id\") between 1 and 200"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_calendar_share": {
+      "name": "room_calendar_share",
+      "schema": "",
+      "columns": {
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "membership_generation": {
+          "name": "membership_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "room_calendar_share_space_id_space_id_fk": {
+          "name": "room_calendar_share_space_id_space_id_fk",
+          "tableFrom": "room_calendar_share",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_calendar_share_principal_id_principal_id_fk": {
+          "name": "room_calendar_share_principal_id_principal_id_fk",
+          "tableFrom": "room_calendar_share",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_calendar_share_connection_id_connection_id_fk": {
+          "name": "room_calendar_share_connection_id_connection_id_fk",
+          "tableFrom": "room_calendar_share",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "room_calendar_share_space_id_principal_id_pk": {
+          "name": "room_calendar_share_space_id_principal_id_pk",
+          "columns": [
+            "space_id",
+            "principal_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "room_calendar_share_mode": {
+          "name": "room_calendar_share_mode",
+          "value": "\"room_calendar_share\".\"mode\" in ('freebusy', 'freebusy_add')"
+        },
+        "room_calendar_share_generation": {
+          "name": "room_calendar_share_generation",
+          "value": "\"room_calendar_share\".\"membership_generation\" >= 0"
         }
       },
       "isRLSEnabled": false

@@ -51,6 +51,11 @@ export type ConnectorContext = {
    * connector can withhold what the job could not read itself.
    */
   granted?: readonly string[];
+  /**
+   * Trusted delegated-calendar boundary, rechecked after provider reads and
+   * before sending a mutation. Never supplied by a tool's arguments.
+   */
+  beforeCalendarWrite?: () => Promise<void>;
 };
 
 export interface Connector {

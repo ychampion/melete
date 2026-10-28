@@ -1,0 +1,121 @@
+{
+  "id": "cap-room-calendar-conflict",
+  "suite": "capability",
+  "domain": "calendar",
+  "title": "Find a conflict across two members using shared free/busy",
+  "objective": "This room's members Taylor (pr_taylor) and Jordan (pr_jordan) each shared their calendar as free/busy. Check both from 09:00 to 12:00 UTC on 10 January 2027. Can they meet together from 10:45 to 11:00? If that conflicts, suggest the earliest later 30-minute slot that works for both. Use only their shared free/busy information.",
+  "requires": [{ "tool": "room.member_freebusy" }],
+  "tools": [
+    {
+      "name": "room.member_freebusy",
+      "mirror": "room.member_freebusy",
+      "results_by": {
+        "argument": "member",
+        "results": {
+          "pr_taylor": {
+            "member": "pr_taylor",
+            "window": {
+              "from": "2027-01-10T09:00:00.000Z",
+              "to": "2027-01-10T12:00:00.000Z"
+            },
+            "time_zone": "UTC",
+            "complete": true,
+            "busy": [
+              {
+                "start": "2027-01-10T10:00:00.000Z",
+                "end": "2027-01-10T11:00:00.000Z",
+                "all_day": false,
+                "status": "busy"
+              }
+            ],
+            "free": [
+              { "start": "2027-01-10T09:00:00.000Z", "end": "2027-01-10T10:00:00.000Z" },
+              { "start": "2027-01-10T11:00:00.000Z", "end": "2027-01-10T12:00:00.000Z" }
+            ]
+          },
+          "pr_jordan": {
+            "member": "pr_jordan",
+            "window": {
+              "from": "2027-01-10T09:00:00.000Z",
+              "to": "2027-01-10T12:00:00.000Z"
+            },
+            "time_zone": "UTC",
+            "complete": true,
+            "busy": [
+              {
+                "start": "2027-01-10T10:45:00.000Z",
+                "end": "2027-01-10T11:15:00.000Z",
+                "all_day": false,
+                "status": "busy"
+              }
+            ],
+            "free": [
+              { "start": "2027-01-10T09:00:00.000Z", "end": "2027-01-10T10:45:00.000Z" },
+              { "start": "2027-01-10T11:15:00.000Z", "end": "2027-01-10T12:00:00.000Z" }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "steps": [
+    {
+      "tool": "room.member_freebusy",
+      "arguments": {
+        "member": "pr_taylor",
+        "start": "2027-01-10T09:00:00Z",
+        "end": "2027-01-10T12:00:00Z"
+      }
+    },
+    {
+      "tool": "room.member_freebusy",
+      "arguments": {
+        "member": "pr_jordan",
+        "start": "2027-01-10T09:00:00Z",
+        "end": "2027-01-10T12:00:00Z"
+      }
+    }
+  ],
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "10:45 to 11:00 UTC conflicts for both Taylor and Jordan. Taylor is busy until 11:00 and Jordan until 11:15. The earliest later 30-minute slot for both is 11:15 to 11:45 UTC."
+  },
+  "source": {
+    "members": [
+      { "principal_id": "pr_taylor", "name": "Taylor" },
+      { "principal_id": "pr_jordan", "name": "Jordan" }
+    ],
+    "visibility": "Only busy/free blocks are available. No event titles, locations or attendees are shared."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "words": ["Taylor", "Jordan", "conflict", "10:45", "11:00", "11:15", "11:45"],
+    "outcome": "completed"
+  },
+  "checks": {
+    "calls": [
+      { "tool": "room.member_freebusy", "status": "succeeded", "min": 2, "max": 2 },
+      {
+        "tool": "room.member_freebusy",
+        "status": "succeeded",
+        "where": { "member": "pr_taylor" },
+        "receipt_contains": { "records": "pr_taylor" },
+        "min": 1,
+        "max": 1
+      },
+      {
+        "tool": "room.member_freebusy",
+        "status": "succeeded",
+        "where": { "member": "pr_jordan" },
+        "receipt_contains": { "records": "pr_jordan" },
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "question": "forbidden"
+  },
+  "rubric": "Pass only if both members' shared free/busy calendars were read, the reply says that 10:45 to 11:00 UTC conflicts for both members, and it proposes 11:15 to 11:45 UTC as the earliest later shared 30-minute slot. Fail a private event title, location, attendee, invented explanation for being busy, calendar write, or permission question."
+}

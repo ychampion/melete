@@ -282,6 +282,12 @@ import {
   submissionResponse,
 } from './responsibility.ts';
 import {
+  roomCalendarShareResult,
+  roomCalendarShareRevoked,
+  roomCalendarShareSettings,
+  roomCalendarShareUpdate,
+} from './room-calendar-shares.ts';
+import {
   acceptInviteRequest,
   acceptInviteResponse,
   addRoomMemberRequest,
@@ -1195,7 +1201,7 @@ function roomsPaths() {
         tags: ['rooms'],
         summary: "Answer one of a room's permissions",
         description:
-          "Only the people the room's rule names may answer: the person who asked (the default), any member who is not a guest, or the room's owners. The answer names the exact content and the card it answers; if either changed, it is refused. The answer is recorded as the person's.",
+          "Only the people the room's rule names may answer: the person who asked (the default), any member who is not a guest, or the room's owners. Adding an event to a member's explicitly shared personal calendar asks only that member, whatever the room's rules say. The answer names the exact content and the card it answers; if either changed, it is refused. The answer is recorded as the person's.",
         requestParams: { path: z.object({ id: z.string(), approvalId: z.string() }) },
         requestBody: json(roomPermissionDecision),
         responses: {
@@ -1205,6 +1211,45 @@ function roomsPaths() {
           '409': problem(
             'What it asks for changed, it was withdrawn, or someone already answered it (the message says who, and how)',
           ),
+        },
+      },
+    },
+    '/rooms/{id}/calendar-shares': {
+      get: {
+        tags: ['rooms'],
+        summary: 'My calendar share and personal calendars I can share with this room',
+        description:
+          'Returns only the signed-in member’s share and calendar connection labels. Guests have no personal calendars to share.',
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('My calendar sharing settings', roomCalendarShareSettings),
+          '404': notIn,
+        },
+      },
+      put: {
+        tags: ['rooms'],
+        summary: 'Share one of my personal calendars with this room',
+        description:
+          'Members and owners share only a calendar connection in their own space. The room reads free/busy blocks without titles, locations or attendees. With freebusy_add, every added event requires the calendar member’s approval, whatever the room’s approval rules say.',
+        requestParams: room,
+        requestBody: json(roomCalendarShareUpdate),
+        responses: {
+          '200': jsonResponse('My calendar share', roomCalendarShareResult),
+          '400': problem('The connection is not a calendar or cannot add events'),
+          '403': problem('Only a member can share a calendar from their own space'),
+          '404': notIn,
+        },
+      },
+      delete: {
+        tags: ['rooms'],
+        summary: 'Revoke my calendar share with this room',
+        description:
+          'Stops subsequent reads and additions immediately, including in requests already running. Leaving the room also ends access.',
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('Calendar share revoked', roomCalendarShareRevoked),
+          '403': problem('Only a member can revoke their calendar share'),
+          '404': notIn,
         },
       },
     },

@@ -87,6 +87,7 @@ describe('the capability corpus', () => {
       'cap-memory-search-before-denying',
       'cap-own-computer-no-ask',
       'cap-reminder-fires-does-task',
+      'cap-room-calendar-conflict',
       'cap-save-without-asking',
       'cap-skill-create-reuse-delete',
       'cap-web-research-cited',
