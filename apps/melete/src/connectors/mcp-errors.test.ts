@@ -117,7 +117,7 @@ test('refused arguments (-32602) end as failed, never unknown, with the message 
       undefined,
       -32602,
       { field: 'due', expected: 'YYYY-MM-DD' },
-      'Invalid params',
+      'Invalid arguments for tool write',
     );
   });
   const worker = await openMcpWorker(mcpFixtureConfig(), binding, { transport });
@@ -133,7 +133,7 @@ test('refused arguments (-32602) end as failed, never unknown, with the message 
       origin_trust: 'external_content',
       input_schema: DUE_SCHEMA,
     });
-    expect(String(result.evidence?.server_said)).toContain('Invalid params');
+    expect(String(result.evidence?.server_said)).toContain('Invalid arguments for tool write');
     expect(String(result.evidence?.server_said)).toContain('YYYY-MM-DD');
   } finally {
     await worker.close();
@@ -244,7 +244,10 @@ function breakingFetch(answer: 'break' | 'refuse') {
       return json({
         jsonrpc: '2.0',
         id: message.id,
-        error: { code: -32602, message: 'due must be YYYY-MM-DD' },
+        error: {
+          code: -32602,
+          message: 'Invalid arguments for tool write: due must be YYYY-MM-DD',
+        },
       });
     // The call went out; the answer began and the connection broke before it ended.
     const body = new ReadableStream<Uint8Array>({
@@ -295,7 +298,7 @@ test('over HTTP, a -32602 answer keeps the server message and the notes from ini
     const result = await worker.execute(action, context(action));
     expect(result.outcome).toBe('failed');
     expect(result.outcome === 'failed' && result.evidence?.server_said).toBe(
-      'due must be YYYY-MM-DD',
+      'Invalid arguments for tool write: due must be YYYY-MM-DD',
     );
   } finally {
     await worker.close();

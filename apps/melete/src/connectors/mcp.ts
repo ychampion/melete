@@ -153,8 +153,10 @@ export type McpWorkerOptions = McpTransportOptions & {
    */
   pinned?: McpToolDefinition[];
   /**
-   * Told each time a session opens, with the server's notes on using its
-   * tools, so the connection can keep them. Its failure never fails the session.
+   * Told each time a session is accepted (its catalog matched the approved
+   * one), with the server's notes on using its tools, so the connection can
+   * keep them. A session refused for a changed catalog is never told, so the
+   * kept notes stay as they were. Its failure never fails the session.
    */
   onSession?: (opened: { instructions: string | null }) => Promise<void> | void;
 };
@@ -170,22 +172,77 @@ export class McpToolMissingError extends Error {
 /** How much of a server's own words a failed call keeps for the agent, in UTF-8 bytes. */
 export const SERVER_SAID_BYTES = 2048;
 
-/**
- * JSON-RPC errors that mean the server answered and did nothing: the request
- * was malformed (-32600), it does not know the method or tool (-32601), or it
- * refused the arguments (-32602). A call answered this way did not happen.
- */
 const INVALID_REQUEST = -32600;
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
-const ANSWERED_UNDONE = new Set([INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS]);
+
+/** A server saying it has no such tool, whatever code it used. */
+const TOOL_MISSING = /\b(not found|unknown tool|no such tool|does not exist|disabled)\b/i;
+/** A server saying it turned the input down before running the tool. */
+const INPUT_REJECTED =
+  /\binvalid (arguments?|parameters?|input)\b|\binput (validation|schema)\b|\bvalidation (error|failed)\b.*\b(arguments?|input|params|parameters?)\b|\bmissing required\b/i;
+/**
+ * Words about a tool's output, or about access. An error in these words says
+ * nothing about the arguments, and an output check runs after the tool has.
+ */
+const NOT_ABOUT_INPUT =
+  /\boutput (schema|validation)\b|\bstructured ?content\b|\bauth\w*|\bpermission|\bforbidden\b|\bunauthori[sz]ed\b|\bcredential|\bapi key\b|\btoken\b|\bscopes?\b|\bquota\b|\brate limit/i;
 
 /**
- * Words a tool's own error uses when it turned the arguments down. Only then is
- * the tool's current schema read again and handed back with the error.
+ * How a JSON-RPC error to `tools/call` settles the call. A malformed request
+ * (-32600) or an unknown method (-32601) was answered before anything ran.
+ * -32602 is sent both for refused input and, by some servers, for an output
+ * check after the tool ran, so it is definite only when its words say the
+ * tool is missing or the input was refused; otherwise whether it ran is not known.
  */
-const ARGUMENT_WORDS =
-  /\b(arguments?|params?|parameters?|fields?|inputs?|invalid|required|missing|must|expected|format|schema|validation)\b/i;
+function rpcRefusal(error: McpProtocolError): 'request' | 'missing' | 'input' | null {
+  // A 5xx came from something that may have passed the call on already.
+  if (error.status !== undefined && (error.status < 400 || error.status >= 500)) return null;
+  const said = rpcText(error);
+  if (error.code === METHOD_NOT_FOUND) return 'missing';
+  if (error.code === INVALID_REQUEST) return 'request';
+  if (error.code !== INVALID_PARAMS || NOT_ABOUT_INPUT.test(said)) return null;
+  if (TOOL_MISSING.test(said)) return 'missing';
+  return INPUT_REJECTED.test(said) ? 'input' : null;
+}
+
+/** Argument nouns a tool's own error uses when it turned the arguments down. */
+const ARGUMENT_NOUNS = /\b(arguments?|params|parameters?|fields?|inputs?|propert(y|ies))\b/i;
+
+/**
+ * Whether a tool's own error is about its arguments: it names an argument
+ * noun or one of the tool's own parameters, and is not about access or output.
+ */
+function aboutArguments(said: string, schema: Record<string, unknown>): boolean {
+  if (!said || NOT_ABOUT_INPUT.test(said)) return false;
+  if (ARGUMENT_NOUNS.test(said)) return true;
+  const properties = schema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return false;
+  return Object.keys(properties).some((name) =>
+    new RegExp(`(^|[^\\w])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w]|$)`, 'i').test(
+      said,
+    ),
+  );
+}
+
+/** How long a failed call may spend reading the server's catalog again, in all. */
+export const CATALOG_RECHECK_MS = 3_000;
+
+/** `work`, or a rejection once `ms` have passed. The work itself is left to its own limits. */
+async function withinTime<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    work.catch(() => {});
+  }
+}
 
 /** At most `limit` UTF-8 bytes of `text`, cut on a character, marked when cut. */
 function withinBytes(text: string, limit: number): string {
@@ -292,9 +349,24 @@ export async function openMcpWorker(
   binding: { connectionId: string; spaceId: string },
   options: McpWorkerOptions = {},
 ): Promise<McpWorker> {
+  /**
+   * Hands an accepted session's notes to the connection. Only a session whose
+   * catalog is the approved one gets here, so a server that changed its tools
+   * never replaces the notes kept with them.
+   */
+  const accepted = async (session: McpSession) => {
+    try {
+      await options.onSession?.({ instructions: session.instructions });
+    } catch (error) {
+      console.error(
+        `mcp notes: ${input.id} were not kept: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
   let current: McpSession | undefined = options.pinned
     ? undefined
     : await openMcpSession(input, binding, options);
+  if (current) await accepted(current);
   const initial = current ?? {
     ...policyTools(
       mcpServerConfig.parse(input),
@@ -345,6 +417,7 @@ export async function openMcpWorker(
           throw new Error('MCP catalog changed during reconnect');
         }
         current = next;
+        await accepted(next);
       })()
         .catch((error: unknown) => {
           if (error instanceof ConnectorFaultError) throw error;
@@ -558,47 +631,59 @@ async function openMcpSession(
     if (!capabilities.resources) pages.clear();
     // A caller receives a copy; mutating presentation cannot alter execution policy.
     const authoritative = new Map(tools.map((tool) => [tool.name, structuredClone(tool)]));
-    try {
-      await options.onSession?.({ instructions });
-    } catch (error) {
-      console.error(
-        `mcp notes: ${config.id} were not kept: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
     /**
      * A refusal's account for the agent: the server's own words, bounded and
-     * marked as content from outside, as a successful result's are.
+     * marked as content from outside, as a successful result's are. Empty when
+     * the server gave no words; Melete's own are never put in its mouth.
      */
     const serverAccount = (action: Action, said: string, extra: JsonObject = {}): JsonObject => ({
       server_id: config.id,
       tool: rawNames.get(action.kind) as string,
-      server_said: withinBytes(said || 'The server gave no reason.', SERVER_SAID_BYTES),
+      server_said: withinBytes(said, SERVER_SAID_BYTES),
       origin_trust: 'external_content',
       evidence_handle: `mcp:${config.id}:${action.id}`,
       ...extra,
     });
-    /** The tool's input schema as the server lists it now, when it still lists it and it fits. */
-    const currentSchema = async (raw: string, signal?: AbortSignal): Promise<JsonObject> => {
+    /** The server's tools read again, within one overall time limit; why not, when it fails. */
+    const relisted = async (
+      signal?: AbortSignal,
+    ): Promise<Map<string, McpToolDefinition> | { failed: string }> => {
       try {
-        const schema = (await readServerTools(transport, signal)).get(raw)?.inputSchema;
-        return schema && toolSchemaFits(schema) ? { input_schema: jsonObject.parse(schema) } : {};
-      } catch {
-        return {};
+        return await withinTime(readServerTools(transport, signal), CATALOG_RECHECK_MS);
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        console.error(`mcp recheck: ${config.id} tools/list could not be read again: ${why}`);
+        return { failed: withinBytes(why, 200) };
       }
+    };
+    /**
+     * The schema the broker checks the tool's calls against: the approved one,
+     * never the server's live one. The live listing only says whether the
+     * server has changed it since it was approved.
+     */
+    const approvedSchema = async (kind: string, signal?: AbortSignal): Promise<JsonObject> => {
+      const raw = rawNames.get(kind) as string;
+      const approved = definitions.find((definition) => definition.name === raw)?.inputSchema;
+      const schema = authoritative.get(kind)?.input_schema;
+      const out: JsonObject = schema ? { input_schema: jsonObject.parse(schema) } : {};
+      const listed = await relisted(signal);
+      if ('failed' in listed) return { ...out, catalog_check: `not read again: ${listed.failed}` };
+      const live = listed.get(raw)?.inputSchema;
+      if (!live) return { ...out, schema_changed: true };
+      if (approved && canonicalizePayload(live).hash !== canonicalizePayload(approved).hash)
+        return { ...out, schema_changed: true };
+      return out;
     };
     /** The brokered tools of this connection the server still lists, read again now. */
     const offeredNow = async (signal?: AbortSignal): Promise<JsonObject> => {
-      try {
-        const listed = await readServerTools(transport, signal);
-        return {
-          tools_offered: [...rawNames]
-            .filter(([, raw]) => listed.has(raw))
-            .map(([name]) => name)
-            .sort(),
-        };
-      } catch {
-        return {};
-      }
+      const listed = await relisted(signal);
+      if ('failed' in listed) return { catalog_check: `not read again: ${listed.failed}` };
+      return {
+        tools_offered: [...rawNames]
+          .filter(([, raw]) => listed.has(raw))
+          .map(([name]) => name)
+          .sort(),
+      };
     };
     return {
       tools,
@@ -681,7 +766,9 @@ async function openMcpSession(
               evidence: serverAccount(
                 action,
                 said,
-                ARGUMENT_WORDS.test(said) ? await currentSchema(raw, context.signal) : {},
+                aboutArguments(said, tool.input_schema)
+                  ? await approvedSchema(action.kind, context.signal)
+                  : {},
               ),
             };
           }
@@ -732,37 +819,50 @@ async function openMcpSession(
           };
         } catch (error) {
           if (error instanceof ConnectorFaultError) throw error;
-          // The server answered and did nothing: the call did not happen. Only
-          // no answer, or an answer cut off after the call went out, is unknown.
-          if (
-            error instanceof McpProtocolError &&
-            error.code !== undefined &&
-            ANSWERED_UNDONE.has(error.code)
-          ) {
-            const raw = rawNames.get(action.kind) as string;
-            const extra =
-              error.code === METHOD_NOT_FOUND
-                ? await offeredNow(context.signal)
-                : error.code === INVALID_PARAMS
-                  ? await currentSchema(raw, context.signal)
-                  : {};
-            return {
-              outcome: 'failed',
-              reason:
-                error.code === METHOD_NOT_FOUND
-                  ? 'MCP server does not offer this tool now; nothing was done'
-                  : error.code === INVALID_PARAMS
-                    ? 'MCP server refused the arguments; nothing was done'
-                    : 'MCP server refused the request; nothing was done',
-              // A malformed call or refused arguments can be corrected and sent
-              // again; a tool the server no longer has cannot.
-              retryable: error.code !== METHOD_NOT_FOUND,
-              evidence: serverAccount(action, rpcText(error), {
-                error_code: error.code,
-                ...extra,
-              }),
-            };
+          if (error instanceof McpProtocolError) {
+            const said = rpcText(error);
+            const code: JsonObject = error.code === undefined ? {} : { error_code: error.code };
+            const refusal = rpcRefusal(error);
+            // The server answered before anything ran: the call did not happen.
+            if (refusal === 'missing')
+              return {
+                outcome: 'failed',
+                reason: 'MCP server does not offer this tool now; nothing was done',
+                // Sent again as it is, it would meet the same answer.
+                retryable: false,
+                evidence: serverAccount(action, said, {
+                  ...code,
+                  ...(await offeredNow(context.signal)),
+                }),
+              };
+            if (refusal === 'input')
+              return {
+                outcome: 'failed',
+                reason: 'MCP server refused the arguments; nothing was done',
+                retryable: true,
+                evidence: serverAccount(action, said, {
+                  ...code,
+                  ...(await approvedSchema(action.kind, context.signal)),
+                }),
+              };
+            if (refusal === 'request')
+              return {
+                outcome: 'failed',
+                reason: 'MCP server refused the request; nothing was done',
+                retryable: true,
+                evidence: serverAccount(action, said, code),
+              };
+            // An error that does not prove the tool did not run, such as an
+            // output check after it ran: what it said still reaches the agent.
+            if (said)
+              return {
+                outcome: 'unknown',
+                reason:
+                  'MCP server answered with an error that does not say whether the tool ran; the call was not replayed',
+                evidence: serverAccount(action, said, code),
+              };
           }
+          // No answer, or an answer cut off after the call went out.
           return {
             outcome: 'unknown',
             reason:

@@ -769,7 +769,12 @@ export async function runRepair(
         return options.readOnly
           ? finish(
               'repair_exhausted',
-              { outcome: 'failed', reason: outcome.reason, retryable: true },
+              {
+                outcome: 'failed',
+                reason: outcome.reason,
+                retryable: true,
+                ...(outcome.evidence ? { evidence: outcome.evidence } : {}),
+              },
               null,
             )
           : finish('needs_reconciliation', outcome, null);
