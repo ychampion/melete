@@ -17,77 +17,49 @@ export class NebiusResponseError extends GatewayError {
 
 type TextParts = { content: string; reasoning: string };
 
-/** A tag may span both model deltas and transport chunks. */
+const OPEN = '<think>';
+const CLOSE = '</think>';
+
+/**
+ * Token Factory returns reasoning in reasoning_content or reasoning. Inline
+ * thinking is recognized only when the reply opens with exactly <think>, and
+ * only that span is held back until </think>. Everything else streams as it
+ * arrives, so tags quoted later in an answer stay answer text. A tag may span
+ * model deltas and transport chunks.
+ */
 class ThinkingText {
   private pending = '';
-  private mode: 'undecided' | 'content' | 'reasoning' = 'undecided';
+  private mode: 'undecided' | 'thinking' | 'content' = 'undecided';
 
-  constructor(private prefilled: boolean) {}
-
-  split(text: string, separated: boolean, final: boolean, cutOff = false): TextParts {
+  split(text: string, separated: boolean, final: boolean): TextParts {
     this.pending += text;
     const out: TextParts = { content: '', reasoning: '' };
-    if (separated) this.prefilled = false;
-    while (this.pending) {
-      if (this.mode === 'content') {
-        // Framing ends with the reasoning prefix. Tags quoted in the answer
-        // after it are ordinary text.
-        out.content += this.pending;
+    // With server-side reasoning, content is the answer.
+    if (separated && this.mode === 'undecided') this.mode = 'content';
+    if (this.mode === 'undecided') {
+      const leading = this.pending.trimStart();
+      if (leading.startsWith(OPEN)) {
+        out.content += this.pending.slice(0, this.pending.length - leading.length);
+        this.pending = leading.slice(OPEN.length);
+        this.mode = 'thinking';
+      } else if (final || !OPEN.startsWith(leading)) this.mode = 'content';
+    }
+    if (this.mode === 'thinking') {
+      const at = this.pending.indexOf(CLOSE);
+      if (at >= 0) {
+        out.reasoning += this.pending.slice(0, at);
+        this.pending = this.pending.slice(at + CLOSE.length);
+        this.mode = 'content';
+      } else if (final) {
+        // An unclosed tag is not proof of reasoning: return the text as sent.
+        out.content += OPEN + this.pending;
         this.pending = '';
-      } else if (this.mode === 'undecided') {
-        if (!this.prefilled) {
-          // A parsed response, or thinking disabled by the request, can stream
-          // as soon as an explicit opening tag is ruled out. Still recognize
-          // one if the provider ignored the off switch.
-          const leading = this.pending.trimStart();
-          if (!final && '<think>'.startsWith(leading)) break;
-          if (!leading.startsWith('<think>')) {
-            this.mode = 'content';
-            continue;
-          }
-        }
-        const open = this.pending.indexOf('<think>');
-        const shut = this.pending.indexOf('</think>');
-        if (open >= 0 && (shut < 0 || open < shut)) {
-          if (this.pending.slice(0, open).trim()) {
-            this.mode = 'content';
-            continue;
-          }
-          out.content += this.pending.slice(0, open);
-          this.pending = this.pending.slice(open + '<think>'.length);
-          this.mode = 'reasoning';
-        } else if (shut >= 0) {
-          // NVIDIA's generation template can prefill the opening tag. Until
-          // the closing tag arrives, unclassified content must stay buffered.
-          out.reasoning += this.pending.slice(0, shut);
-          this.pending = this.pending.slice(shut + '</think>'.length);
-          this.mode = 'content';
-        } else {
-          if (final) {
-            // With thinking enabled, a raw continuation cut off before the
-            // closing tag may still be reasoning. Never publish that guess.
-            out[cutOff ? 'reasoning' : 'content'] += this.pending;
-            this.pending = '';
-          }
-          break;
-        }
-      } else {
-        const tag = '</think>';
-        const at = this.pending.indexOf(tag);
-        if (at >= 0) {
-          out[this.mode] += this.pending.slice(0, at);
-          this.pending = this.pending.slice(at + tag.length);
-          this.mode = 'content';
-        } else {
-          let held = 0;
-          if (!final)
-            for (let size = 1; size < tag.length && size <= this.pending.length; size++)
-              if (this.pending.endsWith(tag.slice(0, size))) held = size;
-          out[this.mode] += this.pending.slice(0, this.pending.length - held);
-          this.pending = this.pending.slice(this.pending.length - held);
-          break;
-        }
+        this.mode = 'content';
       }
+    }
+    if (this.mode === 'content') {
+      out.content += this.pending;
+      this.pending = '';
     }
     return out;
   }
@@ -103,8 +75,6 @@ export class NemotronReply {
   private readonly choices = new Map<number, ThinkingText>();
   private last: Record<string, unknown> | null = null;
 
-  constructor(private readonly thinking = true) {}
-
   private normalize(value: unknown, streaming: boolean): Record<string, unknown> | null {
     const root = object(value);
     if (!root) return null;
@@ -115,7 +85,7 @@ export class NemotronReply {
       const message = object(streaming ? choice?.delta : choice?.message);
       if (!choice || !message) continue;
       const index = typeof choice.index === 'number' ? choice.index : 0;
-      const thinking = this.choices.get(index) ?? new ThinkingText(this.thinking);
+      const thinking = this.choices.get(index) ?? new ThinkingText();
       this.choices.set(index, thinking);
       const reasoning =
         typeof message.reasoning_content === 'string'
@@ -128,7 +98,6 @@ export class NemotronReply {
         text,
         reasoning.length > 0,
         !streaming || !!choice.finish_reason,
-        choice.finish_reason === 'length',
       );
       if (typeof message.content === 'string' || parts.content) message.content = parts.content;
       if (reasoning || parts.reasoning) message.reasoning_content = reasoning + parts.reasoning;
@@ -139,8 +108,16 @@ export class NemotronReply {
     return root;
   }
 
+  /** A body that is not a JSON object goes back as the provider sent it. */
   json(text: string): string {
-    return JSON.stringify(this.normalize(JSON.parse(text), false));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return text;
+    }
+    const normalized = this.normalize(parsed, false);
+    return normalized ? JSON.stringify(normalized) : text;
   }
 
   private flush(): string {
@@ -165,15 +142,23 @@ export class NemotronReply {
       : '';
   }
 
-  private event(text: string): string {
+  /** Events that are not JSON objects pass through unchanged. */
+  private event(text: string, end: string): string {
     const lines = text.split(/\r?\n/);
     const data = lines
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trimStart())
       .join('\n');
-    if (!data) return `${text}\n\n`;
+    if (!data) return text + end;
     if (data === '[DONE]') return `${this.flush()}data: [DONE]\n\n`;
-    const normalized = this.normalize(JSON.parse(data), true);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return text + end;
+    }
+    const normalized = this.normalize(parsed, true);
+    if (!normalized) return text + end;
     const extra = lines.filter((line) => !line.startsWith('data:')).join('\n');
     return `${extra ? `${extra}\n` : ''}data: ${JSON.stringify(normalized)}\n\n`;
   }
@@ -184,7 +169,7 @@ export class NemotronReply {
     for (;;) {
       const boundary = /\r?\n\r?\n/.exec(this.pending);
       if (!boundary) break;
-      out += this.event(this.pending.slice(0, boundary.index));
+      out += this.event(this.pending.slice(0, boundary.index), boundary[0]);
       this.pending = this.pending.slice(boundary.index + boundary[0].length);
     }
     return out;
@@ -193,6 +178,10 @@ export class NemotronReply {
   end(): string {
     const rest = this.pending;
     this.pending = '';
-    return (rest ? this.event(rest) : '') + this.flush();
+    const last = rest ? this.event(rest, '') : '';
+    const held = this.flush();
+    // A trailing fragment passed through as sent still needs a boundary
+    // before any held text that follows it.
+    return last && held && !last.endsWith('\n\n') ? `${last}\n\n${held}` : last + held;
   }
 }

@@ -14,6 +14,7 @@ import {
   toolChunks,
 } from './fixtures/nebius.ts';
 import { createModelGateway, type GatewayOptions } from './index.ts';
+import { NemotronReply } from './nebius.ts';
 import { PriceTable } from './prices.ts';
 import { providersFromEnv } from './providers.ts';
 import { settledCost } from './spending.ts';
@@ -395,29 +396,32 @@ describe('Nemotron through the Token Factory provider', () => {
     });
   });
 
-  test('unfinished inline reasoning at the output limit never becomes an answer', async () => {
-    const model = nemotronModels[0].id;
-    const gateway = await start(() =>
-      streamed(
-        eventStream(model, [
-          chunk(model, { content: '<think>Still comparing private readings.' }),
-          chunk(model, {}, 'length'),
-        ]),
-      ),
-    );
-    const response = await gateway.post(model, { stream: true });
-    const events = readEvents(await response.text());
-    expect(answerText(events)).toBe('');
-    expect(reasoningText(events)).toBe('Still comparing private readings.');
-    expect(events.flatMap((event) => event.choices).at(-1)?.finish_reason).toBe('length');
-  });
+  for (const finishReason of ['length', 'stop']) {
+    test(`an opening think tag that never closes before a ${finishReason} finish is returned as the answer`, async () => {
+      const model = nemotronModels[0].id;
+      const gateway = await start(() =>
+        streamed(
+          eventStream(model, [
+            chunk(model, { content: '<think>Still comparing ' }),
+            chunk(model, { content: 'readings.' }),
+            chunk(model, {}, finishReason),
+          ]),
+        ),
+      );
+      const response = await gateway.post(model, { stream: true });
+      const events = readEvents(await response.text());
+      expect(answerText(events)).toBe('<think>Still comparing readings.');
+      expect(reasoningText(events)).toBe('');
+      expect(events.flatMap((event) => event.choices).at(-1)?.finish_reason).toBe(finishReason);
+    });
+  }
 
-  test('a raw continuation whose opening think tag was prefilled keeps its reasoning separate', async () => {
+  test('a closing think tag in the middle of an answer stays answer text', async () => {
     const model = nemotronModels[1].id;
     const gateway = await start(() =>
       streamed(
         eventStream(model, [
-          chunk(model, { content: 'Privately compare readings.' }),
+          chunk(model, { content: 'Compare readings.' }),
           chunk(model, { content: '</thi' }),
           chunk(model, { content: 'nk>Tea is ready. ☕' }),
           chunk(model, {}, 'stop'),
@@ -426,8 +430,58 @@ describe('Nemotron through the Token Factory provider', () => {
     );
     const response = await gateway.post(model, { stream: true });
     const events = readEvents(await response.text());
-    expect(answerText(events)).toBe('Tea is ready. ☕');
-    expect(reasoningText(events)).toBe('Privately compare readings.');
+    expect(answerText(events)).toBe('Compare readings.</think>Tea is ready. ☕');
+    expect(reasoningText(events)).toBe('');
+    // Text that does not open with a think tag is sent on at once.
+    expect(events[0]?.choices[0]?.delta.content).toBe('Compare readings.');
+  });
+
+  test('an opening think tag in the middle of an answer stays answer text', async () => {
+    const model = nemotronModels[0].id;
+    const gateway = await start(() =>
+      streamed(
+        eventStream(model, [
+          chunk(model, { content: 'Wrap notes in ' }),
+          chunk(model, { content: '<think>' }),
+          chunk(model, { content: ' tags.' }),
+          chunk(model, {}, 'stop'),
+        ]),
+      ),
+    );
+    const response = await gateway.post(model, { stream: true });
+    const events = readEvents(await response.text());
+    expect(answerText(events)).toBe('Wrap notes in <think> tags.');
+    expect(reasoningText(events)).toBe('');
+  });
+
+  test('a JSON reply whose think tag never closes is returned as the answer', async () => {
+    const model = nemotronModels[0].id;
+    const content = '<think>Still comparing readings.';
+    const gateway = await start(() => Response.json(completion(model, { content }, 'length')));
+    const response = await gateway.post(model);
+    expect(replyOf('chat/completions', await response.json())).toEqual({
+      text: content,
+      end: 'cut_off',
+    });
+  });
+
+  test('stream events that are not JSON objects pass through unchanged', async () => {
+    const model = nemotronModels[0].id;
+    const events = eventStream(model, textChunks(model));
+    const gateway = await start(() => streamed(`: keep-alive\r\n\r\ndata: [1,2]\r\n\r\n${events}`));
+    const response = await gateway.post(model, { stream: true });
+    expect(response.status).toBe(200);
+    const wire = await response.text();
+    expect(wire.startsWith(': keep-alive\r\n\r\ndata: [1,2]\r\n\r\n')).toBe(true);
+    const parsed = readEvents(wire.replace('data: [1,2]', ''));
+    expect(answerText(parsed)).toBe('Tea is ready. ☕');
+  });
+
+  test('text that is not a JSON object is left as the provider sent it', () => {
+    for (const body of ['not json', '[1,2]', '"text"'])
+      expect(new NemotronReply().json(body)).toBe(body);
+    for (const event of ['data: not json\r\n\r\n', 'data: {"partial\n\n', 'data: 7\n\n'])
+      expect(new NemotronReply().push(event)).toBe(event);
   });
 
   test('the reasoning alias is kept separate from answer text', async () => {
@@ -463,50 +517,54 @@ describe('Nemotron through the Token Factory provider', () => {
     });
   });
 
-  test('plain streamed content survives when the model returns no reasoning', async () => {
-    const model = nemotronModels[0].id;
-    const gateway = await start(() =>
-      streamed(
-        eventStream(model, [
-          chunk(model, { role: 'assistant', content: '' }),
-          chunk(model, { content: 'Tea ' }),
-          chunk(model, { content: 'is ready. ☕' }),
-          chunk(model, {}, 'stop'),
-        ]),
-      ),
-    );
-    const response = await gateway.post(model, {
-      stream: true,
-      chat_template_kwargs: { enable_thinking: false },
+  for (const thinking of [undefined, false, true]) {
+    test(`content with no reasoning fields streams as it arrives (enable_thinking ${thinking})`, async () => {
+      const model = nemotronModels[0].id;
+      const gateway = await start(() =>
+        streamed(
+          eventStream(model, [
+            chunk(model, { role: 'assistant', content: '' }),
+            chunk(model, { content: 'Tea ' }),
+            chunk(model, { content: 'is ready. ☕' }),
+            chunk(model, {}, 'stop'),
+          ]),
+        ),
+      );
+      const response = await gateway.post(model, {
+        stream: true,
+        ...(thinking === undefined ? {} : { chat_template_kwargs: { enable_thinking: thinking } }),
+      });
+      const events = readEvents(await response.text());
+      expect(answerText(events)).toBe('Tea is ready. ☕');
+      expect(reasoningText(events)).toBe('');
+      expect(
+        events
+          .flatMap((event) => event.choices)
+          .filter((choice) => choice.delta.content)
+          .map((choice) => [choice.delta.content, choice.finish_reason]),
+      ).toEqual([
+        ['Tea ', null],
+        ['is ready. ☕', null],
+      ]);
     });
-    const events = readEvents(await response.text());
-    expect(answerText(events)).toBe('Tea is ready. ☕');
-    expect(reasoningText(events)).toBe('');
-    expect(
-      events
-        .flatMap((event) => event.choices)
-        .filter((choice) => choice.delta.content)
-        .map((choice) => [choice.delta.content, choice.finish_reason]),
-    ).toEqual([
-      ['Tea ', null],
-      ['is ready. ☕', null],
-    ]);
-  });
+  }
 
-  test('a prefilled thinking continuation cut off before its closing tag stays out of answers', async () => {
+  test('an answer cut off at the output limit with no reasoning fields is still the answer', async () => {
     const model = nemotronModels[1].id;
     const gateway = await start(() =>
       streamed(
         eventStream(model, [
-          chunk(model, { content: 'Privately infer a sensitive fact.' }),
+          chunk(model, { content: 'The kettle reads ' }),
+          chunk(model, { content: 'ninety' }),
           chunk(model, {}, 'length'),
         ]),
       ),
     );
     const response = await gateway.post(model, { stream: true });
     const events = readEvents(await response.text());
-    expect(answerText(events)).toBe('');
-    expect(reasoningText(events)).toBe('Privately infer a sensitive fact.');
+    expect(answerText(events)).toBe('The kettle reads ninety');
+    expect(reasoningText(events)).toBe('');
+    expect(events[0]?.choices[0]?.delta.content).toBe('The kettle reads ');
   });
 
   test('thinking tags quoted in the final answer remain literal answer text', async () => {

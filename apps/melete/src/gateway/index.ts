@@ -870,7 +870,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         settlement.provider === 'nebius' &&
         /nemotron/i.test(settlement.modelRequested) &&
         !settlement.servedLocally
-          ? new NemotronReply(object(body.chat_template_kwargs)?.enable_thinking !== false)
+          ? new NemotronReply()
           : null;
       const buffered: string[] = [];
       const streamStatus = result.status;
@@ -881,6 +881,10 @@ export function createModelGateway(options: GatewayOptions): Server {
             'cache-control': 'no-store',
           });
       };
+      // Token Factory can report an error inside an HTTP 200 stream, so its
+      // success headers wait for the first event that passes. Other providers
+      // get them at once.
+      if (streaming && !nemotron) streamHeaders();
       const reader = result.body.getReader();
       try {
         for (;;) {
