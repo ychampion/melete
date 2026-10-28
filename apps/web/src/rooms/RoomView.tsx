@@ -3,15 +3,17 @@
  * right, who is looking at it now, and its people. On the phone the list and
  * the thread take turns.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Button } from '../design/primitives.tsx';
+import { clockTime, monthDay, sameDay } from '../experience/clock.ts';
 import { href, navigate } from '../router.ts';
 import { Shell } from '../shell/Shell.tsx';
 import { type Me, type RoomDetail, type RoomThread, roomsApi } from './api.ts';
 import { Board } from './Board.tsx';
+import { nameText, roomNames, shownName } from './names.ts';
 import { People } from './People.tsx';
-import { PersonAvatar } from './parts.tsx';
+import { PersonAvatar, RoomNamesContext } from './parts.tsx';
 import { RoomMemory } from './RoomMemory.tsx';
 import { approversLine, RoomSettings } from './RoomSettings.tsx';
 import { dayOf } from './reduce.ts';
@@ -22,12 +24,10 @@ const HEARTBEAT_MS = 20_000;
 
 const peopleCount = (n: number) => (n === 1 ? '1 person' : `${n} people`);
 
+/** The time today, or else the day, on the person's own clock. */
 function when(iso: string): string {
   const date = new Date(iso);
-  const now = new Date();
-  if (date.toDateString() === now.toDateString())
-    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return sameDay(date, new Date()) ? clockTime(date) : monthDay(date);
 }
 
 export function RoomView({ roomId, threadId }: { roomId: string; threadId: string | null }) {
@@ -94,6 +94,9 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
   const opened = threadId !== null;
   const guest = room?.my_role === 'guest';
   const myPlace = detail?.members.find((member) => member.principal_id === me?.id) ?? null;
+  // Everyone in the room by name, set apart only where two share one.
+  const names = useMemo(() => roomNames(detail?.members ?? []), [detail]);
+  const nameOf = (label: string) => nameText(shownName(label, names));
 
   if (gone)
     return (
@@ -114,7 +117,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
       </Shell>
     );
 
-  return (
+  const page = (
     <Shell
       title={room?.name ?? 'Room'}
       rail={false}
@@ -144,9 +147,9 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
             {here.length > 0 ? (
               <ul className="room-here" aria-label="Looking at this room now">
                 {here.slice(0, 5).map((member) => (
-                  <li key={member.principal_id} title={member.display_name}>
+                  <li key={member.principal_id} title={nameOf(member.display_name)}>
                     <PersonAvatar id={member.principal_id} label={member.display_name} size={26} />
-                    <span className="sr-only">{member.display_name}</span>
+                    <span className="sr-only">{nameOf(member.display_name)}</span>
                   </li>
                 ))}
                 {here.length > 5 ? <li className="room-here-more">+{here.length - 5}</li> : null}
@@ -213,7 +216,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
               >
                 <span className="clamp1 room-thread-title">{thread.title}</span>
                 <span className="clamp1 room-thread-meta">
-                  {when(thread.last_activity_at)} · {thread.created_by.display_name}
+                  {when(thread.last_activity_at)} · {nameOf(thread.created_by.display_name)}
                 </span>
               </a>
             ))}
@@ -284,4 +287,6 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
       ) : null}
     </Shell>
   );
+  // Every name drawn in the room, its dialogs included, reads from the room's own list.
+  return <RoomNamesContext.Provider value={names}>{page}</RoomNamesContext.Provider>;
 }

@@ -7,15 +7,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Field, Input, Select } from '../design/primitives.tsx';
+import { clockTime, monthDay } from '../experience/clock.ts';
 import { href, navigate } from '../router.ts';
 import { Shell } from '../shell/Shell.tsx';
-import {
-  type AuditEntry,
-  type AuditFilter,
-  type RoomDetail,
-  type RoomMember,
-  roomsApi,
-} from './api.ts';
+import { type AuditEntry, type AuditFilter, type RoomDetail, roomsApi } from './api.ts';
+import { nameText, roomNames, shownName } from './names.ts';
 
 export const EFFECT_WORDS: Record<AuditEntry['effect_class'], string> = {
   read: 'Read',
@@ -60,13 +56,8 @@ export function approvalLine(entry: AuditEntry): string {
   return allowed ? `Approved by ${by}` : `Declined by ${by}`;
 }
 
-const when = (iso: string) =>
-  new Date(iso).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+/** "Oct 28, 5:30 PM" on the person's own clock. */
+const when = (iso: string) => `${monthDay(new Date(iso))}, ${clockTime(new Date(iso))}`;
 
 /**
  * The days a person picked, as the instants the log is filtered on: from the
@@ -120,8 +111,6 @@ const EFFECT_CHOICES = [
   { value: '', label: 'Everything' },
   ...Object.entries(EFFECT_WORDS).map(([value, label]) => ({ value, label })),
 ];
-
-const nameOf = (member: RoomMember) => member.display_name.replace(/\s*<[^>]*>$/, '');
 
 export function ActivityLog({ roomId }: { roomId: string }) {
   const [detail, setDetail] = useState<RoomDetail | null>(null);
@@ -181,6 +170,7 @@ export function ActivityLog({ roomId }: { roomId: string }) {
   const room = detail?.room;
   // Guests ask the room too, so an owner can narrow the log to one of them.
   const people = detail?.members ?? [];
+  const names = roomNames(people);
 
   return (
     <Shell
@@ -226,7 +216,7 @@ export function ActivityLog({ roomId }: { roomId: string }) {
                     { value: '', label: 'Everyone' },
                     ...people.map((member) => ({
                       value: member.principal_id,
-                      label: nameOf(member),
+                      label: nameText(shownName(member.display_name, names)),
                     })),
                   ]}
                 />

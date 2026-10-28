@@ -13,7 +13,7 @@ import {
 } from '../experience/hooks.ts';
 import type { Conversation, Question, Run } from '../experience/types.ts';
 import { DecisionCard, runOfDecision, WaitingOnYou } from './Home.tsx';
-import { emptyLine, whenWords } from './NeedsYouSection.tsx';
+import { emptyLine, nothingNeedsYou, whenWords } from './NeedsYouSection.tsx';
 
 const now = Date.parse('2026-10-09T09:00:00.000Z');
 
@@ -71,6 +71,10 @@ test('a question only an answer settles offers no Dismiss', () => {
 test('the line under the queue does not say nothing needs you while something waits', () => {
   expect(emptyLine(0)).toBe('Nothing needs you right now.');
   expect(emptyLine(2)).toBe('Nothing else needs you right now.');
+  // A board item waiting on the person is in the section too: the empty line waits for both.
+  expect(nothingNeedsYou(0, 0)).toBe(true);
+  expect(nothingNeedsYou(0, 1)).toBe(false);
+  expect(nothingNeedsYou(2, 0)).toBe(false);
 });
 
 test('a reminder from more than a week ago reads as a date, not a weekday', () => {

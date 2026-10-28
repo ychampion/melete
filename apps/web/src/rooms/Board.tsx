@@ -8,9 +8,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Status } from '../design/primitives.tsx';
 import { clockTime, dayWords } from '../experience/clock.ts';
 import { useApp } from '../experience/hooks.ts';
+import { webHref } from '../experience/markdown.ts';
 import { href } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
+import { roomsApi } from './api.ts';
 import { type BoardItem, boardApi, followBoard, itemWhen, mergeItems } from './board-api.ts';
+import { useNameOf } from './parts.tsx';
 import './board.css';
 
 const KIND_WORDS: Record<BoardItem['kind'], string> = {
@@ -23,13 +26,119 @@ const KIND_WORDS: Record<BoardItem['kind'], string> = {
 /** A room label without the code after it: "Bob <K3F9Q>" reads as "Bob". */
 export const shortName = (label: string) => label.replace(/\s*<[^>]*>\s*$/, '') || label;
 
+/** Whether an item is assigned to the reader. */
+const isMine = (entry: BoardItem, me: string | null) =>
+  me !== null && entry.assignee?.principal_id === me;
+
 /** Who sees an item, in words. */
-export function visibilityWords(entry: BoardItem): string {
+export function visibilityWords(
+  entry: BoardItem,
+  me: string | null = null,
+  nameOf: (label: string) => string = shortName,
+): string {
   if (entry.visibility === 'everyone') return 'Everyone in the room';
-  if (entry.visibility === 'owners') return 'Owners only';
-  return entry.assignee
-    ? `${shortName(entry.assignee.display_name)} and the owners`
-    : 'Owners only';
+  if (entry.visibility === 'owners' || !entry.assignee) return 'Owners only';
+  return isMine(entry, me)
+    ? 'You and the owners'
+    : `${nameOf(entry.assignee.display_name)} and the owners`;
+}
+
+/** The line under an item: when it is, who it is for, and who sees it. */
+export function metaWords(
+  entry: BoardItem,
+  me: string | null = null,
+  nameOf: (label: string) => string = shortName,
+  now = new Date(),
+): string {
+  const mine = isMine(entry, me);
+  const forWho = entry.assignee
+    ? mine
+      ? 'For you'
+      : `For ${nameOf(entry.assignee.display_name)}`
+    : null;
+  // "For you · You and the owners" names the reader twice; the owners are what it adds.
+  const seen =
+    mine && entry.visibility === 'assignee'
+      ? 'The owners see it too'
+      : visibilityWords(entry, me, nameOf);
+  return [whenWords(entry, now), forWho, seen].filter(Boolean).join(' · ');
+}
+
+/** Claim takes on someone else's task or nobody's, never one that is already the reader's. */
+export const canClaim = (entry: BoardItem, me: string | null) =>
+  entry.can.claim && !isMine(entry, me) && !(me !== null && entry.claimed_by?.principal_id === me);
+
+/** A detail's text, with each web address in it as a link. */
+export type DetailPart = { text: string } | { href: string; label: string };
+
+const ADDRESS = /https?:\/\/[^\s<>"'`]+/gi;
+
+/**
+ * A detail split into text and links, so a pasted address reads as its site
+ * ("docs.google.com") rather than in full. Only http and https addresses
+ * become links; punctuation that ends a sentence stays text.
+ */
+export function detailParts(text: string): DetailPart[] {
+  const parts: DetailPart[] = [];
+  let at = 0;
+  for (const match of text.matchAll(ADDRESS)) {
+    let raw = match[0];
+    for (;;) {
+      const last = raw.at(-1) ?? '';
+      const unmatched = raw.split(')').length > raw.split('(').length;
+      if (/[.,;:!?'"\]}]/.test(last) || (last === ')' && unmatched)) raw = raw.slice(0, -1);
+      else break;
+    }
+    const start = match.index ?? 0;
+    const target = webHref(raw);
+    if (!target) continue;
+    if (start > at) parts.push({ text: text.slice(at, start) });
+    parts.push({ href: target, label: new URL(target).hostname.replace(/^www\./, '') });
+    at = start + raw.length;
+  }
+  if (at < text.length) parts.push({ text: text.slice(at) });
+  return parts;
+}
+
+function DetailText({ text }: { text: string }) {
+  return (
+    <>
+      {detailParts(text).map((part, index) =>
+        'href' in part ? (
+          <a
+            // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one text, in order
+            key={index}
+            className="board-link"
+            href={part.href}
+            title={part.href}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {part.label}
+          </a>
+        ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one text, in order
+          <span key={index}>{part.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+/** The signed-in person's id, for what is theirs on boards read outside a room. */
+export function useMeId(on = true): string | null {
+  const [me, setMe] = useState<string | null>(null);
+  useEffect(() => {
+    if (!on) return;
+    let live = true;
+    void roomsApi.me().then((result) => {
+      if (live && result.data) setMe(result.data.owner.id);
+    });
+    return () => {
+      live = false;
+    };
+  }, [on]);
+  return me;
 }
 
 /** When an item happens, as a person would say it. */
@@ -42,11 +151,14 @@ export function whenWords(entry: BoardItem, now = new Date()): string | null {
   return entry.starts_at ? `${day}, ${time}` : `Due ${day}, ${time}`;
 }
 
-function stateOf(entry: BoardItem) {
+function stateOf(entry: BoardItem, me: string | null, nameOf: (label: string) => string) {
   if (entry.state === 'claimed')
     return {
       tone: 'working' as const,
-      words: `${shortName(entry.claimed_by?.display_name ?? 'Someone')} is on it`,
+      words:
+        me !== null && entry.claimed_by?.principal_id === me
+          ? 'You are on it'
+          : `${nameOf(entry.claimed_by?.display_name ?? 'Someone')} is on it`,
     };
   if (entry.state === 'done') return { tone: 'settled' as const, words: 'Done' };
   if (entry.state === 'answered') return { tone: 'settled' as const, words: 'Answered' };
@@ -56,17 +168,20 @@ function stateOf(entry: BoardItem) {
 /** One item, and what the reader may do with it. */
 export function BoardRow({
   entry,
+  me,
   onChanged,
   showRoom = false,
 }: {
   entry: BoardItem;
+  /** The reader, once known: what is already theirs is not offered to them. */
+  me: string | null;
   onChanged: (entry: BoardItem) => void;
   showRoom?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [answer, setAnswer] = useState('');
-  const state = stateOf(entry);
-  const when = whenWords(entry);
+  const nameOf = useNameOf();
+  const state = stateOf(entry, me, nameOf);
   const act = async (what: 'claim' | 'done') => {
     setBusy(true);
     const result =
@@ -107,19 +222,16 @@ export function BoardRow({
           {showRoom ? ` · ${entry.room_name}` : ''}
         </span>
         <span className="board-title">{entry.title}</span>
-        {entry.detail ? <span className="board-detail clamp2">{entry.detail}</span> : null}
-        <span className="board-meta">
-          {[
-            when,
-            entry.assignee ? `For ${shortName(entry.assignee.display_name)}` : null,
-            visibilityWords(entry),
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        </span>
+        {entry.detail ? (
+          <span className="board-detail clamp2">
+            <DetailText text={entry.detail} />
+          </span>
+        ) : null}
+        <span className="board-meta">{metaWords(entry, me, nameOf)}</span>
         {entry.answer ? (
           <span className="board-answer">
-            {shortName(entry.assignee?.display_name ?? 'They')} answered: {entry.answer}
+            {isMine(entry, me) ? 'You' : nameOf(entry.assignee?.display_name ?? 'They')} answered:{' '}
+            {entry.answer}
           </span>
         ) : null}
         {entry.can.answer ? (
@@ -162,7 +274,7 @@ export function BoardRow({
           {state.words}
         </Status>
         <span className="row board-actions">
-          {entry.can.claim ? (
+          {canClaim(entry, me) ? (
             <Button
               size="sm"
               variant="outline"
@@ -249,10 +361,10 @@ export function Board({ roomId, me }: { roomId: string; me: string | null }) {
       ) : (
         <>
           {groups.yours.length ? (
-            <BoardGroup title="Waiting on you" items={groups.yours} onChanged={changed} />
+            <BoardGroup title="Waiting on you" items={groups.yours} me={me} onChanged={changed} />
           ) : null}
           {groups.rest.length ? (
-            <BoardGroup title="Coming up" items={groups.rest} onChanged={changed} />
+            <BoardGroup title="Coming up" items={groups.rest} me={me} onChanged={changed} />
           ) : null}
           {groups.closed.length ? (
             <div className="board-group">
@@ -262,7 +374,7 @@ export function Board({ roomId, me }: { roomId: string; me: string | null }) {
               {showDone ? (
                 <ul className="board-list">
                   {groups.closed.map((entry) => (
-                    <BoardRow key={entry.id} entry={entry} onChanged={changed} />
+                    <BoardRow key={entry.id} entry={entry} me={me} onChanged={changed} />
                   ))}
                 </ul>
               ) : null}
@@ -277,11 +389,13 @@ export function Board({ roomId, me }: { roomId: string; me: string | null }) {
 function BoardGroup({
   title,
   items,
+  me,
   onChanged,
   showRoom = false,
 }: {
   title: string;
   items: BoardItem[];
+  me: string | null;
   onChanged: (entry: BoardItem) => void;
   showRoom?: boolean;
 }) {
@@ -290,7 +404,13 @@ function BoardGroup({
       <h3 className="board-group-title">{title}</h3>
       <ul className="board-list">
         {items.map((entry) => (
-          <BoardRow key={entry.id} entry={entry} onChanged={onChanged} showRoom={showRoom} />
+          <BoardRow
+            key={entry.id}
+            entry={entry}
+            me={me}
+            onChanged={onChanged}
+            showRoom={showRoom}
+          />
         ))}
       </ul>
     </div>
@@ -299,9 +419,10 @@ function BoardGroup({
 
 /**
  * Home's "Waiting on you": open items in any room that are assigned to the
- * person. Nothing is drawn when there are none, or rooms are switched off.
+ * person, read once rooms are switched on. Home holds them, so the section
+ * they sit in knows whether anything waits before it says nothing does.
  */
-export function WaitingOnYou() {
+export function useWaitingOnYou() {
   const { capabilities } = useApp();
   const [items, setItems] = useState<BoardItem[]>([]);
   const on = capabilities.multiplayer;
@@ -315,17 +436,24 @@ export function WaitingOnYou() {
       live = false;
     };
   }, [on]);
-  if (!on || items.length === 0) return null;
   const changed = (entry: BoardItem) =>
     setItems((held) =>
       mergeItems(held, [entry]).filter((kept) => kept.state === 'open' || kept.state === 'claimed'),
     );
+  return { items: on ? items : [], changed };
+}
+
+/** The items `useWaitingOnYou` read; nothing is drawn when there are none. */
+export function WaitingOnYou({ waiting }: { waiting: ReturnType<typeof useWaitingOnYou> }) {
+  const me = useMeId(waiting.items.length > 0);
+  if (waiting.items.length === 0) return null;
   return (
     <div className="board-waiting">
       <BoardGroup
         title="Waiting on you"
-        items={[...items].sort(byWhen)}
-        onChanged={changed}
+        items={[...waiting.items].sort(byWhen)}
+        me={me}
+        onChanged={waiting.changed}
         showRoom
       />
     </div>

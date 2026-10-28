@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { weekOf } from '../screens/Household.tsx';
-import { shortName, visibilityWords } from './Board.tsx';
+import { canClaim, detailParts, metaWords, shortName, visibilityWords } from './Board.tsx';
 import { type BoardItem, itemWhen, mergeItems } from './board-api.ts';
 
 const item = (over: Partial<BoardItem>): BoardItem =>
@@ -43,6 +43,47 @@ describe('the board on the web', () => {
       ),
     ).toBe('Bob and the owners');
     expect(shortName('Bob <K3F9Q>')).toBe('Bob');
+  });
+
+  test('says the reader once when the item is theirs', () => {
+    const bob = { principal_id: 'own_2', display_name: 'Bob <K3F9Q>' };
+    const theirs = item({ visibility: 'assignee', assignee: bob });
+    expect(metaWords(theirs, 'own_2')).toBe('For you · The owners see it too');
+    expect(visibilityWords(theirs, 'own_2')).toBe('You and the owners');
+    expect(metaWords(theirs, 'own_1')).toBe('For Bob · Bob and the owners');
+    expect(metaWords(item({ assignee: bob }), 'own_2')).toBe('For you · Everyone in the room');
+    expect(metaWords(item({}), 'own_2')).toBe('Everyone in the room');
+  });
+
+  test('never offers to claim a task the reader already has', () => {
+    const bob = { principal_id: 'own_2', display_name: 'Bob <K3F9Q>' };
+    expect(canClaim(item({ assignee: bob }), 'own_2')).toBe(false);
+    expect(canClaim(item({ assignee: bob }), 'own_3')).toBe(true);
+    expect(canClaim(item({}), 'own_2')).toBe(true);
+    expect(canClaim(item({ state: 'claimed', claimed_by: bob }), 'own_2')).toBe(false);
+    // Until the reader is known, the service's word stands.
+    expect(canClaim(item({ assignee: bob }), null)).toBe(true);
+    expect(canClaim(item({ can: { claim: false, done: true, answer: false } }), 'own_3')).toBe(
+      false,
+    );
+  });
+
+  test('a web address in a detail becomes a short link to its site', () => {
+    expect(detailParts('Notes: https://www.docs.example.com/d/abc?x=1, then call.')).toEqual([
+      { text: 'Notes: ' },
+      { href: 'https://www.docs.example.com/d/abc?x=1', label: 'docs.example.com' },
+      { text: ', then call.' },
+    ]);
+    expect(detailParts('(see http://example.org/a_(b))')).toEqual([
+      { text: '(see ' },
+      { href: 'http://example.org/a_(b)', label: 'example.org' },
+      { text: ')' },
+    ]);
+    // Only http and https: anything else stays text.
+    expect(detailParts('javascript:alert(1) and ftp://example.org/x')).toEqual([
+      { text: 'javascript:alert(1) and ftp://example.org/x' },
+    ]);
+    expect(detailParts('No links here.')).toEqual([{ text: 'No links here.' }]);
   });
 
   test('keeps the newest version of each item as changes arrive', () => {

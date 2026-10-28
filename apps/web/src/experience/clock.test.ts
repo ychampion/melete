@@ -9,6 +9,7 @@ import {
   dayWords,
   displayZone,
   hourOfDay,
+  isoWords,
   isYesterday,
   sameDay,
   setDisplayZone,
@@ -58,4 +59,21 @@ test('a chat started on another day says which day, on the profile’s calendar'
   expect(dayWords(new Date('2026-10-10T02:00:00Z'), now, 'America/Los_Angeles')).toBe('Yesterday');
   expect(dayWords(new Date('2026-10-10T02:00:00Z'), now, 'Asia/Kolkata')).toBe('Today');
   expect(dayWords(new Date('2026-10-03T12:00:00Z'), now, 'UTC')).toBe('Sat, Oct 3');
+});
+
+test('a time a card carries as ISO 8601 reads on the profile’s clock, and other text is left alone', () => {
+  const now = new Date('2026-10-28T12:00:00Z');
+  expect(isoWords('2026-10-30T17:30:00-07:00', now, 'America/Los_Angeles')).toBe(
+    'Fri, Oct 30, 5:30 PM',
+  );
+  // The same instant, for someone whose profile is in Kolkata.
+  expect(isoWords('2026-10-30T17:30:00-07:00', now, 'Asia/Kolkata')).toBe('Sat, Oct 31, 6:00 AM');
+  expect(isoWords('2026-10-30T00:30:00.000Z', now, 'UTC')).toBe('Fri, Oct 30, 12:30 AM');
+  // A date alone is the same day everywhere; a time without an offset is the wall clock it names.
+  expect(isoWords('2026-10-30', now, 'Pacific/Honolulu')).toBe('Fri, Oct 30');
+  expect(isoWords('2026-10-30T09:15', now, 'Asia/Kolkata')).toBe('Fri, Oct 30, 9:15 AM');
+  expect(isoWords('2027-01-05T09:00:00Z', now, 'UTC')).toBe('Tue, Jan 5, 2027, 9:00 AM');
+  expect(isoWords('Conference room B', now)).toBeNull();
+  expect(isoWords('2026-13-45', now)).toBeNull();
+  expect(isoWords('Starts 2026-10-30T17:30:00Z', now)).toBeNull();
 });

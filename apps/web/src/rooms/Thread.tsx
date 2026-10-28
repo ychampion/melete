@@ -10,6 +10,7 @@ import { ReceiptRow, ResultCard } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Status, type StatusTone } from '../design/primitives.tsx';
+import { clockTime } from '../experience/clock.ts';
 import { useNow } from '../experience/hooks.ts';
 import { assistantName } from '../experience/instance.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -24,7 +25,7 @@ import {
   roomsApi,
   type ThreadView,
 } from './api.ts';
-import { PersonAvatar, Who } from './parts.tsx';
+import { PersonAvatar, useNameOf, Who } from './parts.tsx';
 import { RoomComposer } from './RoomComposer.tsx';
 import { RoomPermissionCard } from './RoomPermission.tsx';
 import {
@@ -63,8 +64,8 @@ const TONES: Record<Turn['status'], StatusTone> = {
   stopped: 'waiting',
 };
 
-const timeOf = (iso: string) =>
-  new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+/** On the person's own clock, the same one the cards and receipts below use. */
+const timeOf = (iso: string) => clockTime(new Date(iso));
 
 export function Thread({
   roomId,
@@ -453,10 +454,11 @@ function Answer({
   const status = last ? request.status : turn.status;
   const streaming = ['streaming', 'stalled', 'working', 'queued'].includes(status);
   const now = useNow(last && request.receipts.some((receipt) => receipt.undo), 30_000);
+  const nameOf = useNameOf();
   return (
     <article
       className="room-answer"
-      aria-label={`${agent}, answering ${request.requested_by.display_name}`}
+      aria-label={`${agent}, answering ${nameOf(request.requested_by.display_name)}`}
     >
       <MeleteAvatar size={28} />
       <div className="col room-msg-main">
@@ -523,6 +525,7 @@ function Waiting({
   answering: string | null;
   onAnswer: (permission: RoomPermission, option: 'allow_once' | 'deny') => void;
 }) {
+  const nameOf = useNameOf();
   const permissions = request.permissions ?? [];
   const decisions = request.decisions ?? [];
   if (permissions.length === 0 && decisions.length === 0) return null;
@@ -540,7 +543,7 @@ function Waiting({
       {decisions.map((decision) => (
         <span key={decision.approval_id} className="room-decision">
           <Icon name={decision.decision === 'approved' ? 'circleCheck' : 'circleX'} size={14} />
-          {decisionWords(decision)}
+          {decisionWords(decision, nameOf)}
         </span>
       ))}
     </div>

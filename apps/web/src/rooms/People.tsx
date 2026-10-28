@@ -3,8 +3,8 @@
  * the person goes by here, adding people (owners), inviting guests for a while
  * (owners), making someone an owner or a member again (owners), removing people
  * (owners) and leaving. The person who made the room always stays an owner.
- * Everyone is shown as `Name <handle>`: the handle is the room's own code for a
- * person.
+ * Everyone is shown by name; two people here with the same name each show
+ * what tells them apart (see `names.ts`).
  */
 import { useEffect, useState } from 'react';
 import { Button, Dialog, Field, Input, Select } from '../design/primitives.tsx';
@@ -19,7 +19,7 @@ import {
   type RoomInvite,
   roomsApi,
 } from './api.ts';
-import { PersonAvatar, Who } from './parts.tsx';
+import { PersonAvatar, useNameOf, Who } from './parts.tsx';
 import { dayOf, nextRole, splitLabel } from './reduce.ts';
 
 const ROLE_WORDS = { owner: 'Owner', member: 'Member', guest: 'Guest' } as const;
@@ -45,6 +45,7 @@ export function People({
   const mine = detail.members.find((member) => member.principal_id === me?.id) ?? null;
   const [leaving, setLeaving] = useState<boolean | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const nameOf = useNameOf();
   // The footer's buttons change in place, so focus moves to what replaced the one pressed.
   useEffect(() => {
     if (leaving === null) return;
@@ -64,7 +65,7 @@ export function People({
       toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t remove them' });
       return;
     }
-    toast({ kind: 'ok', title: `${splitLabel(label).name} is no longer in ${detail.room.name}` });
+    toast({ kind: 'ok', title: `${nameOf(label)} is no longer in ${detail.room.name}` });
     onChanged();
   };
 
@@ -79,7 +80,7 @@ export function People({
       });
       return;
     }
-    const { name } = splitLabel(label);
+    const name = nameOf(label);
     toast({
       kind: 'ok',
       title:
@@ -171,8 +172,8 @@ export function People({
                       loading={busy === `${member.principal_id}:role`}
                       aria-label={
                         role === 'owner'
-                          ? `Make ${member.display_name} an owner`
-                          : `Make ${member.display_name} a member`
+                          ? `Make ${nameOf(member.display_name)} an owner`
+                          : `Make ${nameOf(member.display_name)} a member`
                       }
                       onClick={() =>
                         void changeRole(member.principal_id, member.display_name, role)
@@ -186,7 +187,7 @@ export function People({
                       size="sm"
                       variant="ghost"
                       loading={busy === member.principal_id}
-                      aria-label={`Remove ${member.display_name}`}
+                      aria-label={`Remove ${nameOf(member.display_name)}`}
                       onClick={() => void remove(member.principal_id, member.display_name)}
                     >
                       Remove
@@ -204,9 +205,9 @@ export function People({
   );
 }
 
-/** The name the person goes by in rooms; the room's handle for them always follows it. */
+/** The name the person goes by in rooms. */
 function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
-  const { name, handle } = splitLabel(label);
+  const { name } = splitLabel(label);
   // "Someone" is what a room says for a person who chose no name.
   const chosen = name === 'Someone' ? '' : name;
   const [editing, setEditing] = useState<boolean | null>(null);
@@ -279,7 +280,7 @@ function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
       </div>
       <span className="people-hint">
         {error ??
-          `People here see you as ${value.trim() || 'Someone'} <${handle ?? '…'}>. The code after your name is this room’s, so nobody else can pass as you.`}
+          `People here see you as ${value.trim() || 'Someone'}. If someone else in a room goes by the same name, each of you shows the start of your email or a short code after it, so nobody can pass as you.`}
       </span>
     </form>
   );
