@@ -22,31 +22,13 @@ function runtimeImports(source: string, file = 'source.tsx'): string[] {
   const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const imports: string[] = [];
   const visit = (node: ts.Node) => {
+    // verbatimModuleSyntax keeps every declaration that lacks the statement-level `type` keyword,
+    // so `import { type Value } from 'x'` still compiles to `import {} from 'x'` and loads it.
     if (ts.isImportDeclaration(node)) {
-      const clause = node.importClause;
-      const bindings = clause?.namedBindings;
-      if (
-        !clause?.isTypeOnly &&
-        (!clause ||
-          clause.name ||
-          !bindings ||
-          ts.isNamespaceImport(bindings) ||
-          bindings.elements.length === 0 ||
-          bindings.elements.some((item) => !item.isTypeOnly)) &&
-        ts.isStringLiteral(node.moduleSpecifier)
-      )
+      if (!node.importClause?.isTypeOnly && ts.isStringLiteral(node.moduleSpecifier))
         imports.push(node.moduleSpecifier.text);
     } else if (ts.isExportDeclaration(node)) {
-      const clause = node.exportClause;
-      if (
-        !node.isTypeOnly &&
-        (!clause ||
-          ts.isNamespaceExport(clause) ||
-          clause.elements.length === 0 ||
-          clause.elements.some((item) => !item.isTypeOnly)) &&
-        node.moduleSpecifier &&
-        ts.isStringLiteral(node.moduleSpecifier)
-      )
+      if (!node.isTypeOnly && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier))
         imports.push(node.moduleSpecifier.text);
     } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       const specifier = node.arguments[0];
@@ -109,6 +91,8 @@ test.each([
   "import contracts, { type Value } from '@melete/contracts';",
   "import { type Value, value } from '@melete/contracts';",
   "export { type Value, value } from '@melete/contracts';",
+  "import { type Value, type Other as Alias } from '@melete/contracts';",
+  "export { type Value, type Other as Alias } from '@melete/contracts';",
   'import { value } from "@melete/contracts";',
   "import /* a comment */ { value }\nfrom '@melete/contracts';",
   "import {} from '@melete/contracts';",
@@ -121,11 +105,9 @@ test.each([
   "import type { Value } from '@melete/contracts';",
   "import type * as Contracts from '@melete/contracts';",
   "import type Contracts from '@melete/contracts';",
-  "import { type Value, type Other as Alias } from '@melete/contracts';",
   "export type { Value } from '@melete/contracts';",
   "export type * from '@melete/contracts';",
   "export type * as Contracts from '@melete/contracts';",
-  "export { type Value, type Other as Alias } from '@melete/contracts';",
   "type Value = import('@melete/contracts').Value;",
   "import { value } from '@melete/contracts/model-presets';",
   "// import { value } from '@melete/contracts';",
@@ -183,6 +165,8 @@ test.each([
   "export * from './bridge.ts';",
   "const load = () => import('./bridge.ts');",
   "const identity = <T>(value: T) => value; import './bridge.ts';",
+  "import { type Value } from './bridge.ts';",
+  "export { type Value } from './bridge.ts';",
 ])('follows a transitive runtime dependency: %s', (source) => {
   const entry = fixtureModule('model-presets.ts', source);
   const bridge = fixtureModule('bridge.ts', "export * from './server.ts';");
@@ -205,9 +189,7 @@ test('ignores type-only graph edges and terminates cycles', () => {
     'safe.ts',
     `
     import type { Value } from './missing.ts';
-    import { type Other } from './missing.ts';
     export type * from './missing.ts';
-    export { type Value } from './missing.ts';
     import './cycle.ts';
   `,
   );
