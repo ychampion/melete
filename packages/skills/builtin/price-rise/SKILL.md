@@ -1,6 +1,6 @@
 ---
 name: price-rise
-description: Answer a price rise before it starts, and ask for the old rate back.
+description: Answer a price rise before it starts; ask for the old rate back.
 triggers:
   - price-rise
   - price is going up

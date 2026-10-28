@@ -1,6 +1,6 @@
 ---
 name: get-quotes
-description: Collect comparable quotes from real providers and lay them side by side.
+description: Collect comparable quotes from real providers, side by side.
 triggers:
   - get-quotes
   - get quotes
