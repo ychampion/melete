@@ -21,6 +21,7 @@
  * re-dispatched.
  */
 import { createHash } from 'node:crypto';
+import { posix } from 'node:path';
 import {
   type Action,
   ARTIFACT_MIME,
@@ -513,9 +514,9 @@ export function outputText(preview: Uint8Array, cut: boolean): { text: string; b
 export const commandEnv = (timeZone: string | null): Partial<Record<ExecEnvName, string>> =>
   timeZone ? { TZ: timeZone } : {};
 
-/** A path inside the sandbox's own workspace; the marker runner refuses the rest. */
+/** Where a command runs: a relative path is taken from the workspace, an absolute one as given. */
 const sandboxCwd = (cwd: string | undefined) =>
-  cwd === undefined || cwd === '.' ? SANDBOX_WORKDIR : `${SANDBOX_WORKDIR}/${cwd}`;
+  cwd === undefined ? SANDBOX_WORKDIR : posix.resolve(SANDBOX_WORKDIR, cwd);
 
 export function createSandboxExecConnector(options: SandboxExecOptions): Connector {
   const { sessions, provider, sql } = options;
