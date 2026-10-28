@@ -7,7 +7,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { RoomDetail } from './api.ts';
 import { RoomSettings } from './RoomSettings.tsx';
 
-const detail = (policy: Partial<RoomDetail['policy']>, role: 'owner' | 'member' = 'owner') =>
+const detail = (
+  policy: Partial<RoomDetail['policy']>,
+  role: RoomDetail['room']['my_role'] = 'owner',
+) =>
   ({
     room: { id: 'sp_1', name: 'Launch', my_role: role, agent_name: 'Melete' },
     members: [],
@@ -37,4 +40,21 @@ test('who approves what the team accounts send is a choice, anyone in the room b
   // Under the owners' rule, the person who asked approves only if they are an owner.
   expect(owners).not.toContain('The person who asked can approve too.');
   expect(owners).toContain('Guests never approve.');
+});
+
+test('members choose their own calendar sharing even when they do not own the room', () => {
+  const html = renderToStaticMarkup(
+    <RoomSettings onClose={() => {}} onChanged={() => {}} detail={detail({}, 'member')} />,
+  );
+  expect(html).toContain('<legend class="people-field-label">My calendar</legend>');
+  expect(html).toContain('Event titles, locations and attendees stay private.');
+  expect(html).toContain('Leaving the room ends access too.');
+});
+
+test('guests are not offered a personal calendar share', () => {
+  const html = renderToStaticMarkup(
+    <RoomSettings onClose={() => {}} onChanged={() => {}} detail={detail({}, 'guest')} />,
+  );
+  expect(html).not.toContain('<legend class="people-field-label">My calendar</legend>');
+  expect(html).not.toContain('Loading your calendars');
 });

@@ -477,6 +477,73 @@ test('asks made together share a group only when they ask for the same reasons a
   ).toBeUndefined();
 });
 
+test('a member calendar permission previews the bound destination and proposed event without private conflicts', () => {
+  const payload = {
+    member: 'pr_member',
+    member_name: 'Taylor',
+    calendar_connection_id: 'conn_personal',
+    share_created_at: '2026-10-28T09:00:00.000Z',
+    membership_generation: 1,
+    event: {
+      summary: 'Planning session',
+      start: '2027-01-10T09:00:00Z',
+      end: '2027-01-10T10:00:00Z',
+      location: 'Meeting room',
+      description: 'Review the next month.',
+      attendees: ['guest@example.test'],
+      tentative: true,
+      double_book: { reason: 'The member asked to keep both.' },
+      checked: {
+        names: true,
+        read: true,
+        outside: ['guest@example.test'],
+        conflicts: [{ title: 'Private medical appointment', ref: 'private-ref' }],
+      },
+    },
+  };
+  const action: ActionRow = {
+    ...base,
+    kind: 'room.add_to_member_calendar',
+    effectClass: 'write_external',
+    canonicalPayload: payload,
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const connection = { id: 'conn_room', label: 'Room tools', provider: 'room' };
+  const shown = projectPermission({
+    id: 'apr_member',
+    version: 'v1',
+    action,
+    connection,
+    reasons: calendarReasons(action.kind, payload),
+    canAlways: false,
+    requestedAt: base.createdAt,
+  });
+  expect(shown.what).toBe('Add an event to this member’s calendar?');
+  expect(shown.preview?.facts).toEqual([
+    { label: 'Calendar member', value: 'Taylor' },
+    { label: 'Event', value: 'Planning session' },
+    { label: 'Description', value: 'Review the next month.' },
+    { label: 'Starts', value: '2027-01-10T09:00:00Z' },
+    { label: 'Ends', value: '2027-01-10T10:00:00Z' },
+    { label: 'Place', value: 'Meeting room' },
+    { label: 'Invites', value: 'guest@example.test' },
+    { label: 'Hold', value: 'Marked tentative' },
+    { label: 'Why both', value: 'The member asked to keep both.' },
+  ]);
+  expect(shown.why.join(' ')).toContain('already on your calendar');
+  expect(shown.why.join(' ')).toContain('guest@example.test');
+  expect(JSON.stringify(shown)).not.toContain('Private medical appointment');
+  expect(shown.options).toEqual(['allow_once', 'deny']);
+  const completed = projectCards({ ...action, status: 'succeeded' }, connection);
+  expect(completed[0]?.title).toBe('Planning session');
+  expect(completed[0]?.facts).toEqual([
+    { label: 'Starts', value: '2027-01-10T09:00:00Z' },
+    { label: 'Ends', value: '2027-01-10T10:00:00Z' },
+    { label: 'Place', value: 'Meeting room' },
+  ]);
+});
+
 test('a permission for a connected computer shows the exact command and where it runs', () => {
   const run: ActionRow = {
     ...base,
