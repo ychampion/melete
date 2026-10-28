@@ -1,22 +1,35 @@
 import { describe, expect, test } from 'bun:test';
 import { type AddressInfo, createServer, type Socket } from 'node:net';
 import { simpleParser } from 'mailparser';
+import { pdfWith, TINY_PNG } from '../attachments/fixtures.ts';
 import { EmailConnector } from './email.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
-import { type EmailConnection, ImapSmtpTransport, toMailMessage } from './mail-transport.ts';
+import {
+  composeMail,
+  type EmailConnection,
+  ImapSmtpTransport,
+  toMailMessage,
+} from './mail-transport.ts';
 import { UNREACHABLE } from './public-fetch.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { ResolvedAddress } from './web.ts';
 
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
-async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: string } = {}) {
+async function mailServers(
+  options: {
+    smtpRefusesLogin?: boolean;
+    sentName?: string;
+    inbox?: string[];
+    reportedSize?: number;
+  } = {},
+) {
   const sentName = options.sentName ?? 'Sent';
   const sockets = new Set<Socket>();
   const sent: string[] = [];
   const auth: string[] = [];
   let dropAck = false;
   let connections = 0;
-  const inbox = [
+  const inbox = options.inbox ?? [
     'From: friend@example.test\r\nTo: owner@example.test\r\nMessage-ID: <normal@example.test>\r\nSubject: Dinner\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSee you Friday.',
     'From: account@example.test\r\nTo: owner@example.test\r\nMessage-ID: <sensitive@example.test>\r\nSubject: Account information\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
       Buffer.from('Your one-time passcode is 123456.').toString('base64'),
@@ -77,7 +90,7 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
               );
             else
               socket.write(
-                `* ${uid} FETCH (UID ${uid} RFC822.SIZE ${Buffer.byteLength(source)})\r\n`,
+                `* ${uid} FETCH (UID ${uid} RFC822.SIZE ${options.reportedSize ?? Buffer.byteLength(source)})\r\n`,
               );
           }
         } else if (upper === 'LOGOUT') {
@@ -167,6 +180,74 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
 }
 
 describe('IMAP and SMTP wire adapters', () => {
+  test('an incomplete IMAP message is withheld even when its prefix parses as harmless mail', async () => {
+    const prefix = 'From: sender@example.test\r\nSubject: Account\r\n\r\nA harmless prefix.';
+    const destination = await mailServers({
+      inbox: [prefix],
+      reportedSize: Buffer.byteLength(prefix) + 100,
+    });
+    try {
+      expect(
+        await new ImapSmtpTransport(destination.config, 'test-app-password').read(1),
+      ).toBeNull();
+    } finally {
+      await destination.close();
+    }
+  });
+
+  test('IMAP searches and reads a message with PNG and PDF parts above the old body cap', async () => {
+    const pdf = Buffer.concat([
+      Buffer.from(pdfWith(['Statement total 42.'])),
+      Buffer.alloc(300_000, 32),
+    ]);
+    const raw = await composeMail('sender@example.test', {
+      to: ['owner@example.test'],
+      cc: [],
+      bcc: [],
+      subject: 'Statement',
+      body: 'The statement is attached.',
+      messageId: '<statement@example.test>',
+      attachments: [
+        { filename: 'picture.pdf', content: Buffer.from(TINY_PNG), contentType: 'application/pdf' },
+        { filename: 'statement.png', content: pdf, contentType: 'image/png' },
+      ],
+    });
+    const destination = await mailServers({ inbox: [raw.toString()] });
+    try {
+      const connector = new EmailConnector(destination.config, {
+        withSecret: async (_id, _space, use) => use('test-app-password'),
+      });
+      for (const kind of ['email.search', 'email.read']) {
+        const result = await connector.execute(
+          mailAction(kind, kind === 'email.read' ? { uid: 1 } : {}),
+          mailContext(),
+        );
+        expect(result.outcome).toBe('succeeded');
+        if (result.outcome !== 'succeeded') return;
+        const message =
+          kind === 'email.read'
+            ? result.receipt.detail.message
+            : (result.receipt.detail.messages as unknown[])[0];
+        expect(message).toMatchObject({
+          attachments: [
+            { id: '1', media_type: 'image/png', size: TINY_PNG.length },
+            { id: '2', media_type: 'application/pdf', size: pdf.length },
+          ],
+        });
+        expect(JSON.stringify(result)).not.toContain('"content"');
+      }
+      const read = await connector.execute(
+        mailAction('email.read_attachment', { uid: 1, attachment_id: '2' }),
+        mailContext(),
+      );
+      expect(read.outcome).toBe('succeeded');
+      if (read.outcome === 'succeeded')
+        expect(read.receipt.detail.text).toContain('Statement total 42.');
+    } finally {
+      await destination.close();
+    }
+  });
+
   test('real libraries authenticate, decode MIME for hygiene, send with stable Message-ID and verify Sent', async () => {
     const destination = await mailServers();
     try {

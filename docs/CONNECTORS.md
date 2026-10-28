@@ -244,7 +244,7 @@ succeeded and the job continues`.
 | --- | --- | --- |
 | Files | List/read/write/move in configured work and space-artifact roots; content-hash verification | `files manifests parse and workspace/artifact writes can be read and verified` |
 | Web | HTTP(S) fetch with address, redirect and trusted-compartment checks | `redirects are checked hop by hop and never reach a private destination` |
-| Email | IMAP search/read, local draft, SMTP send, or the same tools over the Gmail API or Microsoft Graph after a Google or Microsoft sign-in; Message-ID verification in Sent | `accepted send with lost acknowledgement is unknown, then verified without resending`; `a send is found in Sent afterwards, even when Gmail gives it a Message-ID of its own` |
+| Email | IMAP search/read and attachment reads, local draft, SMTP send, or the same tools over the Gmail API or Microsoft Graph after a Google or Microsoft sign-in; Message-ID verification in Sent | `accepted send with lost acknowledgement is unknown, then verified without resending`; `a send is found in Sent afterwards, even when Gmail gives it a Message-ID of its own` |
 | Calendar | Read-only ICS import; CalDAV, Google Calendar or Outlook calendar list/create/update with UID and content verification; free/busy, conflict refusal, guests and holds | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally`; `an event is named by its action, so a second create cannot make a second event` |
 | Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` |
 | Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` |
@@ -719,6 +719,44 @@ rejected (`context mismatch, header injection and unapproved extra fields never
 reach SMTP`). Hygiene withholds the tested shapes of one-time codes, password
 resets and magic links; a sensitive message in any other shape is read like any
 other message.
+
+`email.read` includes an `attachments` list with each part's `id`, `name`,
+`media_type` and decoded `size` in bytes. Search results also include attachment
+metadata when present. Media types come from the decoded bytes, so a misleading
+filename or Content-Type header cannot turn a PNG into a PDF. Unknown binary
+files are listed as `application/octet-stream`.
+
+`email.read_attachment` reads one part using the message's `uid` and
+`attachment_id` from that list. Gmail and Outlook use the message's `id`
+instead of `uid`. It uses the existing `email.read` permission and never sends
+mail. For example, `{"uid":42,"attachment_id":"2"}` reads the second part of
+that IMAP message.
+
+PDFs return extracted, page-marked text; UTF-8 text files return their words.
+Extraction uses the same bounded reader as chat uploads, and the result is
+limited to 48,000 characters with `truncated` set when more text was read.
+That text passes through the same privacy routing and redaction as message
+bodies. The result marks attachment content as untrusted data, never
+instructions. Authentication messages are withheld before their files are read.
+
+Pictures are kept with the requesting job in the existing attachment store
+and handed to its model through the same gateway as uploaded pictures, after
+privacy routing. A model without vision receives a sentence saying it cannot
+view the picture. A private conversation's picture stays behind when its text
+is sent redacted to a cloud model. No other model is asked to describe a picture
+for a model that cannot see it.
+
+One file uses the upload size limit, 20 MiB by default; a picture sent directly
+to the model must also fit the existing 1 MiB image limit. Complete MIME messages
+are bounded to 28.25 MiB, including base64 framing, with at most 100 parts and
+256 KiB of decoded body text and HTML. A message that exceeds these bounds is
+withheld whole, so a truncated prefix cannot hide sign-in material. Mail image
+storage uses the upload storage quota and blob lifecycle, including deletion
+with its job.
+
+Evidence: `mail-attachments.test.ts`, the attachment case in
+`mail-transport.test.ts`, and the email tool-result cases in
+`gateway/attachments.test.ts`.
 
 Mail and CalDAV authenticate with an account name and a password or app
 password. Gmail and Google Calendar can instead be connected by signing in with

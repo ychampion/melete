@@ -4,24 +4,22 @@
  * for SMTP, parsed with the same parser, and filtered by the same inbox
  * hygiene. Messages are addressed by Gmail's own id instead of an IMAP UID.
  */
-import { simpleParser } from 'mailparser';
 import { retryAfterOf } from '../signals/types.ts';
 import {
   composeMail,
   headerBlock,
   headerMessage,
   MAX_HEADER_BYTES,
+  MAX_MAIL_MESSAGE_BYTES,
   type MailFolder,
   type MailMessage,
   type MailTransport,
   type OutgoingMail,
-  toMailMessage,
+  parseMailMessage,
+  withoutMailAttachmentBytes,
 } from './mail-transport.ts';
 import { bearerRequest, boundedJson, ResponseTooLarge, type SignedInAccess } from './signed-in.ts';
 
-const MAX_MESSAGE_BYTES = 256 * 1024;
-/** A raw message travels base64url-encoded inside JSON, a third larger than its bytes. */
-const MAX_RAW_RESPONSE_BYTES = Math.ceil(MAX_MESSAGE_BYTES * 1.4) + 4096;
 const MAX_LIST_RESPONSE_BYTES = 64 * 1024;
 /** Gmail ids are short hexadecimal strings; anything else is refused before a request. */
 export const GMAIL_MESSAGE_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -83,11 +81,15 @@ export class GmailApiTransport implements MailTransport {
       .filter((id): id is string => typeof id === 'string' && GMAIL_MESSAGE_ID.test(id));
   }
 
-  private async message(id: string): Promise<MailMessage | null> {
+  private async message(id: string, limit = MAX_MAIL_MESSAGE_BYTES): Promise<MailMessage | null> {
     if (!GMAIL_MESSAGE_ID.test(id)) return null;
     let body: { raw?: unknown; sizeEstimate?: unknown } | null;
     try {
-      body = (await this.get(`/messages/${id}?format=raw`, MAX_RAW_RESPONSE_BYTES)) as typeof body;
+      // A raw message travels base64url-encoded in JSON, a third larger than its MIME bytes.
+      body = (await this.get(
+        `/messages/${id}?format=raw`,
+        Math.ceil(limit * 1.4) + 4096,
+      )) as typeof body;
     } catch (error) {
       // A message too large to filter safely is left out, as it is over IMAP.
       if (error instanceof ResponseTooLarge) return null;
@@ -95,8 +97,8 @@ export class GmailApiTransport implements MailTransport {
     }
     if (!body || typeof body.raw !== 'string') return null;
     const source = Buffer.from(body.raw, 'base64url');
-    if (source.length > MAX_MESSAGE_BYTES) return null;
-    return toMailMessage(id, await simpleParser(source, { skipImageLinks: true }));
+    if (source.length > limit) return null;
+    return parseMailMessage(id, source);
   }
 
   async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {
@@ -108,13 +110,13 @@ export class GmailApiTransport implements MailTransport {
     const messages: MailMessage[] = [];
     for (const id of await this.ids(params)) {
       const message = await this.message(id);
-      if (message) messages.push(message);
+      if (message) messages.push(withoutMailAttachmentBytes(message));
     }
     return messages;
   }
 
   async read(key: number | string): Promise<MailMessage | null> {
-    return typeof key === 'string' ? this.message(key) : null;
+    return typeof key === 'string' ? this.message(key, MAX_MAIL_MESSAGE_BYTES) : null;
   }
 
   /** One message's headers, without its body; null when it is gone. */
