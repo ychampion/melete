@@ -212,6 +212,7 @@ import { searchMemory } from './memory/search.ts';
 import { startServiceMemory } from './memory/start.ts';
 import { OperatorConsole } from './operator/console.ts';
 import { diskReading } from './operator/disk.ts';
+import { busyReport, Drain, dispatchingActions, mountQuietUpdate } from './operator/drain.ts';
 import { mountOperatorConsole } from './operator/routes.ts';
 import { InstanceRegistry, instanceId } from './ops/instance.ts';
 import { stuckItems } from './ops/item-failures.ts';
@@ -1009,6 +1010,19 @@ export function createApp(deps: AppDeps) {
       return standing ? { ...detail, composio: standingView(standing) } : detail;
     },
   });
+  // Updating when quiet: this instance's drain, and what an update would interrupt.
+  if (deps.sql) {
+    const sql = deps.sql;
+    const drain = new Drain({
+      ...(deps.runner ? { runner: deps.runner } : {}),
+      dispatching: () => dispatchingActions(sql),
+    });
+    mountQuietUpdate(app, {
+      token: deps.env.MELETE_OPERATOR_TOKEN,
+      drain,
+      busy: async () => busyReport(sql, (await drain.status()).state),
+    });
+  }
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();

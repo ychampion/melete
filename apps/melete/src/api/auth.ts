@@ -35,6 +35,7 @@ import { IDENTITY_JWKS_PATH } from '../identity/assertion.ts';
 import { newId } from '../ids.ts';
 import { markSeen } from '../jobs/resting.ts';
 import { MCP_PUBLIC_PATHS, mcpActorOf, mcpPublicPath } from '../mcp-server/actor.ts';
+import { quietUpdatePath } from '../operator/drain.ts';
 import { type LimitStore, PostgresLimitStore } from '../ops/limiter.ts';
 import { PAGE_REPORT_PATH } from '../pages/routes.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
@@ -452,6 +453,8 @@ export function mountAuth(
           // An authorization server reads this client's metadata without a session.
           c.req.path === '/oauth/client-metadata.json')) ||
       mcpPublicPath(c.req.method, c.req.path) ||
+      // The drain and the busy report check the operator's token themselves (operator/drain.ts).
+      quietUpdatePath(c.req.method, c.req.path) ||
       // Signing in through the identity provider, and its back-channel logout.
       oidcPublicPath(c.req.method, c.req.path) ||
       (c.req.method === 'POST' &&
