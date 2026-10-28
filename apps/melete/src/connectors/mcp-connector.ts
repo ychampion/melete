@@ -47,6 +47,22 @@ export type McpCallServices = {
   gateMessage?: string;
 };
 
+/**
+ * Keeps a server's notes on using its tools on its connection, in the
+ * connection's configuration as `server_notes`, so an attempt is told them
+ * even before the server next runs. Written only when they changed.
+ */
+export const keepServerNotes =
+  (sql: Sql, connectionId: string) =>
+  async ({ instructions }: { instructions: string | null }): Promise<void> => {
+    await sql`update connection
+      set configuration = case when ${instructions}::text is null
+        then configuration - 'server_notes'
+        else configuration || jsonb_build_object('server_notes', ${instructions}::text) end
+      where id = ${connectionId} and provider = 'mcp'
+        and configuration->>'server_notes' is distinct from ${instructions}::text`;
+  };
+
 /** The operator's entitlements for one brokered tool name. */
 function requiredFor(config: McpServerConfig | undefined, kind: string): readonly EntitlementKey[] {
   const tool = config?.tools.find((entry) => `mcp_${config.id}.${entry.alias}` === kind);
@@ -265,6 +281,7 @@ export async function openConfiguredMcpConnector(
     fetch: pinned,
     // Open requests are limited per connection and across the space's connections.
     space: binding.spaceId,
+    onSession: keepServerNotes(sql, binding.connectionId),
   });
   return mcpConnector(worker, binding, sql, credentials, undefined, config, services);
 }

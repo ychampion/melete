@@ -11,6 +11,7 @@ import {
   mcpHttpUrl,
   mcpOperatorPolicy,
   mcpStdioLaunch,
+  SERVER_NOTES_MAX,
   type VerifyResult,
 } from '@melete/contracts';
 import { z } from 'zod';
@@ -125,6 +126,11 @@ export type McpWorker = {
   pageUri(kind: string): string | null;
   /** The server's own name for each brokered tool, by brokered name. */
   rawNames?: ReadonlyMap<string, string>;
+  /**
+   * The running server's notes on using its tools, bounded, from the live
+   * session only: null without a session or when the server gave none.
+   */
+  readonly instructions: string | null;
   catalog: { source: 'mcp' };
   execute(action: Action, context: McpExecutionContext): Promise<DispatchResult>;
   verify(): Promise<VerifyResult>;
@@ -146,6 +152,11 @@ export type McpWorkerOptions = McpTransportOptions & {
    * only if the server still describes exactly these tools.
    */
   pinned?: McpToolDefinition[];
+  /**
+   * Told each time a session opens, with the server's notes on using its
+   * tools, so the connection can keep them. Its failure never fails the session.
+   */
+  onSession?: (opened: { instructions: string | null }) => Promise<void> | void;
 };
 
 /** A tool the installation names that the server does not list. */
@@ -154,6 +165,82 @@ export class McpToolMissingError extends Error {
     super(`Configured MCP tool is unavailable: ${tool}`);
     this.name = 'McpToolMissingError';
   }
+}
+
+/** How much of a server's own words a failed call keeps for the agent, in UTF-8 bytes. */
+export const SERVER_SAID_BYTES = 2048;
+
+/**
+ * JSON-RPC errors that mean the server answered and did nothing: the request
+ * was malformed (-32600), it does not know the method or tool (-32601), or it
+ * refused the arguments (-32602). A call answered this way did not happen.
+ */
+const INVALID_REQUEST = -32600;
+const METHOD_NOT_FOUND = -32601;
+const INVALID_PARAMS = -32602;
+const ANSWERED_UNDONE = new Set([INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS]);
+
+/**
+ * Words a tool's own error uses when it turned the arguments down. Only then is
+ * the tool's current schema read again and handed back with the error.
+ */
+const ARGUMENT_WORDS =
+  /\b(arguments?|params?|parameters?|fields?|inputs?|invalid|required|missing|must|expected|format|schema|validation)\b/i;
+
+/** At most `limit` UTF-8 bytes of `text`, cut on a character, marked when cut. */
+function withinBytes(text: string, limit: number): string {
+  if (Buffer.byteLength(text) <= limit) return text;
+  let kept = '';
+  let bytes = 0;
+  for (const character of text) {
+    const size = Buffer.byteLength(character);
+    if (bytes + size > limit - 3) break;
+    kept += character;
+    bytes += size;
+  }
+  return `${kept}…`;
+}
+
+/**
+ * A server's notes on using its tools (`instructions` from `initialize`, or
+ * from `server/discover`), trimmed and kept to a bounded length. Null when it
+ * gave none.
+ */
+export function serverNotes(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= SERVER_NOTES_MAX) return trimmed;
+  // Cut on a character, never inside a surrogate pair.
+  const kept = trimmed.slice(0, SERVER_NOTES_MAX - 1).replace(/[\uD800-\uDBFF]$/, '');
+  return `${kept}…`;
+}
+
+/** The text a tool's result carries, as the server wrote it. */
+function resultText(result: JsonObject): string {
+  const content = Array.isArray(result.content) ? result.content : [];
+  const text = content
+    .flatMap((item) =>
+      item && typeof item === 'object' && !Array.isArray(item) && typeof item.text === 'string'
+        ? [item.text]
+        : [],
+    )
+    .join('\n')
+    .trim();
+  if (text) return text;
+  if (result.structuredContent !== undefined) return JSON.stringify(result.structuredContent);
+  return content.length ? JSON.stringify(content) : '';
+}
+
+/** What a JSON-RPC error said: its message, then its data. */
+function rpcText(error: McpProtocolError): string {
+  const data =
+    error.data === undefined
+      ? ''
+      : typeof error.data === 'string'
+        ? error.data
+        : JSON.stringify(error.data);
+  return [error.serverMessage?.trim() ?? '', data].filter(Boolean).join('\n');
 }
 
 /** Transport failures that mean nothing answered, or nothing answered in time. */
@@ -223,6 +310,9 @@ export async function openMcpWorker(
     rawNames: new Map(initial.rawNames),
     get readOnly() {
       return [...(current?.readOnly ?? [])];
+    },
+    get instructions() {
+      return current?.instructions ?? null;
     },
     pageUri: (kind) => current?.pages.get(kind) ?? null,
     catalog: { source: 'mcp' },
@@ -344,8 +434,11 @@ async function introduce(transport: McpTransport) {
   const statelessServer = transport.discover ? await transport.discover() : null;
   const stateless = statelessServer !== null;
   let capabilities: JsonObject;
-  if (statelessServer) capabilities = statelessServer.capabilities;
-  else {
+  let instructions: string | null;
+  if (statelessServer) {
+    capabilities = statelessServer.capabilities;
+    instructions = serverNotes(statelessServer.instructions);
+  } else {
     const initialized = jsonObject.parse(
       await transport.request('initialize', {
         protocolVersion: MCP_PROTOCOL_VERSION,
@@ -359,16 +452,34 @@ async function introduce(transport: McpTransport) {
     }
     transport.agreed?.(agreed);
     capabilities = jsonObject.parse(initialized.capabilities);
+    instructions = serverNotes(initialized.instructions);
   }
   if (!capabilities.tools) throw new Error('MCP server does not expose tools');
   if (!stateless) await transport.notify('notifications/initialized');
+  const discovered = await readServerTools(transport);
+  const paramHeaders = new Map<string, McpParamHeader[]>();
+  for (const [name, definition] of discovered) {
+    const annotated = mcpParamHeaders(definition.inputSchema);
+    if (annotated === null && stateless) discovered.delete(name);
+    else if (annotated?.length) paramHeaders.set(name, annotated);
+  }
+  return { stateless, discovered, paramHeaders, capabilities, instructions };
+}
+
+/** Every tool the server lists now, every page read, held to the same limits as discovery. */
+async function readServerTools(
+  transport: McpTransport,
+  signal?: AbortSignal,
+): Promise<Map<string, McpToolDefinition>> {
   const discovered = new Map<string, McpToolDefinition>();
   const cursors = new Set<string>();
   let cursor: string | undefined;
   let listBytes = 0;
   for (let pageNumber = 0; ; pageNumber++) {
     if (pageNumber >= 16) throw new Error('MCP catalog page limit exceeded');
-    const page = toolPage.parse(await transport.request('tools/list', cursor ? { cursor } : {}));
+    const page = toolPage.parse(
+      await transport.request('tools/list', cursor ? { cursor } : {}, signal),
+    );
     for (const raw of page.tools) {
       const size = Buffer.byteLength(JSON.stringify(raw) ?? '');
       listBytes += size;
@@ -387,13 +498,7 @@ async function introduce(transport: McpTransport) {
     if (cursors.has(cursor)) throw new Error('Repeated MCP pagination cursor');
     cursors.add(cursor);
   }
-  const paramHeaders = new Map<string, McpParamHeader[]>();
-  for (const [name, definition] of discovered) {
-    const annotated = mcpParamHeaders(definition.inputSchema);
-    if (annotated === null && stateless) discovered.delete(name);
-    else if (annotated?.length) paramHeaders.set(name, annotated);
-  }
-  return { stateless, discovered, paramHeaders, capabilities };
+  return discovered;
 }
 
 /**
@@ -443,7 +548,8 @@ async function openMcpSession(
         : undefined);
   if (!transport) throw new Error('A container MCP server needs its isolating launcher');
   try {
-    const { stateless, discovered, paramHeaders, capabilities } = await introduce(transport);
+    const { stateless, discovered, paramHeaders, capabilities, instructions } =
+      await introduce(transport);
     const { tools, definitions, readOnly, pages, rawNames, healthNotes } = policyTools(
       config,
       discovered,
@@ -452,12 +558,55 @@ async function openMcpSession(
     if (!capabilities.resources) pages.clear();
     // A caller receives a copy; mutating presentation cannot alter execution policy.
     const authoritative = new Map(tools.map((tool) => [tool.name, structuredClone(tool)]));
+    try {
+      await options.onSession?.({ instructions });
+    } catch (error) {
+      console.error(
+        `mcp notes: ${config.id} were not kept: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    /**
+     * A refusal's account for the agent: the server's own words, bounded and
+     * marked as content from outside, as a successful result's are.
+     */
+    const serverAccount = (action: Action, said: string, extra: JsonObject = {}): JsonObject => ({
+      server_id: config.id,
+      tool: rawNames.get(action.kind) as string,
+      server_said: withinBytes(said || 'The server gave no reason.', SERVER_SAID_BYTES),
+      origin_trust: 'external_content',
+      evidence_handle: `mcp:${config.id}:${action.id}`,
+      ...extra,
+    });
+    /** The tool's input schema as the server lists it now, when it still lists it and it fits. */
+    const currentSchema = async (raw: string, signal?: AbortSignal): Promise<JsonObject> => {
+      try {
+        const schema = (await readServerTools(transport, signal)).get(raw)?.inputSchema;
+        return schema && toolSchemaFits(schema) ? { input_schema: jsonObject.parse(schema) } : {};
+      } catch {
+        return {};
+      }
+    };
+    /** The brokered tools of this connection the server still lists, read again now. */
+    const offeredNow = async (signal?: AbortSignal): Promise<JsonObject> => {
+      try {
+        const listed = await readServerTools(transport, signal);
+        return {
+          tools_offered: [...rawNames]
+            .filter(([, raw]) => listed.has(raw))
+            .map(([name]) => name)
+            .sort(),
+        };
+      } catch {
+        return {};
+      }
+    };
     return {
       tools,
       definitions,
       readOnly,
       pages,
       rawNames,
+      instructions,
       catalog: { source: 'mcp' },
       async execute(action, context) {
         const tool = authoritative.get(action.kind);
@@ -522,7 +671,19 @@ async function openMcpSession(
             };
           }
           if (result.isError === true) {
-            return { outcome: 'failed', reason: 'MCP tool returned an error', retryable: false };
+            // The server's own account of what went wrong is what lets the
+            // agent correct the call; without it the agent can only give up.
+            const said = resultText(result);
+            return {
+              outcome: 'failed',
+              reason: 'MCP tool returned an error',
+              retryable: false,
+              evidence: serverAccount(
+                action,
+                said,
+                ARGUMENT_WORDS.test(said) ? await currentSchema(raw, context.signal) : {},
+              ),
+            };
           }
           if (!Array.isArray(result.content)) throw new Error('Invalid MCP tool acknowledgement');
           const detail: JsonObject = {
@@ -571,6 +732,37 @@ async function openMcpSession(
           };
         } catch (error) {
           if (error instanceof ConnectorFaultError) throw error;
+          // The server answered and did nothing: the call did not happen. Only
+          // no answer, or an answer cut off after the call went out, is unknown.
+          if (
+            error instanceof McpProtocolError &&
+            error.code !== undefined &&
+            ANSWERED_UNDONE.has(error.code)
+          ) {
+            const raw = rawNames.get(action.kind) as string;
+            const extra =
+              error.code === METHOD_NOT_FOUND
+                ? await offeredNow(context.signal)
+                : error.code === INVALID_PARAMS
+                  ? await currentSchema(raw, context.signal)
+                  : {};
+            return {
+              outcome: 'failed',
+              reason:
+                error.code === METHOD_NOT_FOUND
+                  ? 'MCP server does not offer this tool now; nothing was done'
+                  : error.code === INVALID_PARAMS
+                    ? 'MCP server refused the arguments; nothing was done'
+                    : 'MCP server refused the request; nothing was done',
+              // A malformed call or refused arguments can be corrected and sent
+              // again; a tool the server no longer has cannot.
+              retryable: error.code !== METHOD_NOT_FOUND,
+              evidence: serverAccount(action, rpcText(error), {
+                error_code: error.code,
+                ...extra,
+              }),
+            };
+          }
           return {
             outcome: 'unknown',
             reason:

@@ -71,7 +71,7 @@ export type McpEndpoint =
   | { transport: 'http'; url: string };
 
 /** What a stateless server said about itself when asked with `server/discover`. */
-export type McpDiscovery = { version: string; capabilities: JsonObject };
+export type McpDiscovery = { version: string; capabilities: JsonObject; instructions?: string };
 
 export interface McpTransport {
   request(
@@ -93,12 +93,17 @@ export interface McpTransport {
   agreed?(version: string): void;
 }
 
-/** A JSON-RPC error, or an HTTP refusal that carried one, with its code and data kept. */
+/**
+ * A JSON-RPC error, or an HTTP refusal that carried one, with its code, data
+ * and the server's own message kept. The server's message is its words, not
+ * Melete's: it travels only as external content.
+ */
 export class McpProtocolError extends Error {
   constructor(
     readonly status: number | undefined,
     readonly code: number | undefined,
     readonly data: unknown,
+    readonly serverMessage?: string,
   ) {
     super(status === undefined ? 'MCP server rejected the request' : `MCP HTTP status ${status}`);
   }
@@ -151,6 +156,7 @@ function rpcError(message: JsonObject, status?: number): McpProtocolError {
     status,
     typeof fields.code === 'number' ? fields.code : undefined,
     fields.data,
+    typeof fields.message === 'string' ? fields.message : undefined,
   );
 }
 
@@ -695,7 +701,11 @@ export function openHttpMcpTransport(
           return null;
         stateless = true;
         version = MCP_STATELESS_VERSION;
-        return { version, capabilities };
+        return {
+          version,
+          capabilities,
+          ...(typeof answer.instructions === 'string' ? { instructions: answer.instructions } : {}),
+        };
       } catch (error) {
         if (error instanceof ConnectorFaultError) throw error;
         if (closed) throw disconnected();
