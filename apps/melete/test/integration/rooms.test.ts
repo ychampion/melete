@@ -884,7 +884,13 @@ withDb('rooms', () => {
       join principal p on p.id = m.principal_id where m.space_id = ${roomId} and p.kind = 'room'`;
     expect(room?.display_name).toBe('Quiet Corner');
     await ok(send(world.carol.cookie, '/me', 'PATCH', { display_name: 'quiet corner' }));
-    // A person's name is still refused.
+    // A person's name is still refused once the two share a room, and it stays
+    // taken after its owner leaves, so nobody can take it over.
+    const shared = await makeRoom('Neighbours', [world.bob, world.carol]);
+    expect((await send(world.carol.cookie, '/me', 'PATCH', { display_name: 'Bob' })).status).toBe(
+      409,
+    );
+    await ok(send(world.bob.cookie, `/rooms/${shared}/members/${world.bob.id}`, 'DELETE'));
     expect((await send(world.carol.cookie, '/me', 'PATCH', { display_name: 'Bob' })).status).toBe(
       409,
     );
@@ -1004,9 +1010,20 @@ withDb('rooms', () => {
 
   test('nobody reads as someone else: each speaker carries the handle the room gives them, and a name is one line', async () => {
     const { sql } = database();
-    // A name already in use, or someone's email name, is refused; so is anything
-    // that could pass for an address or a second line.
-    for (const taken of ['Alice', 'ALICE', 'carol']) {
+    // A name someone Carol shares a room with goes by, or their email name, is
+    // refused, and so is one that only reads like it: Cyrillic or Greek letters,
+    // fullwidth forms, a dotless i. So is anything that could pass for an
+    // address or a second line.
+    const roomId = await makeRoom('Names', [world.carol]);
+    for (const taken of [
+      'Alice',
+      'ALICE',
+      'carol',
+      '\u0410lice',
+      '\u0391LICE',
+      '\uFF21lice',
+      'Al\u0131ce',
+    ]) {
       const refused = await send(world.carol.cookie, '/me', 'PATCH', { display_name: taken });
       expect([taken, refused.status]).toEqual([taken, taken === 'carol' ? 200 : 409]);
     }
@@ -1024,12 +1041,12 @@ withDb('rooms', () => {
       const refused = await send(world.carol.cookie, '/me', 'PATCH', { display_name: forged });
       expect([forged, refused.status]).toEqual([forged, 400]);
     }
-    const roomId = await makeRoom('Names', [world.carol]);
     const opened = await startThread(world.alice, roomId, '@Melete book the venue', true);
     const request = opened.request_job_id ?? '';
     await answer(request, 'Which venue?');
-    // Look-alike names are allowed, and still cannot pass for Alice: the handle is Carol's.
-    for (const lookalike of ['\u0410lice', 'Al\u0131ce', 'Alice.']) {
+    // Names close to Alice's but not the same are allowed, and still cannot pass
+    // for Alice: the handle is Carol's.
+    for (const lookalike of ['Alice (design)', 'Alice 2', 'Alice.']) {
       await ok(send(world.carol.cookie, '/me', 'PATCH', { display_name: lookalike }));
       await post(
         world.carol,

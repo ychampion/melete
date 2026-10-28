@@ -21,7 +21,7 @@ import {
   Status,
 } from '../design/primitives.tsx';
 import { adapter, type SavedFilePreview } from '../experience/adapter.ts';
-import { clockTime } from '../experience/clock.ts';
+import { clockTime, isoWords } from '../experience/clock.ts';
 import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { assistantName } from '../experience/instance.ts';
@@ -361,7 +361,8 @@ function FactRows({ facts }: { facts: readonly { label: string; value: string }[
       {facts.map((fact) => (
         <div key={`${fact.label}-${fact.value}`} className="field-row">
           <span>{fact.label}</span>
-          <span>{fact.value}</span>
+          {/* An event's start and end come as ISO times; they read on the person's clock. */}
+          <span>{isoWords(fact.value) ?? fact.value}</span>
         </div>
       ))}
     </>
@@ -393,7 +394,9 @@ export function ResultCard({
 }) {
   const size = touch ? 'xl' : 'sm';
   const about = card.facts.find((f) => f.label === 'About')?.value ?? null;
-  const chips = card.facts.filter((f) => f.label === 'When').map((f) => f.value);
+  const chips = card.facts
+    .filter((f) => f.label === 'When')
+    .map((f) => isoWords(f.value) ?? f.value);
   const shown = card.facts.filter(
     (f) => f.label !== 'About' && f.label !== 'When' && f.label !== 'Draft',
   );
