@@ -241,9 +241,9 @@ test('a person who takes the computer while its text is read is not shown it', a
     });
     expect(JSON.stringify(detail)).not.toContain('what the person typed');
     expect(detail.control_changed).toBe(true);
-    expect((detail.screen_text as Record<string, string>).unavailable).toContain(
-      'a person took control',
-    );
+    expect(detail.screenshot).toBe('not taken: a person took control');
+    expect(detail.screen_text).toBeUndefined();
+    expect(detail.window).toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

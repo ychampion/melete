@@ -842,3 +842,44 @@ test('a person who takes the computer once the new title is read is shown none o
     await controls.change(sandbox, 'agent');
   }
 });
+
+test('a screenshot taken while a person takes the computer is kept from the agent', async () => {
+  // The takeover lands as the picture is taken, as the window is read, or as the screen is read.
+  for (const takeoverOn of ['screenshot', 'info', 'text'] as const) {
+    const { session, sandbox } = fixture();
+    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    const provider = {
+      desktop: true,
+      async computer(_handle: unknown, command: DesktopCommand) {
+        if (command.kind === takeoverOn) await controls.change(sandbox, 'human');
+        if (command.kind === 'screenshot') return png(1024, 768);
+        if (command.kind === 'text')
+          return json({ source: 'accessibility', url: 'https://mail.example/', elements: [] });
+        return json({ window: 'Their inbox - Chromium', browser: true });
+      },
+    } as unknown as DockerSandboxProvider;
+    const root = await workRoot();
+    const detail = await runComputerAction({
+      action: action('computer.screenshot', {}, 'act_HELD1'),
+      jobId: 'job_COMPUTER',
+      workRoot: root,
+      session,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(detail).toMatchObject({
+      computer: 'screenshot',
+      control_changed: true,
+      screenshot: 'not taken: a person took control',
+    });
+    for (const field of ['path', 'sha256', 'window', 'browser', 'screen_text'])
+      expect(detail[field]).toBeUndefined();
+    expect(JSON.stringify(detail)).not.toContain('Their inbox');
+    if (takeoverOn === 'screenshot')
+      await expect(
+        readFile(path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_HELD1.png')),
+      ).rejects.toThrow();
+    await controls.change(sandbox, 'agent');
+  }
+});

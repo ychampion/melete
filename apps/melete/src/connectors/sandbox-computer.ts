@@ -641,18 +641,26 @@ export async function runComputerAction(options: {
     ...(display ? { display: display.number, computer_id: display.id } : {}),
   };
   if (first.kind === 'screenshot') {
-    const picture = await capture(options, provider, handle, signal);
-    if ((await controls.state(key)).epoch !== held.epoch) base.control_changed = true;
+    const moved = async () => {
+      const now = await controls.state(key);
+      return now.control === 'human' || now.epoch !== held.epoch;
+    };
+    // What a person who took the computer meanwhile has on the screen, what
+    // they type included, is never returned: not the picture, the window's
+    // title or the screen's text.
+    const notTaken = {
+      ...base,
+      control_changed: true,
+      screenshot: 'not taken: a person took control',
+    };
+    const picture = await capture(options, provider, handle, signal, moved);
+    if (!picture) return notTaken;
     const info = infoOf(
       await provider
         .computer(handle, { kind: 'info' }, signal, display ?? undefined)
         .catch(() => new Uint8Array()),
     );
-    const moved = async () => {
-      const now = await controls.state(key);
-      return now.control === 'human' || now.epoch !== held.epoch;
-    };
-    let screen = await lookPastChallenge(
+    const screen = await lookPastChallenge(
       await readScreen(provider, handle, signal, display),
       provider,
       handle,
@@ -661,13 +669,8 @@ export async function runComputerAction(options: {
       moved,
       display,
     );
-    // Read after the picture: what a person who took the computer meanwhile
-    // has on the screen, what they type included, is never returned.
-    const after = await controls.state(key);
-    if (after.control === 'human' || after.epoch !== held.epoch) {
-      base.control_changed = true;
-      screen = { unavailable: 'not read: a person took control of this computer' };
-    }
+    // Checked after everything was read, so nothing read during a takeover goes out.
+    if (await moved()) return notTaken;
     return {
       ...base,
       ...picture,
