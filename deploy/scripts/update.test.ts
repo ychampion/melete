@@ -34,15 +34,28 @@ const STUB_GIT = `#!/usr/bin/env bash
 printf 'git %s\\n' "$*" >> "$STUB_LOG"
 exit "\${STUB_GIT_EXIT:-0}"
 `;
-// `bun run melete quiet`, which waits for a quiet moment and drains, or cancels the drain.
+// `bun run melete quiet`: with --time-only it checks the service and waits for
+// --at; otherwise it waits for a quiet moment and drains, or cancels the drain.
 const STUB_BUN = `#!/usr/bin/env bash
 printf 'bun %s\\n' "$*" >> "$STUB_LOG"
 case "$*" in
   *"quiet --cancel") exit 0 ;;
+  *" --time-only") exit "\${STUB_TIME_EXIT:-0}" ;;
   *" quiet"*) exit "\${STUB_QUIET_EXIT:-0}" ;;
 esac
 exit 0
 `;
+/**
+ * Runs the script with the stand-ins first on PATH. Git for Windows' bash puts
+ * its own directories (and its git) ahead of the PATH it is given, so the
+ * stand-ins are put first again inside bash, which then runs the script.
+ */
+const FIRST_ON_PATH = [
+  'stubs="$STUB_DIR"',
+  'if command -v cygpath >/dev/null 2>&1; then stubs="$(cygpath -u "$stubs")"; fi',
+  'PATH="$stubs:$PATH"',
+  'exec "$BASH" "$0" "$@"',
+].join('\n');
 
 let directory = '';
 afterEach(() => {
@@ -63,10 +76,13 @@ function run(env: Record<string, string>, args: string[] = []) {
     writeFileSync(join(directory, name), body);
     chmodSync(join(directory, name), 0o755);
   }
-  const result = Bun.spawnSync([bash ?? 'bash', script, ...args], {
+  const result = Bun.spawnSync([bash ?? 'bash', '-c', FIRST_ON_PATH, script, ...args], {
     env: {
       ...process.env,
       PATH: `${directory}${delimiter}${process.env.PATH ?? ''}`,
+      STUB_DIR: directory,
+      // Were a real git ever reached, it would find no repository to change.
+      GIT_DIR: join(directory, 'no-repository'),
       STUB_LOG: log,
       STUB_ROOT: directory,
       STUB_IMAGES: PUBLISHED.join(' '),
@@ -133,7 +149,13 @@ describe.skipIf(!bash)('update.sh', () => {
     expect(changes(calls)).toEqual([]);
   });
 
-  test('--when-quiet waits and drains before the checkout moves, and ends the drain on exit', () => {
+  test('runs the stand-ins, never a real git, whatever bash puts first on PATH', () => {
+    const { code, calls } = run({});
+    expect(code).toBe(0);
+    expect(calls).toContain('git pull --ff-only');
+  });
+
+  test('--when-quiet waits for --at, pulls, then waits for quiet and drains before the restart', () => {
     const { code, calls } = run({}, [
       '--when-quiet',
       '--at',
@@ -144,20 +166,41 @@ describe.skipIf(!bash)('update.sh', () => {
       'sandbox',
     ]);
     expect(code).toBe(0);
-    const waited = calls.indexOf('bun run melete quiet --at 03:00 --max-wait 90');
-    expect(waited).toBeGreaterThan(calls.indexOf('docker info --format {{.DockerRootDir}}'));
-    expect(waited).toBeLessThan(calls.indexOf('git pull --ff-only'));
+    const timed = calls.indexOf('bun run melete quiet --at 03:00 --time-only');
+    const drained = calls.indexOf('bun run melete quiet --max-wait 90');
+    expect(timed).toBeGreaterThan(calls.indexOf('docker info --format {{.DockerRootDir}}'));
+    expect(timed).toBeLessThan(calls.indexOf('git pull --ff-only'));
+    // The code and the images download before the drain, so no new work waits on them.
+    expect(drained).toBeGreaterThan(calls.indexOf('git pull --ff-only'));
+    expect(drained).toBeGreaterThan(calls.indexOf('compose --profile sandbox pull'));
+    expect(drained).toBeLessThan(
+      calls.indexOf('compose --profile sandbox up -d --no-build --wait --wait-timeout 600'),
+    );
     expect(calls.at(-1)).toBe('bun run melete quiet --cancel');
     // The timing options are not Compose's.
     expect(changes(calls)[0]).toBe('compose --profile sandbox pull');
   });
 
-  test('--when-quiet with no quiet moment changes nothing', () => {
+  test('--when-quiet with no quiet moment pulls, but stops and restarts nothing', () => {
     const { code, stderr, calls } = run({ STUB_QUIET_EXIT: '1' }, ['--when-quiet']);
     expect(code).not.toBe(0);
     expect(stderr).toContain('no quiet moment came in time');
+    expect(stderr).toContain('nothing running was stopped or restarted');
+    expect(calls).toContain('git pull --ff-only');
+    expect(changes(calls)).toEqual(['compose pull']);
+    // The drain it may have left on is cancelled on the way out.
+    expect(calls.at(-1)).toBe('bun run melete quiet --cancel');
+  });
+
+  test('--when-quiet with a service that cannot answer changes nothing', () => {
+    const { code, stderr, calls } = run({ STUB_TIME_EXIT: '2' }, ['--when-quiet']);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain('nothing was changed');
     expect(calls.some((line) => line.startsWith('git '))).toBe(false);
     expect(changes(calls)).toEqual([]);
+    expect(calls.filter((line) => line.startsWith('bun '))).toEqual([
+      'bun run melete quiet --time-only',
+    ]);
   });
 
   test('--at without --when-quiet is refused', () => {
