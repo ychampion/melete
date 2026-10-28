@@ -194,6 +194,9 @@
   color: var(--heading);
   overflow-wrap: anywhere;
 }
+.household-week-empty {
+  display: none;
+}
 .household-open {
   display: flex;
   flex-direction: column;
@@ -207,6 +210,13 @@
   }
   .household-day {
     min-height: 0;
+  }
+  /* Stacked, an empty day is only a box that says "Nothing": the days with something are kept. */
+  .household-day[data-empty="true"] {
+    display: none;
+  }
+  .household-week-empty {
+    display: block;
   }
   .board {
     padding: 16px;

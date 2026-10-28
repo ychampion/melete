@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '../design/primitives.tsx';
 import { clockTime, dayKey, displayZone } from '../experience/clock.ts';
 import { useApp } from '../experience/hooks.ts';
-import { BoardRow, shortName } from '../rooms/Board.tsx';
+import { BoardRow, shortName, useMeId } from '../rooms/Board.tsx';
 import { type BoardItem, boardApi, itemWhen, mergeItems } from '../rooms/board-api.ts';
 import '../rooms/board.css';
 import { href } from '../router.ts';
@@ -37,6 +37,7 @@ export function HouseholdScreen() {
   const [items, setItems] = useState<BoardItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const zone = displayZone();
+  const me = useMeId(capabilities.multiplayer);
   const week = useMemo(() => weekOf(new Date(), zone, offset), [zone, offset]);
 
   const read = useCallback(async () => {
@@ -74,6 +75,8 @@ export function HouseholdScreen() {
 
   const changed = (entry: BoardItem) => setItems((held) => mergeItems(held ?? [], [entry]));
   const [opened, setOpened] = useState<string | null>(null);
+  // On a phone the days stack, so an empty one is left out; a week with none says so once.
+  const emptyWeek = items !== null && week.days.every((day) => !byDay.get(day.key)?.length);
   const openItem = items?.find((entry) => entry.id === opened) ?? null;
 
   if (!capabilities.multiplayer)
@@ -124,6 +127,7 @@ export function HouseholdScreen() {
                 key={day.key}
                 className="household-day"
                 data-today={day.today && offset === 0 ? 'true' : undefined}
+                data-empty={items !== null && list.length === 0 ? 'true' : undefined}
               >
                 <h2 className="household-day-head">
                   <span>{LONG_DAYS[index]}</span>
@@ -163,10 +167,11 @@ export function HouseholdScreen() {
             );
           })}
         </ol>
+        {emptyWeek ? <p className="board-empty household-week-empty">Nothing this week.</p> : null}
         {openItem ? (
           <div className="household-open">
             <ul className="board-list">
-              <BoardRow entry={openItem} onChanged={changed} showRoom />
+              <BoardRow entry={openItem} me={me} onChanged={changed} showRoom />
             </ul>
             <a className="board-link" href={href(`/rooms/${openItem.room_id}/board`)}>
               Open {openItem.room_name}’s board
