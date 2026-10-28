@@ -29,6 +29,8 @@ const INTERACTIVE_PURPOSES: ReadonlySet<string> = new Set([
   'companies',
   // The first line of a turn the person is waiting on.
   'acknowledgement',
+  // A picture the person just sent, read before their turn reaches it.
+  'attachment_reading',
 ]);
 
 /**

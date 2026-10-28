@@ -66,10 +66,25 @@ export class SubmissionService {
     row: JobRow,
     kind: 'create' | 'input',
   ) => Promise<void>;
+  /**
+   * Told the files a message carried once it is committed, outside any
+   * transaction; the pictures among them are read then (`attachments/reading.ts`).
+   * Never waited on: the message is accepted whatever becomes of it.
+   */
+  onFilesSent?: (jobId: string, ids: readonly string[]) => void;
   constructor(
     readonly jobs: JobService,
     readonly faults: SubmissionFaults = {},
   ) {}
+
+  /** Hand a committed message's files to `onFilesSent`. */
+  private filesSent(result: SubmissionResult, raw: unknown): void {
+    if (!this.onFilesSent || result.replayed || result.receipt.state !== 'accepted') return;
+    const jobId = result.receipt.job_id;
+    const parsed = postMessageRequest.safeParse(raw);
+    const ids = parsed.success ? (parsed.data.attachments ?? []) : [];
+    if (jobId && ids.length) this.onFilesSent(jobId, ids);
+  }
 
   private async read(tx: Transaction, id: string) {
     const [saved] = await tx.select().from(submission).where(eq(submission.submissionId, id));
@@ -232,8 +247,10 @@ export class SubmissionService {
       'result' in outcome &&
       !outcome.result.replayed &&
       outcome.result.receipt.state === 'accepted'
-    )
+    ) {
+      this.filesSent(outcome.result, raw);
       await this.faults.afterAdmissionBeforeResponse?.(outcome.result.receipt);
+    }
     return outcome;
   }
 
@@ -255,8 +272,10 @@ export class SubmissionService {
     const result = await this.jobs.transaction((tx) =>
       this.admit(tx, kind, raw, id, digest, jobId),
     );
-    if (!result.replayed && result.receipt.state === 'accepted')
+    if (!result.replayed && result.receipt.state === 'accepted') {
+      if (kind === 'input') this.filesSent(result, raw);
       await this.faults.afterAdmissionBeforeResponse?.(result.receipt);
+    }
     return result;
   }
 

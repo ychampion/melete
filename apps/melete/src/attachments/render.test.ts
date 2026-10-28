@@ -7,6 +7,7 @@ import {
   type MessageFile,
   messageFiles,
   PICTURE_NOT_SHOWN,
+  PICTURE_READ,
   unmarked,
   withFiles,
 } from './render.ts';
@@ -45,6 +46,26 @@ describe("a message's files in the prompt", () => {
     expect(text).toContain(PICTURE_NOT_SHOWN);
     const blocks = [...text.matchAll(FILE_BLOCK)].map((match) => match[1]);
     expect(blocks).toEqual(['file_LEASE', 'file_PHOTO']);
+  });
+
+  test('a picture Melete read shows its reading in place of the sentence that it is not shown', () => {
+    const reading =
+      'What it shows: A water bill.\nText in the picture:\nAmount due $84.20\nKey values:\n- amount due: $84.20';
+    const text = withFiles('Is this right?', [photo], new Map([['file_PHOTO', reading]]));
+    expect(text).not.toContain(PICTURE_NOT_SHOWN);
+    expect(text).toContain(`${PICTURE_READ}\n${reading}`);
+    expect(text).toContain('Melete read this picture:');
+    // The gateway still knows the block for a picture, and swaps it where the model sees pictures.
+    expect(PICTURE_READ.slice(0, 40)).toBe(PICTURE_NOT_SHOWN.slice(0, 40));
+    expect([...text.matchAll(FILE_BLOCK)].map((match) => match[1])).toEqual(['file_PHOTO']);
+  });
+
+  test('a picture with no reading, or one not ready yet, keeps the sentence', () => {
+    for (const texts of [new Map(), new Map([['file_PHOTO', null]])]) {
+      const text = withFiles('Is this right?', [photo], texts);
+      expect(text).toContain(PICTURE_NOT_SHOWN);
+      expect(text).not.toContain('Melete read this picture');
+    }
   });
 
   test("a file's text cannot close its own block early", () => {

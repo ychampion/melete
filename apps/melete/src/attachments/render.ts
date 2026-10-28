@@ -5,7 +5,8 @@
  * then its text between an opening and a closing marker. The closing marker
  * carries a digest of the file's own text, so nothing inside the file can end
  * the block early and speak as the prompt. A picture's block holds a sentence
- * instead of text; where the model reads pictures, the gateway puts the picture
+ * instead of text, followed by Melete's reading of the picture once it has one
+ * (`reading.ts`); where the model reads pictures, the gateway puts the picture
  * itself in the block's place (`gateway/attachments.ts`).
  *
  * What is inside a block is the file's content, untrusted data, and the prompt
@@ -39,6 +40,14 @@ const KIND_LABELS: Record<AttachmentKind, string> = {
 /** The sentence a picture's block holds when the picture itself is not shown. */
 export const PICTURE_NOT_SHOWN =
   '[A picture. It is not shown to you in this request. To work with it, save it to your workspace with files.save_attachment and use code.]';
+
+/**
+ * The sentence a picture's block opens with when Melete has read it, followed
+ * by the reading. It starts as `PICTURE_NOT_SHOWN` does, so the gateway still
+ * knows the block for a picture (`carriesAttachedPicture`).
+ */
+export const PICTURE_READ =
+  '[A picture. It is not shown to you in this request. Melete read it when it was sent; its reading follows. To work with the picture itself, save it to your workspace with files.save_attachment and use code.]\nMelete read this picture:';
 
 const NO_TEXT: Partial<Record<AttachmentKind, string>> = {
   pdf: '[No text could be read from this PDF. It may be scanned pages.]',
@@ -134,7 +143,7 @@ export function withFiles(
 ): string {
   if (!files.length) return unmarked(words);
   const bodies = files.map((file) => {
-    const text = file.kind === 'image' ? null : (texts.get(file.id) ?? null);
+    const text = texts.get(file.id) ?? null;
     return text === null ? null : unmarked(text);
   });
   const budget = shares(
@@ -143,8 +152,15 @@ export function withFiles(
   );
   const blocks = files.map((file, index) => {
     let body: string;
-    if (file.kind === 'image') body = PICTURE_NOT_SHOWN;
-    else {
+    if (file.kind === 'image') {
+      // A picture with no reading yet, or none at all, keeps its sentence.
+      const reading = bodies[index];
+      const room = budget[index] ?? 0;
+      if (reading === null || reading === undefined || !reading.trim()) body = PICTURE_NOT_SHOWN;
+      else if (reading.length <= room) body = `${PICTURE_READ}\n${reading}`;
+      else
+        body = `${PICTURE_READ}\n${reading.slice(0, room)}\n[Only the first ${room} of ${reading.length} characters of the reading are shown here.]`;
+    } else {
       const text = bodies[index];
       const room = budget[index] ?? 0;
       if (text === null || text === undefined)

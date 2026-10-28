@@ -67,6 +67,13 @@ export type AttachmentRoute =
   | { kind: 'on_device' }
   | { kind: 'local'; model: string };
 
+/**
+ * The service's one side call that is shown a person's picture: reading it
+ * once when it is sent (`attachments/reading.ts`), as the conversation it was
+ * sent in.
+ */
+export const PICTURE_READING_PURPOSE = 'attachment_reading';
+
 /** Providers that take a PDF in the request body itself. */
 const PDF_PROVIDERS = new Set(['anthropic', 'openai']);
 
@@ -189,7 +196,10 @@ export async function withAttachedFiles(input: {
   maxRequestBytes: number;
 }): Promise<Record<string, unknown>> {
   const { protocol, provider, principal, route, source } = input;
-  if (!source || principal.privacy.kind !== 'job') return input.body;
+  const shows =
+    principal.privacy.kind === 'job' ||
+    (principal.privacy.kind === 'service' && principal.privacy.purpose === PICTURE_READING_PURPOSE);
+  if (!source || !shows) return input.body;
   if (!JSON.stringify(input.body).includes('[[melete-file ')) return input.body;
   let images: boolean;
   if (route.kind === 'local') images = modelSupportsVision('openai-compatible', route.model);
