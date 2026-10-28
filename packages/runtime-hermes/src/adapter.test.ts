@@ -1189,9 +1189,33 @@ describe('a reply that hit the output limit', () => {
     }
   });
 
+  test('a reply that is only reasoning, or nothing, gets a notice and never the reasoning', async () => {
+    // The engine's wording after its empty-reply retries, as the pinned release writes it.
+    for (const output of [
+      '⚠️ The model produced only internal reasoning and no final answer, despite retries. ' +
+        'Its last reasoning, which may contain the answer:\n\nCompare the private readings.',
+      '(empty)',
+    ]) {
+      const { fetch } = harness({
+        sse: `data: ${JSON.stringify({ event: 'run.completed', output })}\n\n`,
+      });
+      const outcome = await adapterWith(fetch).start(
+        bundle,
+        new Collector(),
+        new AbortController().signal,
+      );
+      expect(outcome.kind).toBe('completed');
+      const said = (outcome as { summary: string }).summary;
+      expect(said).toContain("didn't write an answer");
+      expect(said).toContain('Settings › Models');
+      expect(said).not.toContain('private readings');
+    }
+  });
+
   test('an ordinary answer is left as written', () => {
     expect(plainEngineNotice('Response times were fine today.')).toBe(
       'Response times were fine today.',
     );
+    expect(plainEngineNotice('(empty) marks a blank cell.')).toBe('(empty) marks a blank cell.');
   });
 });
