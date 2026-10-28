@@ -632,6 +632,8 @@ type Io = {
   in?: () => Promise<Uint8Array>;
   /** The next chunk from a pipe, or null once the writer has ended. */
   read?: () => Promise<Uint8Array | null>;
+  /** Hand back bytes read past what was wanted, for the next reader of the same pipe. */
+  unread?: (bytes: Uint8Array) => void;
 };
 
 /** A pipe between two commands: chunks as they are written, then an end. */
@@ -646,6 +648,9 @@ class FakePipe {
   close(): void {
     this.ended = true;
     this.wake();
+  }
+  unread(bytes: Uint8Array): void {
+    if (bytes.byteLength) this.chunks.unshift(bytes.slice());
   }
   async read(): Promise<Uint8Array | null> {
     for (;;) {
@@ -933,12 +938,14 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
           io.out((await (io.in ? io.in() : shell.process.readStdin())).slice(0, count));
           return 0;
         }
-        // As head does on a pipe: what it read past the count is gone.
+        // As head -c does on a pipe: it reads no further than its count, so
+        // what follows is left for the next reader.
         for (let left = count; left > 0; ) {
           const chunk = await io.read();
           if (!chunk) break;
           const part = chunk.subarray(0, left);
           io.out(part);
+          io.unread?.(chunk.subarray(part.byteLength));
           left -= part.byteLength;
         }
         return 0;
@@ -956,6 +963,24 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       } catch {
         return fail(`cannot open '${file}' for reading`, 1);
       }
+      return 0;
+    }
+    case 'tail': {
+      const operands = args.filter((arg) => arg !== '--');
+      if (operands[0] !== '-c' || operands[1] === undefined || operands.length > 2)
+        return fail('only -c N is supported', 2);
+      const count = Number(operands[1]);
+      // The newest `count` bytes of the input, written once it ends.
+      let kept = new Uint8Array(0);
+      const keep = (bytes: Uint8Array) => {
+        const joined = new Uint8Array(kept.byteLength + bytes.byteLength);
+        joined.set(kept);
+        joined.set(bytes, kept.byteLength);
+        kept = joined.slice(Math.max(0, joined.byteLength - count));
+      };
+      if (io.read) for (let chunk = await io.read(); chunk; chunk = await io.read()) keep(chunk);
+      else keep(await (io.in ? io.in() : shell.process.readStdin()));
+      io.out(kept);
       return 0;
     }
     case 'cat': {
@@ -1176,7 +1201,12 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
       runCommand(
         command.right,
         { ...shell, vars: new Map(shell.vars) },
-        { ...current, in: () => pipe.readAll(), read: () => pipe.read() },
+        {
+          ...current,
+          in: () => pipe.readAll(),
+          read: () => pipe.read(),
+          unread: (bytes) => pipe.unread(bytes),
+        },
       ),
     );
     const [first, second] = await Promise.allSettled([left, right]);

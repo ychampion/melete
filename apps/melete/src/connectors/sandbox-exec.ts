@@ -857,8 +857,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     newHosts: string[] | null = null,
   ): Promise<Record<string, JsonValue>> => {
     // The receipt is the only way the result travels back to the engine that
-    // asked, so the preview the service kept goes on it, capped as it was.
-    const shown = outputText(record.preview, record.truncated);
+    // asked, so the preview the service kept goes on it: the start and the
+    // end of the output, each cut on a character boundary.
+    const shown = outputText(record.preview, false);
     const detail: Record<string, JsonValue> = {
       language: 'shell',
       command: payload.command,
@@ -868,10 +869,14 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       exit_code: record.exitCode,
       signal: record.signal,
       timed_out: record.timedOut,
+      stopped_by: record.stoppedBy,
+      ...(record.memoryLimitBytes !== null ? { memory_limit_bytes: record.memoryLimitBytes } : {}),
       duration_ms: record.durationMs,
       output_digest: record.outputDigest,
       output_bytes: record.outputBytes,
       truncated: record.truncated,
+      elided_bytes: record.elidedBytes,
+      elided_lines: record.elidedLines,
       output_path: record.outputPath,
       stored_bytes: stored ? stored.byteLength : null,
       // The service captured and hashed these bytes itself, so it can say so.

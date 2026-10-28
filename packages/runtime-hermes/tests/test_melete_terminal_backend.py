@@ -333,8 +333,19 @@ def test_truncated_capped_and_binary_output_are_each_said():
     assert result["returncode"] == 3
     output = result["output"]
     assert "[binary output" in output and "d" * 64 in output
-    assert "the full capture is in the job workspace at .melete/exec/act_1.out" in output
-    assert "wrote 9000000 bytes; only the first 4194304 were kept" in output
+    assert "showing the start and the end of 4194304 captured bytes" in output
+    assert "the kept output is in the job workspace at .melete/exec/act_1.out" in output
+    assert "its start and its newest output were kept" in output
+
+
+def test_a_command_killed_for_memory_is_said_to_have_run_out_of_it():
+    broker = ScriptedBroker()
+    broker.receipt = receipt(
+        output="allocating", exit_code=137, stopped_by="memory_limit", memory_limit_bytes=536_870_912
+    )
+    result = environment(broker).execute("python train.py")
+    assert result["returncode"] == 137
+    assert "killed because it used all the memory of 512 MiB its computer allows" in result["output"]
 
 
 def test_a_command_with_no_exit_status_is_not_reported_as_success():

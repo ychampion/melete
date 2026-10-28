@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { FAKE_CAPABILITIES, FakeSandboxProvider } from './fake.ts';
 import {
   checkMarker,
@@ -375,7 +378,7 @@ test("a command's kept output never exceeds the capture limit, and the rest is r
       timeoutMs: 5_000,
       dispatch: 'first',
     },
-    workRoot: '.',
+    workRoot: await mkdtemp(path.join(tmpdir(), 'melete-marker-')),
     jobId: 'job_UNUSED',
     signal: signal(),
     limits: { maxCaptureBytes: 1_000, maxOutputBytes: 1_000 },
@@ -447,12 +450,14 @@ test('every command prunes markers untouched for the retention period, and never
 });
 
 test("the stage that keeps a command's output runs in a session of its own, so a timeout's kill spares it", () => {
-  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sleep', '9'], { keepBytes: 10 });
+  const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sleep', '9'], {
+    keep: { head: 4, tail: 6 },
+  });
   const line = (script ?? '').split('\n').find((each) => each.includes('"$d/status"; }'));
   expect(line).toBeDefined();
   // The command and its status on the left; the keeping stage, in a new session, on the right.
   expect(line?.split(' | ')[1]).toBe(
-    `setsid -w sh -c 'head -c "$1"; exec cat > /dev/null' melete-keep 10; } > "$d/out"`,
+    `setsid -w sh -c 'head -c "$1"; exec tail -c "$2"' melete-keep 4 7; } > "$d/out"`,
   );
   // `out` is opened by the group around both stages, before the command starts, and by
   // nothing else: no stage creates a file in the marker while the command can remove it.
@@ -469,4 +474,153 @@ test('a command that removes its own marker leaves it removed, with no status wr
   ]);
   expect(result.outcome).toBe('unknown');
   expect(await reattachByMarker(provider, handle, MARKER, signal())).toBeNull();
+});
+
+/** Put files into the fake sandbox, as a sync or a seed would. */
+async function seed(
+  provider: FakeSandboxProvider,
+  handle: SandboxHandle,
+  files: Record<string, string>,
+) {
+  await provider.putFiles(
+    handle,
+    (async function* () {
+      for (const [where, body] of Object.entries(files))
+        yield { path: where, bytes: new TextEncoder().encode(body), mode: 0o644 };
+    })(),
+    signal(),
+  );
+}
+
+const runIn = async (
+  provider: FakeSandboxProvider,
+  handle: SandboxHandle,
+  script: string,
+  more: { timeoutMs?: number; limits?: { maxCaptureBytes?: number; maxOutputBytes?: number } } = {},
+) => {
+  const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-marker-'));
+  const result = await runCommand({
+    provider,
+    handle,
+    request: {
+      marker: MARKER,
+      argv: ['sh', '-c', script],
+      timeoutMs: more.timeoutMs ?? 5_000,
+      dispatch: 'first',
+    },
+    workRoot,
+    jobId: 'job_UNUSED',
+    signal: signal(),
+    ...(more.limits ? { limits: more.limits } : {}),
+  });
+  if (result.outcome !== 'succeeded') throw new Error(`not recorded: ${JSON.stringify(result)}`);
+  return { record: result.record, workRoot };
+};
+
+test('output that does not fit is shown as its start and its end, with what was left out counted', async () => {
+  const { provider, handle } = await sandbox();
+  const lines = Array.from({ length: 3000 }, (_, index) => `ok test_${index + 1}\n`).join('');
+  const failure = 'FAILED test_checkout_rounding: expected 10.00, got 9.99\n';
+  await seed(provider, handle, { '/work/run.log': lines + failure });
+  const { record, workRoot } = await runIn(provider, handle, 'cat /work/run.log; exit 1');
+  expect(record.exitCode).toBe(1);
+  expect(record.stoppedBy).toBe('exit');
+  expect(record.truncated).toBe(true);
+  expect(record.captureLimited).toBe(false);
+  const shown = text(record.preview);
+  // The start and the end are both there, each on whole lines.
+  expect(shown.startsWith('ok test_1\nok test_2\n')).toBe(true);
+  expect(shown.endsWith(failure)).toBe(true);
+  // One line between them says how much was left out, and where all of it is.
+  const separator = shown.split('\n').find((line) => line.startsWith('⟦melete:'));
+  expect(separator).toBe(
+    `⟦melete: ${record.elidedBytes} bytes (${record.elidedLines} lines) of output left out here; the kept output is at ${record.outputPath}⟧`,
+  );
+  const [head = '', tail = ''] = shown.split(`${separator}\n`);
+  expect(head.length).toBeLessThanOrEqual(4096);
+  expect(tail.length).toBeLessThanOrEqual(12_288);
+  expect(head.length + tail.length + record.elidedBytes).toBe(record.outputBytes);
+  expect(record.elidedLines).toBe(
+    (lines + failure).split('\n').length -
+      1 -
+      head.split('\n').length -
+      tail.split('\n').length +
+      2,
+  );
+  // Nothing printed is mistaken for the line, and the stored copy is the whole output.
+  expect(shown.match(/⟦melete:/g)).toHaveLength(1);
+  const stored = await readFile(path.join(workRoot, 'job_UNUSED', record.outputPath ?? ''), 'utf8');
+  expect(stored).toBe(lines + failure);
+});
+
+test('output that fits is shown whole, with nothing left out', async () => {
+  const { provider, handle } = await sandbox();
+  const { record } = await runIn(provider, handle, 'printf "one\ntwo\n"');
+  expect(text(record.preview)).toBe('one\ntwo\n');
+  expect(record).toMatchObject({
+    truncated: false,
+    elidedBytes: 0,
+    elidedLines: 0,
+    outputPath: null,
+    stoppedBy: 'exit',
+  });
+});
+
+test('above the capture limit the start and the newest output are kept, never only the first bytes', async () => {
+  const { provider, handle } = await sandbox();
+  const body = Array.from(
+    { length: 500 },
+    (_, index) => `line ${String(index).padStart(4, '0')}\n`,
+  );
+  await seed(provider, handle, { '/work/big.log': body.join('') });
+  const { record, workRoot } = await runIn(provider, handle, 'cat /work/big.log', {
+    limits: { maxCaptureBytes: 1_000, maxOutputBytes: 400 },
+  });
+  // 5,000 bytes printed: the first 100 and the newest 900 are kept.
+  expect(record.outputBytes).toBe(1_000);
+  expect(record.captureLimited).toBe(true);
+  expect(record.totalBytes).toBeGreaterThan(record.outputBytes);
+  const stored = await readFile(path.join(workRoot, 'job_UNUSED', record.outputPath ?? ''), 'utf8');
+  const all = body.join('');
+  expect(stored).toBe(all.slice(0, 100) + all.slice(-900));
+  const shown = text(record.preview);
+  expect(shown.startsWith('line 0000\n')).toBe(true);
+  expect(shown.endsWith('line 0499\n')).toBe(true);
+  // More was dropped before capture than can be counted, and the line says so.
+  expect(shown).toContain('⟦melete: at least ');
+});
+
+test('a command past its time is stopped by the timeout, and its receipt says so', async () => {
+  const { provider, handle } = await sandbox();
+  const { record } = await runIn(provider, handle, 'printf started; sleep 5', { timeoutMs: 300 });
+  expect(record).toMatchObject({ timedOut: true, exitCode: null, stoppedBy: 'timeout' });
+  expect(record.memoryLimitBytes).toBeNull();
+});
+
+test("a command killed for memory says so, with the computer's limit", async () => {
+  const { provider, handle } = await sandbox();
+  await seed(provider, handle, {
+    '/sys/fs/cgroup/memory.events': 'low 0\nhigh 0\nmax 4\noom 1\noom_kill 0\n',
+    '/sys/fs/cgroup/memory.max': '536870912\n',
+  });
+  const { record } = await runIn(
+    provider,
+    handle,
+    "printf 'low 0\nhigh 0\nmax 9\noom 2\noom_kill 1\n' > /sys/fs/cgroup/memory.events; exit 137",
+  );
+  expect(record).toMatchObject({
+    exitCode: 137,
+    stoppedBy: 'memory_limit',
+    memoryLimitBytes: 536_870_912,
+  });
+});
+
+test('an exit 137 the memory count does not explain is an ordinary exit', async () => {
+  const { provider, handle } = await sandbox();
+  await seed(provider, handle, {
+    '/sys/fs/cgroup/memory.events': 'oom_kill 3\n',
+    '/sys/fs/cgroup/memory.max': 'max\n',
+  });
+  const { record } = await runIn(provider, handle, 'exit 137');
+  expect(record).toMatchObject({ exitCode: 137, stoppedBy: 'exit', memoryLimitBytes: null });
 });

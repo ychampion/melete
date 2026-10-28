@@ -306,7 +306,13 @@ withDb('a command in a remote sandbox', () => {
     const cut = accents.result.receipt.detail as Record<string, unknown>;
     expect(cut.truncated).toBe(true);
     expect(cut.output_binary).toBe(false);
-    expect(String(cut.output)).toBe(`a${'é'.repeat(8_191)}`);
+    // Its start and its end, each cut between characters, and what was left out between them.
+    expect(cut).toMatchObject({ elided_bytes: 1_618, elided_lines: 0 });
+    expect(String(cut.output)).toBe(
+      `a${'é'.repeat(2_047)}
+⟦melete: 1618 bytes (0 lines) of output left out here; the kept output is at ${cut.output_path}⟧
+${'é'.repeat(6_144)}`,
+    );
   }, 60_000);
 
   test('a malformed run name is refused before a sandbox opens', async () => {

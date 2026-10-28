@@ -33,13 +33,48 @@ export const EXEC_LIMITS = {
   default_timeout_ms: 300_000,
   /** The most a caller may ask for. A longer job is several commands. */
   max_timeout_ms: 600_000,
-  /** How much combined output the model is shown before truncation. */
+  /**
+   * How much combined output the model is shown. Output that does not fit is
+   * shown as its start and its end, `preview_head_bytes` and
+   * `preview_tail_bytes`, with one line between them that says how many bytes
+   * and lines were left out and where the whole capture is stored.
+   */
   max_output_bytes: 16_384,
-  /** How much output is captured at all. Past this the tail is dropped. */
+  preview_head_bytes: 4_096,
+  preview_tail_bytes: 12_288,
+  /**
+   * How much output is kept at all. Past this the first `preview_head_bytes`
+   * stay and, after them, only the newest bytes: the middle is dropped as it
+   * goes, never the end, so a long run still shows how it finished.
+   */
   max_capture_bytes: 4_194_304,
   /** Where retained command output is stored, under the workspace. */
   output_dir: '.melete/exec',
 } as const;
+
+/**
+ * Why a command stopped: it exited by itself, its time ran out, it was killed
+ * for using more memory than its computer allows, a signal ended it, or the
+ * person stopped it.
+ */
+export const EXEC_STOP_REASONS = ['exit', 'timeout', 'memory_limit', 'signal', 'person'] as const;
+export type ExecStopReason = (typeof EXEC_STOP_REASONS)[number];
+
+/**
+ * The line put where output was left out of what the model is shown. It is a
+ * line of its own, and its brackets and wording are not something a command
+ * prints, so it is never read as output. `atLeast` says more was dropped
+ * before capture than can be counted.
+ */
+export const execElisionLine = (
+  bytes: number,
+  lines: number,
+  path: string | null,
+  atLeast = false,
+): string =>
+  `
+⟦melete: ${atLeast ? 'at least ' : ''}${bytes} bytes (${atLeast ? 'at least ' : ''}${lines} lines) of output left out here${path ? `; the kept output is at ${path}` : ''}⟧
+`;
 
 /**
  * Background processes in the agent's computer: work that outlives one
@@ -167,7 +202,8 @@ export type ExecLanguage = z.infer<typeof execLanguage>;
 /**
  * One execution, as it is written to the ledger. Every field is a fact about a
  * command that has already finished. `exit_code` is null exactly when the
- * command was killed, which is also when `timed_out` or `signal` says why.
+ * command was killed, which is also when `timed_out` or `signal` says why;
+ * `stopped_by` says it in one word either way.
  */
 export const execRecord = z.object({
   language: execLanguage,
@@ -189,6 +225,13 @@ export const execRecord = z.object({
   /** True when the capture cap discarded output; distinct from the display cap. */
   capture_limited: z.boolean().optional(),
   truncated: z.boolean().default(false),
+  /** What was left out of the middle of the shown output. Optional for records from an older plugin. */
+  elided_bytes: z.number().int().nonnegative().optional(),
+  elided_lines: z.number().int().nonnegative().optional(),
+  /** Why the command stopped. Optional for records from an older plugin. */
+  stopped_by: z.enum(EXEC_STOP_REASONS).optional(),
+  /** The memory limit a command was killed at, when it was and the limit is known. */
+  memory_limit_bytes: z.number().int().positive().nullable().optional(),
   /**
    * Where retained output was stored when it did not fit, relative to the
    * workspace root. Null when the output fit and nothing was written.
@@ -232,6 +275,10 @@ export const EXEC_RECORD_JSON_SCHEMA = {
     total_bytes: { type: 'integer', minimum: 0 },
     capture_limited: { type: 'boolean' },
     truncated: { type: 'boolean' },
+    elided_bytes: { type: 'integer', minimum: 0 },
+    elided_lines: { type: 'integer', minimum: 0 },
+    stopped_by: { type: 'string', enum: [...EXEC_STOP_REASONS] },
+    memory_limit_bytes: { type: ['integer', 'null'], minimum: 1 },
     output_path: { type: ['string', 'null'], maxLength: 1024 },
   },
 } as const;

@@ -352,14 +352,26 @@ def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
         )
     if detail.get("truncated"):
         stored = detail.get("output_path")
-        where = f"; the full capture is in the job workspace at {stored}" if stored else ""
+        where = f"; the kept output is in the job workspace at {stored}" if stored else ""
         notes.append(
-            f"[output truncated: showing the start of {detail.get('output_bytes')} captured bytes{where}]"
+            f"[output truncated: showing the start and the end of {detail.get('output_bytes')} captured bytes, "
+            f"with a line between them saying what was left out{where}]"
         )
     if detail.get("capture_limited"):
         notes.append(
-            f"[the command wrote {detail.get('total_bytes')} bytes; "
-            f"only the first {detail.get('captured_bytes')} were kept]"
+            f"[the command wrote more than the {detail.get('captured_bytes')} bytes kept; "
+            "its start and its newest output were kept, and the middle was dropped]"
+        )
+    if detail.get("stopped_by") == "memory_limit":
+        limit = detail.get("memory_limit_bytes")
+        size = (
+            f" of {limit // (1024 * 1024)} MiB"
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+            else ""
+        )
+        notes.append(
+            f"[the command was killed because it used all the memory{size} its computer allows; "
+            "the same command will run out again unless it uses less]"
         )
     exit_code = detail.get("exit_code")
     if detail.get("timed_out"):
