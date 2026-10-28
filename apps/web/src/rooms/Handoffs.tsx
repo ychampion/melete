@@ -102,7 +102,13 @@ export function RoomHandoffs({
               <span className="decision-agent clamp1">{handoff.room.name}</span>
               {handoff.asked_by ? (
                 <span className="decision-for clamp1">
-                  asked by <Who label={handoff.asked_by.display_name} strong={false} />
+                  asked by{' '}
+                  <Who
+                    label={handoff.asked_by.display_name}
+                    id={handoff.asked_by.principal_id}
+                    strong={false}
+                    trust
+                  />
                 </span>
               ) : null}
             </div>

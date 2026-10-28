@@ -5,15 +5,15 @@
  * the same view comes out of a reload and of a stream.
  */
 
+import { dayKey, monthDay } from '../experience/clock.ts';
 import { assistantName } from '../experience/instance.ts';
 import type { RoomFrame, RoomMember, RoomMessage, RoomRequest, ThreadView } from './api.ts';
 
 /**
  * A person in a room is labelled `Name <handle>` by the service, always. The
- * handle is the room's own code for them: nobody chooses it, so it is what
- * tells two people with the same name apart, and it is shown, never dropped.
- * No label carries an email. This only splits the label so the two parts can
- * be set apart.
+ * handle is the room's own code for them, different in every room, and what
+ * the room's agent tells people apart by. No label carries an email. This only
+ * splits the label; how a name is shown is `names.ts`.
  */
 export function splitLabel(label: string): { name: string; handle: string | null } {
   const match = /^(.*\S)\s+<([^<>\s@]+)>$/.exec(label.trim());
@@ -328,9 +328,12 @@ export function sendKey(held: HeldSend | null, text: string, ask: boolean, mint:
 export type RoomDecisionView = NonNullable<RoomRequest['decisions']>[number];
 
 /** How an answered permission reads in the thread, with who answered it. */
-export function decisionWords(decision: RoomDecisionView): string {
+export function decisionWords(
+  decision: RoomDecisionView,
+  nameOf: (label: string) => string = (label) => splitLabel(label).name,
+): string {
   if (decision.decided_by)
-    return `${decision.decision === 'approved' ? 'Allowed' : 'Denied'} by ${decision.decided_by.display_name}`;
+    return `${decision.decision === 'approved' ? 'Allowed' : 'Denied'} by ${nameOf(decision.decided_by.display_name)}`;
   return decision.decision === 'approved'
     ? 'Allowed by the room’s settings'
     : `Withdrawn by ${assistantName()}`;
@@ -351,9 +354,6 @@ export function canAnswer(permission: PermissionView, me: string | null): boolea
 /** A date as people say it: "Oct 25", with the year only when it is not this one. */
 export function dayOf(iso: string, now = new Date()): string {
   const date = new Date(iso);
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
-  });
+  const year = dayKey(date).slice(0, 4);
+  return year === dayKey(now).slice(0, 4) ? monthDay(date) : `${monthDay(date)}, ${year}`;
 }
