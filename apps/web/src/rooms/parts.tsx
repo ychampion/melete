@@ -1,9 +1,12 @@
 /**
- * Small pieces every rooms screen draws: a person's label, which always
- * carries the room's handle for them after their name, and their avatar.
+ * Small pieces every rooms screen draws: a person's name, set apart from
+ * someone else's of the same name in the room (see `names.ts`), and their
+ * avatar.
  */
+import { createContext, useContext } from 'react';
 import { Avatar } from '../design/primitives.tsx';
-import { initialsOf, splitLabel } from './reduce.ts';
+import { nameText, type RoomNames, shownName } from './names.ts';
+import { initialsOf } from './reduce.ts';
 
 const TONES = ['blue', 'sage', 'sand', 'lilac'] as const;
 
@@ -14,15 +17,44 @@ export function toneOf(id: string): (typeof TONES)[number] {
   return TONES[hash % TONES.length] ?? 'blue';
 }
 
-/** `Name <handle>`, with the handle set quieter; read aloud and copied, it is the whole label. */
-export function Who({ label, strong = true }: { label: string; strong?: boolean }) {
-  const { name, handle } = splitLabel(label);
+/** The names of the open room's people; outside a room, a label shows its name alone. */
+export const RoomNamesContext = createContext<RoomNames | null>(null);
+
+type NameOptions = { id?: string; trust?: boolean };
+
+/** A label as one string, as the open room shows it; `trust` always adds the tell. */
+export function useNameOf(): (label: string, options?: NameOptions) => string {
+  const names = useContext(RoomNamesContext);
+  return (label, options) => nameText(shownName(label, names, options));
+}
+
+/**
+ * A person's name, with their tell set quieter after it where it shows (see
+ * `names.ts`). Hovered, or read aloud, every name carries its tell.
+ */
+export function Who({
+  label,
+  id,
+  strong = true,
+  trust = false,
+}: {
+  label: string;
+  id?: string;
+  strong?: boolean;
+  /** Who it is matters here, as for who may answer a permission: the tell always shows. */
+  trust?: boolean;
+}) {
+  const { name, tell, code } = shownName(label, useContext(RoomNamesContext), { id, trust });
   return (
-    <span className="who">
+    <span className="who" title={nameText({ name, tell: code })}>
       <span className="who-name" data-strong={strong ? 'true' : undefined}>
         {name}
       </span>
-      {handle ? <span className="who-handle">{` <${handle}>`}</span> : null}
+      {tell ? (
+        <span className="who-handle">{` <${tell}>`}</span>
+      ) : code ? (
+        <span className="sr-only">{` <${code}>`}</span>
+      ) : null}
     </span>
   );
 }

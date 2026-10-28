@@ -63,6 +63,35 @@ export function dayKey(date: Date, zone: string = displayZone()): string {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+/** The day after a day key, counted on the calendar rather than in hours. */
+export function nextDay(key: string): string {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, (day ?? 1) + 1))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** The instant a day ("2026-10-10") starts on the zone's clock, or null for no such day. */
+export function startOfDay(key: string, zone: string = displayZone()): Date | null {
+  const [year, month, day] = key.split('-').map(Number);
+  if (!year || !month || !day) return null;
+  const midnight = Date.UTC(year, month - 1, day);
+  // Move by the zone's offset, then once more in case the offset changes across the move.
+  let at = midnight;
+  for (let pass = 0; pass < 2; pass++) {
+    const parts = partsOf(new Date(at), zone);
+    const read = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour) % 24,
+      Number(parts.minute),
+    );
+    at = midnight - (read - at);
+  }
+  return new Date(at);
+}
+
 /** The day before a day key, counted on the calendar rather than in hours. */
 function dayBefore(key: string): string {
   const [year, month, day] = key.split('-').map(Number);
@@ -102,4 +131,40 @@ export function dayWords(date: Date, now: Date, zone: string = displayZone()): s
   if (sameDay(date, now, zone)) return 'Today';
   if (isYesterday(date, now, zone)) return 'Yesterday';
   return `${weekday(date, zone)}, ${monthDay(date, zone)}`;
+}
+
+/** "Fri, Oct 30", with the year only when it is not this one. */
+function calendarDay(date: Date, now: Date, zone: string): string {
+  const year = dayKey(date, zone).slice(0, 4);
+  const thisYear = dayKey(now, zone).slice(0, 4);
+  return `${weekday(date, zone)}, ${monthDay(date, zone)}${year === thisYear ? '' : `, ${year}`}`;
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})?$/;
+
+/**
+ * A time a card's fact carries as ISO 8601 ("2026-10-30T17:30:00-07:00"), as
+ * a person reads it on the zone's clock: "Fri, Oct 30, 5:30 PM". A date alone
+ * is a calendar day, the same in every zone; a time with no offset is the
+ * wall clock it names. Null for anything that is not one of these, so other
+ * text is left as it is.
+ */
+export function isoWords(
+  value: string,
+  now: Date = new Date(),
+  zone: string = displayZone(),
+): string | null {
+  const text = value.trim();
+  if (ISO_DATE.test(text)) {
+    const date = new Date(`${text}T12:00:00Z`);
+    return Number.isNaN(date.getTime()) ? null : calendarDay(date, now, 'UTC');
+  }
+  const match = ISO_TIME.exec(text);
+  if (!match) return null;
+  // No offset: the time as written, read on a clock that does not move it.
+  const date = new Date(match[1] ? text : `${text}Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  const on = match[1] ? zone : 'UTC';
+  return `${calendarDay(date, now, on)}, ${clockTime(date, on)}`;
 }

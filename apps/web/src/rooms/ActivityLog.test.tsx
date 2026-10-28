@@ -86,6 +86,11 @@ test('picked days cover the whole of each day, in the person’s own time', () =
   expect(new Date(range.since ?? '').getTime()).toBe(new Date(2026, 9, 1).getTime());
   expect(new Date(range.until ?? '').getTime()).toBe(new Date(2026, 9, 4).getTime());
   expect(dayRange('', '')).toEqual({});
+  // The days are the profile's, not this browser's.
+  expect(dayRange('2026-10-01', '2026-10-03', 'Asia/Kolkata')).toEqual({
+    since: '2026-09-30T18:30:00.000Z',
+    until: '2026-10-03T18:30:00.000Z',
+  });
 });
 
 test('owners find the activity log in the room’s settings; members do not', () => {
