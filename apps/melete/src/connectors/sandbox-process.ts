@@ -932,7 +932,7 @@ export function createProcessTools(options: ProcessToolOptions) {
       } catch (error) {
         return refused((error as Error).message, true);
       }
-      const computer = processes.computer(provider, sessionHandle(session));
+      const computer = processes.computer(provider, sessionHandle(session), ctx.space_id);
       try {
         switch (action.kind) {
           case 'process.start':

@@ -402,7 +402,11 @@ export type SandboxPreviewsOptions = {
   masterKey?: string;
   now?: () => number;
   /** How the service reaches a computer's processes; the helper unless a test says otherwise. */
-  computerFor?: (provider: SandboxProvider, handle: SandboxHandle) => ProcessComputer;
+  computerFor?: (
+    provider: SandboxProvider,
+    handle: SandboxHandle,
+    spaceId: string,
+  ) => ProcessComputer;
   /** Stops processes and closes their records. Without it, stopping is refused. */
   processes?: SandboxProcesses;
   fetch?: typeof fetch;
@@ -423,8 +427,8 @@ export class SandboxPreviews {
     this.tokens = new ViewTokens(previewKey(options.masterKey), this.now);
     this.computerFor =
       options.computerFor ??
-      ((provider, handle) =>
-        options.processes?.computer(provider, handle) ?? helperComputer(provider, handle));
+      ((provider, handle, spaceId) =>
+        options.processes?.computer(provider, handle, spaceId) ?? helperComputer(provider, handle));
   }
 
   /** The process, running with a port, in a computer the service can reach now. */
@@ -466,10 +470,11 @@ export class SandboxPreviews {
     const { watched, port, computer } = await this.live(processId, principalId);
     let ports: number[] = [];
     try {
-      const status = await this.computerFor(computer.provider, computer.handle).status(
-        [processId],
-        AbortSignal.timeout(COMPUTER_MS),
-      );
+      const status = await this.computerFor(
+        computer.provider,
+        computer.handle,
+        watched.row.spaceId,
+      ).status([processId], AbortSignal.timeout(COMPUTER_MS));
       ports = status.processes.find((facts) => facts.id === processId)?.ports ?? [];
     } catch {
       throw refused('The computer did not answer, so the preview was not opened. Try again.');
@@ -537,7 +542,7 @@ export class SandboxPreviews {
     let text: string | null = null;
     if (computer)
       try {
-        const answer = await this.computerFor(computer.provider, computer.handle).read(
+        const answer = await this.computerFor(computer.provider, computer.handle, row.spaceId).read(
           processId,
           -1,
           PREVIEW_LIMITS.output_bytes,
@@ -565,7 +570,7 @@ export class SandboxPreviews {
       return processStopped.parse({ process_id: processId, state: row.state });
     const after = await processes.end(
       row,
-      computer ? this.computerFor(computer.provider, computer.handle) : null,
+      computer ? this.computerFor(computer.provider, computer.handle, row.spaceId) : null,
       'stopped',
       'the person stopped it from the computer view',
       AbortSignal.timeout(PROCESS_LIMITS.stop_grace_ms + COMPUTER_MS),

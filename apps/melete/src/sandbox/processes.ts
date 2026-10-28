@@ -38,6 +38,7 @@ import {
   ProcessHelperRefusal,
   ProcessHelperUnavailable,
 } from './process-helper.ts';
+import { sealedComputer } from './secret-redaction.ts';
 import { awakeSecondsToday } from './sessions.ts';
 import type { SandboxHandle, SandboxProvider } from './types.ts';
 
@@ -186,9 +187,14 @@ export type SandboxProcessesOptions = {
   limits: ProcessLimits;
   /** How the service reaches one computer's processes; the helper unless a test says otherwise. */
   computerFor?: ProcessComputerFor;
+  /** The space's sealed secrets, kept out of everything a process printed that the service reads. */
+  secrets?: SealedValues;
   now?: () => Date;
   log?: (line: string) => void;
 };
+
+/** Every value a space keeps for commands, by space. */
+export type SealedValues = { valuesOf(spaceId: string): Promise<string[]> };
 
 export type ProcessProviders = () => ReadonlyMap<
   string,
@@ -198,6 +204,7 @@ export type ProcessProviders = () => ReadonlyMap<
 export class SandboxProcesses {
   readonly limits: ProcessLimits;
   private readonly computerFor: ProcessComputerFor;
+  private secrets: SealedValues | undefined;
   private readonly now: () => Date;
   private readonly say: (line: string) => void;
 
@@ -207,12 +214,25 @@ export class SandboxProcesses {
   ) {
     this.limits = options.limits;
     this.computerFor = options.computerFor ?? helperComputer;
+    this.secrets = options.secrets;
     this.now = options.now ?? (() => new Date());
     this.say = options.log ?? ((line) => process.stderr.write(`${line}\n`));
   }
 
-  computer(provider: SandboxProvider, handle: SandboxHandle): ProcessComputer {
-    return this.computerFor(provider, handle);
+  /** Keeps the sealed secrets of each space out of what its processes print, from now on. */
+  useSecrets(secrets: SealedValues): void {
+    this.secrets = secrets;
+  }
+
+  /**
+   * One computer of the space's, with every value the space keeps for commands
+   * redacted from what it answers: output, wake lines and the last line its
+   * rows record.
+   */
+  computer(provider: SandboxProvider, handle: SandboxHandle, spaceId: string): ProcessComputer {
+    const computer = this.computerFor(provider, handle);
+    const secrets = this.secrets;
+    return secrets ? sealedComputer(computer, () => secrets.valuesOf(spaceId)) : computer;
   }
 
   /** The time limit a start asks for, held to the longest allowed. */
@@ -514,11 +534,15 @@ export class SandboxProcesses {
         order by opened_at desc limit 1`;
       const computer =
         held && session
-          ? this.computer(held.provider, {
-              providerSandboxId: String(session.provider_sandbox_id),
-              imageDigest: (session.image_digest as string | null) ?? null,
-              region: (session.region as string | null) ?? null,
-            })
+          ? this.computer(
+              held.provider,
+              {
+                providerSandboxId: String(session.provider_sandbox_id),
+                imageDigest: (session.image_digest as string | null) ?? null,
+                region: (session.region as string | null) ?? null,
+              },
+              row.spaceId,
+            )
           : null;
       await this.end(row, computer, 'stopped', END_REASONS.turn, signal);
       ended.push(row.id);
@@ -630,7 +654,7 @@ export class SandboxProcesses {
         // Not reached: what must end is still closed below.
         this.say(`the computer of ${agentId} could not be inspected: ${String(error)}`);
       }
-      let computer = reachable ? this.computer(held.provider, handle) : null;
+      let computer = reachable ? this.computer(held.provider, handle, spaceId) : null;
       let current = members.map((each) => each.row);
       if (computer) {
         try {

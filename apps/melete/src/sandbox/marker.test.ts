@@ -392,6 +392,34 @@ test("a command's kept output never exceeds the capture limit, and the rest is r
   expect(text(await provider.getFile(handle, '/work/after', 16, signal()))).toBe('done');
 });
 
+test('a sealed value cut in two by the capture limit leaves no part of itself behind', async () => {
+  const { provider, handle } = await sandbox();
+  const VALUE = 'PK0123456789ABCDEFGH';
+  const run = (marker: string, maxCaptureBytes: number) =>
+    runCommand({
+      provider,
+      handle,
+      request: {
+        marker,
+        argv: ['sh', '-c', `head -c 990 /dev/zero; printf ${VALUE}; head -c 50 /dev/zero`],
+        timeoutMs: 5_000,
+        dispatch: 'first',
+      },
+      workRoot: '.',
+      jobId: 'job_UNUSED',
+      signal: signal(),
+      limits: { maxCaptureBytes, maxOutputBytes: 2_000 },
+      redact: [VALUE],
+    });
+  const cut = await run(MARKER, 1_000);
+  if (cut.outcome !== 'succeeded') throw new Error(JSON.stringify(cut));
+  expect(cut.record.captureLimited).toBe(true);
+  expect(text(cut.record.preview)).toBe(' '.repeat(990));
+  const whole = await run('act_01J0MARKERTEST0000000009', 2_000);
+  if (whole.outcome !== 'succeeded') throw new Error(JSON.stringify(whole));
+  expect(text(whole.record.preview)).toBe(`${' '.repeat(990)}[redacted]${' '.repeat(50)}`);
+});
+
 test("a command's marker is removed by the next command once its outcome is recorded", async () => {
   const { provider, handle } = await sandbox();
   const FIRST = 'act_01J0MARKERTEST0000000002';

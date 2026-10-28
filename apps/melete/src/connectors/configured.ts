@@ -457,6 +457,8 @@ export class ConnectorFactory {
       new PostgresSecretRepository(options.sql),
       () => options.masterKey,
     );
+    // What a background process prints is read with the space's sealed secrets kept out.
+    options.sandbox?.processes?.useSecrets(new SpaceSecrets(options.sql, this.secrets));
     this.overrides = new Map((options.connections ?? []).map((entry) => [entry.id, entry]));
     if (this.overrides.size !== (options.connections ?? []).length)
       throw new Error('Duplicate configured connection id');

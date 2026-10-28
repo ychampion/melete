@@ -33,7 +33,7 @@
  */
 import { createHash } from 'node:crypto';
 import { EXEC_LIMITS, execEnvRefusal } from '@melete/contracts';
-import { redactBytes } from './secret-redaction.ts';
+import { redactBytes, redactCutBytes } from './secret-redaction.ts';
 import {
   type ExecOutcome,
   type FileEntry,
@@ -340,7 +340,12 @@ async function capture(
     listed > 0
       ? await options.provider.getFile(options.handle, `${directory}/out`, maxCaptureBytes, signal)
       : EMPTY;
-  const captured = options.redact?.length ? redactBytes(read, options.redact) : read;
+  // Output cut off at the capture limit loses the start of a value it cut in two.
+  const captured = !options.redact?.length
+    ? read
+    : listed > read.byteLength
+      ? redactCutBytes(read, options.redact)
+      : redactBytes(read, options.redact);
   const outputDigest = digest(captured);
   const truncated = captured.byteLength > maxOutputBytes;
   let outputPath: string | null = null;

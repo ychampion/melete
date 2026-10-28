@@ -186,7 +186,7 @@ export class ProcessMonitor {
       region: (session.region as string | null) ?? null,
     };
     return {
-      computer: this.options.processes.computer(held.provider, handle),
+      computer: this.options.processes.computer(held.provider, handle, row.spaceId),
       adapter: held.adapter,
     };
   }

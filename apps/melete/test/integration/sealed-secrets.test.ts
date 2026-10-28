@@ -39,9 +39,13 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { captureChat } from '../../src/memory/capture.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
+import { FakeSandboxEngine, FakeSandboxProvider } from '../../src/sandbox/fake.ts';
+import { FakeComputers } from '../../src/sandbox/process-fixtures.ts';
+import { ProcessMonitor } from '../../src/sandbox/process-monitor.ts';
+import { SandboxProcesses } from '../../src/sandbox/processes.ts';
 import { seedSessionScope } from '../../src/sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../../src/sandbox/sessions.ts';
+import type { SandboxProvider } from '../../src/sandbox/types.ts';
 import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -49,6 +53,8 @@ const KEY = randomBytes(32).toString('hex');
 /** What the person types. Long and odd enough that a match anywhere is this value. */
 const SECRET = `wk-live-${randomBytes(12).toString('hex')}-Planted`;
 const OTHER_SPACE_SECRET = `wk-other-${randomBytes(12).toString('hex')}-Planted`;
+/** What a background process prints: capitals and digits only, which no other output here holds. */
+const PROCESS_SECRET = `PK${randomBytes(16).toString('hex').toUpperCase()}`;
 const NAME = 'WEATHER_API_KEY';
 
 /** Every line the service writes while the test runs, to look for the value in. */
@@ -97,6 +103,8 @@ if (handle) {
   });
 }
 const withDb = handle ? describe : describe.skip;
+/** One engine for every computer here, so each is named apart. */
+const engine = new FakeSandboxEngine();
 function required<T>(value: T | null | undefined): T {
   if (value == null) throw new Error('Expected test fixture');
   return value;
@@ -276,7 +284,7 @@ withDb('a secret given through a sealed field', () => {
     );
     workRoot = await mkdtemp(path.join(tmpdir(), 'melete-sealed-'));
     await mkdir(path.join(workRoot, scope.jobId), { recursive: true });
-    const provider = new FakeSandboxProvider();
+    const provider = new FakeSandboxProvider({ engine });
     const connector = createSandboxExecConnector({
       sessions: new SandboxSessions(sql(), { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       provider,
@@ -396,12 +404,210 @@ withDb('a secret given through a sealed field', () => {
     }
   });
 
+  test('is redacted from all a background process prints, wherever it is kept or shown', async () => {
+    const scope = await seedSessionScope(sql());
+    await sql()`update connection set provider = 'sandbox',
+        scopes = '["terminal.run","process.start"]'::jsonb
+      where id = ${scope.connectionId}`;
+    await sql()`update job set agent_id = ${scope.agentId} where id = ${scope.jobId}`;
+    await secrets().save(
+      { spaceId: scope.spaceId, name: 'PROCESS_TOKEN', purpose: 'the server' },
+      PROCESS_SECRET,
+    );
+    const root = await mkdtemp(path.join(tmpdir(), 'melete-sealed-process-'));
+    await mkdir(path.join(root, scope.jobId), { recursive: true });
+    const provider = new FakeSandboxProvider({ engine });
+    const computers = new FakeComputers();
+    const said: string[] = [];
+    const processes = new SandboxProcesses(sql(), {
+      limits: {
+        maxPerComputer: 4,
+        maxPerSpace: 8,
+        defaultTtlMinutes: 120,
+        maxTtlMinutes: 720,
+        outputMaxBytes: 1024 * 1024,
+        awakeSecondsPerDay: undefined,
+      },
+      computerFor: (each, target) => computers.computerFor(each, target),
+      secrets: secrets(),
+      log: (line) => said.push(line),
+    });
+    const connector = createSandboxExecConnector({
+      sessions: new SandboxSessions(sql(), { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
+      provider,
+      config: {
+        adapter: 'e2b',
+        image: 'base',
+        egress: 'deny_all',
+        persistence: 'pause',
+        lifetime_seconds: 600,
+      },
+      connectionId: scope.connectionId,
+      spaceId: scope.spaceId,
+      project: 'sealed-secrets-process-test',
+      workRoot: root,
+      sql: sql(),
+      processes,
+      secrets: secrets(),
+      workspaceWaitMs: 0,
+    });
+    const attemptId = await scope.attempt();
+    let step = 0;
+    const receipts: unknown[] = [];
+    const run = async (kind: string, payload: Record<string, unknown>) => {
+      step += 1;
+      const id = await scope.action(attemptId);
+      const canonical = canonicalizePayload({ step, ...payload });
+      await sql()`update action set kind = ${kind},
+          canonical_payload = ${JSON.stringify(canonical.canonical)}::jsonb
+        where id = ${id}`;
+      const result = await connector.execute(
+        {
+          id,
+          job_id: scope.jobId,
+          attempt_id: attemptId,
+          connection_id: scope.connectionId,
+          kind,
+          effect_class: 'write_reversible',
+          canonical_payload: canonical.canonical,
+          payload_hash: canonical.hash,
+          intent_key: null,
+          status: 'dispatched',
+          authorization_ref: null,
+          budget_reservation: null,
+          idempotency_key: id,
+          dispatched_at: new Date().toISOString(),
+          receipt: null,
+          resolved_at: null,
+          reconciliation: null,
+          repair_trace: [],
+          repair_counters: {},
+          repair_disposition: null,
+          retry_after_at: null,
+          created_at: new Date().toISOString(),
+        } as Action,
+        {
+          job_id: scope.jobId,
+          space_id: scope.spaceId,
+          idempotency_key: id,
+          constraints: {
+            deliverable: { kind: 'none' },
+            allowed_domains: [],
+            public_compartment: false,
+          },
+        },
+      );
+      receipts.push(result);
+      if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
+      await sql()`update action set receipt = ${JSON.stringify(result.receipt)}::jsonb
+        where id = ${id}`;
+      return result.receipt.detail as Record<string, unknown>;
+    };
+    /** What the process printed, as the agent was shown it: no capital or digit of the value. */
+    const shown = (detail: Record<string, unknown>) => {
+      const output = String(detail.output ?? '');
+      expect([output, /[A-Z0-9]/.test(output)]).toEqual([output, false]);
+      return output;
+    };
+
+    const started = await run('process.start', {
+      command: 'serve',
+      secrets: ['PROCESS_TOKEN'],
+      notify: { on: 'output', pattern: 'token=' },
+    });
+    expect(started.secrets_used).toEqual(['PROCESS_TOKEN']);
+    const id = String(started.process_id);
+    const sandbox = required([...computers.processes.keys()][0]);
+    const before = required(computers.get(sandbox, id)).out.byteLength;
+    computers.print(sandbox, id, `token=${PROCESS_SECRET}\n`);
+
+    // The monitor wakes the job with the line, redacted.
+    const delivered: unknown[] = [];
+    const monitor = new ProcessMonitor({
+      sql: sql(),
+      processes,
+      providers: () =>
+        new Map([[scope.connectionId, { adapter: 'fake', provider: provider as SandboxProvider }]]),
+      wakes: {
+        deliver: async (input) => {
+          delivered.push(input);
+        },
+        processEnded: async (_id, observation) => {
+          delivered.push(observation);
+          return 0;
+        },
+      },
+      log: (line) => said.push(line),
+      remoteMs: 0,
+    });
+    await monitor.pass(AbortSignal.timeout(10_000));
+    expect(delivered).toHaveLength(1);
+    expect(JSON.stringify(delivered)).toContain('token=[redacted]');
+
+    // Read whole, read in pages of every size, and read from inside the value.
+    expect(shown(await run('process.read', { process_id: id, cursor: before }))).toBe(
+      'token=[redacted]\n',
+    );
+    const at = before + 'token='.length;
+    for (const size of [3, 7, 16, 25]) {
+      let cursor = before;
+      for (let reads = 0; reads < 40; reads++) {
+        const page = await run('process.read', { process_id: id, cursor, max_bytes: size });
+        shown(page);
+        if (Number(page.next_cursor) >= Number(page.total_bytes)) break;
+        cursor = Number(page.next_cursor);
+      }
+    }
+    for (const cursor of [at + 1, at + 10, at + PROCESS_SECRET.length - 1])
+      shown(await run('process.read', { process_id: id, cursor, max_bytes: 64 }));
+
+    // A wait matches the line as it is shown, so a pattern cannot test the value.
+    const waited = await run('process.wait', {
+      process_id: id,
+      until: 'pattern',
+      pattern: 'token=',
+      cursor: before,
+      timeout_seconds: 1,
+    });
+    expect(waited).toMatchObject({ met: true, line: 'token=[redacted]' });
+    const probed = await run('process.wait', {
+      process_id: id,
+      until: 'pattern',
+      pattern: `token=${PROCESS_SECRET.slice(0, 6)}`,
+      cursor: before,
+      timeout_seconds: 1,
+    });
+    expect(probed.met).toBe(false);
+
+    // The row keeps the last line redacted, and the list and the end the monitor reports show it so.
+    await run('process.list', {});
+    const [kept] = await sql()`select last_line from sandbox_process where id = ${id}`;
+    expect(kept?.last_line).toBe('token=[redacted]');
+    await run('process.wait', { process_id: id, until: 'exit', later: true });
+    computers.exit(sandbox, id, 0);
+    await monitor.pass(AbortSignal.timeout(10_000));
+    expect(delivered.length).toBeGreaterThan(1);
+
+    const everything = JSON.stringify([receipts, delivered, said]);
+    expect(everything).not.toContain(PROCESS_SECRET);
+    expect([PROCESS_SECRET, await tablesHolding(PROCESS_SECRET)]).toEqual([PROCESS_SECRET, []]);
+    const files = await readdir(path.join(root, scope.jobId), { recursive: true });
+    for (const file of files) {
+      const text = await readFile(path.join(root, scope.jobId, String(file)), 'utf8').catch(
+        () => '',
+      );
+      expect([file, text.includes(PROCESS_SECRET)]).toEqual([file, false]);
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+
   test('is in no table, response or line the service wrote', async () => {
     // The sealed store holds it only as ciphertext.
-    for (const value of [SECRET, OTHER_SPACE_SECRET])
+    for (const value of [SECRET, OTHER_SPACE_SECRET, PROCESS_SECRET])
       expect([value, await tablesHolding(value)]).toEqual([value, []]);
     const lines = written.join('\n');
     expect(lines).not.toContain(SECRET);
     expect(lines).not.toContain(OTHER_SPACE_SECRET);
+    expect(lines).not.toContain(PROCESS_SECRET);
   });
 });
