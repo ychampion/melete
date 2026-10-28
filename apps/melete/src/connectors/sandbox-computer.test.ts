@@ -795,3 +795,50 @@ test('a key that cannot navigate keeps the short settle, whatever the window doe
   expect(seen).toEqual(['key', 'screenshot', 'text']);
   expect(detail.page_changed).toBeUndefined();
 });
+
+test('a person who takes the computer once the new title is read is shown none of it', async () => {
+  // The takeover lands as the title is read, or as the capture that follows fails.
+  for (const takeoverOn of ['info', 'screenshot'] as const) {
+    const { session, sandbox } = fixture();
+    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    let clicked = false;
+    let reads = 0;
+    const provider = {
+      desktop: true,
+      async computer(_handle: unknown, command: DesktopCommand) {
+        if (command.kind === 'click') {
+          clicked = true;
+          return json({ window: 'Results - Chromium' });
+        }
+        if (command.kind === 'screenshot') {
+          if (takeoverOn === 'screenshot') await controls.change(sandbox, 'human');
+          return new TextEncoder().encode('not a png');
+        }
+        if (command.kind === 'text')
+          return json({ source: 'accessibility', url: 'https://mail.example/', elements: [] });
+        reads += 1;
+        if (clicked && takeoverOn === 'info') await controls.change(sandbox, 'human');
+        return json({ window: 'Their inbox - Chromium', browser: true });
+      },
+    } as unknown as DockerSandboxProvider;
+    const detail = await runComputerAction({
+      action: action('computer.click', { x: 10, y: 20 }),
+      jobId: 'job_COMPUTER',
+      workRoot: await workRoot(),
+      session,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+      settleMs: 0,
+      pageWatch: FAST_WATCH,
+    });
+    expect(reads).toBeGreaterThan(0);
+    expect(detail).toMatchObject({
+      control_changed: true,
+      screenshot: 'not taken: a person took control',
+    });
+    expect(JSON.stringify(detail)).not.toContain('Their inbox');
+    expect(detail.screen_text).toBeUndefined();
+    await controls.change(sandbox, 'agent');
+  }
+});

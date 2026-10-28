@@ -477,6 +477,8 @@ async function watchPage(
     await Bun.sleep(watch.pollMs);
     if (await takenOver()) return null;
     const now = await readWindow();
+    // A title read once a person has the computer is theirs, never the model's.
+    if (await takenOver()) return null;
     // A window that cannot be read says nothing more: what is known so far stands.
     if (now === null) return { changed, settled: !changed, window: last };
     if (!changed) {
@@ -782,6 +784,8 @@ export async function runComputerAction(options: {
     if (await takenOver()) return notTaken;
     return { ...landed, ...picture, screen_text: screen };
   } catch (error) {
+    // A person who took the computer meanwhile is not shown what the watch read either.
+    if (await takenOver()) return notTaken;
     return {
       ...landed,
       screenshot: `not taken: ${said(error)}`,
