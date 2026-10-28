@@ -494,7 +494,7 @@ const journey = late ? await database() : null;
         'artifacts',
         'board',
         'files',
-        ['room_handoff', ['room.handoff']],
+        ['room_handoff', ['room.handoff', 'room.member_freebusy', 'room.add_to_member_calendar']],
         'web',
       ]);
       expect(await providers(bare)).toEqual([]);

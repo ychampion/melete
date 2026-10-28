@@ -246,6 +246,7 @@ import { reachConfigFromEnv } from './reach/provider.ts';
 import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
 import { requestFailureText } from './request-failure.ts';
+import { mountRoomCalendarShares } from './rooms/calendar-share-routes.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
@@ -819,6 +820,8 @@ export function createApp(deps: AppDeps) {
   if (calls) callServices.set(app, calls);
   // Rooms: shared spaces where several people talk to one agent. Switched
   // off, no room request is started, by a route or by a chat platform.
+  if (multiplayer && deps.db && deps.jobs && submissions)
+    mountRoomCalendarShares(app, { db: deps.db });
   if (multiplayer && deps.db && deps.jobs && submissions)
     mountRooms(app, {
       db: deps.db,

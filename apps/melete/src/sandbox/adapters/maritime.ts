@@ -110,7 +110,18 @@ const COMPUTERS = '/api/v1/computers';
 export const MARITIME_FILE_LIMIT = 8 * MiB;
 /** Maritime's cap on one `exec`, in seconds, and on its command's length. */
 const EXEC_SECONDS = 30;
-const COMMAND_CHARS = 8192;
+const MARITIME_COMMAND_CHARS = 8192;
+/**
+ * Maritime's `exec` answers `exitCode: null` for every command (seen live on
+ * 2026-10-28), so each command prints its own status after this marker, and
+ * the adapter reads it back and strips it. A command killed at `timeoutS`
+ * prints none, so its status stays unknown.
+ */
+const EXIT_MARK = '__melete_exit=';
+const withStatus = (command: string) => `${command}; printf '\\n${EXIT_MARK}%s\\n' "$?"`;
+const STATUS_AT_END = new RegExp(`(?:^|\\n)${EXIT_MARK}(\\d{1,3})\\s*$`);
+/** What is left of Maritime's command length once the status is asked for. */
+const COMMAND_CHARS = MARITIME_COMMAND_CHARS - withStatus('').length;
 const REQUEST_TIMEOUT_MS = 60_000;
 /** A first create can take up to a minute on a cold placement. */
 const CREATE_TIMEOUT_MS = 180_000;
@@ -624,15 +635,20 @@ export function createMaritimeProvider(options: MaritimeOptions): MaritimeProvid
     const { json } = await api(
       'POST',
       `/${id}/exec`,
-      { json: { command, timeoutS: EXEC_SECONDS } },
+      { json: { command: withStatus(command), timeoutS: EXEC_SECONDS } },
       [200],
       signal,
       { timeoutMs: (EXEC_SECONDS + 30) * 1000 },
     );
-    const answer = (json ?? {}) as { exitCode?: unknown; stdout?: unknown; stderr?: unknown };
+    const answer = (json ?? {}) as { stdout?: unknown; stderr?: unknown };
+    const stdout = typeof answer.stdout === 'string' ? answer.stdout : '';
+    // The marker ends the output. Maritime trims the output's whitespace, so a
+    // command that printed nothing leaves the marker first, with no newline.
+    // Its own exitCode, were it given, would be the printf's, so it is not read.
+    const status = STATUS_AT_END.exec(stdout);
     return {
-      exitCode: typeof answer.exitCode === 'number' ? answer.exitCode : null,
-      stdout: typeof answer.stdout === 'string' ? answer.stdout : '',
+      exitCode: status ? Number(status[1]) : null,
+      stdout: status ? stdout.slice(0, status.index) : stdout,
       stderr: typeof answer.stderr === 'string' ? answer.stderr : '',
     };
   }

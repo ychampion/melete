@@ -901,6 +901,12 @@ export const activityEntry = z.strictObject({
   undo: z.strictObject({ valid_until: date }).optional(),
   /** Set once it was taken back. */
   undone_at: date.optional(),
+  /**
+   * Set on a note the space keeps for everyone in it, rather than an effect
+   * of a deleted chat: an original opened in a summaries-only space, or that
+   * setting turned on or off. `source` then names who did it.
+   */
+  note: z.enum(['original_opened', 'summaries_on', 'summaries_off']).optional(),
 });
 export type ActivityEntry = z.infer<typeof activityEntry>;
 export const activityList = z.strictObject({ activity: z.array(activityEntry) });

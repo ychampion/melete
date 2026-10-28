@@ -32,7 +32,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { Readable } from 'node:stream';
-import type { Sql } from 'postgres';
+import type { Query } from '../broker/records.ts';
 import { meleteNetworks } from '../runtime/network-pool.ts';
 import { ConnectorFaultError } from './faults.ts';
 import {
@@ -371,7 +371,7 @@ export async function isPublicEndpoint(
  * in it, so its servers are held to public addresses like anyone else's, and
  * to the internal hosts the operator listed in MELETE_PRIVATE_HOSTS.
  */
-export async function setupOwnersSpace(sql: Sql, spaceId: string): Promise<boolean> {
+export async function setupOwnersSpace(sql: Query, spaceId: string): Promise<boolean> {
   const [row] = await sql`select s.kind = 'personal'
       and (o.id is null or coalesce(s.owner_principal_id, o.id) = o.id) as setup
     from space s left join lateral (select id from owner order by created_at limit 1) o on true
@@ -380,6 +380,6 @@ export async function setupOwnersSpace(sql: Sql, spaceId: string): Promise<boole
 }
 
 /** How far the addresses a space's connections name may reach. */
-export async function spaceReach(sql: Sql, spaceId: string): Promise<Reach> {
+export async function spaceReach(sql: Query, spaceId: string): Promise<Reach> {
   return (await setupOwnersSpace(sql, spaceId)) ? 'installation' : 'public';
 }

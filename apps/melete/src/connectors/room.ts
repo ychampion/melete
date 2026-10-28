@@ -3,7 +3,8 @@
  * room and a person's own space, each an effect the broker admits and
  * receipts like any other.
  *
- * A room's request has one tool, `room.handoff`. The room's agent cannot use
+ * A room's request can read an explicitly shared calendar as free/busy, or
+ * ask its member to approve adding an event. Otherwise it cannot use
  * anyone's mailbox, files or memory; it asks a member to run a task with their
  * own setup instead. Nothing runs until that person reads the whole task and
  * accepts it, so the person's consent card is the approval: the hand-off
@@ -32,6 +33,8 @@ import type { Query } from '../broker/records.ts';
 import { event, job, schema, trigger } from '../db/schema.ts';
 import { serviceTransaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
+import { labelsIn } from '../rooms/approvals.ts';
+import { resolveRoomCalendarShare } from '../rooms/calendar-shares.ts';
 import {
   HANDOFF_OPEN_PER_PERSON,
   HANDOFF_PER_REQUEST,
@@ -43,22 +46,73 @@ import {
   sha256,
 } from '../rooms/handoffs.ts';
 import { roomHandoff, roomMessage, roomThread } from '../rooms/schema.ts';
-import { namesOf } from '../rooms/transcript.ts';
+import { namesOf, personLabel, roomHandle } from '../rooms/transcript.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
+import { calendarManifest, createPayload, freebusyDetail, freebusyPayload } from './calendar.ts';
+import { calendarSource, checkCalendarAhead, spaceTimeZone } from './calendar-truth.ts';
+import type { ConnectionSource } from './configured.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 const TEXT_LIMIT = 8000;
+const eventSchema = calendarManifest.tools.find(
+  (tool) => tool.name === 'calendar.create',
+)?.input_schema;
+if (!eventSchema) throw new Error('The calendar create schema is missing');
 
 export const roomManifest: ConnectorManifest = {
   name: 'room',
   version: '0.1.0',
   provider: 'room',
   description:
-    "Hand a room's request to one of its people, and post or add files to a room a person is in.",
+    'Read explicitly shared free/busy calendars, ask their member to add an event, hand work to a person, or post and add files to a room.',
   credentials: [],
   health: true,
   tools: [
+    {
+      name: 'room.member_freebusy',
+      description:
+        "Read a current room member's explicitly shared calendar as free/busy only. Name the member by their room handle, full room label, unique display name or principal id, and give a start/end window of at most 62 days. Event titles, locations and attendees stay private. Compare members' busy blocks to find a time that works for everyone.",
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['member', 'start', 'end'],
+        properties: {
+          member: { type: 'string', minLength: 1 },
+          start: { type: 'string' },
+          end: { type: 'string' },
+          calendar_connection_id: { type: 'string', description: 'Filled in by Melete.' },
+          share_created_at: { type: 'string', description: 'Filled in by Melete.' },
+          membership_generation: { type: 'integer', description: 'Filled in by Melete.' },
+        },
+      },
+      effect_class: 'read',
+      required_scopes: ['room.member_freebusy'],
+      verify: false,
+      requires_approval: false,
+    },
+    {
+      name: 'room.add_to_member_calendar',
+      description:
+        "Add an event to a room member's explicitly shared personal calendar. Name the member by their room handle, full room label, unique display name or principal id, and provide the calendar event. Available only when they shared free/busy with additions. Only that member can approve the exact event, regardless of the room's approval rule. Existing calendar conflicts still stop a write.",
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['member', 'event'],
+        properties: {
+          member: { type: 'string', minLength: 1 },
+          member_name: { type: 'string', description: 'Filled in by Melete.' },
+          event: eventSchema,
+          calendar_connection_id: { type: 'string', description: 'Filled in by Melete.' },
+          share_created_at: { type: 'string', description: 'Filled in by Melete.' },
+          membership_generation: { type: 'integer', description: 'Filled in by Melete.' },
+        },
+      },
+      effect_class: 'write_external',
+      required_scopes: ['room.add_to_member_calendar'],
+      verify: true,
+      requires_approval: true,
+    },
     {
       name: 'room.handoff',
       description:
@@ -142,6 +196,8 @@ export type RoomConnectorOptions = {
   maxBytes?: number;
   /** How long a hand-off waits for its person. */
   handoffTtlMs?: number;
+  /** Opens only the personal calendar row proven by the member's current share. */
+  openCalendar?: (row: ConnectionSource, query: Query) => Promise<Connector | undefined>;
 };
 
 type JobFacts = {
@@ -318,6 +374,167 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
     received_at: new Date().toISOString(),
     late: false,
   });
+
+  const calendarKind = (kind: string) =>
+    kind === 'room.member_freebusy' || kind === 'room.add_to_member_calendar';
+
+  const calendarEvent = (payload: JsonObject): JsonObject => {
+    const parsed = createPayload.safeParse(payload.event);
+    if (!parsed.success)
+      throw new BrokerFault(
+        'payload_invalid',
+        'Provide a valid calendar event with a title, start and end.',
+      );
+    return parsed.data as JsonObject;
+  };
+
+  /** A room can choose a member, never an arbitrary personal connection. */
+  const calendarTarget = async (
+    tx: Query,
+    ctx: ConnectorContext,
+    payload: JsonObject,
+    write: boolean,
+    bound = false,
+  ) => {
+    const job = await facts(tx, ctx.job_id);
+    const [room] = await tx`select 1 from space s
+      join space_membership m on m.space_id = s.id and m.role = 'agent' and m.revoked_at is null
+      join principal p on p.id = m.principal_id
+      where s.id = ${ctx.space_id} and s.kind = 'shared' and s.removed_at is null
+        and p.kind = 'room' and p.id = ${job.principal_id ?? ''}`;
+    if (!room || job.space_id !== ctx.space_id || typeof payload.member !== 'string')
+      throw new BrokerFault('scope_denied', "Only this room's agent can use its shared calendars.");
+    if (job.requested_by_principal_id) {
+      const [requester] = await tx`select 1 from space_membership where space_id = ${ctx.space_id}
+        and principal_id = ${job.requested_by_principal_id} and revoked_at is null
+        and (expires_at is null or expires_at > now())`;
+      if (!requester) throw notInRoom();
+    }
+    let memberId = payload.member;
+    if (!bound) {
+      // Room transcripts identify speakers by public labels and handles,
+      // rather than personal account ids. Never guess between identical names.
+      const members = await tx<
+        { id: string; display_name: string | null }[]
+      >`select p.id, p.display_name
+        from space_membership m join principal p on p.id = m.principal_id
+        where m.space_id = ${ctx.space_id} and m.revoked_at is null
+          and m.role in ('owner', 'member') and p.kind = 'person' and p.disabled_at is null
+          and (m.expires_at is null or m.expires_at > now())`;
+      const given = memberId.trim().toLowerCase();
+      const matches = members.filter((member) => {
+        const handle = roomHandle(ctx.space_id, member.id);
+        const label = personLabel(
+          { id: member.id, displayName: member.display_name, email: '' },
+          ctx.space_id,
+        );
+        return [member.id, handle, `<${handle}>`, label, member.display_name?.trim()].some(
+          (value) => value?.toLowerCase() === given,
+        );
+      });
+      if (matches.length !== 1 || !matches[0])
+        throw new BrokerFault(
+          'scope_denied',
+          'Name one current room member. Use their room handle if names are the same.',
+        );
+      memberId = matches[0].id;
+    }
+    const target = await resolveRoomCalendarShare(tx, ctx.space_id, memberId, write);
+    if (
+      bound &&
+      (payload.calendar_connection_id !== target.connection.id ||
+        payload.share_created_at !== target.share.createdAt.toISOString() ||
+        payload.membership_generation !== target.share.membershipGeneration)
+    )
+      throw new BrokerFault(
+        'scope_denied',
+        'That calendar share changed. Ask again with its current permission.',
+      );
+    return target;
+  };
+
+  const openCalendar = async (
+    target: Awaited<ReturnType<typeof calendarTarget>>,
+    query: Query = options.sql,
+  ) => {
+    const connector = await options.openCalendar?.(target.connection, query);
+    if (!connector || !calendarSource(connector))
+      throw new BrokerFault('scope_denied', 'That shared calendar is unavailable.');
+    return connector;
+  };
+
+  const personalContext = (
+    ctx: ConnectorContext,
+    target: Awaited<ReturnType<typeof calendarTarget>>,
+  ): ConnectorContext => ({ ...ctx, space_id: target.connection.spaceId, granted: [] });
+
+  const calendarAction = (action: Action): Action => ({
+    ...action,
+    kind: 'calendar.create',
+    connection_id: String(action.canonical_payload.calendar_connection_id),
+    canonical_payload: calendarEvent(action.canonical_payload),
+  });
+
+  async function memberCalendar(action: Action, ctx: ConnectorContext) {
+    const write = action.kind === 'room.add_to_member_calendar';
+    const target = await calendarTarget(options.sql, ctx, action.canonical_payload, write, true);
+    const connector = await openCalendar(target);
+    if (!write) {
+      const window = freebusyPayload.parse({
+        start: action.canonical_payload.start,
+        end: action.canonical_payload.end,
+        time_zone: await spaceTimeZone(options.sql, target.connection.spaceId),
+      });
+      const source = calendarSource(connector);
+      if (!source) throw new BrokerFault('scope_denied', 'That shared calendar is unavailable.');
+      let detail: JsonObject;
+      try {
+        detail = await freebusyDetail(source, window, ctx.signal);
+      } catch {
+        return {
+          outcome: 'failed' as const,
+          reason: 'The shared calendar could not be read just now.',
+          retryable: true,
+        };
+      }
+      // Revoke or leave while the provider was reading: discard that result.
+      await calendarTarget(options.sql, ctx, action.canonical_payload, false, true);
+      const blocks = (value: unknown, busy: boolean): JsonObject[] =>
+        (Array.isArray(value) ? value : []).map((block) => ({
+          start: block.start,
+          end: block.end,
+          ...(busy ? { all_day: block.all_day, status: block.status } : {}),
+        }));
+      return {
+        outcome: 'succeeded' as const,
+        receipt: receiptFor(
+          action,
+          {
+            member: target.share.principalId,
+            window: detail.window ?? null,
+            time_zone: detail.time_zone ?? null,
+            complete: detail.complete ?? false,
+            busy: blocks(detail.busy, true),
+            free: blocks(detail.free, false),
+            ...(detail.note ? { note: detail.note } : {}),
+          },
+          null,
+        ),
+      };
+    }
+    // The provider performs its normal dispatch-time calendar check and write.
+    // No read grant is delegated, so conflict refusals cannot name private events.
+    await calendarTarget(options.sql, ctx, action.canonical_payload, true, true);
+    const result = await connector.execute(calendarAction(action), {
+      ...personalContext(ctx, target),
+      beforeCalendarWrite: async () => {
+        await calendarTarget(options.sql, ctx, action.canonical_payload, true, true);
+      },
+    });
+    return result.outcome === 'succeeded'
+      ? { ...result, receipt: { ...result.receipt, connection_id: action.connection_id } }
+      : result;
+  }
 
   const checkIdentity = (action: Action, ctx: ConnectorContext) => {
     if (
@@ -565,7 +782,63 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
 
   return {
     manifest: roomManifest,
-    async prepare(payload, ctx, tx) {
+    async ahead(proposal, ctx, tx) {
+      if (proposal.kind !== 'room.add_to_member_calendar') return null;
+      const target = await calendarTarget(tx, ctx, proposal.canonical_payload, true);
+      const connector = await openCalendar(target, tx);
+      return (
+        (await connector.ahead?.(
+          { kind: 'calendar.create', canonical_payload: calendarEvent(proposal.canonical_payload) },
+          personalContext(ctx, target),
+          tx,
+        )) ?? null
+      );
+    },
+    checkAhead(proposal, ctx) {
+      if (proposal.kind !== 'room.add_to_member_calendar') return;
+      checkCalendarAhead(
+        { kind: 'calendar.create', canonical_payload: calendarEvent(proposal.canonical_payload) },
+        { ...ctx, granted: [] },
+      );
+    },
+    async prepare(payload, ctx, tx, kind) {
+      if (kind && calendarKind(kind)) {
+        const write = kind === 'room.add_to_member_calendar';
+        const target = await calendarTarget(tx, ctx, payload, write);
+        const binding = {
+          member: target.share.principalId,
+          calendar_connection_id: target.connection.id,
+          share_created_at: target.share.createdAt.toISOString(),
+          membership_generation: target.share.membershipGeneration,
+        };
+        if (!write) {
+          const window = freebusyPayload.safeParse({ start: payload.start, end: payload.end });
+          if (!window.success)
+            throw new BrokerFault(
+              'payload_invalid',
+              'Choose a valid free/busy window of at most 62 days.',
+            );
+          return { ...binding, start: window.data.start, end: window.data.end };
+        }
+        const connector = await openCalendar(target, tx);
+        if (!connector.prepare || !connector.ahead || !connector.checkAhead)
+          throw new BrokerFault(
+            'scope_denied',
+            'That calendar does not support checked event additions.',
+          );
+        const event = await connector.prepare(
+          calendarEvent(payload),
+          personalContext(ctx, target),
+          tx,
+          'calendar.create',
+        );
+        const names = await labelsIn(tx, ctx.space_id, [target.share.principalId]);
+        return {
+          ...binding,
+          member_name: names.get(target.share.principalId) ?? 'Room member',
+          event,
+        };
+      }
       // The payload already matched its tool's schema, and each tool's
       // required field is its own: `task`, `text` or `path`, and none for a list.
       if ('task' in payload) {
@@ -609,6 +882,19 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
     },
     async validateBinding(action, ctx, tx) {
       const payload = action.canonical_payload;
+      if (calendarKind(action.kind)) {
+        const write = action.kind === 'room.add_to_member_calendar';
+        const target = await calendarTarget(tx, ctx, payload, write, true);
+        if (write) {
+          const connector = await openCalendar(target, tx);
+          await connector.validateBinding?.(
+            calendarAction(action),
+            personalContext(ctx, target),
+            tx,
+          );
+        }
+        return;
+      }
       if (action.kind === 'room.handoff') {
         const { target } = await handoffTarget(tx, ctx, payload);
         if (target !== payload.member_id) throw new BrokerFault('payload_invalid');
@@ -631,6 +917,7 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
     async execute(action, ctx) {
       checkIdentity(action, ctx);
       ctx.signal?.throwIfAborted();
+      if (calendarKind(action.kind)) return memberCalendar(action, ctx);
       if (action.kind === 'room.handoff') return handoff(action, ctx);
       if (action.kind === 'room.post') return post(action, ctx);
       if (action.kind === 'room.add_file') return addFile(action, ctx);
@@ -654,6 +941,15 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
     },
     async verify(action, ctx) {
       checkIdentity(action, ctx);
+      if (action.kind === 'room.add_to_member_calendar') {
+        const target = await calendarTarget(options.sql, ctx, action.canonical_payload, true, true);
+        const connector = await openCalendar(target);
+        const result = await connector.verify(calendarAction(action), personalContext(ctx, target));
+        await calendarTarget(options.sql, ctx, action.canonical_payload, true, true);
+        return result.decision === 'succeeded' && result.receipt
+          ? { ...result, receipt: { ...result.receipt, connection_id: action.connection_id } }
+          : result;
+      }
       if (action.kind === 'room.handoff') {
         const [row] = await db
           .select()

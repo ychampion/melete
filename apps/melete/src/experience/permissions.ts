@@ -248,6 +248,8 @@ export class ExperiencePermissions {
     // standing rule is never offered there, since it would answer for others.
     const room = await roomAuthorityOf(this.sql, String(row.job_id), {
       connectionId: action.connection_id,
+      kind: action.kind,
+      payload: action.canonical_payload,
     });
     const eligible = room ? await eligibleApprovers(this.sql, room) : [];
     const names = room
@@ -520,15 +522,24 @@ export class ExperiencePermissions {
     decider: string,
   ) {
     const row = await this.findInRoom(spaceId, id);
+    const action = await loadAction(this.sql, String(row.action_id));
     // Asked here so a refusal reads plainly; the broker asks again under its lock.
     const room = await roomAuthorityOf(this.sql, String(row.job_id), {
       connectionId: row.connection_id ? String(row.connection_id) : null,
+      kind: action.kind,
+      payload: action.canonical_payload,
     });
     if (!room || !(await mayDecide(this.sql, room, decider)))
       throw new ServiceError(
         'not_yours_to_answer',
         room
-          ? waitingFor(room, await labelsIn(this.sql, room.spaceId, [room.requestedBy ?? '']))
+          ? waitingFor(
+              room,
+              await labelsIn(this.sql, room.spaceId, [
+                room.requestedBy ?? '',
+                room.calendarMember?.principalId ?? '',
+              ]),
+            )
           : 'Nobody in the room can answer this one.',
         403,
       );

@@ -85,6 +85,8 @@ export class Store {
   readonly artifacts = new Map<string, { artifact: Artifact; bytes: Uint8Array }>();
   /** Files a scenario's files action saved, by that action's id, as `/files/{id}/content` serves them. */
   readonly savedFiles = new Map<string, SavedFile>();
+  /** "Show me only what needs me" in the session's space: file content is read only by opening the original. */
+  summariesOnly = false;
   /** Files deleted from the Files screen, by trash id, until they are put back. */
   readonly trashedFiles = new Map<
     string,

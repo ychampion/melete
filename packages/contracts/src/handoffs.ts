@@ -69,8 +69,8 @@ export type HandoffResultDecision = z.infer<typeof handoffResultDecision>;
 
 export const handoffResponse = z.strictObject({ handoff: roomHandoff });
 
-/** The tools of the built-in `room` connection: one for a room's requests, three for a person's own work. */
+/** The tools of the built-in `room` connection, separated by whose work they serve. */
 export const ROOM_TOOL_SCOPES = {
-  room: ['room.handoff'],
+  room: ['room.handoff', 'room.member_freebusy', 'room.add_to_member_calendar'],
   personal: ['room.list', 'room.post', 'room.add_file'],
 } as const;

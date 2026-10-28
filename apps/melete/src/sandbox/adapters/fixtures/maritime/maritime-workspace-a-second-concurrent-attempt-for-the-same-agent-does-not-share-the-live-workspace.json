@@ -9,7 +9,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 78,
+        "atMs": 46,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers",
         "path": "/api/v1/computers",
@@ -36,7 +36,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 79,
+        "atMs": 46,
         "body": {
           "id": "fake-sbx-0001",
           "os": "linux",
@@ -62,7 +62,7 @@
     },
     {
       "request": {
-        "atMs": 79,
+        "atMs": 46,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/wake",
         "path": "/api/v1/computers/fake-sbx-0001/wake",
@@ -81,7 +81,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 79,
+        "atMs": 46,
         "body": {
           "status": "awake",
           "wakeMs": 0,
@@ -91,7 +91,7 @@
     },
     {
       "request": {
-        "atMs": 79,
+        "atMs": 47,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/actions",
         "path": "/api/v1/computers/fake-sbx-0001/actions",
@@ -116,7 +116,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 80,
+        "atMs": 47,
         "body": {
           "action": "cursor_position",
           "ok": true,
@@ -126,16 +126,16 @@
     },
     {
       "request": {
-        "atMs": 80,
+        "atMs": 47,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
-        "bodySha256": "e252a3bb228b15d3199c2361b86954a6363b9f3fc3aad493ee4f662cab05bb06",
+        "bodySha256": "6e8828f465a0d0181e4634496338ee55d34afaefb5ecf3f9f8a627101ac1096b",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
+          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'; printf '\\n__melete_exit=%s\\n' \"$?\"",
           "timeoutS": 30
         }
       },
@@ -147,21 +147,21 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJleGl0Q29kZSI6MCwic3Rkb3V0IjoicmVhZHlcbiIsInN0ZGVyciI6IiJ9"
+            "base64": "eyJleGl0Q29kZSI6bnVsbCwic3Rkb3V0IjoicmVhZHlcblxuX19tZWxldGVfZXhpdD0wIiwic3RkZXJyIjoiIn0="
           }
         ],
         "end": "complete",
-        "atMs": 80,
+        "atMs": 47,
         "body": {
-          "exitCode": 0,
-          "stdout": "ready\n",
+          "exitCode": null,
+          "stdout": "ready\n\n__melete_exit=0",
           "stderr": ""
         }
       }
     },
     {
       "request": {
-        "atMs": 81,
+        "atMs": 47,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/files",
         "path": "/api/v1/computers/fake-sbx-0001/files?path=%2Fdata%2F.melete-run%2Fsandbox-env",
@@ -182,7 +182,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 84,
+        "atMs": 47,
         "body": {
           "path": "/data/.melete-run/sandbox-env",
           "size": 0
@@ -191,7 +191,7 @@
     },
     {
       "request": {
-        "atMs": 152,
+        "atMs": 110,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/sleep",
         "path": "/api/v1/computers/fake-sbx-0001/sleep",
@@ -210,7 +210,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 152,
+        "atMs": 111,
         "body": {
           "id": "fake-sbx-0001",
           "os": "linux",
@@ -236,7 +236,7 @@
     },
     {
       "request": {
-        "atMs": 247,
+        "atMs": 140,
         "method": "GET",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001",
         "path": "/api/v1/computers/fake-sbx-0001",
@@ -255,7 +255,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 247,
+        "atMs": 140,
         "body": {
           "id": "fake-sbx-0001",
           "os": "linux",
@@ -281,7 +281,7 @@
     },
     {
       "request": {
-        "atMs": 247,
+        "atMs": 141,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/wake",
         "path": "/api/v1/computers/fake-sbx-0001/wake",
@@ -300,7 +300,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 247,
+        "atMs": 141,
         "body": {
           "status": "awake",
           "wakeMs": 0,
@@ -310,7 +310,7 @@
     },
     {
       "request": {
-        "atMs": 248,
+        "atMs": 141,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/actions",
         "path": "/api/v1/computers/fake-sbx-0001/actions",
@@ -335,7 +335,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 248,
+        "atMs": 141,
         "body": {
           "action": "cursor_position",
           "ok": true,
@@ -345,16 +345,16 @@
     },
     {
       "request": {
-        "atMs": 248,
+        "atMs": 141,
         "method": "POST",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/exec",
         "path": "/api/v1/computers/fake-sbx-0001/exec",
-        "bodySha256": "e252a3bb228b15d3199c2361b86954a6363b9f3fc3aad493ee4f662cab05bb06",
+        "bodySha256": "6e8828f465a0d0181e4634496338ee55d34afaefb5ecf3f9f8a627101ac1096b",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'",
+          "command": "'/bin/sh' '-c' 's=\"$1\"; r=\"$2\"; t=\"$3\"\nmkdir -p -m 0700 \"$r\" \"$t\" 2>/dev/null\nmkdir -p \"$s\" 2>/dev/null\n[ -d \"$s\" ] && [ -w \"$s\" ] && [ -d \"$r\" ] && [ -w \"$r\" ] && [ -d \"$t\" ] && [ -w \"$t\" ] || exit 4\necho ready' 'melete' '/data/work' '/data/.melete-run' '/data/.melete-tmp'; printf '\\n__melete_exit=%s\\n' \"$?\"",
           "timeoutS": 30
         }
       },
@@ -366,21 +366,21 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJleGl0Q29kZSI6MCwic3Rkb3V0IjoicmVhZHlcbiIsInN0ZGVyciI6IiJ9"
+            "base64": "eyJleGl0Q29kZSI6bnVsbCwic3Rkb3V0IjoicmVhZHlcblxuX19tZWxldGVfZXhpdD0wIiwic3RkZXJyIjoiIn0="
           }
         ],
         "end": "complete",
-        "atMs": 248,
+        "atMs": 142,
         "body": {
-          "exitCode": 0,
-          "stdout": "ready\n",
+          "exitCode": null,
+          "stdout": "ready\n\n__melete_exit=0",
           "stderr": ""
         }
       }
     },
     {
       "request": {
-        "atMs": 249,
+        "atMs": 142,
         "method": "PUT",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001/files",
         "path": "/api/v1/computers/fake-sbx-0001/files?path=%2Fdata%2F.melete-run%2Fsandbox-env",
@@ -401,7 +401,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 249,
+        "atMs": 142,
         "body": {
           "path": "/data/.melete-run/sandbox-env",
           "size": 0
@@ -410,7 +410,7 @@
     },
     {
       "request": {
-        "atMs": 265,
+        "atMs": 145,
         "method": "DELETE",
         "url": "https://api.maritime.sh/api/v1/computers/fake-sbx-0001",
         "path": "/api/v1/computers/fake-sbx-0001",
@@ -422,7 +422,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 265
+        "atMs": 145
       }
     }
   ]

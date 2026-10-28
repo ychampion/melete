@@ -2602,6 +2602,7 @@ export class RunService {
         tx,
         rows.filter((entry) => !isTerminal(entry.state as JobState)).map((entry) => entry.id),
       );
+      const limited = await restingOnLimit(tx, rows);
       const views: RunView[] = [];
       for (const row of rows) {
         const state = states.get(row.id);
@@ -2668,6 +2669,7 @@ export class RunService {
               check: check.state,
               standing: onTrigger ? (standing?.kind ?? null) : null,
               closing: Boolean(state.finishedAt) && !isTerminal(row.state as JobState),
+              limited: limited.get(row.id) ?? null,
             }),
             conversation_id: state.conversationId,
             agent_id: row.agentId,
@@ -3308,6 +3310,57 @@ async function pausedFor(tx: Transaction, ids: string[]): Promise<Map<string, st
   return reasons;
 }
 
+/**
+ * The runs resting until a background spending limit resets, with the limit's period: each one
+ * waits on the timer its limit's notice was told for (that notice's key names the reset), so a
+ * later rest of the same run is not taken for it.
+ */
+async function restingOnLimit(
+  tx: Transaction,
+  rows: Pick<JobRow, 'id' | 'state' | 'wait'>[],
+): Promise<Map<string, RunLimitRest>> {
+  const rests = new Map<string, RunLimitRest>();
+  const keys = new Map<string, { id: string; until: Date }>();
+  for (const row of rows) {
+    if (row.state !== 'waiting_for_event_or_time') continue;
+    const wait = object(row.wait);
+    if (wait.kind !== 'timer' || typeof wait.wake_at !== 'string') continue;
+    const until = new Date(wait.wake_at);
+    if (Number.isNaN(until.getTime())) continue;
+    keys.set(`spending-limit:${row.id}:${wait.wake_at}`, { id: row.id, until });
+  }
+  if (!keys.size) return rests;
+  const told = await tx
+    .select({ key: event.dedupKey, payload: event.payload })
+    .from(event)
+    .where(and(inArray(event.dedupKey, [...keys.keys()]), eq(event.type, 'notice')));
+  for (const { key, payload } of told) {
+    const run = keys.get(key);
+    const said = object(payload);
+    if (!run || said.kind !== 'run_paused' || said.reason !== 'spending_limit') continue;
+    const message = typeof said.message === 'string' ? said.message : '';
+    rests.set(run.id, {
+      period: /this month's limit/.test(message) ? 'month' : 'day',
+      until: run.until,
+    });
+  }
+  return rests;
+}
+
+/** A run resting until a background spending limit resets: the limit's period, and when. */
+type RunLimitRest = { period: 'day' | 'month'; until: Date };
+
+/** When a limit resets, as the limit's own notice says it: "October 29 at 00:00 UTC". */
+function resetWords(until: Date): string {
+  const day = until.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
+  const time = until.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  });
+  return `${day} at ${time} UTC`;
+}
+
 type WaitingPermission = {
   approvalId: string;
   actionId: string;
@@ -3393,7 +3446,7 @@ function carried(constraints: unknown) {
 }
 
 /** One line on where the work stands, in the person's words: no shifts, no internals. */
-function statusLine(input: {
+export function statusLine(input: {
   status: RunStatus;
   paused: boolean;
   experiments: number;
@@ -3408,6 +3461,8 @@ function statusLine(input: {
   check: RunView['check']['state'];
   /** The result is given; the run closes once what it started reports back. */
   closing: boolean;
+  /** Set while it rests until a background spending limit resets. */
+  limited?: RunLimitRest | null;
 }): string {
   const tried =
     input.experiments > 0
@@ -3445,6 +3500,12 @@ function statusLine(input: {
       if (input.waitingOnSteps)
         return join(
           `Waiting for ${input.helpersWorking} helper${input.helpersWorking === 1 ? '' : 's'}`,
+          tried,
+        );
+      // Resting on a spending limit, it says so and when it picks up, which no other wait does.
+      if (input.limited)
+        return join(
+          `Background work reached ${input.limited.period === 'month' ? "this month's" : "today's"} limit; picks up again on ${resetWords(input.limited.until)}`,
           tried,
         );
       if (input.standing)

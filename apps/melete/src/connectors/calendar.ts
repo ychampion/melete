@@ -855,6 +855,7 @@ export class CalendarConnector implements Connector {
       const condition: Record<string, string> = update
         ? { 'if-match': update.etag }
         : { 'if-none-match': '*' };
+      await ctx.beforeCalendarWrite?.();
       dispatched = true;
       const response = await this.request('PUT', uid, ics, ctx, {
         'content-type': 'text/calendar; charset=utf-8',

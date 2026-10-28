@@ -121,9 +121,9 @@ const spec = (
 /** A provider over a live stand-in, with every request it sends written down. */
 function standinProvider(
   rewrite?: (url: URL, init: RequestInit, response: Response) => Promise<Response>,
-  options: { graceMs?: number } = {},
+  options: { graceMs?: number; exitCodes?: boolean } = {},
 ) {
-  const standin = createMaritimeStandin();
+  const standin = createMaritimeStandin({ exitCodes: options.exitCodes });
   const sent: { method: string; url: URL; body: string | null; authorization: string | null }[] =
     [];
   const fetch: Fetch = async (input, init = {}) => {
@@ -244,6 +244,27 @@ test('the key goes to the API only, as a bearer token, and never into the comput
       apiUrl: 'http://api.maritime.sh',
     }),
   ).toThrow('https');
+});
+
+test("a command's status and output come back whether or not Maritime reports the status", async () => {
+  for (const exitCodes of [false, true]) {
+    const { provider } = standinProvider(undefined, { exitCodes });
+    const handle = await openSandbox(provider, spec(), signal());
+    const ran = await provider.exec(
+      handle,
+      {
+        marker: 'act_01J0MARITIMESTATUS000000',
+        argv: ['sh', '-c', 'echo made; exit 3'],
+        cwd: '/work',
+        timeoutMs: 5_000,
+        maxOutputBytes: 4096,
+      },
+      signal(),
+    );
+    expect(ran).toMatchObject({ started: 'yes', state: 'exited', exitCode: 3 });
+    expect(new TextDecoder().decode((ran as { output: Uint8Array }).output)).toBe('made\n');
+    await provider.destroy(handle, signal());
+  }
 });
 
 test('what Maritime cannot do is refused before Maritime is called', async () => {

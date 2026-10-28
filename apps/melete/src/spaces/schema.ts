@@ -7,6 +7,7 @@
 import type { RemovalCounts, RemovalPhase, RemovalProvider } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   index,
   integer,
@@ -96,6 +97,13 @@ export const spacePolicy = pgTable('space_policy', {
   deniedConnectorKinds: jsonb('denied_connector_kinds').$type<string[]>().notNull().default([]),
   /** Tool names, such as `email.send`, or a whole family by its prefix, such as `email`. */
   deniedToolKinds: jsonb('denied_tool_kinds').$type<string[]>().notNull().default([]),
+  /**
+   * "Show me only what needs me": the people in the space see summaries and
+   * action cards, and read an original only by opening it on purpose, which is
+   * noted in the space's activity (`spaces/summaries.ts`). The space's work
+   * still reads everything.
+   */
+  summariesOnly: boolean('summaries_only').notNull().default(false),
   updatedBy: text('updated_by').references(() => principal.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

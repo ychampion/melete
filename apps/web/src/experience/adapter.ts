@@ -152,6 +152,7 @@ import type {
   SpaceRulesView,
   Starters,
   StreamGap,
+  SummariesOnlyView,
   Task,
   TaskAutonomyList,
   TaskAutonomyUpdate,
@@ -309,6 +310,48 @@ function worthHearing<T>(result: Result<T>): Result<T> {
   return result;
 }
 const path = (id: string) => ({ params: { path: { id } } });
+
+/** A file the service sent, ready to show: a PDF or a picture at a local address, else text. */
+async function previewOf(response: Response): Promise<Result<SavedFilePreview>> {
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      error?: { code?: unknown; message?: unknown };
+    } | null;
+    if (body?.error?.code === 'summaries_only')
+      return {
+        data: null,
+        error:
+          typeof body.error.message === 'string'
+            ? body.error.message
+            : 'This space shows only what needs you. Open the original from Files.',
+        unavailable: null,
+        code: 'summaries_only',
+      };
+    return {
+      data: null,
+      error: response.status === 404 ? 'This file is no longer the one that was saved.' : offline(),
+      unavailable: null,
+    };
+  }
+  const type = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
+  if (PICTURES.has(type) || type === 'application/pdf') {
+    const blob = new Blob([await response.arrayBuffer()], { type });
+    return {
+      data: { kind: type === 'application/pdf' ? 'pdf' : 'image', url: URL.createObjectURL(blob) },
+      error: null,
+      unavailable: null,
+    };
+  }
+  return {
+    data: { kind: 'text', ...(await readTextPrefix(response)) },
+    error: null,
+    unavailable: null,
+  };
+}
+
+/** Where the original of a card's file is opened on purpose; a file sent in chat has none. */
+const originalUrl = (handle: string): string =>
+  `${client.options.baseUrl}/${handle.startsWith('act_') ? 'files' : 'artifacts'}/${encodeURIComponent(handle)}/original?disposition=inline`;
 
 export const adapter = {
   /* ---------- your data: take it along, empty your space, delete the account ---------- */
@@ -619,30 +662,24 @@ export const adapter = {
         headers: client.options.headers,
         credentials: client.options.credentials,
       });
-      if (!response.ok)
-        return {
-          data: null,
-          error:
-            response.status === 404 ? 'This file is no longer the one that was saved.' : offline(),
-          unavailable: null,
-        };
-      const type = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
-      if (PICTURES.has(type) || type === 'application/pdf') {
-        const blob = new Blob([await response.arrayBuffer()], { type });
-        return {
-          data: {
-            kind: type === 'application/pdf' ? 'pdf' : 'image',
-            url: URL.createObjectURL(blob),
-          },
-          error: null,
-          unavailable: null,
-        };
-      }
-      return {
-        data: { kind: 'text', ...(await readTextPrefix(response)) },
-        error: null,
-        unavailable: null,
-      };
+      return await previewOf(response);
+    } catch {
+      return { data: null, error: offline(), unavailable: null };
+    }
+  },
+  /**
+   * The original of a card's file, opened on purpose: the one way to read it
+   * in a space set to show only what needs the person. The service notes each
+   * open in the space's activity before it sends the file.
+   */
+  openOriginal: async (handle: string): Promise<Result<SavedFilePreview>> => {
+    try {
+      const response = await client.options.fetch(originalUrl(handle), {
+        method: 'POST',
+        headers: client.options.headers,
+        credentials: client.options.credentials,
+      });
+      return await previewOf(response);
     } catch {
       return { data: null, error: offline(), unavailable: null };
     }
@@ -957,6 +994,13 @@ export const adapter = {
     guard<SpaceRulesView>(() => api.GET('/spaces/{id}/policy', path(spaceId))),
   setSpaceRules: (spaceId: string, rules: SpaceRulesChange) =>
     guard<SpaceRulesView>(() => api.PUT('/spaces/{id}/policy', { ...path(spaceId), body: rules })),
+  /** Whether a space shows only what needs its people ("Show me only what needs me"). */
+  summariesOnly: (spaceId: string) =>
+    guard<SummariesOnlyView>(() => api.GET('/spaces/{id}/summaries-only', path(spaceId))),
+  setSummariesOnly: (spaceId: string, on: boolean) =>
+    guard<SummariesOnlyView>(() =>
+      api.PUT('/spaces/{id}/summaries-only', { ...path(spaceId), body: { on } }),
+    ),
   /** The space's owner removes someone from a shared space. */
   removeMember: (id: string) =>
     guard<{ status: 'ok' }>(() => api.DELETE('/space/members/{id}', path(id))),
