@@ -284,7 +284,13 @@ export class BrowserLive {
             channel.sessionId,
             channel.epoch,
             async () => {
-              await channel.teach?.before(event);
+              if (channel.teach) {
+                await channel.teach.before(event);
+                // The look at the page takes a moment, in which the person may have handed back:
+                // their input is fenced again so it never lands in automation's epoch.
+                this.host.sessions.checkHumanControl(channel.sessionId, channel.epoch);
+                if (channel.ended) throw new BrowserFault('live_closed');
+              }
               await this.dispatch(channel, screen.cdp, event);
             },
           );

@@ -14,7 +14,7 @@
 import type { CDPSession, Page } from 'playwright';
 import { z } from 'zod';
 import { hostOf, type LiveInput } from './live-protocol.ts';
-import { handbackLabel, handbackUrl, teachingLabel } from './redact.ts';
+import { EMAIL, handbackLabel, handbackUrl, REDACTED, teachingLabel } from './redact.ts';
 import { attributeWords, isSensitiveControl, sensitiveName } from './visible.ts';
 
 /** The most steps one demonstration keeps; later ones are counted as cut off, never kept. */
@@ -78,8 +78,16 @@ const SECRET_AUTOCOMPLETE =
   /(?:^|\s)(?:current-password|new-password|one-time-code|cc-[a-z-]+)(?:$|\s)/i;
 /** A query parameter whose name says it carries who someone is or what lets them in. */
 const IDENTIFYING_KEY =
-  /(?:^|\s)(?:token|session|sid|id|uid|code|key|sig|signature|auth|state|nonce|ticket|hash|secret|jwt|email|account|user)s?(?:$|\s)/i;
+  /(?:^|\s)(?:token|session|sid|id|uid|code|key|sig|signature|auth|state|nonce|ticket|hash|secret|jwt|email|account|user|name|phone|tel|mobile|address|dob|birthday|birthdate|zip|postcode)s?(?:$|\s)/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A field's name or id, read as words, that says a password goes in it. */
+const SECRET_WORDS = /(?:^|\s)(?:pwd|passwd|pass|passphrase)(?:$|\s)/i;
+/** A label that asks for a code the person was sent ("Enter the code we texted you"), or a passphrase. */
+const SENT_CODE =
+  /\bcodes?\b.*\b(?:sent|texted|emailed)\b|\b(?:sent|texted|emailed)\b.*\bcodes?\b|\bpass ?phrase\b/i;
+/** A query value that carries an address, an email or another query, never a plain choice. */
+const NESTED_VALUE = /[@:/?&=]/;
+const HAS_EMAIL = new RegExp(EMAIL.source);
 
 const clip = (value: string) => value.replace(/\s+/g, ' ').trim().slice(0, NAME_LIMIT);
 /** A name or title the page gave, with the shapes of a secret taken out as at handback. */
@@ -115,7 +123,15 @@ export function secretField(facts: ElementFacts): boolean {
   if ((attributes.type ?? '').toLowerCase() === 'password') return true;
   if (SECRET_AUTOCOMPLETE.test(attributes.autocomplete ?? '')) return true;
   const named = [attributes.name, attributes.id, attributes.placeholder, attributes['aria-label']];
-  if (named.some((value) => value && sensitiveName.test(attributeWords(value)))) return true;
+  if (
+    named.some(
+      (value) =>
+        value &&
+        (sensitiveName.test(attributeWords(value)) || SECRET_WORDS.test(attributeWords(value))),
+    ) ||
+    SENT_CODE.test(facts.name)
+  )
+    return true;
   return isSensitiveControl({
     label: facts.name,
     role: TYPED_ROLES.has(facts.role) ? facts.role : 'textbox',
@@ -126,13 +142,28 @@ export function secretField(facts: ElementFacts): boolean {
 
 /**
  * Where a page is, as a step keeps it: scheme, host and a path filtered as a handed-back page's
- * is, and only the query parameters that look like neither an identity nor a token.
+ * is, with no email address in it, and only the query parameters that look like neither an
+ * identity, a token nor another address. `withQuery` false keeps no query at all.
  */
-export function taughtUrl(value: string): string {
-  const base = hostOf(value) ? handbackUrl(value) : '';
-  if (!base) return '';
+export function taughtUrl(value: string, withQuery = true): string {
+  const handed = hostOf(value) ? handbackUrl(value) : '';
+  if (!handed) return '';
+  const { protocol, host, pathname } = new URL(handed);
+  const path = pathname
+    .split('/')
+    .map((segment) => {
+      let decoded = segment;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        // handbackUrl has already replaced a segment that does not decode.
+      }
+      return HAS_EMAIL.test(decoded) ? encodeURIComponent(REDACTED) : segment;
+    })
+    .join('/');
+  const base = `${protocol}//${host}${path}`;
   const kept = new URLSearchParams();
-  for (const [key, parameter] of new URL(value).searchParams) {
+  for (const [key, parameter] of withQuery ? new URL(value).searchParams : []) {
     const words = attributeWords(key);
     if (
       !parameter ||
@@ -141,6 +172,7 @@ export function taughtUrl(value: string): string {
       IDENTIFYING_KEY.test(words) ||
       sensitiveName.test(words) ||
       UUID.test(parameter) ||
+      NESTED_VALUE.test(parameter) ||
       /^[A-Za-z0-9]{16,}$/.test(parameter) ||
       handbackLabel(parameter) !== parameter
     )
@@ -174,12 +206,52 @@ export function downloadName(disposition: string | undefined, url: string): stri
 /** The placeholder a typed value is replaced by, named after its field. */
 const placeholder = (label: string) => `{${label.toLowerCase().slice(0, NAME_LIMIT) || 'text'}}`;
 
+/** A download's media type, or nothing when the header is not one. */
+const mediaType = (type: string) => {
+  const kept = (type.split(';')[0] ?? '').trim().toLowerCase();
+  return /^[a-z0-9.+-]{1,40}\/[a-z0-9.+-]{1,58}$/.test(kept) ? kept : '';
+};
+
+/**
+ * A step as the service keeps it, whatever worker sent it: every name, title and address filtered
+ * again, a press only ever on a role a press means something on, and a typed value only ever the
+ * placeholder named after its field. Null when nothing of the step is left to keep.
+ */
+export function cleanStep(step: TaughtStep): TaughtStep | null {
+  switch (step.kind) {
+    case 'open': {
+      const url = taughtUrl(step.url);
+      return url ? { kind: 'open', url, title: shownName(step.title) } : null;
+    }
+    case 'click': {
+      const label = shownName(step.name);
+      return PRESSED_ROLES.has(step.role) && label
+        ? { kind: 'click', role: step.role, name: label, title: shownName(step.title) }
+        : null;
+    }
+    case 'fill': {
+      const label = shownName(step.label);
+      return { kind: 'fill', label, value: placeholder(label) };
+    }
+    case 'press':
+      return { kind: 'press', key: step.key };
+    case 'download':
+      return {
+        kind: 'download',
+        file: shownName(step.file) || 'a file',
+        type: mediaType(step.type),
+      };
+  }
+}
+
 /** One demonstration's steps, for one control epoch, capped, and sealed when it is handed over. */
 export class StepLog {
   private readonly steps: TaughtStep[] = [];
   private truncated = false;
   private sealed = false;
   private lastField?: number | string;
+  /** Once the person has typed, a page's query may hold what they typed, so none is kept. */
+  private typed = false;
 
   constructor(
     readonly epoch: number,
@@ -191,7 +263,7 @@ export class StepLog {
   }
 
   opened(url: string, title: string): void {
-    const shown = taughtUrl(url);
+    const shown = taughtUrl(url, !this.typed);
     if (!shown) return;
     const step: TaughtStep = { kind: 'open', url: shown, title: shownName(title) };
     // A redirect, or the same page loading again, is one place reached.
@@ -207,6 +279,11 @@ export class StepLog {
     const label = shownName(facts.name);
     if (!label) return;
     this.add({ kind: 'click', role: facts.role, name: label, title: shownName(title) });
+  }
+
+  /** The person typed something, into whatever field; what they typed is never kept. */
+  typing(): void {
+    this.typed = true;
   }
 
   /** A field typed into, once however many keys it takes; a secret field leaves nothing. */
@@ -230,11 +307,7 @@ export class StepLog {
   }
 
   downloaded(file: string, type: string): void {
-    this.add({
-      kind: 'download',
-      file,
-      type: (type.split(';')[0] ?? '').trim().toLowerCase().slice(0, 100),
-    });
+    this.add({ kind: 'download', file, type: mediaType(type) });
   }
 
   /** The steps, once; nothing is added after. */
@@ -324,7 +397,9 @@ export class TeachRecorder {
       return;
     }
     const types = event.k === 'text' || (event.k === 'key' && event.down && Boolean(event.text));
-    if (!types || this.typing) return;
+    if (!types) return;
+    this.log.typing();
+    if (this.typing) return;
     this.typing = true;
     const facts = await bounded(probe.focused());
     if (facts && typedInto(facts)) this.log.filled(facts);
