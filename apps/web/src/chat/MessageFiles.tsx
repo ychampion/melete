@@ -5,7 +5,7 @@
  *
  * In a room set to show only what needs you, a file someone else posted comes
  * kept back, with its kind and no name. It shows as a plain tile that says
- * opening it is noted for the room's maker, and "Open the original" opens it
+ * opening it is noted in the room's activity, which its members can read, and "Open the original" opens it
  * on purpose and shows it here.
  */
 import {
@@ -138,7 +138,7 @@ function KeptFile({ file, base }: { file: AttachmentKept; base: string }) {
       <span className="attach-name">
         <span className="attach-title">{label}</span>
         <span className="attach-meta attach-note" role={problem ? 'alert' : undefined}>
-          {problem ?? 'Opening it is noted for the room’s maker.'}
+          {problem ?? 'Opening it is noted in the room’s activity.'}
         </span>
       </span>
       <button type="button" className="kept-open" disabled={opening} onClick={open}>
