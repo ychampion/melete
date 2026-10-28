@@ -19,7 +19,7 @@ import {
 import type { Sql, TransactionSql } from 'postgres';
 import { SealedSecretStore, type SecretRepository } from '../connectors/secrets.ts';
 import type { LocalModel } from './local.ts';
-import { SEEN_PARTS_PER_CONVERSATION, SEEN_PARTS_PER_SPACE, type SeenPart } from './seen.ts';
+import { SEEN_PARTS_PER_CONVERSATION, SEEN_ROWS_PER_CONVERSATION, type SeenPart } from './seen.ts';
 import { type KnownValue, Vault, type VaultData } from './vault.ts';
 
 /** The choices a person makes, resolved against the defaults. */
@@ -562,23 +562,32 @@ export class PostgresPrivacyStore implements PrivacyStore {
       truncated: part.truncated,
     }));
     await this.sql.begin(async (tx) => {
-      // Serialize this space's writers, including different conversations, so
-      // inserts and oldest-first pruning commit together under concurrent requests.
-      await tx`select id from space where id = ${spaceId} for update`;
+      // One writer per conversation, so concurrent turns take their row locks
+      // one after the other and the limits hold. Nothing else is locked.
+      await tx`select pg_advisory_xact_lock(hashtextextended(${`privacy-seen:${conversationId}`}, 0))`;
       await tx`insert into privacy_seen ${tx(rows)}
         on conflict (conversation_id, digest) do nothing`;
-      await tx`delete from privacy_seen where id in (
+      // Pieces past the limit lose their text, and so does the rest of every
+      // earlier answer they belong to. Their rows stay, so a re-sent piece
+      // still conflicts above and is never recorded as this answer's.
+      await tx`with expired as (
+          select id, turn_id from privacy_seen
+          where conversation_id = ${conversationId} and text <> ''
+          order by id desc offset ${SEEN_PARTS_PER_CONVERSATION})
+        update privacy_seen set text = '', truncated = true
+        where conversation_id = ${conversationId} and text <> '' and (
+          id in (select id from expired) or
+          (turn_id <> ${turnId} and turn_id in (select turn_id from expired)))`;
+      await tx`delete from privacy_seen where text = '' and id in (
         select id from privacy_seen where conversation_id = ${conversationId}
-        order by id desc offset ${SEEN_PARTS_PER_CONVERSATION})`;
-      await tx`delete from privacy_seen where id in (
-        select id from privacy_seen where space_id = ${spaceId}
-        order by id desc offset ${SEEN_PARTS_PER_SPACE})`;
+        order by id desc offset ${SEEN_ROWS_PER_CONVERSATION})`;
     });
   }
 
   async seen(conversationId: string, turnId: string) {
     const rows = await this.sql`select source, tool, text, truncated from privacy_seen
-      where conversation_id = ${conversationId} and turn_id = ${turnId} order by id`;
+      where conversation_id = ${conversationId} and turn_id = ${turnId} and text <> ''
+      order by id`;
     return rows.map((row) => ({
       source: row.source === 'tool' ? ('tool' as const) : ('you' as const),
       tool: row.tool === null ? null : String(row.tool),
@@ -735,38 +744,39 @@ export class MemoryPrivacyStore implements PrivacyStore {
   }
 
   /** What cloud requests carried, per conversation, as `recordSeen` keeps it. */
-  readonly seenParts: (SeenPart & { spaceId: string; conversationId: string; turnId: string })[] =
-    [];
+  readonly seenParts: (SeenPart & { conversationId: string; turnId: string })[] = [];
 
   async recordSeen(scope: Scope, parts: SeenPart[]) {
-    const { spaceId, conversationId, turnId } = scope;
-    if (this.options.keepLogs === false || !spaceId || !conversationId || !turnId) return;
+    const { conversationId, turnId } = scope;
+    if (this.options.keepLogs === false || !conversationId || !turnId) return;
     for (const part of parts) {
       const kept = this.seenParts.some(
         (row) => row.conversationId === conversationId && row.digest === part.digest,
       );
-      if (!kept) this.seenParts.push({ ...part, spaceId, conversationId, turnId });
+      if (!kept) this.seenParts.push({ ...part, conversationId, turnId });
     }
-    const prune = (rows: typeof this.seenParts, limit: number) => {
-      const expired = new Set(rows.slice(0, -limit));
-      for (let i = this.seenParts.length - 1; i >= 0; i--) {
-        const row = this.seenParts[i];
-        if (row && expired.has(row)) this.seenParts.splice(i, 1);
-      }
-    };
-    prune(
-      this.seenParts.filter((row) => row.conversationId === conversationId),
-      SEEN_PARTS_PER_CONVERSATION,
-    );
-    prune(
-      this.seenParts.filter((row) => row.spaceId === spaceId),
-      SEEN_PARTS_PER_SPACE,
-    );
+    // As the Postgres store does: blank past the limit, whole earlier answers,
+    // then delete the oldest blanked rows past the row limit.
+    const rows = this.seenParts.filter((row) => row.conversationId === conversationId);
+    const expired = rows.filter((row) => row.text).slice(0, -SEEN_PARTS_PER_CONVERSATION);
+    const turns = new Set(expired.map((row) => row.turnId));
+    turns.delete(turnId);
+    for (const row of new Set([...expired, ...rows.filter((row) => turns.has(row.turnId))])) {
+      row.text = '';
+      row.truncated = true;
+    }
+    const deleted = new Set(rows.slice(0, -SEEN_ROWS_PER_CONVERSATION).filter((row) => !row.text));
+    for (let i = this.seenParts.length - 1; i >= 0; i--) {
+      const row = this.seenParts[i];
+      if (row && deleted.has(row)) this.seenParts.splice(i, 1);
+    }
   }
 
   async seen(conversationId: string, turnId: string) {
     return this.seenParts
-      .filter((row) => row.conversationId === conversationId && row.turnId === turnId)
+      .filter(
+        (row) => row.conversationId === conversationId && row.turnId === turnId && row.text !== '',
+      )
       .map(({ source, tool, text, truncated }) => ({ source, tool, text, truncated }));
   }
 
