@@ -30,6 +30,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { PushService } from '../../src/push/service.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -624,5 +625,86 @@ withDb('room board', () => {
     expect(changed.status).not.toBe('succeeded');
     const [kept] = (await listOf(world.alice, roomId)).filter((item) => item.id === hidden.item);
     expect(kept?.title).toBe('Owners only plan');
+  }, 60_000);
+  test('a stream already following the board sends each reader only what they may see', async () => {
+    const roomId = await makeRoom('Following');
+    const guest = await guestIn(roomId, 'ida@guest.example');
+    const { claims } = await request(world.alice, roomId);
+    await tool(claims, roomId, 'board.add', { kind: 'event', title: 'Opening item' });
+    const readers: [string, Person][] = [
+      ['member-assignee', world.bob],
+      ['member-other', world.carol],
+      ['guest', guest],
+    ];
+    // Each stream has sent a frame, so what follows is read from past its cursor.
+    const streams = await Promise.all(
+      readers.map(async ([who, person]) => {
+        const live = await openStream(person, roomId);
+        expect([who, live.status]).toEqual([who, 200]);
+        return live;
+      }),
+    );
+    await Bun.sleep(500);
+    await tool(claims, roomId, 'board.add', {
+      kind: 'event',
+      title: 'Later owners plan',
+      visibility: 'owners',
+    });
+    await tool(claims, roomId, 'board.note', { assignee: world.bob.id, title: 'Later Bob note' });
+    await tool(claims, roomId, 'board.add', { kind: 'event', title: 'Later for everyone' });
+    const wanted: Record<string, string[]> = {
+      'member-assignee': ['Later Bob note', 'Later for everyone'],
+      'member-other': ['Later for everyone'],
+      guest: ['Later for everyone'],
+    };
+    for (const [index, [who]] of readers.entries()) {
+      const stream = streams[index];
+      if (!stream) throw new Error('No stream');
+      const read = await readFor(stream, 4000, (text) =>
+        (wanted[who] ?? []).every((title) => text.includes(title)),
+      );
+      expect([who, read.text.includes('Opening item')]).toEqual([who, true]);
+      for (const title of ['Later owners plan', 'Later Bob note', 'Later for everyone'])
+        expect([who, title, read.text.includes(title)]).toEqual([
+          who,
+          title,
+          (wanted[who] ?? []).includes(title),
+        ]);
+    }
+  }, 60_000);
+
+  test('a push for one person waits to be sent, and names only what they may see', async () => {
+    const { sql, db } = database();
+    const roomId = await makeRoom('Pushes');
+    for (const person of [world.bob, world.carol])
+      await sql`insert into push_subscription (id, principal_id, endpoint, p256dh, auth)
+        values (${`ps${randomBytes(6).toString('hex')}`}, ${person.id},
+          ${`https://push.example.test/${randomBytes(6).toString('hex')}`}, 'key', 'auth')`;
+    const { claims } = await request(world.alice, roomId);
+    const note = await tool(claims, roomId, 'board.note', {
+      assignee: world.bob.id,
+      title: 'Bring the permission slip',
+    });
+    // The pass that collects decisions leaves the board's own push alone.
+    const push = new PushService(db, { keys: null, subject: null, extraOrigins: [] });
+    await push.collectDecisions(world.bob.id, new Date(0));
+    const [waiting] = await sql`select principal_id, body, dropped_at from push_intent
+      where dedup_key = ${`board:${note.item}`}`;
+    expect(waiting).toMatchObject({
+      principal_id: world.bob.id,
+      body: 'Bring the permission slip',
+      dropped_at: null,
+    });
+    // A question only the owners would see is not put to a member at all.
+    const hidden = await tool(claims, roomId, 'board.ask', {
+      assignee: world.carol.id,
+      title: 'Owners only question',
+      visibility: 'owners',
+    });
+    expect(hidden.status).toBe('refused');
+    const [told] = await sql`select count(*)::int as n from push_intent
+      where principal_id = ${world.carol.id} and body = 'Owners only question'`;
+    expect(told?.n).toBe(0);
+    expect(titles(await listOf(world.alice, roomId))).toEqual(['Bring the permission slip']);
   }, 60_000);
 });

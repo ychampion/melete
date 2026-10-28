@@ -574,6 +574,11 @@ export async function pushToAssignee(
            ${row.title}, ${'Because it was put on the board for you.'},
            ${`/#/rooms/${row.spaceId}/board`}, ${`board:${row.id}`}
     where exists (select 1 from push_subscription s where s.principal_id = ${row.assigneePrincipalId})
+      -- An item for the owners alone is never pushed to someone who is not one.
+      and (${row.visibility} <> 'owners' or exists (select 1 from space_membership m
+        where m.space_id = ${row.spaceId} and m.principal_id = ${row.assigneePrincipalId}
+          and m.role = 'owner' and m.revoked_at is null
+          and (m.expires_at is null or m.expires_at > now())))
       and coalesce((select p.decisions from push_setting p where p.principal_id = ${row.assigneePrincipalId}), true)
     on conflict (dedup_key) do nothing`);
 }

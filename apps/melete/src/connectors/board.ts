@@ -74,7 +74,7 @@ export const boardManifest: ConnectorManifest = {
     {
       name: 'board.list',
       description:
-        "List the room's board as the person you are working for may see it, and the people who can be assigned items.",
+        "List the room's board as the person you are working for may see it, and the people who can be assigned items. Everyone in the room reads its threads, so name an item there only when it is for everyone.",
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -251,8 +251,18 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     if (kind === 'board.ask' || kind === 'board.note') {
       if (!next.assignee) throw new BrokerFault('payload_invalid', 'Name the person this is for.');
       // A note is always for its person alone; it carries no visibility of its own.
-      if (kind === 'board.ask')
+      if (kind === 'board.ask') {
         next.visibility = (payload.visibility as BoardVisibility | undefined) ?? 'assignee';
+        // The person asked must be able to see the question to answer it.
+        if (
+          next.visibility === 'owners' &&
+          (await roleOf(tx, ctx.space_id, String(next.assignee))) !== 'owner'
+        )
+          throw new BrokerFault(
+            'payload_invalid',
+            'Only the owners see a question for the owners, so ask an owner or let the person see it.',
+          );
+      }
       if (Array.isArray(payload.choices))
         next.choices = [...new Set(payload.choices.map((choice) => String(choice).trim()))].filter(
           Boolean,
@@ -355,6 +365,23 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
 
   async function add(action: Action, ctx: ConnectorContext) {
     const payload = action.canonical_payload;
+    // Read before the transaction: inside it, the event order lock is held,
+    // and nothing there may wait on another connection.
+    const job = await facts(options.sql, ctx);
+    const assignee = typeof payload.assignee === 'string' ? payload.assignee : null;
+    // Who may be assigned is read again now: someone may have left since.
+    if (assignee) {
+      const [still] = await options.sql`select 1 from space_membership m
+        join principal p on p.id = m.principal_id
+        where m.space_id = ${ctx.space_id} and m.principal_id = ${assignee}
+          and m.revoked_at is null and (m.expires_at is null or m.expires_at > now())
+          and m.role in ('owner', 'member') and p.kind = 'person'`;
+      if (!still) {
+        const [made] =
+          await options.sql`select id from room_board_item where action_id = ${action.id}`;
+        if (!made) return failed('That person is no longer in this room.');
+      }
+    }
     return serviceTransaction(db, async (tx) => {
       const [done] = await tx
         .select()
@@ -365,17 +392,6 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
           outcome: 'succeeded' as const,
           receipt: receiptFor(action, { item_id: done.id }, done.id),
         };
-      const job = await facts(options.sql, ctx);
-      const assignee = typeof payload.assignee === 'string' ? payload.assignee : null;
-      // Who may be assigned is read again now: someone may have left since.
-      if (assignee) {
-        const [still] = await options.sql`select 1 from space_membership m
-          join principal p on p.id = m.principal_id
-          where m.space_id = ${ctx.space_id} and m.principal_id = ${assignee}
-            and m.revoked_at is null and (m.expires_at is null or m.expires_at > now())
-            and m.role in ('owner', 'member') and p.kind = 'person'`;
-        if (!still) return failed('That person is no longer in this room.');
-      }
       const kind =
         action.kind === 'board.ask'
           ? 'question'
@@ -423,8 +439,9 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
 
   async function update(action: Action, ctx: ConnectorContext) {
     const payload = action.canonical_payload;
+    // Read before the transaction, which holds the event order lock.
+    const job = await facts(options.sql, ctx);
     return serviceTransaction(db, async (tx) => {
-      const job = await facts(options.sql, ctx);
       const reader = await readerOf(tx, job);
       const itemId = String(payload.item_id);
       // The person the request works for must be able to see what it changes.
