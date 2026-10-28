@@ -1,6 +1,6 @@
 ---
 name: schedule-a-check-in
-description: Set a time to come back to something, or put it in the calendar, and say what is already booked.
+description: Set a reminder or a calendar entry, and say what is already booked.
 triggers:
   - check in
   - remind me
