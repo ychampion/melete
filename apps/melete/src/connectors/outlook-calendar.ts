@@ -101,7 +101,13 @@ type GraphEvent = {
       month?: number;
       index?: string;
     };
-    range?: { type?: string; startDate?: string; endDate?: string; numberOfOccurrences?: number };
+    range?: {
+      type?: string;
+      startDate?: string;
+      endDate?: string;
+      numberOfOccurrences?: number;
+      recurrenceTimeZone?: string;
+    };
   } | null;
   singleValueExtendedProperties?: { id?: string; value?: string }[];
   attendees?: { emailAddress?: { address?: string } }[];
@@ -659,13 +665,28 @@ export class OutlookCalendarConnector implements Connector {
           const rrule = master ? graphRule(master) : null;
           const parsed = rrule ? parseRecurrence(rrule) : null;
           const start = instant(master?.start?.dateTime);
+          const named =
+            master?.recurrence?.range?.recurrenceTimeZone ?? master?.originalStartTimeZone;
+          let ruleZone = zone;
+          let includeTime = !event.isAllDay;
+          if (named) {
+            try {
+              ruleZone = new Intl.DateTimeFormat('en', { timeZone: named }).resolvedOptions()
+                .timeZone;
+            } catch {
+              // Graph also names Windows zones. Without their IANA rules,
+              // the weekday remains known, but a fixed UTC clock would be
+              // wrong when the series next crosses a daylight saving change.
+              includeTime = false;
+            }
+          }
           view.recurrence_status = 'active';
           view.recurrence = rrule;
           view.recurrence_summary =
             parsed?.ok && !Number.isNaN(start)
-              ? recurrenceWords(parsed.value, localTime(start, zone), {
-                  zone,
-                  includeTime: !event.isAllDay,
+              ? recurrenceWords(parsed.value, localTime(start, ruleZone), {
+                  zone: ruleZone,
+                  includeTime,
                 })
               : 'On a set schedule';
           if (master && !Number.isNaN(start)) view.series_start = eventView(master).start;

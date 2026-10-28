@@ -73,6 +73,28 @@ const weeklyMaster = {
 };
 
 describe('Outlook recurring listings', () => {
+  test('the series zone keeps its wall-clock rule when the person uses another zone', async () => {
+    const { list } = calendar([occurrence('first', '2026-11-03T17:00:00', '2026-11-03T18:00:00')], {
+      ...weeklyMaster,
+      originalStartTimeZone: 'America/Los_Angeles',
+    });
+    expect((await list({ time_zone: 'UTC' })).events[0]).toMatchObject({
+      start: '2026-11-03T17:00:00.000Z',
+      recurrence_summary: 'Every Tuesday at 9:00',
+    });
+  });
+
+  test('a Windows series zone never invents a fixed UTC recurrence time across DST', async () => {
+    const { list } = calendar([occurrence('first', '2026-11-03T17:00:00', '2026-11-03T18:00:00')], {
+      ...weeklyMaster,
+      originalStartTimeZone: 'Pacific Standard Time',
+    });
+    expect((await list({ time_zone: 'UTC' })).events[0]).toMatchObject({
+      start: '2026-11-03T17:00:00.000Z',
+      recurrence_summary: 'Every Tuesday',
+    });
+  });
+
   test('an old series lists its next instance and reads its rule once across the DST change', async () => {
     const { asked, list } = calendar(
       [
