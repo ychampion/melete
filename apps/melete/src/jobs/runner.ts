@@ -230,6 +230,13 @@ export type RunnerOptions = {
    * Left out, or `afterMs` 0, there is none.
    */
   acknowledge?: { afterMs: number; writer: AckWriter };
+  /**
+   * Waits, for a few seconds at most, for what the job's newest message is
+   * still having read (its pictures, `attachments/reading.ts`), so the turn it
+   * starts is shown the reading. Asked before the attempt is claimed, never
+   * inside its transaction; it never throws.
+   */
+  readings?: (jobId: string) => Promise<void>;
 };
 
 /** The spending limit a job's person has reached, for each class of work. */
@@ -676,6 +683,7 @@ export class AttemptRunner {
   }
 
   async claim(wake: AttemptWake): Promise<ClaimedAttempt | null> {
+    await this.options.readings?.(wake.job_id);
     const capabilities = await this.runtime.capabilities();
     const limits = await this.reachedLimits(wake.job_id);
     return this.jobs.transaction(async (tx) => {

@@ -15,11 +15,17 @@
  * picture is read only by the person's own model, and only when that model
  * reads pictures; it never goes to a cloud model, redacted or not.
  *
+ * The words the picture was sent with are read for a sensitive topic before
+ * it goes anywhere: the turn marks a conversation private only when it
+ * starts, and the reading usually starts first. Words that make it private
+ * keep the picture from a cloud model as a private conversation's would be.
+ *
  * What comes back (the picture's text, a short description and its key
  * values) is kept as the picture's text, the way a PDF's words are kept, and
- * the prompt shows it where the picture is not shown (`render.ts`). A reading
- * that fails, or is not ready when the turn starts, leaves the prompt as it
- * was; the message is never held for it.
+ * the prompt shows it where the picture is not shown (`render.ts`). The turn
+ * the message starts waits a few seconds for it (`PictureReadings`); a reading
+ * that fails, or takes longer, leaves the prompt as it was. The message is
+ * never held for it.
  */
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
@@ -97,6 +103,8 @@ export type PictureCall = {
   jobId: string;
   principalId: string | null;
   fileId: string;
+  /** What the person wrote with the picture, read for a sensitive topic; never sent. */
+  words?: string;
 };
 
 /**
@@ -190,15 +198,20 @@ function failureOf(body: string): PictureFailure {
  * conversation's picture goes only to the person's own model, and only when
  * that model reads pictures. A redacted cloud request, which the person may
  * have allowed for words, is refused here before it is sent, since a picture
- * cannot be redacted. Every other decision is the router's own.
+ * cannot be redacted. So is a cloud request for a call `keptPrivate` names,
+ * whose words make its conversation private before the router knows it is.
+ * Every other decision is the router's own.
  */
-function picturesStayPrivate(router: GatewayOptions['privacy']): GatewayOptions['privacy'] {
+function picturesStayPrivate(
+  router: GatewayOptions['privacy'],
+  keptPrivate: (principal: GatewayPrincipal) => boolean,
+): GatewayOptions['privacy'] {
   if (!router) return router;
   // The gateway asks the router only to prepare a request; the rest is the router's.
   const guarded = Object.create(router) as PrivacyRouter;
   guarded.prepare = async (input) => {
     const prepared = await router.prepare(input);
-    if (prepared.private && prepared.route === 'cloud')
+    if ((prepared.private || keptPrivate(input.principal)) && prepared.route === 'cloud')
       throw new GatewayError(409, 'privacy_picture_kept');
     if (prepared.local && !modelSupportsVision('openai-compatible', prepared.local.model))
       throw new GatewayError(409, 'privacy_picture_kept');
@@ -208,10 +221,12 @@ function picturesStayPrivate(router: GatewayOptions['privacy']): GatewayOptions[
 }
 
 export async function openPictureReader(options: PictureReaderOptions): Promise<PictureReader> {
-  type Bound = PictureCall & ServiceModel;
+  type Bound = PictureCall & ServiceModel & { callId: string };
   const tokens = new Map<string, Bound>();
   /** The pictures the gateway put in a request, by file. */
   const shown = new Set<string>();
+  /** The calls whose words made their conversation private, by the attempt id the gateway sees. */
+  const kept = new Set<string>();
   const timeoutMs = options.timeoutMs ?? PICTURE_READING_LIMITS.timeout_ms;
   const total = PICTURE_READING_LIMITS.input_tokens + PICTURE_READING_LIMITS.output_tokens;
   const budget: GatewayBudget = {
@@ -231,7 +246,7 @@ export async function openPictureReader(options: PictureReaderOptions): Promise<
     currentProviders: options.source.providers,
     fake: options.fake,
     fetch: options.fetch,
-    privacy: picturesStayPrivate(options.privacy),
+    privacy: picturesStayPrivate(options.privacy, (principal) => kept.has(principal.attemptId)),
     spending: options.spending,
     reasoningEffort: options.reasoningEffort,
     timeoutMs,
@@ -256,7 +271,7 @@ export async function openPictureReader(options: PictureReaderOptions): Promise<
         // The person who sent the picture: the call is charged to them.
         ...(call.principalId ? { actor: call.principalId } : {}),
         jobId: call.jobId,
-        attemptId: `picture:${token.slice(0, 8)}`,
+        attemptId: `picture:${call.callId}`,
         // The conversation's own privacy decides where its picture may go.
         privacy: {
           kind: 'service',
@@ -314,9 +329,19 @@ export async function openPictureReader(options: PictureReaderOptions): Promise<
               };
       const body = withStructuredOutput(plain, target, protocol, PICTURE_READING_FORMAT);
       const token = randomUUID();
+      const callId = randomUUID();
       const key = `${call.jobId}:${call.fileId}`;
-      tokens.set(token, { ...call, ...target });
+      tokens.set(token, { ...call, ...target, callId });
       try {
+        // Read the way a cloud embedder's words are: a private space or agent,
+        // a conversation already marked, or words about a sensitive topic.
+        // A check that cannot answer keeps the picture private.
+        if (
+          call.words?.trim() &&
+          options.privacy &&
+          !(await options.privacy.cloudEmbedsRequest(call.jobId, call.words))
+        )
+          kept.add(`picture:${callId}`);
         const timeout = AbortSignal.timeout(timeoutMs + 2_000);
         const response = await fetch(`${base}/providers/${target.provider}/v1/${protocol}`, {
           method: 'POST',
@@ -346,6 +371,7 @@ export async function openPictureReader(options: PictureReaderOptions): Promise<
       } finally {
         tokens.delete(token);
         shown.delete(key);
+        kept.delete(`picture:${callId}`);
       }
     },
     async close() {
@@ -369,6 +395,8 @@ export async function readSentPictures(input: {
   reader: PictureReader;
   jobId: string;
   ids: readonly string[];
+  /** What the message said with its pictures. */
+  words?: string;
   log: (line: string) => void;
 }): Promise<number> {
   const { sql, reader, jobId, log } = input;
@@ -385,6 +413,7 @@ export async function readSentPictures(input: {
       jobId,
       principalId: row.principal_id,
       fileId: row.id,
+      ...(input.words ? { words: input.words } : {}),
     });
     if (!answer.ok) {
       log(`attachment ${row.id}: the picture was not read (${answer.reason}); its prompt says so`);
@@ -396,6 +425,61 @@ export async function readSentPictures(input: {
     if (kept.count) read++;
   }
   return read;
+}
+
+/**
+ * How long, at most, the turn a message starts waits for that message's
+ * pictures to be read, counted from when the reading began.
+ */
+export const PICTURE_READING_WAIT_MS = 9_000;
+
+/**
+ * The readings under way in this process, by job, so the turn their message
+ * starts can wait a short while for them (`AttemptRunner`'s `readings`) and be
+ * shown what they found. A turn claimed by another process, or one that
+ * starts after the bound, is shown what is kept by then.
+ */
+export class PictureReadings {
+  private readonly pending = new Map<string, Set<{ done: Promise<void>; until: number }>>();
+
+  constructor(private readonly waitMs = PICTURE_READING_WAIT_MS) {}
+
+  /** Hold `reading` as under way for the job until it settles, however it settles. */
+  track(jobId: string, reading: Promise<unknown>): void {
+    const entry = {
+      done: reading.then(
+        () => {},
+        () => {},
+      ),
+      until: Date.now() + this.waitMs,
+    };
+    const held = this.pending.get(jobId) ?? new Set();
+    held.add(entry);
+    this.pending.set(jobId, held);
+    void entry.done.then(() => {
+      held.delete(entry);
+      if (!held.size && this.pending.get(jobId) === held) this.pending.delete(jobId);
+    });
+  }
+
+  /**
+   * Wait until the job's readings settle or the newest of them reaches its
+   * bound, whichever is first. Never throws: a reading that fails or is slow
+   * leaves the turn to go ahead with what is kept.
+   */
+  async settled(jobId: string): Promise<void> {
+    const held = [...(this.pending.get(jobId) ?? [])];
+    const left = Math.max(0, ...held.map((entry) => entry.until - Date.now()));
+    if (!held.length || left === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.all(held.map((entry) => entry.done)),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
 }
 
 /** The model one space's pictures are read with. See the module comment for the order. */

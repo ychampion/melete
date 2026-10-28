@@ -67,11 +67,12 @@ export class SubmissionService {
     kind: 'create' | 'input',
   ) => Promise<void>;
   /**
-   * Told the files a message carried once it is committed, outside any
-   * transaction; the pictures among them are read then (`attachments/reading.ts`).
-   * Never waited on: the message is accepted whatever becomes of it.
+   * Told the files a message carried, and its words, once it is committed,
+   * outside any transaction; the pictures among them are read then
+   * (`attachments/reading.ts`). Never waited on: the message is accepted
+   * whatever becomes of it.
    */
-  onFilesSent?: (jobId: string, ids: readonly string[]) => void;
+  onFilesSent?: (jobId: string, ids: readonly string[], words: string) => void;
   constructor(
     readonly jobs: JobService,
     readonly faults: SubmissionFaults = {},
@@ -82,8 +83,8 @@ export class SubmissionService {
     if (!this.onFilesSent || result.replayed || result.receipt.state !== 'accepted') return;
     const jobId = result.receipt.job_id;
     const parsed = postMessageRequest.safeParse(raw);
-    const ids = parsed.success ? (parsed.data.attachments ?? []) : [];
-    if (jobId && ids.length) this.onFilesSent(jobId, ids);
+    if (!jobId || !parsed.success || !parsed.data.attachments?.length) return;
+    this.onFilesSent(jobId, parsed.data.attachments, parsed.data.text);
   }
 
   private async read(tx: Transaction, id: string) {

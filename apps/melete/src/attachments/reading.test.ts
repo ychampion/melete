@@ -180,6 +180,27 @@ test('a private conversation with no model of the person’s own sends no pictur
   }
 });
 
+test('words sent with a picture that make the conversation private keep it from a cloud model before the turn marks it', async () => {
+  // A new chat: nothing has marked it yet, and the reading starts before its turn does.
+  const store = new MemoryPrivacyStore({ keepLogs: false });
+  store.scopes.set(JOB, { spaceId: SPACE, conversationId: JOB, agentId: null, turnId: null });
+  const { reader: pictures, sent } = await reader(() => completion(JSON.stringify(bill)), {
+    privacy: new PrivacyRouter({ store }),
+  });
+  expect(
+    await pictures.read({
+      ...call,
+      words: 'My doctor sent my blood test results. Is my cholesterol too high?',
+    }),
+  ).toEqual({ ok: false, reason: 'kept_private' });
+  expect(sent).toHaveLength(0);
+  // The same picture sent with ordinary words is read, and the words are not sent with it.
+  const answer = await pictures.read({ ...call, words: 'Is this water bill right?' });
+  expect(answer.ok).toBe(true);
+  expect(sent).toHaveLength(1);
+  expect(JSON.stringify(sent[0])).not.toContain('water bill right');
+});
+
 test('what a model returns is held to what one kept reading may hold', () => {
   const read = readingText(
     `\`\`\`json\n${JSON.stringify({
