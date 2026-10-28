@@ -419,6 +419,18 @@ to people in the room who are not guests. A note is always for its person
 alone. A question or a note sends a push to that person only, paced like any
 other push and held in their quiet hours.
 
+A question is for its person and the owners (`assignee`) unless the agent
+asks for everyone, and once a request has read someone's shared calendar,
+every question it asks stays with its person. A room has no question card of
+its own, so when the agent asks the person whose request it is with
+`ask_person`, the question goes on the board for them, under the same rule,
+and their answer comes back in the request's thread.
+
+Times on the board are read and written as wall times in the room's time zone
+(`2026-11-06T09:00`, with `time_zone` alongside in `board.list`), so an item
+moved to another day keeps its time of day when the clocks change in between.
+A time written with its own offset is taken as given.
+
 When someone leaves the room, items assigned to them read as unassigned and a
 claim of theirs reads as open again. Titles are written by the agent, so `board.add` tells it
 to keep the titles of items for everyone short and free of private detail.

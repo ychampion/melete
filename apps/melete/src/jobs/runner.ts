@@ -87,6 +87,7 @@ import { newId } from '../ids.ts';
 import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { instanceName } from '../names.ts';
 import { principalContext, requestPrincipal, spaceAuthority } from '../principals/authority.ts';
+import { askOnBoard } from '../rooms/board.ts';
 import type { RunService } from '../runs/service.ts';
 import { EngineImageUnavailable } from '../runtime/cell-host.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
@@ -1691,6 +1692,9 @@ export class AttemptRunner {
           }
         : original;
     if (asked && posed !== original) carried = [asked, ...carried];
+    // A room shows no question card: the question goes on its board for the
+    // person who asked, and their answer comes back in the thread.
+    if (asked && posed !== original && row.audience === 'room') await askOnBoard(tx, row, asked);
     // A wait that was cancelled before it fired comes back when the attempt told
     // about it completes without choosing another, and only while it can still
     // fire. A retryable failure hands it to the retry instead.

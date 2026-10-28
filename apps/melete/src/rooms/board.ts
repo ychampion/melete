@@ -15,6 +15,10 @@
 import { randomBytes } from 'node:crypto';
 import {
   BOARD_ANSWER_MAX,
+  BOARD_CHOICE_MAX,
+  BOARD_CHOICES_MAX,
+  BOARD_DETAIL_MAX,
+  BOARD_TITLE_MAX,
   type BoardItem,
   type BoardItemKind,
   type BoardItemState,
@@ -560,6 +564,63 @@ export class BoardService {
       request_job_id: posted.request_job_id ?? null,
     };
   }
+}
+
+/**
+ * A question a room request's agent asked with ask_person. A room has no
+ * question card, so it goes on the board for the person whose request it is:
+ * only they and the owners read it, it is on their "Waiting on you", and their
+ * answer reaches the request as their own message in its thread. Nothing is
+ * added for someone who cannot be assigned, or twice for the same question.
+ */
+export async function askOnBoard(
+  tx: Transaction,
+  job: {
+    spaceId: string;
+    principalId: string | null;
+    requestedByPrincipalId: string | null;
+    roomThreadId: string | null;
+  },
+  question: { text: string; options?: { label: string }[] | undefined },
+): Promise<ItemRow | null> {
+  const asker = job.requestedByPrincipalId;
+  if (!asker || !job.principalId || !(await assignable(tx, job.spaceId, asker))) return null;
+  const text = question.text.trim();
+  const title = text.length > BOARD_TITLE_MAX ? `${text.slice(0, BOARD_TITLE_MAX - 3)}...` : text;
+  const [open] = await tx
+    .select({ id: roomBoardItem.id })
+    .from(roomBoardItem)
+    .where(
+      and(
+        eq(roomBoardItem.spaceId, job.spaceId),
+        eq(roomBoardItem.kind, 'question'),
+        eq(roomBoardItem.state, 'open'),
+        eq(roomBoardItem.assigneePrincipalId, asker),
+        eq(roomBoardItem.title, title),
+      ),
+    )
+    .limit(1);
+  if (open) return null;
+  const choices = [
+    ...new Set((question.options ?? []).map((option) => option.label.slice(0, BOARD_CHOICE_MAX))),
+  ].slice(0, BOARD_CHOICES_MAX);
+  const made = await addItem(tx, {
+    spaceId: job.spaceId,
+    kind: 'question',
+    title,
+    detail: title === text ? null : text.slice(0, BOARD_DETAIL_MAX),
+    assignee: asker,
+    visibility: 'assignee',
+    choices: choices.length ? choices : null,
+    sourceThreadId: job.roomThreadId,
+    createdBy: job.principalId,
+  });
+  const [named] = await tx
+    .select({ name: space.name })
+    .from(space)
+    .where(eq(space.id, job.spaceId));
+  await pushToAssignee(tx, made, named?.name ?? 'a room');
+  return made;
 }
 
 /** Items assigned to someone, unanswered, whose push goes to them alone. */

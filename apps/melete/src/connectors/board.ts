@@ -30,13 +30,19 @@ import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { schema, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
+import { localDay, localTime, zonedInstant } from '../memory/zoned.ts';
 import { addItem, pushToAssignee, readItems, touchItem } from '../rooms/board.ts';
 import { roomBoardItem } from '../rooms/board-schema.ts';
 import { roomPrincipalOf } from '../rooms/release.ts';
 import { roomHandle } from '../rooms/transcript.ts';
+import { spaceTimeZone } from './calendar-truth.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
-const when = { type: ['string', 'null'], format: 'date-time' };
+const when = {
+  type: ['string', 'null'],
+  description:
+    "A local date and time in the room's time zone with no offset, as board.list shows them, such as 2026-11-06T09:00.",
+};
 const who = {
   type: 'string',
   minLength: 1,
@@ -145,7 +151,7 @@ export const boardManifest: ConnectorManifest = {
             ...visibility,
             default: 'assignee',
             description:
-              'Leave this out. A question for one person is for them and the owners (assignee). Use everyone only when everyone in the room is meant to read the question, and then keep it free of anything about one person.',
+              'Leave this out. A question for one person is for them and the owners (assignee). Use everyone only for a question the whole room is meant to read, such as a vote, and then keep it free of anything about one person. After a shared calendar was read in this request, every question stays with its person.',
           },
         },
       },
@@ -164,6 +170,29 @@ type JobFacts = {
   requested_by_principal_id: string | null;
   room_thread_id: string | null;
 };
+
+/** The fields of an item that hold a time. */
+const TIMES = ['starts_at', 'ends_at', 'due_at'] as const;
+/** A date and time with no offset: a wall time, read in the room's own zone. */
+const WALL = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/;
+
+/**
+ * Times the agent writes as wall times in the room's zone, made instants. A
+ * time read on the board and given again on another day keeps its time of day
+ * across a change of clocks, which an instant moved by whole days does not.
+ */
+function inRoomTime(payload: JsonObject, timeZone: string): JsonObject {
+  const next: JsonObject = { ...payload };
+  for (const field of TIMES) {
+    const wall = typeof payload[field] === 'string' ? WALL.exec(payload[field]) : null;
+    if (wall?.[1] && wall[2]) next[field] = zonedInstant(wall[1], wall[2], timeZone).toISOString();
+  }
+  return next;
+}
+
+/** An instant as the wall time it is in the room's zone, as the agent reads the board. */
+const wallTime = (at: string | null, timeZone: string) =>
+  at ? `${localDay(new Date(at), timeZone)}T${localTime(new Date(at), timeZone)}` : null;
 
 const toDate = (value: unknown, field: string): Date | null | undefined => {
   if (value === undefined) return undefined;
@@ -244,11 +273,12 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
   };
 
   /** The payload with its people resolved, as the approval and the action carry it. */
-  async function prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
+  async function prepare(given: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
     if (kind === 'board.list') {
       await facts(tx, ctx);
-      return payload;
+      return given;
     }
+    const payload = inRoomTime(given, await spaceTimeZone(tx, ctx.space_id));
     const job = await mayChange(tx, ctx);
     checkDates(payload);
     // Work with nobody behind it is the room's own, and goes as an owner's would.
@@ -268,6 +298,14 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       // A note is always for its person alone; it carries no visibility of its own.
       if (kind === 'board.ask') {
         next.visibility = (payload.visibility as BoardVisibility | undefined) ?? 'assignee';
+        // A request that read someone's shared calendar keeps its questions
+        // with their person: what it asks may rest on what that calendar shows.
+        if (next.visibility === 'everyone') {
+          const [read] = await tx`select 1 from action
+            where job_id = ${ctx.job_id} and kind = 'room.member_freebusy'
+              and status = 'succeeded' limit 1`;
+          if (read) next.visibility = 'assignee';
+        }
         // The person asked must be able to see the question to answer it.
         if (
           next.visibility === 'owners' &&
@@ -327,14 +365,14 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
   const readerOf = async (tx: Pick<Transaction, 'select'>, job: JobFacts) =>
     job.requested_by_principal_id ?? (await roomPrincipalOf(tx, job.space_id)).id;
 
-  const compact = (item: BoardItem): JsonValue => ({
+  const compact = (item: BoardItem, timeZone: string): JsonValue => ({
     id: item.id,
     kind: item.kind,
     title: item.title,
     detail: item.detail,
-    starts_at: item.starts_at,
-    ends_at: item.ends_at,
-    due_at: item.due_at,
+    starts_at: wallTime(item.starts_at, timeZone),
+    ends_at: wallTime(item.ends_at, timeZone),
+    due_at: wallTime(item.due_at, timeZone),
     assignee: item.assignee?.display_name ?? null,
     visibility: item.visibility,
     state: item.state,
@@ -346,6 +384,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
   const failed = (reason: string) => ({ outcome: 'failed' as const, reason, retryable: false });
 
   async function list(action: Action, ctx: ConnectorContext) {
+    const timeZone = await spaceTimeZone(options.sql, ctx.space_id);
     // A read takes no part in the event order, so it holds none of its lock.
     return db.transaction(async (tx) => {
       const job = await facts(options.sql, ctx);
@@ -367,7 +406,8 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
         receipt: receiptFor(
           action,
           {
-            items: items.map(compact),
+            time_zone: timeZone,
+            items: items.map((item) => compact(item, timeZone)),
             people: people.map((row) => ({
               code: roomHandle(ctx.space_id, String(row.principal_id)),
               name: row.display_name ? String(row.display_name) : null,
