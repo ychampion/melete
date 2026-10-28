@@ -6,12 +6,21 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
+import { parseRecurrence, recurrenceWords } from '@melete/contracts';
 import { XMLParser } from 'fast-xml-parser';
 import ICAL from 'ical.js';
 import { z } from 'zod';
 import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
-import { confirmFromIcs, expandIcs, instantMs } from '../signals/occurrences.ts';
+import {
+  confirmFromIcs,
+  expandIcs,
+  icalInstant,
+  instantMs,
+  MAX_EXPANSION_STEPS,
+  startNearWindow,
+  zonedToUtc,
+} from '../signals/occurrences.ts';
 import {
   type CalendarOccurrences,
   type Occurrence,
@@ -74,6 +83,7 @@ export const listPayload = z
     limit: z.number().int().min(1).max(100).default(50),
     from: instant.optional(),
     to: instant.optional(),
+    time_zone: z.string().min(1).max(100).optional(),
   })
   .strict()
   .refine((v) => !v.from || !v.to || Date.parse(v.to) > Date.parse(v.from), {
@@ -93,9 +103,13 @@ export type ListWindow = { from: string; to: string };
 export function listWindow(payload: z.infer<typeof listPayload>, now = Date.now()): ListWindow {
   const span = DEFAULT_LIST_DAYS * DAY_MS;
   const to = payload.to
-    ? Date.parse(payload.to)
-    : (payload.from ? Date.parse(payload.from) : now - DAY_MS) + span;
-  const from = payload.from ? Date.parse(payload.from) : payload.to ? to - span : now - DAY_MS;
+    ? eventInstant(payload.to, payload.time_zone ?? 'UTC')
+    : (payload.from ? eventInstant(payload.from, payload.time_zone ?? 'UTC') : now - DAY_MS) + span;
+  const from = payload.from
+    ? eventInstant(payload.from, payload.time_zone ?? 'UTC')
+    : payload.to
+      ? to - span
+      : now - DAY_MS;
   return { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
 }
 
@@ -125,7 +139,9 @@ export function listDetail(
     truncated,
     ...(truncated
       ? {
-          note: `Only the first ${events.length} events in this window are listed; more exist. Ask again with a narrower from/to before treating the list as complete.`,
+          note: events.some((event) => event.recurrence_status === 'unknown')
+            ? 'Some repeating events could not be fully checked. Their next occurrence is unavailable; do not treat this list as complete.'
+            : `Only the first ${events.length} events in this window are listed; more exist. Ask again with a narrower from/to before treating the list as complete.`,
         }
       : {}),
   };
@@ -288,7 +304,7 @@ export const calendarManifest: ConnectorManifest = {
     {
       name: 'calendar.list',
       description:
-        'List events and series (with recurrence rules) between `from` and `to`, earliest first. Defaults: yesterday to 90 days later; one end alone covers the 90 days after `from` or before `to`. The result names its window. If `truncated` is true more events exist than were returned: list again with a narrower window before calling the list complete.',
+        'List events and series, earliest first. Series show the next start/end on or after now (or from for explicit windows), recurrence_summary, series_start and ended/unknown status. Defaults: yesterday through 90 days later; one end covers 90 days after from or before to. Date-only windows use the person’s zone. If truncated, narrow the window before calling the list complete.',
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -302,6 +318,10 @@ export const calendarManifest: ConnectorManifest = {
             type: 'string',
             description:
               'End of the window, an ISO date or date-time after `from`. Defaults to 90 days after `from`.',
+          },
+          time_zone: {
+            type: 'string',
+            description: 'IANA zone for floating and all-day events. Defaults to the person’s own.',
           },
         },
       },
@@ -403,37 +423,149 @@ export type EventView = {
   location: string;
   recurrence: string | null;
   etag: string | null;
+  series_start?: string;
+  recurrence_summary?: string;
+  recurrence_status?: 'active' | 'ended' | 'unknown';
 };
 
 type ParsedEvent = { view: EventView; event: ICAL.Event };
 
 /** Parse structured ICS, including folded/escaped fields, without executing embedded URLs. */
-export function importIcs(ics: string, etag: string | null = null): EventView[] {
-  return parseIcs(ics, etag).map((parsed) => parsed.view);
+export type CalendarReference = { now?: number; timeZone?: string; includeEnded?: boolean };
+
+export function importIcs(
+  ics: string,
+  etag: string | null = null,
+  reference: CalendarReference = {},
+): EventView[] {
+  return parseIcs(ics, etag).map(({ view, event }) =>
+    nextEventView(view, event, reference.now ?? Date.now(), reference.timeZone ?? 'UTC'),
+  );
 }
 
-/** Most occurrences a series is walked through looking for one inside the window. */
-const MAX_OCCURRENCES = 5000;
+const propertyZone = (event: ICAL.Event, field: string): string | null => {
+  const zone = event.component.getFirstProperty(field)?.getParameter('tzid');
+  return typeof zone === 'string' ? zone : null;
+};
+
+/** A date-only event fills the person's day, independent of the server's clock. */
+function dateInZone(at: number, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(at));
+  const part = (name: string) => parts.find((value) => value.type === name)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+function eventInstant(value: string, timeZone: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return instantMs(value);
+  const [year = 0, month = 0, day = 0] = value.split('-').map(Number);
+  return zonedToUtc({ year, month, day, hour: 0, minute: 0, second: 0 }, timeZone);
+}
 
 /**
- * When an event or series first touches the window, in epoch milliseconds, or
- * null when it never does. A series too long to walk is kept rather than
- * dropped, placed at the start of the window.
+ * Project a series onto its next occurrence, retaining its original anchor.
+ * The existing iCalendar iterator applies RRULE, COUNT, UNTIL, RDATE, EXDATE
+ * and changed instances; the shared timezone conversion preserves wall time
+ * across daylight saving changes. Exhaustion and an unfinished read differ.
  */
-function firstInWindow(event: ICAL.Event, from: number, to: number): number | null {
-  const first = event.startDate.toJSDate().getTime();
-  const length = Math.max(0, (event.endDate?.toJSDate().getTime() ?? first) - first);
-  const touches = (start: number) => start < to && (start + length > from || start >= from);
-  if (!event.isRecurring()) return touches(first) ? first : null;
-  const occurrences = event.iterator();
-  for (let step = 0; step < MAX_OCCURRENCES; step++) {
-    const next = occurrences.next();
-    if (!next) return null;
-    const start = next.toJSDate().getTime();
-    if (start >= to) return null;
-    if (touches(start)) return start;
+export function nextEventView(
+  view: EventView,
+  event: ICAL.Event,
+  from: number,
+  timeZone = 'UTC',
+): EventView {
+  const zone = propertyZone(event, 'dtstart') ?? timeZone;
+  const endZone = propertyZone(event, 'dtend') ?? zone;
+  const start = icalInstant(event.startDate, zone);
+  const end = icalInstant(event.endDate, endZone);
+  if (!event.isRecurring()) return { ...view, start, end };
+  const rule = view.recurrence?.split(/\r?\n/).find((line) => /^RRULE:/i.test(line));
+  const parsed = parseRecurrence(rule ?? view.recurrence ?? '');
+  const recurrence_summary = parsed.ok
+    ? recurrenceWords(parsed.value, event.startDate, { zone, includeTime: !event.startDate.isDate })
+    : 'On a set schedule';
+  const series = { ...view, series_start: start, recurrence_summary };
+  const today = dateInZone(from, timeZone);
+  const eligible = (value: string) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(value) ? value >= today : instantMs(value) >= from;
+  // startNearWindow changes the event's anchor. Preserve the parsed series so
+  // projecting it a second time still counts from the original DTSTART.
+  const component = new ICAL.Component(structuredClone(event.component.toJSON()));
+  component.parent = event.component.parent;
+  // Compare exclusions as instants. An IANA-only TZID is floating to ical.js,
+  // so its iterator alone cannot match an EXDATE written in UTC to that zone.
+  const excluded = new Set(
+    component.getAllProperties('exdate').flatMap((property) => {
+      const named = property.getParameter('tzid');
+      return property
+        .getValues()
+        .filter((value): value is ICAL.Time => value instanceof ICAL.Time)
+        .map((value) => icalInstant(value, typeof named === 'string' ? named : zone));
+    }),
+  );
+  component.removeAllProperties('exdate');
+  const projected = new ICAL.Event(component, { exceptions: Object.values(event.exceptions) });
+  startNearWindow(projected, zone, from);
+  let best: EventView | null = null;
+  const consider = (
+    item: ICAL.Event,
+    begins: ICAL.Time,
+    ends: ICAL.Time,
+    current: EventView | null,
+  ): EventView | null => {
+    if (item.component.getFirstPropertyValue('status') === 'CANCELLED') return current;
+    const start = icalInstant(begins, propertyZone(item, 'dtstart') ?? zone);
+    if (!eligible(start) || (current && instantMs(current.start) <= instantMs(start)))
+      return current;
+    return {
+      ...series,
+      summary: item.summary ?? view.summary,
+      location: item.location ?? view.location,
+      start,
+      end: icalInstant(ends, propertyZone(item, 'dtend') ?? endZone),
+      recurrence_status: 'active',
+    };
+  };
+  // An exception can move into the window from beyond the iterator's next
+  // date, or move that next date later than the following regular instance.
+  for (const exception of Object.values(projected.exceptions)) {
+    const id = exception.component.getFirstPropertyValue('recurrence-id');
+    if (
+      id instanceof ICAL.Time &&
+      excluded.has(icalInstant(id, propertyZone(exception, 'recurrence-id') ?? zone))
+    )
+      continue;
+    best = consider(exception, exception.startDate, exception.endDate, best);
   }
-  return from;
+  const iterator = projected.iterator();
+  // Supported COUNT values are bounded by the shared parser. Walk through
+  // that count once more to distinguish a long exhausted series from a read
+  // that hit the ordinary search limit.
+  const steps =
+    parsed.ok && parsed.value.count !== null
+      ? Math.max(MAX_EXPANSION_STEPS, parsed.value.count + 1)
+      : MAX_EXPANSION_STEPS;
+  for (let step = 0; step < steps; step++) {
+    const next = iterator.next();
+    if (!next) return best ?? { ...series, start: '', end: '', recurrence_status: 'ended' };
+    const original = icalInstant(next, zone);
+    if (
+      parsed.ok &&
+      parsed.value.until &&
+      'at' in parsed.value.until &&
+      instantMs(original) > parsed.value.until.at.getTime()
+    )
+      return best ?? { ...series, start: '', end: '', recurrence_status: 'ended' };
+    if (best && instantMs(original) >= instantMs(best.start)) return best;
+    if (excluded.has(original)) continue;
+    const details = projected.getOccurrenceDetails(next);
+    best = consider(details.item, details.startDate, details.endDate, best);
+  }
+  return { ...series, start: '', end: '', recurrence_status: 'unknown' };
 }
 
 /** The events in a window, earliest first, and whether any were left out. */
@@ -441,18 +573,26 @@ export function eventsInWindow(
   parsed: ParsedEvent[],
   window: ListWindow,
   limit: number,
+  reference: CalendarReference = {},
 ): { events: EventView[]; truncated: boolean } {
   const from = Date.parse(window.from);
   const to = Date.parse(window.to);
+  const zone = reference.timeZone ?? 'UTC';
   const inside = parsed
     .flatMap(({ view, event }) => {
-      const at = firstInWindow(event, from, to);
-      return at === null ? [] : [{ view, at }];
+      const projected = nextEventView(view, event, reference.now ?? from, zone);
+      if (projected.recurrence_status === 'ended')
+        return reference.includeEnded ? [{ view: projected, at: Number.POSITIVE_INFINITY }] : [];
+      if (projected.recurrence_status === 'unknown') return [{ view: projected, at: from }];
+      const at = eventInstant(projected.start, zone);
+      const end = eventInstant(projected.end, zone);
+      return at < to && (end > from || at >= from) ? [{ view: projected, at }] : [];
     })
     .sort((a, b) => a.at - b.at);
   return {
     events: inside.slice(0, limit).map((item) => item.view),
-    truncated: inside.length > limit,
+    truncated:
+      inside.length > limit || inside.some(({ view }) => view.recurrence_status === 'unknown'),
   };
 }
 
@@ -460,21 +600,39 @@ export function parseIcs(ics: string, etag: string | null = null): ParsedEvent[]
   if (Buffer.byteLength(ics) > MAX_CALENDAR_BYTES) throw new Error('Calendar import too large');
   const component = new ICAL.Component(ICAL.parse(ics));
   if (component.name !== 'vcalendar') throw new Error('Expected VCALENDAR');
-  return component.getAllSubcomponents('vevent').map((item) => {
-    const event = new ICAL.Event(item);
-    if (!event.uid || !event.startDate) throw new Error('Malformed calendar event');
-    const view: EventView = {
-      uid: event.uid,
-      summary: event.summary ?? '',
-      start: event.startDate.toString(),
-      end: event.endDate.toString(),
-      description: event.description ?? '',
-      location: event.location ?? '',
-      recurrence: item.getFirstPropertyValue('rrule')?.toString() ?? null,
-      etag,
-    };
-    return { view, event };
-  });
+  const components = component.getAllSubcomponents('vevent');
+  return components
+    .filter(
+      (item) =>
+        !item.getFirstProperty('recurrence-id') ||
+        !components.some(
+          (other) =>
+            !other.getFirstProperty('recurrence-id') &&
+            other.getFirstPropertyValue('uid') === item.getFirstPropertyValue('uid'),
+        ),
+    )
+    .map((item) => {
+      const uid = item.getFirstPropertyValue('uid');
+      const exceptions = components.filter(
+        (other) =>
+          !item.getFirstProperty('recurrence-id') &&
+          other.getFirstProperty('recurrence-id') &&
+          other.getFirstPropertyValue('uid') === uid,
+      );
+      const event = new ICAL.Event(item, { exceptions });
+      if (!event.uid || !event.startDate) throw new Error('Malformed calendar event');
+      const view: EventView = {
+        uid: event.uid,
+        summary: event.summary ?? '',
+        start: event.startDate.toString(),
+        end: event.endDate.toString(),
+        description: event.description ?? '',
+        location: event.location ?? '',
+        recurrence: item.getFirstPropertyValue('rrule')?.toString() ?? null,
+        etag,
+      };
+      return { view, event };
+    });
 }
 
 function eventIcs(
@@ -602,7 +760,7 @@ export class CalendarConnector implements Connector {
         throw new Error('CalDAV requires a trusted HTTPS calendar URL');
       if (!this.base.pathname.endsWith('/')) this.base.pathname += '/';
     }
-    if (config.mode === 'ics') importIcs(config.ics);
+    if (config.mode === 'ics') parseIcs(config.ics);
   }
 
   private assertContext(action: Action, ctx: ConnectorContext): void {
@@ -800,15 +958,26 @@ export class CalendarConnector implements Connector {
       }
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
-        const window = listWindow(payload);
+        const now = Date.now();
+        const window = listWindow(payload, now);
+        const reference = {
+          now: payload.from || payload.to ? Date.parse(window.from) : now,
+          timeZone: payload.time_zone ?? 'UTC',
+          includeEnded: !payload.from && !payload.to,
+        };
         if (this.config.mode === 'ics') {
-          const listed = eventsInWindow(parseIcs(this.config.ics), window, payload.limit);
+          const listed = eventsInWindow(
+            parseIcs(this.config.ics),
+            window,
+            payload.limit,
+            reference,
+          );
           return this.success(action, listDetail(listed.events, window, listed.truncated, true));
         }
         const events: ParsedEvent[] = [];
         for (const object of await this.calendarObjects(ctx, { window }))
           events.push(...parseIcs(object.ics, object.etag));
-        const listed = eventsInWindow(events, window, payload.limit);
+        const listed = eventsInWindow(events, window, payload.limit, reference);
         return this.success(action, listDetail(listed.events, window, listed.truncated, false));
       }
       if (this.config.mode === 'ics')
@@ -1024,7 +1193,7 @@ export class CalendarConnector implements Connector {
 
   async health(): Promise<ConnectorHealth> {
     try {
-      if (this.config.mode === 'ics') importIcs(this.config.ics);
+      if (this.config.mode === 'ics') parseIcs(this.config.ics);
       else {
         const response = await this.request(
           'PROPFIND',

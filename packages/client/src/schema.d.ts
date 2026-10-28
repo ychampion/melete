@@ -8252,9 +8252,11 @@ export interface paths {
                             tasks: components["schemas"]["__schema459"][];
                             time_zone: components["schemas"]["__schema371"];
                             upcoming: {
+                                all_day?: boolean;
                                 connection_id: components["schemas"]["__schema370"];
                                 ends_at: components["schemas"]["__schema374"];
                                 id: components["schemas"]["__schema370"];
+                                recurrence_summary?: components["schemas"]["__schema371"];
                                 starts_at: components["schemas"]["__schema374"];
                                 title: components["schemas"]["__schema371"];
                                 url?: components["schemas"]["__schema382"];

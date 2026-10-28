@@ -26,6 +26,7 @@ import {
 import { newId } from '../ids.ts';
 import { assistantName } from '../names.ts';
 import { ownJob } from '../principals/authority.ts';
+import { zonedToUtc } from '../signals/occurrences.ts';
 import { watchedByDefault } from '../signals/poller.ts';
 import { sourceCursor } from '../signals/schema.ts';
 import { watchable } from '../signals/watching.ts';
@@ -342,24 +343,46 @@ export class ExperienceHome {
       }),
     };
   }
-  calendarEvents(connectionId: string, detail: unknown) {
+  calendarEvents(connectionId: string, detail: unknown, zone = 'UTC') {
     const rows = object(detail).events;
     if (!Array.isArray(rows)) return [];
     return rows.flatMap((raw) => {
       const item = object(raw);
+      if (item.recurrence_status === 'ended' || item.recurrence_status === 'unknown') return [];
       const url = safeUrl(item.url);
+      const allDay = typeof item.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.start);
+      const at = (value: unknown) => {
+        if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+        const [year, month, day] = value.split('-').map(Number);
+        return new Date(
+          zonedToUtc(
+            {
+              year: year ?? 0,
+              month: month ?? 0,
+              day: day ?? 0,
+              hour: 0,
+              minute: 0,
+              second: 0,
+            },
+            zone,
+          ),
+        ).toISOString();
+      };
+      const repeats = plainText(item.recurrence_summary, '');
       const parsed = experienceCalendarEvent.safeParse({
         id: `${connectionId}:${plainText(item.uid, 'event', 160)}`,
         title: plainText(item.summary, 'Calendar event'),
-        starts_at: item.start,
-        ends_at: item.end,
+        starts_at: at(item.start),
+        ends_at: at(item.end),
+        ...(allDay ? { all_day: true } : {}),
+        ...(repeats ? { recurrence_summary: repeats } : {}),
         connection_id: connectionId,
         ...(url ? { url } : {}),
       });
       return parsed.success ? [parsed.data] : [];
     });
   }
-  async upcoming(spaceId: string) {
+  async upcoming(spaceId: string, zone = 'UTC') {
     const rows = await this.db
       .select()
       .from(connection)
@@ -377,7 +400,7 @@ export class ExperienceHome {
       const result = await this.effects.read(spaceId, row.id, 'calendar.list', { limit: 100 });
       if ('reason' in result || result.status !== 'succeeded')
         return unavailable('Your calendar could not be read just now.');
-      events.push(...this.calendarEvents(row.id, result.receipt?.detail));
+      events.push(...this.calendarEvents(row.id, result.receipt?.detail, zone));
     }
     return events
       .filter((event) => Date.parse(event.ends_at) >= Date.now())
@@ -393,7 +416,7 @@ export class ExperienceHome {
       .where(and(eq(task.spaceId, spaceId), eq(task.done, false)));
     return {
       ...dayGreeting(profile),
-      upcoming: await this.upcoming(spaceId),
+      upcoming: await this.upcoming(spaceId, profile.time_zone),
       tasks: tasks.filter((item) => !item.done).slice(0, 20),
       open_task_count: counts?.count ?? 0,
     };

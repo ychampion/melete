@@ -270,7 +270,7 @@ const SECONDS: Record<string, number> = {
  * the same ones, at the same wall-clock times, under the same recurrence ids.
  * A rule with COUNT is left alone: its last instance depends on where it began.
  */
-function startNearWindow(event: ICAL.Event, zone: string | null, from: number): void {
+export function startNearWindow(event: ICAL.Event, zone: string | null, from: number): void {
   const rules = event.component.getAllProperties('rrule');
   if (rules.length !== 1) return;
   const rule = rules[0]?.getFirstValue() as ICAL.Recur | undefined;

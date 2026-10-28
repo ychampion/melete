@@ -669,6 +669,8 @@ export function recurrenceWords(
     zone?: string | undefined;
     /** "9:00" and "17:00" (the default), or "9:00 AM" and "5:00 PM" where a page says times that way. */
     clock?: '24h' | '12h';
+    /** Date-only events have no time of day to say. */
+    includeTime?: boolean;
   } = {},
 ): string {
   const minutes = String(start.minute).padStart(2, '0');
@@ -737,6 +739,7 @@ export function recurrenceWords(
     }
   }
   if (!words) return 'On a set schedule';
+  if (options.includeTime === false) words = words.replace(` ${time}`, '');
   if (inMonths) words += ` in ${months}`;
   if (rule.count !== null) words += rule.count === 1 ? ', once' : `, ${rule.count} times`;
   if (rule.until) {

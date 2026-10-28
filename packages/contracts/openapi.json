@@ -8607,6 +8607,12 @@
                                   "ends_at": {
                                     "$ref": "#/components/schemas/__schema374"
                                   },
+                                  "all_day": {
+                                    "type": "boolean"
+                                  },
+                                  "recurrence_summary": {
+                                    "$ref": "#/components/schemas/__schema371"
+                                  },
                                   "connection_id": {
                                     "$ref": "#/components/schemas/__schema370"
                                   },

@@ -14,6 +14,7 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
+import ICAL from 'ical.js';
 import type { Query } from '../broker/records.ts';
 import {
   type CalendarOccurrences,
@@ -30,11 +31,13 @@ import {
   createPayload,
   deletePayload,
   type EventView,
+  eventsInWindow,
   freebusyDetail,
   freebusyPayload,
   listDetail,
   listPayload,
   listWindow,
+  parseIcs,
   retryAfterSeconds,
   updatePayload,
   type WritePayload,
@@ -190,6 +193,32 @@ function eventView(event: GoogleEvent): EventView {
     recurrence: event.recurrence?.length ? event.recurrence.join('\n') : null,
     etag: event.etag ?? null,
   };
+}
+
+/** A Google series uses the same recurrence projection as imported calendars. */
+function seriesView(event: GoogleEvent) {
+  const component = new ICAL.Component('vevent');
+  component.updatePropertyWithValue('uid', event.id ?? event.iCalUID ?? 'series');
+  const time = (field: 'start' | 'end', name: string) => {
+    const value = event[field];
+    if (!value) return;
+    if (value.date) component.updatePropertyWithValue(name, ICAL.Time.fromDateString(value.date));
+    else if (value.dateTime) {
+      const at = value.timeZone
+        ? ICAL.Time.fromString(value.dateTime.slice(0, 19), undefined)
+        : ICAL.Time.fromJSDate(new Date(value.dateTime), true);
+      component.updatePropertyWithValue(name, at);
+      if (value.timeZone) component.getFirstProperty(name)?.setParameter('tzid', value.timeZone);
+    }
+  };
+  time('start', 'dtstart');
+  time('end', 'dtend');
+  for (const line of event.recurrence ?? []) component.addProperty(ICAL.Property.fromString(line));
+  const root = new ICAL.Component('vcalendar');
+  root.addSubcomponent(component);
+  const parsed = parseIcs(root.toString())[0];
+  if (!parsed) throw new Error('Malformed calendar series');
+  return { ...parsed, view: eventView(event) };
 }
 
 export class GoogleCalendarConnector implements Connector {
@@ -416,7 +445,8 @@ export class GoogleCalendarConnector implements Connector {
       }
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
-        const window = listWindow(payload, this.config.now?.() ?? Date.now());
+        const now = this.config.now?.() ?? Date.now();
+        const window = listWindow(payload, now);
         const query = new URLSearchParams({
           maxResults: String(payload.limit),
           // Series and single events that touch the window; a series keeps its rule.
@@ -435,8 +465,23 @@ export class GoogleCalendarConnector implements Connector {
         } | null;
         const items = (listed?.items ?? []).filter((event) => event.status !== 'cancelled');
         // Google cannot order series by start, so the page is put in order here.
-        const events = byStart(items.map(eventView)).slice(0, payload.limit);
-        const truncated = Boolean(listed?.nextPageToken) || items.length > payload.limit;
+        const series = eventsInWindow(
+          items.filter((event) => event.recurrence?.length).map(seriesView),
+          window,
+          payload.limit,
+          {
+            now: payload.from || payload.to ? Date.parse(window.from) : now,
+            timeZone: payload.time_zone ?? 'UTC',
+            includeEnded: !payload.from && !payload.to,
+          },
+        );
+        const combined = byStart([
+          ...items.filter((event) => !event.recurrence?.length).map(eventView),
+          ...series.events,
+        ]);
+        const events = combined.slice(0, payload.limit);
+        const truncated =
+          Boolean(listed?.nextPageToken) || combined.length > payload.limit || series.truncated;
         return this.success(action, listDetail(events, window, truncated, false));
       }
       if (action.kind === 'calendar.delete') {

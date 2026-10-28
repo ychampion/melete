@@ -86,6 +86,69 @@ test('three calls across two connections produce one compound action with attrib
   expect(JSON.stringify(group)).not.toMatch(BACKEND_VOCABULARY);
   expect(projectCards(base, calendar)[0]?.facts).toHaveLength(2);
 });
+
+test('recurring event cards show the next occurrence and its rule in plain words', () => {
+  const [card] = projectCards(
+    {
+      ...base,
+      receipt: {
+        detail: {
+          events: [
+            {
+              summary: 'Planning',
+              start: '2026-11-03T17:00:00.000Z',
+              end: '2026-11-03T18:00:00.000Z',
+              series_start: '2026-09-08T16:00:00.000Z',
+              recurrence_status: 'active',
+              recurrence_summary: 'Every Tuesday',
+              location: 'Office',
+            },
+          ],
+        },
+      },
+    },
+    { id: 'calendar-connection', label: 'My calendar', provider: 'caldav' },
+  );
+  expect(card?.facts).toEqual([
+    { label: 'Next', value: '2026-11-03T17:00:00.000Z' },
+    { label: 'Ends', value: '2026-11-03T18:00:00.000Z' },
+    { label: 'Place', value: 'Office' },
+    { label: 'Repeats', value: 'Every Tuesday' },
+  ]);
+  expect(JSON.stringify(card)).not.toContain('2026-09-08');
+});
+
+test('ended and unreadable series do not present the original start as the next occurrence', () => {
+  for (const status of ['ended', 'unknown']) {
+    const [card] = projectCards(
+      {
+        ...base,
+        receipt: {
+          detail: {
+            events: [
+              {
+                summary: 'Planning',
+                start: '2026-09-08T16:00:00.000Z',
+                end: '2026-09-08T17:00:00.000Z',
+                recurrence_status: status,
+                recurrence_summary: 'Every Tuesday, 3 times',
+              },
+            ],
+          },
+        },
+      },
+      { id: 'calendar-connection', label: 'My calendar', provider: 'caldav' },
+    );
+    expect(card?.facts).toEqual([
+      {
+        label: 'Status',
+        value: status === 'ended' ? 'Series ended' : 'Next occurrence unavailable',
+      },
+      { label: 'Repeats', value: 'Every Tuesday, 3 times' },
+    ]);
+    expect(JSON.stringify(card)).not.toContain('2026-09-08');
+  }
+});
 test('source content cannot smuggle backend labels or credential URLs', () => {
   expect(plainText('{"canonical_payload": {"to": "a@b.c"}}', 'Event')).toBe('Event');
   expect(plainText('Lunch, key sk-proj-Q7vLm2Xr9TbW4kZp8NcY3dHs', 'Event')).toBe(
