@@ -497,6 +497,7 @@ export class GoogleCalendarConnector implements Connector {
           },
         },
       };
+      await ctx.beforeCalendarWrite?.();
       dispatched = true;
       // Guests are told by Google itself, and only when there are guests.
       const notify = guests.length ? '?sendUpdates=all' : '';
