@@ -686,13 +686,19 @@ export const adapter = {
     }
   },
   questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
-  /** One of the offered answers by its id, or `{ text }` for an answer in the person's words. */
-  answer: (id: string, answer: string | { text: string }) =>
+  /**
+   * One of the offered answers by its id, `{ text }` for an answer in the
+   * person's words, or `{ secret }` for a question that asked for one: that
+   * value goes to its own route and is sealed, never sent as a message.
+   */
+  answer: (id: string, answer: string | { text: string } | { secret: string }) =>
     guard<{ status: 'ok' }>(() =>
-      api.POST('/quick-answers/{id}', {
-        ...path(id),
-        body: typeof answer === 'string' ? { option_id: answer } : { text: answer.text },
-      }),
+      typeof answer !== 'string' && 'secret' in answer
+        ? api.POST('/quick-answers/{id}/secret', { ...path(id), body: { value: answer.secret } })
+        : api.POST('/quick-answers/{id}', {
+            ...path(id),
+            body: typeof answer === 'string' ? { option_id: answer } : { text: answer.text },
+          }),
     ).then(worthHearing),
   /** Stop waiting for an answer to a question the person no longer wants to answer. */
   dismissQuestion: (id: string) =>
