@@ -6,6 +6,12 @@ import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 const template = readFileSync(join(import.meta.dir, '..', '.env.example'), 'utf8');
 
 describe('what configure.ts tells an operator about the provider it wrote', () => {
+  test('Nebius reads its own environment key', () => {
+    const selected = { ...parseEnvFile(template), MELETE_DEFAULT_PROVIDER: 'nebius' };
+    expect(providerWarnings(selected).join('\n')).toContain('NEBIUS_API_KEY is empty');
+    expect(providerWarnings({ ...selected, NEBIUS_API_KEY: 'nebius-test-key' })).toEqual([]);
+  });
+
   test('the example configuration selects a real provider and leaves its key empty', () => {
     const warnings = providerWarnings(parseEnvFile(template));
     expect(warnings).toHaveLength(1);
