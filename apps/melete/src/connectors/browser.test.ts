@@ -408,6 +408,31 @@ test('a step that ran onto a page with a field for a secret is done, and the per
   expect(s.parks).toEqual(['sensitive_input_require_takeover']);
 });
 
+test('a hand-off that fails after a step ran leaves the step done and says the hand-off failed', async () => {
+  const s = fixture(() =>
+    Response.json({
+      session_id: 'brws_fixture',
+      control_epoch: 4,
+      result: { observed: false, not_observed: 'sensitive_input_require_takeover' },
+    }),
+  );
+  s.sessions.park = async () => {
+    throw new Error('database unavailable');
+  };
+  const action = connectorAction('browser.click', {
+    session_id: 'brws_fixture',
+    control_epoch: 4,
+    after_observation: 'obs_prior',
+    role: 'button',
+    name: 'Checkout',
+  });
+  const done = await s.connector.execute(action, connectorContext(action));
+  expect(done.outcome).toBe('succeeded');
+  expect((done as { receipt: { detail: Record<string, unknown> } }).receipt.detail.hand_off).toBe(
+    'browser_park_failed',
+  );
+});
+
 test('sensitive-input refusal is a service wait and uncertain submits are never marked unsent', async () => {
   const s = fixture(() =>
     Response.json({ error: 'sensitive_input_require_takeover' }, { status: 409 }),

@@ -601,17 +601,26 @@ export function createBrowserConnector(options: {
           detail.handed_to = 'person';
         } else if (result.result?.not_observed === 'sensitive_input_require_takeover') {
           // The step ran onto a page with a field for a secret: it is done, and
-          // that field is the person's, as when a step itself meets one.
-          if (options.sessions.handOff) {
-            await handOff(ctx, session.id, 'sign_in', '', action);
-            detail.handed_to = 'person';
-          } else
-            await options.sessions.park(
-              ctx,
-              session.id,
-              'sensitive_input_require_takeover',
-              action.attempt_id,
+          // that field is the person's, as when a step itself meets one. A hand-off
+          // that fails is said in the receipt; the step that ran stays done.
+          try {
+            if (options.sessions.handOff) {
+              await handOff(ctx, session.id, 'sign_in', '', action);
+              detail.handed_to = 'person';
+            } else
+              await options.sessions.park(
+                ctx,
+                session.id,
+                'sensitive_input_require_takeover',
+                action.attempt_id,
+              );
+          } catch (error) {
+            console.error(
+              'browser hand-off after a step failed:',
+              error instanceof Error ? error.message : String(error),
             );
+            detail.hand_off = 'browser_park_failed';
+          }
         }
         if (
           kind === 'observe' &&
