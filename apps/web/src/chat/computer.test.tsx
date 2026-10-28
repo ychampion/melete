@@ -154,18 +154,26 @@ test('while the person shows the agent how, the panel says the steps are recorde
 });
 
 test('what the person is told when control changes hands', () => {
-  expect(controlChangedWords('teach', 'Nova')).toBe(
+  expect(controlChangedWords('teach', 'Nova', { teaching: true })).toBe(
     'Recording your steps. Do the task, then press Done',
   );
-  expect(controlChangedWords('give', 'Nova', 4)).toBe(
+  expect(controlChangedWords('give', 'Nova', { shown_steps: 4 })).toBe(
     'Nova has your 4 steps and will draft a skill for you to check',
   );
-  expect(controlChangedWords('give', 'Nova', 1)).toContain('your step and');
-  expect(controlChangedWords('give', 'Nova', 0)).toBe('Nova has the browser again');
-  expect(controlChangedWords('discard', 'Nova')).toBe(
+  expect(controlChangedWords('give', 'Nova', { shown_steps: 1 })).toContain('your step and');
+  expect(controlChangedWords('give', 'Nova', { shown_steps: 0 })).toBe(
+    'Nova has the browser again',
+  );
+  expect(controlChangedWords('discard', 'Nova', {})).toBe(
     'Your steps were thrown away. Nova has the browser again',
   );
-  expect(controlChangedWords('take', 'Nova')).toBe('You have the browser');
+  expect(controlChangedWords('take', 'Nova', {})).toBe('You have the browser');
+});
+
+test('a takeover the service did not start as teaching is never said to be recording', () => {
+  const words = controlChangedWords('teach', 'Nova', {});
+  expect(words).not.toContain('Recording your steps');
+  expect(words).toBe('You have the browser. Your steps aren’t being recorded');
 });
 
 test('a page with no picture says so rather than showing an old one', () => {

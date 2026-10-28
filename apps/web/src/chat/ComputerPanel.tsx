@@ -843,13 +843,18 @@ export function computerEmptyWords(
 export function controlChangedWords(
   to: 'take' | 'teach' | 'give' | 'discard',
   agentName: string,
-  shownSteps?: number,
+  result: { teaching?: boolean; shown_steps?: number },
 ): string {
   if (to === 'take') return 'You have the browser';
-  if (to === 'teach') return `Recording your steps. Do the task, then press Done`;
+  // Recording is what the service started, never what the button asked for.
+  if (to === 'teach')
+    return result.teaching
+      ? 'Recording your steps. Do the task, then press Done'
+      : 'You have the browser. Your steps aren’t being recorded';
   if (to === 'discard') return `Your steps were thrown away. ${agentName} has the browser again`;
-  if (shownSteps)
-    return `${agentName} has your ${shownSteps === 1 ? 'step' : `${shownSteps} steps`} and will draft a skill for you to check`;
+  const shown = result.shown_steps;
+  if (shown)
+    return `${agentName} has your ${shown === 1 ? 'step' : `${shown} steps`} and will draft a skill for you to check`;
   return `${agentName} has the browser again`;
 }
 
@@ -914,7 +919,7 @@ export function ComputerPanel({
       });
       return;
     }
-    toast({ kind: 'ok', title: controlChangedWords(to, agentName, result.data.shown_steps) });
+    toast({ kind: 'ok', title: controlChangedWords(to, agentName, result.data) });
     onChanged();
   };
   const empty =
