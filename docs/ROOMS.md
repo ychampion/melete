@@ -138,6 +138,26 @@ resumes from `Last-Event-ID`. A room view says who is looking at it with a
 heartbeat (`POST /rooms/{id}/presence`); presence is shown, and decides
 nothing about who may read.
 
+A message can carry photos and files: upload each to `POST /rooms/{id}/attachments`
+and name it in the message's `attachments`. Everyone in the room reads them
+(`GET /rooms/{id}/attachments/{file}/content`), except in a summaries-only room
+(below); someone removed from the room, or never in it, does not. An ask hands
+them to its request, and the room's model reads a photo itself, or the
+operator's vision model (`MELETE_MODEL_VISION`) takes the call and answers it.
+Where neither can read photos, an ask with one is refused with a plain sentence
+saying so, and the photo can still be posted without asking. A guest attaches
+files only where guests may ask.
+
+In a room set to "Show me only what needs me", a posted file is read as it is
+only by the person who posted it and the room's maker. Everyone else sees what
+kind of file it is and its id, with no name, size or pages, in the thread and
+its live stream, and `content` (and its `preview`) answers `403 summaries_only`.
+They read it with `POST /rooms/{id}/attachments/{file}/original`, which notes
+the open in the room's activity, naming who opened what kind of file, before a
+byte is sent; if the note cannot be written, nothing is sent. The same person
+opening the same file again within a few minutes is one note. The room's request
+still reads every file.
+
 ## Permissions in a room
 
 When a request needs permission (posting to people through the room's

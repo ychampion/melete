@@ -893,6 +893,98 @@ const admission = <T extends z.ZodType>(
   },
 });
 
+/** A room's files: uploaded by one of its people, read by whoever is in the room now. */
+function roomAttachmentPaths(room: ReturnType<typeof idParam>, notIn: ReturnType<typeof problem>) {
+  const file = { path: z.object({ id: z.string(), fileId: z.string() }) };
+  return {
+    '/rooms/{id}/attachments': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Upload a file to post in the room',
+        description:
+          'Multipart form data, as `POST /attachments` takes it. The file waits, visible only to ' +
+          'whoever uploaded it, until a message in this room names it in `attachments`; from ' +
+          'then on everyone in the room reads it. A guest uploads only where guests may ask.',
+        requestParams: room,
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: z.object({
+                file: z.string().meta({ format: 'binary' }),
+                preview: z.string().meta({ format: 'binary' }).optional(),
+              }),
+            },
+          },
+        },
+        responses: {
+          '201': jsonResponse('The file, ready to post', attachmentResponse),
+          '400': problem('Empty, unreadable, or not the kind of file it says it is'),
+          '403': problem('A guest, where guests may not ask'),
+          '404': notIn,
+          '413': problem('Larger than the limit'),
+          '415': problem('A kind of file Melete does not read'),
+          '429': problem('More uploads at once, or in a while, than the operator allows'),
+        },
+      },
+    },
+    '/rooms/{id}/attachments/{fileId}/content': {
+      get: {
+        tags: ['rooms'],
+        summary: 'Read a file posted in the room',
+        description:
+          'For everyone in the room once it is posted, and for its uploader before. ' +
+          '`variant=preview` reads the small copy a picture has. In a room set to summaries ' +
+          'only, only the person who posted it and the room’s maker read it here; everyone ' +
+          'else opens the original.',
+        requestParams: { ...file, query: attachmentContentQuery },
+        responses: {
+          '200': {
+            description: 'The bytes',
+            content: {
+              'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+            },
+          },
+          '403': problem('The room shows only what needs you (`summaries_only`)'),
+          '404': problem('Not in this room, or no such file'),
+        },
+      },
+    },
+    '/rooms/{id}/attachments/{fileId}/original': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Open the original of a file posted in the room, noted in its activity',
+        description:
+          'The same bytes `GET /rooms/{id}/attachments/{fileId}/content` serves, read on ' +
+          'purpose. In a room set to summaries only this is how its people read a file someone ' +
+          'else posted, and each open is noted in the room’s activity before it is sent.',
+        requestParams: { ...file, query: attachmentContentQuery },
+        responses: {
+          '200': {
+            description: 'The bytes',
+            content: {
+              'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+            },
+          },
+          '404': problem('Not in this room, or no such file'),
+        },
+      },
+    },
+    '/rooms/{id}/attachments/{fileId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Take back a file not posted yet',
+        requestParams: file,
+        responses: {
+          '200': jsonResponse('Deleted', z.object({ ok: z.literal(true) })),
+          '404': problem('Not in this room, or no such file'),
+          '409': problem('Already posted'),
+        },
+      },
+    },
+  };
+}
+
 /** The rooms routes. Each names its room in the path and checks the caller's membership itself. */
 function roomsPaths() {
   const room = idParam('id', 'Room id');
@@ -1065,6 +1157,7 @@ function roomsPaths() {
         },
       },
     },
+    ...roomAttachmentPaths(room, notIn),
     '/rooms/{id}/threads': {
       get: {
         tags: ['rooms'],
@@ -1109,7 +1202,7 @@ function roomsPaths() {
           '200': jsonResponse('The message', roomMessageResponse),
           '404': notIn,
           '409': problem(
-            'The thread is closed, or the submission ID belongs to a different message',
+            "The thread is closed, the submission ID belongs to a different message, or it asks with a photo the room's model cannot read",
           ),
         },
       },

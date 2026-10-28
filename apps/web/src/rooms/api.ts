@@ -140,20 +140,41 @@ export const roomsApi = {
       }),
     ),
   threads: (id: string) => call<ThreadList>(() => api.GET('/rooms/{id}/threads', room(id))),
-  startThread: (id: string, text: string, askAgent: boolean, key: string) =>
+  startThread: (
+    id: string,
+    text: string,
+    askAgent: boolean,
+    key: string,
+    attachments: readonly string[] = [],
+  ) =>
     call<Posted>(() =>
       api.POST('/rooms/{id}/threads', {
         ...room(id),
-        body: { text, ask_agent: askAgent, submission_id: key },
+        body: {
+          text,
+          ask_agent: askAgent,
+          submission_id: key,
+          ...(attachments.length ? { attachments: [...attachments] } : {}),
+        },
       }),
     ),
   thread: (id: string, threadId: string) =>
     call<ThreadView>(() => api.GET('/rooms/{id}/threads/{threadId}', thread(id, threadId))),
-  post: (id: string, threadId: string, text: string, key: string) =>
+  post: (
+    id: string,
+    threadId: string,
+    text: string,
+    key: string,
+    attachments: readonly string[] = [],
+  ) =>
     call<Posted>(() =>
       api.POST('/rooms/{id}/threads/{threadId}/messages', {
         ...thread(id, threadId),
-        body: { text, submission_id: key },
+        body: {
+          text,
+          submission_id: key,
+          ...(attachments.length ? { attachments: [...attachments] } : {}),
+        },
       }),
     ),
   stop: (id: string, jobId: string) =>

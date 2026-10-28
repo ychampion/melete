@@ -70,9 +70,13 @@ export function refusal(
   return null;
 }
 
-/** The address of a file sent, or about to be sent, or of a picture's small copy. */
-export const attachmentUrl = (id: string, preview = false) =>
-  `${API_BASE_URL}/attachments/${encodeURIComponent(id)}/content${preview ? '?variant=preview' : ''}`;
+/**
+ * The address of a file sent, or about to be sent, or of a picture's small
+ * copy. `base` names where the file lives when it is not the person's own
+ * chat: a room's files are under `/rooms/{id}`.
+ */
+export const attachmentUrl = (id: string, preview = false, base = '') =>
+  `${API_BASE_URL}${base}/attachments/${encodeURIComponent(id)}/content${preview ? '?variant=preview' : ''}`;
 
 /**
  * The qualities a copy is tried at, at each size, best first. Detail goes in
@@ -172,6 +176,7 @@ export async function modelCopy(file: File): Promise<Blob | null> {
 export async function uploadAttachment(
   file: File,
   preview: Blob | null,
+  base = '',
 ): Promise<Result<AttachmentView>> {
   const form = new FormData();
   form.append('file', file, file.name);
@@ -181,7 +186,7 @@ export async function uploadAttachment(
       string,
       string
     >;
-    const response = await client.options.fetch(`${API_BASE_URL}/attachments`, {
+    const response = await client.options.fetch(`${API_BASE_URL}${base}/attachments`, {
       method: 'POST',
       headers,
       credentials: client.options.credentials,
@@ -237,10 +242,49 @@ export function fileNote(
     : null;
 }
 
-/** Take back an uploaded file that was not sent. Failing quietly is fine: it is swept after a day. */
-export async function removeAttachment(id: string): Promise<void> {
+/**
+ * Open the original of a room's file on purpose (`POST .../original`): in a
+ * room that shows only what needs you, the open is noted in its activity
+ * before the file is sent. Answers the file and the name it was sent under.
+ */
+export async function openOriginal(
+  id: string,
+  base: string,
+): Promise<Result<{ blob: Blob; name: string }>> {
   try {
-    await client.options.fetch(`${API_BASE_URL}/attachments/${encodeURIComponent(id)}`, {
+    const response = await client.options.fetch(
+      `${API_BASE_URL}${base}/attachments/${encodeURIComponent(id)}/original`,
+      {
+        method: 'POST',
+        headers: client.options.headers as Record<string, string>,
+        credentials: client.options.credentials,
+      },
+    );
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as UploadAnswer;
+      return response.status < 500 && body?.error?.message
+        ? { data: null, error: body.error.message, unavailable: null }
+        : { data: null, error: null, unavailable: body?.error?.message || offline() };
+    }
+    const named = /filename\*=UTF-8''([^;]+)/i.exec(
+      response.headers.get('content-disposition') ?? '',
+    );
+    let name = 'original';
+    try {
+      if (named?.[1]) name = decodeURIComponent(named[1]);
+    } catch {
+      // A name that does not decode is not needed to save the file.
+    }
+    return { data: { blob: await response.blob(), name }, error: null, unavailable: null };
+  } catch {
+    return { data: null, error: null, unavailable: offline() };
+  }
+}
+
+/** Take back an uploaded file that was not sent. Failing quietly is fine: it is swept after a day. */
+export async function removeAttachment(id: string, base = ''): Promise<void> {
+  try {
+    await client.options.fetch(`${API_BASE_URL}${base}/attachments/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: client.options.headers as Record<string, string>,
       credentials: client.options.credentials,
@@ -305,8 +349,8 @@ const queued = queueOf(() => limitsNow.uploads_at_once ?? BROWSER_UPLOADS_AT_ONC
 
 let counter = 0;
 
-/** The files in one message box, as they upload. */
-export function useAttachments() {
+/** The files in one message box, as they upload: to the person's own chat, or under `base`. */
+export function useAttachments(base = '') {
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
   const [limits, setLimits] = useState(limitsNow);
@@ -383,12 +427,12 @@ export function useAttachments() {
             if (tried > 0) update(pending.key, { state: 'uploading', error: null });
             // A file taken out while it waited is never sent.
             const result = await queued(async () =>
-              kept(pending.key) ? uploadAttachment(file, preview) : null,
+              kept(pending.key) ? uploadAttachment(file, preview, base) : null,
             );
             if (!result) return;
             if (!kept(pending.key)) {
               // Removed while it uploaded.
-              if (result.data) void removeAttachment(result.data.id);
+              if (result.data) void removeAttachment(result.data.id, base);
               return;
             }
             if (result.data) {
@@ -407,20 +451,23 @@ export function useAttachments() {
           await attempt(0);
         })();
     },
-    [update, limits],
+    [update, limits, base],
   );
 
-  const remove = useCallback((key: string) => {
-    const file = live.current.find((entry) => entry.key === key);
-    if (!file) return;
-    gone.current.add(key);
-    clearTimeout(retries.current.get(key));
-    retries.current.delete(key);
-    if (file.thumb) URL.revokeObjectURL(file.thumb);
-    if (file.view) void removeAttachment(file.view.id);
-    setFiles((current) => current.filter((entry) => entry.key !== key));
-    setProblem(null);
-  }, []);
+  const remove = useCallback(
+    (key: string) => {
+      const file = live.current.find((entry) => entry.key === key);
+      if (!file) return;
+      gone.current.add(key);
+      clearTimeout(retries.current.get(key));
+      retries.current.delete(key);
+      if (file.thumb) URL.revokeObjectURL(file.thumb);
+      if (file.view) void removeAttachment(file.view.id, base);
+      setFiles((current) => current.filter((entry) => entry.key !== key));
+      setProblem(null);
+    },
+    [base],
+  );
 
   /** Take out every file that did not upload, as a new chat starts without them. */
   const dropFailed = useCallback(() => {

@@ -5,6 +5,8 @@
  * own space.
  */
 import {
+  type AttachmentKept,
+  type AttachmentView,
   conversationTurn,
   type PermissionCard,
   type RoomMessage,
@@ -57,6 +59,8 @@ export function threadView(
 export function messageView(
   row: typeof roomMessage.$inferSelect,
   names: ReadonlyMap<string, string>,
+  /** The files posted with it, as this viewer sees them; none are shown once it is deleted. */
+  files?: readonly (AttachmentView | AttachmentKept)[],
 ): RoomMessage {
   return roomMessageContract.parse({
     id: row.id,
@@ -68,6 +72,7 @@ export function messageView(
     mentions: row.mentions,
     request_state: row.requestState,
     request_job_id: row.requestJobId,
+    ...(files?.length && !row.redactedAt ? { attachments: [...files] } : {}),
     created_at: row.createdAt.toISOString(),
   });
 }
