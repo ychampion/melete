@@ -508,6 +508,28 @@ export function nextEventView(
     }),
   );
   component.removeAllProperties('exdate');
+  const until =
+    parsed.ok && parsed.value.until && 'at' in parsed.value.until
+      ? parsed.value.until.at.getTime()
+      : null;
+  // For IANA-only/floating times the iterator cannot compare a UTC UNTIL
+  // correctly. Enforce that bound on normalized instants below instead.
+  // RDATE is independent of RRULE's UNTIL, so keep those candidates apart.
+  const extraDates: ICAL.Time[] = [];
+  if (until !== null) {
+    for (const property of component.getAllProperties('rrule')) {
+      const rule = property.getFirstValue();
+      if (rule instanceof ICAL.Recur) {
+        rule.until = null;
+        property.setValue(rule);
+      }
+    }
+    for (const property of component.getAllProperties('rdate')) {
+      for (const value of property.getValues())
+        if (value instanceof ICAL.Time) extraDates.push(value);
+    }
+    component.removeAllProperties('rdate');
+  }
   const projected = new ICAL.Event(component, { exceptions: Object.values(event.exceptions) });
   startNearWindow(projected, zone, from);
   let best: EventView | null = null;
@@ -541,6 +563,11 @@ export function nextEventView(
       continue;
     best = consider(exception, exception.startDate, exception.endDate, best);
   }
+  for (const extra of extraDates) {
+    if (excluded.has(icalInstant(extra, zone))) continue;
+    const details = projected.getOccurrenceDetails(extra);
+    best = consider(details.item, details.startDate, details.endDate, best);
+  }
   const iterator = projected.iterator();
   // Supported COUNT values are bounded by the shared parser. Walk through
   // that count once more to distinguish a long exhausted series from a read
@@ -553,12 +580,7 @@ export function nextEventView(
     const next = iterator.next();
     if (!next) return best ?? { ...series, start: '', end: '', recurrence_status: 'ended' };
     const original = icalInstant(next, zone);
-    if (
-      parsed.ok &&
-      parsed.value.until &&
-      'at' in parsed.value.until &&
-      instantMs(original) > parsed.value.until.at.getTime()
-    )
+    if (until !== null && instantMs(original) > until)
       return best ?? { ...series, start: '', end: '', recurrence_status: 'ended' };
     if (best && instantMs(original) >= instantMs(best.start)) return best;
     if (excluded.has(original)) continue;
