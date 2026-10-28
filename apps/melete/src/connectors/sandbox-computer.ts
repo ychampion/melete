@@ -391,6 +391,73 @@ export class ComputerPayloadRefusal extends Error {
 const SETTLE_MS = 300;
 
 /**
+ * How a click or a key press that may lead to another page waits for it,
+ * read from the title of the window in front: a link starts loading, and the
+ * window still shows the page it left until the new one lands.
+ */
+export type PageWatch = {
+  /** How long after the step the window is watched for another page before it counts as the same one. */
+  startMs: number;
+  /** The longest a page that started to change is waited for before the screen is captured anyway. */
+  landMs: number;
+  /** How often the window's title is read. */
+  pollMs: number;
+};
+export const PAGE_WATCH: PageWatch = { startMs: 1_500, landMs: 8_000, pollMs: 250 };
+
+/** Steps that can take the browser to another page: a click on a link, Return in a search box. */
+const LEADS_AWAY = new Set<DesktopCommand['kind']>(['click', 'key']);
+
+/** Titles a browser window shows while no page has landed in it yet. */
+const BLANK_TITLE =
+  /^(?:chromium|new tab - chromium|about:blank - chromium|untitled - chromium)?$/i;
+
+/** Said with a step whose new page had not landed when the screen was captured. */
+export const PAGE_STILL_LOADING =
+  'The step led to another page, which was still loading when the screen was captured, so the screenshot and screen_text may show the page before it. Take a screenshot before describing the new page.';
+/** Said with a step whose new page was never captured. */
+export const PAGE_NOT_OBSERVED =
+  'The step led to another page, but nothing of that page was observed. Take a screenshot before describing it.';
+
+type Landing = { changed: boolean; settled: boolean; window: string };
+
+/**
+ * Wait for the page a step led to: the window in front is read until its
+ * title moves off the one the step left, then until it holds still. A step
+ * after which it does not move within `startMs` stayed on its page. Null when
+ * a person took the computer meanwhile.
+ */
+async function watchPage(
+  from: string,
+  started: number,
+  watch: PageWatch,
+  readWindow: () => Promise<string | null>,
+  takenOver: () => Promise<boolean>,
+): Promise<Landing | null> {
+  let last = from;
+  let changed = false;
+  let still = 0;
+  for (;;) {
+    const elapsed = performance.now() - started;
+    if (!changed && elapsed >= watch.startMs) return { changed, settled: true, window: last };
+    if (changed && elapsed >= watch.landMs) return { changed, settled: false, window: last };
+    await Bun.sleep(watch.pollMs);
+    if (await takenOver()) return null;
+    const now = await readWindow();
+    // A window that cannot be read says nothing more: what is known so far stands.
+    if (now === null) return { changed, settled: !changed, window: last };
+    if (!changed) {
+      if (now === from) continue;
+      changed = true;
+    }
+    // Two more reads of one real page's title in a row: it has landed.
+    still = now === last && !BLANK_TITLE.test(now) ? still + 1 : 0;
+    last = now;
+    if (still >= 2) return { changed, settled: true, window: now };
+  }
+}
+
+/**
  * Capture the screen, keep the PNG in the job workspace at a path named for
  * the action, and say where, how big and what it is.
  */
@@ -512,6 +579,8 @@ export async function runComputerAction(options: {
   settleMs?: number;
   /** How long a bot check is given to pass by itself; `CHALLENGE_WAIT_MS` unless set. */
   challengeWaitMs?: number;
+  /** How a click or key that may lead to another page waits for it; `PAGE_WATCH` unless set. */
+  pageWatch?: PageWatch;
   /** The chat's display of the computer; absent means display 0, as before displays. */
   display?: DesktopDisplay | null;
 }): Promise<Record<string, JsonValue>> {
@@ -620,6 +689,7 @@ export async function runComputerAction(options: {
     screenshot: 'not taken: a person took control',
   };
   if (base.control_changed) return notTaken;
+  const started = performance.now();
   const settle = options.settleMs ?? (commands.at(-1)?.kind === 'open' ? 0 : SETTLE_MS);
   if (settle > 0) await Bun.sleep(settle);
   // A person who takes the computer while the screen settles, or while it is
@@ -630,6 +700,39 @@ export async function runComputerAction(options: {
     return now.control === 'human' || now.epoch !== held.epoch;
   };
   if (await takenOver()) return notTaken;
+  // A click or key that led to another page is captured once that page has
+  // landed, so the screen the model is shown is the page it would describe.
+  // The window it left is the one the step itself read, right after it.
+  const from = steps.at(-1)?.window;
+  const last = commands[steps.length - 1];
+  let landing: Landing | null = null;
+  if (last && LEADS_AWAY.has(last.kind) && typeof from === 'string' && from) {
+    landing = await watchPage(
+      from,
+      started,
+      options.pageWatch ?? PAGE_WATCH,
+      async () => {
+        try {
+          const info = infoOf(
+            await provider.computer(handle, { kind: 'info' }, signal, display ?? undefined),
+          );
+          return typeof info.window === 'string' ? info.window : null;
+        } catch {
+          return null;
+        }
+      },
+      takenOver,
+    );
+    if (!landing) return notTaken;
+  }
+  const landed: Record<string, JsonValue> = landing
+    ? {
+        ...done,
+        window: landing.window,
+        page_changed: landing.changed,
+        ...(landing.changed && !landing.settled ? { page_note: PAGE_STILL_LOADING } : {}),
+      }
+    : done;
   try {
     const picture = await capture(options, provider, handle, signal, takenOver);
     if (!picture) return notTaken;
@@ -644,8 +747,12 @@ export async function runComputerAction(options: {
     );
     // Read after the picture: a person who took the computer meanwhile is not shown either.
     if (await takenOver()) return notTaken;
-    return { ...done, ...picture, screen_text: screen };
+    return { ...landed, ...picture, screen_text: screen };
   } catch (error) {
-    return { ...done, screenshot: `not taken: ${said(error)}` };
+    return {
+      ...landed,
+      screenshot: `not taken: ${said(error)}`,
+      ...(landing?.changed ? { page_note: PAGE_NOT_OBSERVED } : {}),
+    };
   }
 }

@@ -127,6 +127,8 @@ test('a computer screenshot result includes the text view built from the page’
         controls: new MemoryComputerControls(),
         signal: AbortSignal.timeout(5_000),
         settleMs: 0,
+        // The click stays on its page; this test is about what the look carries.
+        pageWatch: { startMs: 0, landMs: 0, pollMs: 0 },
       });
       const screen = detail.screen_text as Record<string, string>;
       expect(screen.about_this_text).toBe(SCREEN_TEXT_NOTICE);
