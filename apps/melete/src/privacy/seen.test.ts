@@ -259,45 +259,14 @@ describe('what the model saw', () => {
     expect(await store.seen(CHAT, 'trn_109')).toHaveLength(24);
   });
 
-  test('a space keeps at most 2400 pieces of text across conversations and leaves other spaces alone', async () => {
+  test('a space has no limit of its own across conversations', async () => {
     const { store } = setup();
     const scope = await store.scope(CHAT, principal.attemptId);
     const pieces = turnPieces(0, 240);
-    await store.recordSeen(
-      { ...scope, spaceId: 'other-space', conversationId: 'other-chat' },
-      pieces,
-    );
     for (let i = 0; i < 11; i++)
       await store.recordSeen({ ...scope, conversationId: `chat_${i}` }, pieces);
-    expect(await store.seen('chat_0', 'trn_1')).toEqual([]);
-    expect(await store.seen('chat_1', 'trn_1')).toHaveLength(240);
-    expect(await store.seen('other-chat', 'trn_1')).toHaveLength(240);
+    expect(await store.seen('chat_0', 'trn_1')).toHaveLength(240);
     expect(store.seenParts.filter((part) => part.text)).toHaveLength(2640);
-    // A retained blanked digest also prevents a history retry moving to a newer answer.
-    await store.recordSeen({ ...scope, conversationId: 'chat_0', turnId: 'resumed' }, pieces);
-    expect(await store.seen('chat_0', 'resumed')).toEqual([]);
-  });
-
-  test('a space caps blanked digest rows at 24000, deleting the oldest first', async () => {
-    const { store } = setup();
-    const scope = await store.scope(CHAT, principal.attemptId);
-    const [part] = turnPieces(0, 1);
-    if (!part) throw new Error('no piece');
-    // Already blanked history, as a long-lived space could have accumulated.
-    store.seenParts.push(
-      ...Array.from({ length: 24000 }, (_, i) => ({
-        ...part,
-        text: '',
-        truncated: true,
-        spaceId: SPACE,
-        conversationId: `old_${i}`,
-        turnId: 'old',
-      })),
-    );
-    await store.recordSeen(scope, turnPieces(1));
-    expect(store.seenParts).toHaveLength(24000);
-    expect(store.seenParts[0]?.conversationId).toBe('old_24');
-    expect(await store.seen(CHAT, scope.turnId ?? '')).toHaveLength(24);
   });
 
   test('an answer with no record has no route and no pieces', async () => {

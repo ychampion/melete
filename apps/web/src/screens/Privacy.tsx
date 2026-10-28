@@ -509,7 +509,7 @@ export function PrivacyTab() {
 
       <Section
         title="What the model saw"
-        sub="Keep the redacted text sent to cloud models so you can inspect it beside an answer. History is limited per conversation and per space; the oldest answers lose their copy first."
+        sub="Keep the redacted text sent to cloud models so you can inspect it beside an answer. Each conversation keeps a limited history; the oldest answers lose their copy first."
       >
         <SwitchRow
           label="Keep what the model saw"

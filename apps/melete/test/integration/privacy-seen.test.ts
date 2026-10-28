@@ -167,8 +167,13 @@ describe.if(handle !== null)('bounded history of what the model saw over Postgre
     expect(await live()).toHaveLength(240);
   });
 
-  test('concurrent conversations respect the space text cap and leave other spaces alone', async () => {
-    const watched = postgres(handle.url, { max: 4, onnotice: () => {} });
+  test('a space has no limit of its own, and no write or read filters by space', async () => {
+    const statements: string[] = [];
+    const watched = postgres(handle.url, {
+      max: 4,
+      onnotice: () => {},
+      debug: (_connection, query) => statements.push(query),
+    });
     try {
       const watchedStore = new PostgresPrivacyStore(watched);
       const parts = pieces(240);
@@ -176,45 +181,20 @@ describe.if(handle !== null)('bounded history of what the model saw over Postgre
         { ...scope, spaceId: OTHER_SPACE, conversationId: 'other' },
         parts,
       );
-      await watchedStore.recordSeen({ ...scope, conversationId: 'oldest' }, parts);
       await Promise.all(
-        Array.from({ length: 10 }, (_, i) =>
+        Array.from({ length: 11 }, (_, i) =>
           watchedStore.recordSeen({ ...scope, conversationId: `chat_${i}` }, parts),
         ),
       );
-      expect(await watchedStore.seen('oldest', 'trn_1')).toEqual([]);
-      // Blanked digests still prevent a retry from becoming a later answer.
-      await watchedStore.recordSeen(
-        { ...scope, conversationId: 'oldest', turnId: 'resumed' },
-        parts,
-      );
-      expect(await watchedStore.seen('oldest', 'resumed')).toEqual([]);
+      expect(await watchedStore.seen('chat_0', 'trn_1')).toHaveLength(240);
     } finally {
       await watched.end();
     }
     const rows = await sql`select space_id, count(*)::int as count from privacy_seen
       where text <> '' group by space_id`;
-    expect(rows.find((row) => row.space_id === SPACE)?.count).toBe(2400);
+    expect(rows.find((row) => row.space_id === SPACE)?.count).toBe(2640);
     expect(rows.find((row) => row.space_id === OTHER_SPACE)?.count).toBe(240);
-    const [retained] =
-      await sql`select count(*)::int as count from privacy_seen where space_id = ${SPACE}`;
-    expect(retained?.count).toBe(2640);
-  });
-
-  test('space retention bounds blanked rows and removes the oldest without touching another space', async () => {
-    await sql`insert into privacy_seen (space_id, conversation_id, turn_id, source, digest, text, truncated)
-      select ${SPACE}, 'old_' || n, 'old', 'you', md5(n::text), '', true
-      from generate_series(0, 23999) n order by n`;
-    await sql`insert into privacy_seen (space_id, conversation_id, turn_id, source, digest, text, truncated)
-      values (${OTHER_SPACE}, 'other', 'old', 'you', 'other', '', true)`;
-    await store().recordSeen(scope, turn(1));
-    const rows =
-      await sql`select space_id, count(*)::int as count from privacy_seen group by space_id`;
-    expect(rows.find((row) => row.space_id === SPACE)?.count).toBe(24000);
-    expect(rows.find((row) => row.space_id === OTHER_SPACE)?.count).toBe(1);
-    const expired = await sql`select conversation_id from privacy_seen
-      where space_id = ${SPACE} and conversation_id in ('old_0', 'old_23', 'old_24')`;
-    expect(expired.map((row) => row.conversation_id)).toEqual(['old_24']);
-    expect(await store().seen(CONVERSATION, scope.turnId ?? '')).toHaveLength(24);
+    expect(statements.length).toBeGreaterThan(0);
+    expect(statements.filter((query) => /\bspace_id\s*=|\bfrom space\b/i.test(query))).toEqual([]);
   });
 });
