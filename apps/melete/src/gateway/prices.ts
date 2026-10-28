@@ -127,6 +127,14 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
   'google/*': { input: 1.25, output: 10, cached_input: 0.125 },
   'google/*flash*': { input: 0.3, output: 2.5, cached_input: 0.03 },
   'google/*flash-lite*': { input: 0.1, output: 0.4, cached_input: 0.01 },
+  // NVIDIA Nemotron on Nebius Token Factory, at its catalog prices (docs/NEBIUS.md).
+  'nebius/nvidia/nemotron-3-super-120b-a12b': { input: 0.3, output: 0.9, cached_input: 0.06 },
+  'nebius/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B': {
+    input: 0.06,
+    output: 0.24,
+    cached_input: 0.012,
+  },
+  'nebius/nvidia/Nemotron-3-Ultra-550b-a55b': { input: 1, output: 3, cached_input: 0.12 },
   // Embedding models semantic recall uses: input only, at their listed prices.
   'fireworks/*embed*': { input: 0.016, output: 0 },
   'fireworks/nomic-ai/nomic-embed-text-v1.5': { input: 0.008, output: 0 },
