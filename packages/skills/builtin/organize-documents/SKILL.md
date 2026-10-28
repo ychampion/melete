@@ -1,6 +1,6 @@
 ---
 name: organize-documents
-description: Sort files into the space, keeping originals and noting where each went.
+description: Sort files into the space, keep originals, note where each went.
 triggers:
   - file these
   - tidy up

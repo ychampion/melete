@@ -1,6 +1,6 @@
 ---
 name: summarize-a-source
-description: Summarise a file, page or report the person pointed at, from its text.
+description: Summarise a file, page or report the person points at, from its text.
 triggers:
   - summarise
   - summarize
