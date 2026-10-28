@@ -574,8 +574,11 @@ export class AttemptRunner {
   private stopping = false;
   /** Set by a drain (`operator/drain.ts`): no new attempt is claimed here until it is cleared. */
   private draining = false;
-  /** Jobs whose wake is being claimed now, before their attempt is active. */
-  private readonly claiming = new Set<string>();
+  /**
+   * Jobs whose wake is being claimed now, before their attempt is active, with
+   * how many claims each has under way: two wakes for one job can overlap.
+   */
+  private readonly claiming = new Map<string, number>();
   scheduler: FairScheduler;
   private readonly wakes = new Set<Promise<void>>();
   /** Wakes waiting in the scheduler for their person's own limit, by job, epoch and version. */
@@ -2549,12 +2552,14 @@ export class AttemptRunner {
     if (this.stopping || this.draining) return;
     // Counted from before the claim until the attempt is active, with no await
     // between, so a drain never reads as drained while one is starting.
-    this.claiming.add(wake.job_id);
+    this.claiming.set(wake.job_id, (this.claiming.get(wake.job_id) ?? 0) + 1);
     let claim: ClaimedAttempt | null;
     try {
       claim = await this.claim(wake);
     } finally {
-      this.claiming.delete(wake.job_id);
+      const left = (this.claiming.get(wake.job_id) ?? 1) - 1;
+      if (left > 0) this.claiming.set(wake.job_id, left);
+      else this.claiming.delete(wake.job_id);
     }
     if (!claim) return;
     const { bundle, claims } = claim;
@@ -3156,7 +3161,7 @@ export class AttemptRunner {
   inFlight(): { attempts: string[]; starting: string[] } {
     return {
       attempts: [...new Set([...this.active.keys(), ...this.running.keys()])],
-      starting: [...this.claiming],
+      starting: [...this.claiming.keys()],
     };
   }
 

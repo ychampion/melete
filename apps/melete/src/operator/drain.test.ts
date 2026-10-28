@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
+import type { AttemptWake } from '../jobs/queue.ts';
+import { AttemptRunner } from '../jobs/runner.ts';
+import type { JobService } from '../jobs/service.ts';
+import { StubRuntimeAdapter } from '../runtime/stub.ts';
 import type { OperatorConsole } from './console.ts';
 import { BUSY_PATH, DRAIN_PATH, Drain, type DrainRunner, mountQuietUpdate } from './drain.ts';
 import { mountOperatorConsole } from './routes.ts';
@@ -65,6 +69,55 @@ describe('the drain', () => {
     expect(status.state).toBe('timed_out');
     expect(status.running_attempts).toEqual(['att_1']);
     expect(held).toEqual([true]);
+  });
+});
+
+describe('the runner under a drain', () => {
+  /** A runner whose claims wait until the test settles them, each as nothing to run. */
+  function claimingRunner() {
+    const runner = new AttemptRunner({} as JobService, new StubRuntimeAdapter(), {
+      key: 'drain-test-signing-key-32-bytes-long',
+    });
+    const claims: Array<() => void> = [];
+    Object.assign(runner, {
+      claim: () => new Promise<null>((resolve) => claims.push(() => resolve(null))),
+    });
+    return { runner, claims };
+  }
+  const wake: AttemptWake = {
+    job_id: 'job_1',
+    expected_epoch: 0,
+    expected_version: 1,
+    reason: 'input',
+  };
+
+  test('counts a job as starting until its last claim is done', async () => {
+    const { runner, claims } = claimingRunner();
+    // Two wakes for one job, such as a stale one and the current one, claim at once.
+    const first = runner.handleWake(wake);
+    const second = runner.handleWake({ ...wake, expected_version: 2, reason: 'recovery' });
+    expect(claims).toHaveLength(2);
+    expect(runner.inFlight().starting).toEqual(['job_1']);
+    claims[0]?.();
+    await first;
+    // The second claim may still start an attempt, so the drain must not read as drained.
+    expect(runner.inFlight().starting).toEqual(['job_1']);
+    claims[1]?.();
+    await second;
+    expect(runner.inFlight()).toEqual({ attempts: [], starting: [] });
+  });
+
+  test('claims nothing while held, and claims again once let go', async () => {
+    const { runner, claims } = claimingRunner();
+    await runner.hold(true);
+    await runner.handleWake(wake);
+    expect(claims).toHaveLength(0);
+    expect(runner.inFlight()).toEqual({ attempts: [], starting: [] });
+    await runner.hold(false);
+    const pending = runner.handleWake(wake);
+    expect(claims).toHaveLength(1);
+    claims[0]?.();
+    await pending;
   });
 });
 
