@@ -8,12 +8,14 @@ import { loadBuiltInSkills } from '@melete/skills';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { appsManifest } from './apps.ts';
 import { artifactsManifest } from './artifacts.ts';
+import { boardManifest } from './board.ts';
 import { browserManifest } from './browser.ts';
 import { calendarManifest } from './calendar.ts';
 import { REACT_TOOL } from './catalog.ts';
 import { emailManifest } from './email.ts';
 import { execManifest } from './exec.ts';
 import { filesManifest } from './files.ts';
+import { roomManifest } from './room.ts';
 import { speechCapability } from './tts.ts';
 import { webManifest } from './web.ts';
 
@@ -21,11 +23,13 @@ const PROVIDED = new Set([
   ...[
     appsManifest,
     artifactsManifest,
+    boardManifest,
     browserManifest,
     calendarManifest,
     emailManifest,
     execManifest,
     filesManifest,
+    roomManifest,
     webManifest,
   ].flatMap((manifest) => manifest.tools.map((tool) => tool.name)),
   speechCapability(null, 'none', 0).kind,

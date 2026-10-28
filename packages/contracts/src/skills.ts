@@ -178,5 +178,7 @@ export const BUILT_IN_SKILLS = [
   'appeal-a-denial',
   /** Works in the browser, so it is offered only where the browser is. */
   'compare-drug-plans',
+  /** Shared dates in a room, so it is offered only where the board is. */
+  'coordinate-the-household',
 ] as const;
 export type BuiltInSkill = (typeof BUILT_IN_SKILLS)[number];

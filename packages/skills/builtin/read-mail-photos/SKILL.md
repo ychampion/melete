@@ -1,9 +1,11 @@
 ---
 name: read-mail-photos
-description: Turn photos of paper mail into a checklist of what to do and by when.
+description: Turn photos of paper mail into a list of what to do by when.
 triggers:
   - paper mail
   - photos of my mail
+  - photo of our mail
+  - photo of the mail
   - these letters
   - read this letter
   - got a letter
@@ -22,7 +24,7 @@ a model that reads images, and never read from the note.
 or ID numbers copied exactly, digit for digit.
 
 3. Never guess a digit. If part is unreadable, say which part and ask for a
-closer photo of it before giving that number.
+closer photo before giving that number.
 
 4. Say what to do and by when in one line, or "nothing to do".
 

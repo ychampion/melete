@@ -1,6 +1,6 @@
 ---
 name: chase-reply
-description: Nudge someone who has not replied, in the person's own words.
+description: Nudge someone who has not replied, in the person's words.
 triggers:
   - chase-reply
   - waiting on a reply
