@@ -951,4 +951,36 @@ withDb('room guests', () => {
     const detail = roomDetail.parse(await ok(send(alice.cookie, `/rooms/${roomId}`)));
     expect(detail.members.map((member) => member.principal_id)).not.toContain(kim.id);
   }, 60_000);
+
+  test('nobody joins a room under a name that reads as someone the room has had', async () => {
+    const roomId = await makeRoom('Look-alikes');
+    // Mallory shares no room with Alice, so she may go by a name that reads as
+    // hers (a Cyrillic A); an owner adding her to Alice's room is refused.
+    const made = await ok<{ principal: { id: string } }>(
+      send(alice.cookie, '/principals', 'POST', { email: 'mallory@example.test', password }),
+      201,
+    );
+    const mallory = { id: made.principal.id, cookie: await login('mallory@example.test') };
+    await ok(send(mallory.cookie, '/me', 'PATCH', { display_name: '\u0410lice' }));
+    const add = () =>
+      send(alice.cookie, `/rooms/${roomId}/members`, 'POST', { principal_id: mallory.id });
+    await refused(add(), 409, 'name_taken');
+    await ok(send(mallory.cookie, '/me', 'PATCH', { display_name: 'Mallory' }));
+    await ok(add(), 201);
+    // A guest with an account already, taking a second room's invite, is
+    // compared with that room: Carol is in it, and Mel goes by a Cyrillic C.
+    const mel = await guestIn(roomId, 'mel@guest.example');
+    await ok(send(mel.cookie, '/me', 'PATCH', { display_name: '\u0421arol' }));
+    const second = await makeRoom('Look-alikes two');
+    await ok(
+      send(alice.cookie, `/rooms/${second}/members`, 'POST', { principal_id: carol.id }),
+      201,
+    );
+    const token = tokenOf((await invite(second, 'mel@guest.example')).path);
+    await refused(accept(token, {}, mel.cookie), 409, 'name_taken');
+    await ok(send(mel.cookie, '/me', 'PATCH', { display_name: 'Mel' }));
+    await ok(accept(token, {}, mel.cookie));
+    const detail = roomDetail.parse(await ok(send(alice.cookie, `/rooms/${second}`)));
+    expect(detail.members.map((member) => member.principal_id)).toContain(mel.id);
+  }, 60_000);
 });
