@@ -61,9 +61,10 @@ describe('the board on the web', () => {
     expect(canClaim(item({ assignee: bob }), 'own_3')).toBe(true);
     expect(canClaim(item({}), 'own_2')).toBe(true);
     expect(canClaim(item({ state: 'claimed', claimed_by: bob }), 'own_2')).toBe(false);
-    // Until the reader is known, Claim is not offered at all.
-    expect(canClaim(item({ assignee: bob }), null)).toBe(false);
-    expect(canClaim(item({}), null)).toBe(false);
+    // While the reader is being read, Claim waits; if they cannot be read, the service decides.
+    expect(canClaim(item({ assignee: bob }), undefined)).toBe(false);
+    expect(canClaim(item({}), undefined)).toBe(false);
+    expect(canClaim(item({ assignee: bob }), null)).toBe(true);
     expect(canClaim(item({ can: { claim: false, done: true, answer: false } }), 'own_3')).toBe(
       false,
     );

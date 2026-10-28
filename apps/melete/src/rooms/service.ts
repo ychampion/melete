@@ -78,22 +78,50 @@ const roomOwnerOnly = () =>
   new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
 
 /**
- * Whether a name is another account's: its chosen name, or the part before the
- * @ of its email, read alike (see `nameSkeleton`: case, spacing, fullwidth
- * forms and Cyrillic or Greek letters that pass for Latin ones aside). A name
- * is how a room tells people apart at a glance; the handle after it is what
- * settles it for the room's agent, and people see a short tell after a name
- * wherever two read alike. A room's own account carries the room's name and is
- * no one's, so it never counts: otherwise anyone could learn the names of
- * rooms they are not in.
+ * Whether a name reads as the name of someone a person shares a space with:
+ * their chosen name, or the part before the @ of their email, read alike (see
+ * `nameSkeleton`: case, spacing, invisible characters, fullwidth forms and
+ * Cyrillic, Greek, Lisu or Cherokee letters that pass for Latin ones aside).
+ * A name is how a room tells people apart at a glance; the handle after it is
+ * what settles it for the room's agent, and people see a tell after a name
+ * wherever it matters who someone is. `among` is the person renaming, who is
+ * compared with everyone in every space they are in now, or the space someone
+ * is joining. Everyone a space has had counts, members, guests and people who
+ * have left alike, so a name cannot be taken over once its owner leaves. A
+ * room's own account carries the room's name and is no one's, so it never
+ * counts: otherwise anyone could learn the names of rooms they are not in.
  */
-export async function nameTaken(db: Database, name: string, except?: string): Promise<boolean> {
+export async function nameTaken(
+  db: Database,
+  name: string,
+  among: { person: string } | { space: string },
+): Promise<boolean> {
   const wanted = nameSkeleton(name);
+  // Everyone in each space the person is in now, or in the space being joined.
+  const within =
+    'person' in among
+      ? and(
+          inArray(
+            spaceMembership.spaceId,
+            db
+              .select({ id: spaceMembership.spaceId })
+              .from(spaceMembership)
+              .where(
+                and(
+                  eq(spaceMembership.principalId, among.person),
+                  isNull(spaceMembership.revokedAt),
+                ),
+              ),
+          ),
+          ne(principal.id, among.person),
+        )
+      : eq(spaceMembership.spaceId, among.space);
   // Read alike is not something SQL can compare, so the names are folded here.
   const rows = await db
-    .select({ displayName: principal.displayName, email: principal.email })
-    .from(principal)
-    .where(and(except ? ne(principal.id, except) : undefined, ne(principal.kind, 'room')));
+    .selectDistinct({ displayName: principal.displayName, email: principal.email })
+    .from(spaceMembership)
+    .innerJoin(principal, eq(principal.id, spaceMembership.principalId))
+    .where(and(within, ne(principal.kind, 'room')));
   return rows.some(
     (row) =>
       (row.displayName !== null && nameSkeleton(row.displayName) === wanted) ||
@@ -326,14 +354,14 @@ export class RoomService {
 
   /**
    * Set the name a person shows in rooms. It must read as one line, and it
-   * must not read as another person's name, or as the part before the @ of
-   * another person's email (see `nameTaken`): a name is how a room, and its
-   * agent, tell people apart.
+   * must not read as the name, or the part before the @ of the email, of
+   * anyone they share a space with (see `nameTaken`): a name is how a room,
+   * and its agent, tell people apart.
    */
   async rename(actor: string, name: string | null) {
     if (name !== null) {
       displayNameText.parse(name);
-      if (await nameTaken(this.deps.db, name, actor))
+      if (await nameTaken(this.deps.db, name, { person: actor }))
         throw new ServiceError(
           'name_taken',
           'Someone here already goes by that name. Choose another.',

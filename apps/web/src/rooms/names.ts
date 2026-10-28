@@ -10,9 +10,10 @@
  * Where it matters who someone is (who may answer a permission, who answered
  * it, who asked, the room's people) the tell always shows. Elsewhere a name
  * shows alone, unless two of the people the room knows of, there now or not,
- * have names that read alike (`nameSkeleton`); then each shows its tell.
+ * have names that read alike (`clashSkeleton`, which also reads I, l, 1 and |
+ * as one letter and rn as m); then each shows its tell.
  */
-import { nameSkeleton } from '@melete/contracts/name-skeleton';
+import { clashSkeleton } from '@melete/contracts/name-skeleton';
 import { splitLabel } from './reduce.ts';
 
 /** A person as the service names them in a room: their id and its label. */
@@ -54,7 +55,7 @@ export function roomNames(
     if (!people.has(person.principal_id)) people.set(person.principal_id, person);
   const groups = new Map<string, LabelledPerson[]>();
   for (const person of people.values()) {
-    const key = nameSkeleton(splitLabel(person.display_name).name);
+    const key = clashSkeleton(splitLabel(person.display_name).name);
     groups.set(key, [...(groups.get(key) ?? []), person]);
   }
   const shown = new Map<string, Entry>();

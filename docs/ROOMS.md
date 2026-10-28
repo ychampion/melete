@@ -81,14 +81,21 @@ read alike; then each shows its tell. Hovered or read aloud, every name
 carries its tell.
 
 Each person sets their name with `PATCH /me`: one line of plain text, without
-`<`, `>` or `@` or anything that reads as one, so no name can carry a tell or a
-handle of its own. It is refused when it reads as a name someone else already
-goes by, or as the part before the @ of someone else's email. Reads as means
-the same after `nameSkeleton` (`@melete/contracts/name-skeleton`): NFKC, lower
-case, format characters dropped, spaces collapsed, and a short table of
-Cyrillic, Greek and Latin letters that look like Latin ones read as those, so
-Alice spelled with a Cyrillic or a fullwidth A is Alice. The web app uses the
-same fold to decide which names read alike.
+`<`, `>` or `@` or anything that reads as one, and without characters that show
+as nothing (the default ignorable characters and the Hangul fillers), so no
+name can carry a tell or a handle of its own or hide a difference. It is
+refused when it reads as the name of someone the person shares a room with, or
+as the part before the @ of their email; everyone a room has had counts,
+members, guests and people who have left, so a name cannot be taken over once
+its owner leaves. A guest's name is compared the same way with the room they
+join. Reads as means the same after `nameSkeleton`
+(`@melete/contracts/name-skeleton`): NFKC, lower case, invisible characters
+dropped, spaces collapsed, and a short table of Cyrillic, Greek, Lisu, Cherokee
+and Latin letters that look like Latin ones read as those, so Alice spelled
+with a Cyrillic or a fullwidth A is Alice. The web app decides which names read
+alike by a looser fold, `clashSkeleton`, which also reads `I`, `l`, `1` and `|`
+as one letter and `rn` as `m`. That fold would join ordinary names such as Eli
+and Ell, so it only makes both names show their tells; it never refuses one.
 
 ## Guests
 

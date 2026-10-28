@@ -26,14 +26,24 @@ const KIND_WORDS: Record<BoardItem['kind'], string> = {
 /** A room label without the code after it: "Bob <K3F9Q>" reads as "Bob". */
 export const shortName = (label: string) => label.replace(/\s*<[^>]*>\s*$/, '') || label;
 
+/**
+ * The reader of a board: their id, null when it could not be read, or
+ * undefined while it is still being read.
+ */
+export type Reader = string | null | undefined;
+
 /** Whether an item is assigned to the reader. */
-const isMine = (entry: BoardItem, me: string | null) =>
-  me !== null && entry.assignee?.principal_id === me;
+const isMine = (entry: BoardItem, me: Reader) =>
+  typeof me === 'string' && entry.assignee?.principal_id === me;
+
+/** Whether the reader has claimed an item. */
+const claimedByMe = (entry: BoardItem, me: Reader) =>
+  typeof me === 'string' && entry.claimed_by?.principal_id === me;
 
 /** Who sees an item, in words. */
 export function visibilityWords(
   entry: BoardItem,
-  me: string | null = null,
+  me: Reader = null,
   nameOf: (label: string) => string = shortName,
 ): string {
   if (entry.visibility === 'everyone') return 'Everyone in the room';
@@ -46,7 +56,7 @@ export function visibilityWords(
 /** The line under an item: when it is, who it is for, and who sees it. */
 export function metaWords(
   entry: BoardItem,
-  me: string | null = null,
+  me: Reader = null,
   nameOf: (label: string) => string = shortName,
   now = new Date(),
 ): string {
@@ -68,8 +78,8 @@ export function metaWords(
  * Claim takes on someone else's task or nobody's, never one that is already the
  * reader's; until the reader is known it is not offered at all.
  */
-export const canClaim = (entry: BoardItem, me: string | null) =>
-  me !== null && entry.can.claim && !isMine(entry, me) && entry.claimed_by?.principal_id !== me;
+export const canClaim = (entry: BoardItem, me: Reader) =>
+  me !== undefined && entry.can.claim && !isMine(entry, me) && !claimedByMe(entry, me);
 
 /** A detail's text, with each web address in it as a link. */
 export type DetailPart = { text: string } | { href: string; label: string };
@@ -129,13 +139,13 @@ function DetailText({ text }: { text: string }) {
 }
 
 /** The signed-in person's id, for what is theirs on boards read outside a room. */
-export function useMeId(on = true): string | null {
-  const [me, setMe] = useState<string | null>(null);
+export function useMeId(on = true): Reader {
+  const [me, setMe] = useState<Reader>(undefined);
   useEffect(() => {
     if (!on) return;
     let live = true;
     void roomsApi.me().then((result) => {
-      if (live && result.data) setMe(result.data.owner.id);
+      if (live) setMe(result.data ? result.data.owner.id : null);
     });
     return () => {
       live = false;
@@ -154,14 +164,13 @@ export function whenWords(entry: BoardItem, now = new Date()): string | null {
   return entry.starts_at ? `${day}, ${time}` : `Due ${day}, ${time}`;
 }
 
-function stateOf(entry: BoardItem, me: string | null, nameOf: (label: string) => string) {
+function stateOf(entry: BoardItem, me: Reader, nameOf: (label: string) => string) {
   if (entry.state === 'claimed')
     return {
       tone: 'working' as const,
-      words:
-        me !== null && entry.claimed_by?.principal_id === me
-          ? 'You are on it'
-          : `${nameOf(entry.claimed_by?.display_name ?? 'Someone')} is on it`,
+      words: claimedByMe(entry, me)
+        ? 'You are on it'
+        : `${nameOf(entry.claimed_by?.display_name ?? 'Someone')} is on it`,
     };
   if (entry.state === 'done') return { tone: 'settled' as const, words: 'Done' };
   if (entry.state === 'answered') return { tone: 'settled' as const, words: 'Answered' };
@@ -177,7 +186,7 @@ export function BoardRow({
 }: {
   entry: BoardItem;
   /** The reader, once known: what is already theirs is not offered to them. */
-  me: string | null;
+  me: Reader;
   onChanged: (entry: BoardItem) => void;
   showRoom?: boolean;
 }) {
@@ -310,7 +319,7 @@ const byWhen = (a: BoardItem, b: BoardItem) =>
   a.created_at.localeCompare(b.created_at);
 
 /** The board of one room, kept live while it is open. */
-export function Board({ roomId, me }: { roomId: string; me: string | null }) {
+export function Board({ roomId, me }: { roomId: string; me: Reader }) {
   const [items, setItems] = useState<BoardItem[] | null>(null);
   const [gone, setGone] = useState(false);
   const [showDone, setShowDone] = useState(false);
@@ -398,7 +407,7 @@ function BoardGroup({
 }: {
   title: string;
   items: BoardItem[];
-  me: string | null;
+  me: Reader;
   onChanged: (entry: BoardItem) => void;
   showRoom?: boolean;
 }) {
@@ -430,10 +439,14 @@ export function useWaitingOnYou() {
   const [items, setItems] = useState<BoardItem[]>([]);
   // Null while the read is out; the read's error when it failed.
   const [read, setRead] = useState<{ error: string | null } | null>(null);
+  // Bumped by "Try again": the board is read once more.
+  const [attempt, setAttempt] = useState(0);
   const on = capabilities.multiplayer;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new attempt is the reason to read again
   useEffect(() => {
     if (!on) return;
     let live = true;
+    setRead(null);
     void boardApi.across({ mine: true }).then((result) => {
       if (!live) return;
       if (result.data) setItems(result.data.items);
@@ -442,7 +455,7 @@ export function useWaitingOnYou() {
     return () => {
       live = false;
     };
-  }, [on]);
+  }, [on, attempt]);
   const changed = (entry: BoardItem) =>
     setItems((held) =>
       mergeItems(held, [entry]).filter((kept) => kept.state === 'open' || kept.state === 'claimed'),
@@ -453,6 +466,7 @@ export function useWaitingOnYou() {
     loaded: !on || read !== null,
     error: on ? (read?.error ?? null) : null,
     changed,
+    retry: () => setAttempt((n) => n + 1),
   };
 }
 
@@ -461,9 +475,12 @@ export function WaitingOnYou({ waiting }: { waiting: ReturnType<typeof useWaitin
   const me = useMeId(waiting.items.length > 0);
   if (waiting.error)
     return (
-      <p className="board-error board-waiting">
-        Couldn’t read what waits on you in your rooms. {waiting.error}
-      </p>
+      <div className="queue-failed board-waiting" role="status">
+        <span>Couldn’t read what waits on you in your rooms. {waiting.error}</span>
+        <Button size="sm" variant="outline" onClick={waiting.retry}>
+          Try again
+        </Button>
+      </div>
     );
   if (waiting.items.length === 0) return null;
   return (

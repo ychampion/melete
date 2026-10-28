@@ -88,3 +88,18 @@ test('outside a room a name shows alone, and where it matters with its account c
   );
   expect(nameText(shownName('Lena <zz9yy8xx>', null, { trust: true }))).toBe('Lena <zz9yy8xx>');
 });
+
+test('names that only look alike on screen are set apart too', () => {
+  for (const lookalike of ['AIice', 'Alice͏', 'Alice️', 'Aliceㅤ', 'ꓮlice', 'Ꭺlice', 'A1ice']) {
+    const impostor = { principal_id: 'own_eve', display_name: `${lookalike} <p3vz8ndr>` };
+    const names = roomNames([alice, impostor]);
+    expect([lookalike, text(alice.display_name, names)]).toEqual([lookalike, 'Alice <alice.w>']);
+    expect(shownName(impostor.display_name, names).tell).toBe(accountCode('own_eve'));
+  }
+  // Eli and Ell read alike on screen, so each shows a tell; the service still lets both be.
+  const names = roomNames([
+    { principal_id: 'own_eli', display_name: 'Eli <aaaaaaaa>' },
+    { principal_id: 'own_ell', display_name: 'Ell <bbbbbbbb>' },
+  ]);
+  expect(shownName('Eli <aaaaaaaa>', names).tell).toBe(accountCode('own_eli'));
+});

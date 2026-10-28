@@ -272,7 +272,7 @@ export class InviteService {
         throw new ServiceError('password_required', 'Choose a password for your account.', 400);
     }
     const name = input.display_name?.trim() || null;
-    if (!existing && name && (await nameTaken(this.deps.db, name)))
+    if (!existing && name && (await nameTaken(this.deps.db, name, { space: invite.spaceId })))
       throw new ServiceError(
         'name_taken',
         'Someone here already goes by that name. Choose another.',

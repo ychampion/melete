@@ -36,6 +36,8 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
+  // Who is signed in could not be read: the board offers what the service allows, and it decides.
+  const [meFailed, setMeFailed] = useState(false);
   const [present, setPresent] = useState<Set<string>>(new Set());
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -64,6 +66,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
     // what they may answer, delete and change here.
     void roomsApi.me().then((result) => {
       if (result.data) setMe(result.data.owner);
+      else setMeFailed(true);
     });
   }, [readRoom, readThreads]);
 
@@ -235,7 +238,7 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
           </nav>
           <section className="room-thread" aria-label="Thread">
             {!detail ? null : threadId === 'board' ? (
-              <Board roomId={roomId} me={me?.id ?? null} />
+              <Board roomId={roomId} me={me ? me.id : meFailed ? null : undefined} />
             ) : threadId && threadId !== 'new' ? (
               <Thread
                 key={threadId}
