@@ -634,6 +634,7 @@ const variables = z.object({
   ANTHROPIC_BASE_URL: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
+  NEBIUS_API_KEY: z.string().optional(),
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
   OPENAI_COMPAT_API_KEY: z.string().optional(),
   /**

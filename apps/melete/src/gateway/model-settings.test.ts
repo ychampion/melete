@@ -31,6 +31,64 @@ function service(
 const status = (code: number) => async () => new Response('{"error":"no"}', { status: code });
 
 describe('testing a model connection', () => {
+  test('Nebius lists models with a typed key at its built-in address', async () => {
+    const seen: Request[] = [];
+    const settings = service(async (request) => {
+      seen.push(request);
+      return Response.json({
+        data: [
+          { id: 'nvidia/nemotron-3-super-120b-a12b' },
+          { id: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B' },
+        ],
+      });
+    });
+    expect(await settings.test({ provider: 'nebius' })).toMatchObject({
+      ok: false,
+      code: 'no_key',
+    });
+    expect(seen).toHaveLength(0);
+    expect(
+      await settings.test({
+        provider: 'nebius',
+        api_key: 'nebius-test-1234',
+        base_url: 'https://elsewhere.example.test/v1/',
+      }),
+    ).toMatchObject({
+      ok: true,
+      models: ['nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B', 'nvidia/nemotron-3-super-120b-a12b'],
+    });
+    expect(seen[0]?.url).toBe('https://api.tokenfactory.nebius.com/v1/models');
+    expect(seen[0]?.headers.get('authorization')).toBe('Bearer nebius-test-1234');
+    expect(seen[0]?.redirect).toBe('manual');
+  });
+
+  test('Nebius environment keys connect Settings and are used for connection tests', async () => {
+    const seen: Request[] = [];
+    const settings = service(
+      async (request) => {
+        seen.push(request);
+        return Response.json({ data: [] });
+      },
+      {
+        NEBIUS_API_KEY: 'nebius-operator-key',
+        MELETE_DEFAULT_PROVIDER: 'nebius',
+        MELETE_DEFAULT_MODEL: 'nvidia/nemotron-3-super-120b-a12b',
+      },
+    );
+    const view = await settings.view(true);
+    expect(view.providers.find((entry) => entry.provider === 'nebius')).toMatchObject({
+      label: 'Nebius Token Factory',
+      method: 'key',
+      key: { state: 'operator', last_four: null },
+      connected: true,
+      lists_models: true,
+    });
+    expect(view.active).toMatchObject({ provider: 'nebius', connected: true, vision: false });
+    expect(JSON.stringify(view)).not.toContain('nebius-operator-key');
+    expect(await settings.test({ provider: 'nebius' })).toMatchObject({ ok: true });
+    expect(seen[0]?.headers.get('authorization')).toBe('Bearer nebius-operator-key');
+  });
+
   test('a working key lists the provider’s models, sorted, and sends the key the provider expects', async () => {
     const seen: Request[] = [];
     const openai = await service(async (request) => {

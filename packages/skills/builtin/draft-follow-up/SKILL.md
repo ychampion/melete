@@ -1,6 +1,6 @@
 ---
 name: draft-follow-up
-description: Draft a short follow-up message from what was already said, and stop before sending.
+description: Draft a short follow-up from the thread, and stop before sending.
 triggers:
   - follow up
   - chase

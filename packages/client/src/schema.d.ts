@@ -27195,12 +27195,12 @@ export interface components {
             url: string;
         };
         /** @enum {string} */
-        __schema191: "anthropic" | "openai" | "google" | "fireworks" | "openai-compatible";
+        __schema191: "anthropic" | "openai" | "google" | "fireworks" | "nebius" | "openai-compatible";
         __schema192: string;
         /** @description The endpoint’s version prefix, for example https://models.example.net/v1 */
         __schema193: string;
         /** @enum {string} */
-        __schema194: "anthropic" | "openai" | "google" | "fireworks" | "openai-compatible" | "chatgpt";
+        __schema194: "anthropic" | "openai" | "google" | "fireworks" | "nebius" | "openai-compatible" | "chatgpt";
         __schema195: boolean | null;
         __schema196: boolean;
         /** @enum {string} */
@@ -29989,7 +29989,7 @@ export interface components {
                 /** @enum {string} */
                 method: "key" | "sign_in";
                 /** @enum {string} */
-                provider: "anthropic" | "openai" | "google" | "fireworks" | "openai-compatible" | "chatgpt";
+                provider: "anthropic" | "openai" | "google" | "fireworks" | "nebius" | "openai-compatible" | "chatgpt";
             }[];
             /** @description This account’s secondary model, for cheaper work beside the primary, and which work uses it */
             secondary: {

@@ -36633,6 +36633,7 @@
           "openai",
           "google",
           "fireworks",
+          "nebius",
           "openai-compatible"
         ]
       },
@@ -36654,6 +36655,7 @@
           "openai",
           "google",
           "fireworks",
+          "nebius",
           "openai-compatible",
           "chatgpt"
         ]
@@ -52109,6 +52111,7 @@
                     "openai",
                     "google",
                     "fireworks",
+                    "nebius",
                     "openai-compatible",
                     "chatgpt"
                   ]
