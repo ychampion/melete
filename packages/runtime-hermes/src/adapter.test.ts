@@ -1190,7 +1190,7 @@ describe('a reply that hit the output limit', () => {
   });
 
   test('a reply that is only reasoning, or nothing, gets a notice and never the reasoning', async () => {
-    // The engine's wording after its empty-reply retries, as the pinned release writes it.
+    // The engine's own notice after its empty-reply retries.
     for (const output of [
       '⚠️ The model produced only internal reasoning and no final answer, despite retries. ' +
         'Its last reasoning, which may contain the answer:\n\nCompare the private readings.',
