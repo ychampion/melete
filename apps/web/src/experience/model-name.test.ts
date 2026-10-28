@@ -1,6 +1,12 @@
 import { expect, test } from 'bun:test';
 import { modelDisplayName } from './model-name.ts';
 
+test('Nemotron recommendations have friendly names without changing their exact ids', () => {
+  expect(modelDisplayName('nvidia/nemotron-3-super-120b-a12b')).toBe('NVIDIA Nemotron 3 Super');
+  expect(modelDisplayName('nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B')).toBe('NVIDIA Nemotron 3 Nano');
+  expect(modelDisplayName('nvidia/Nemotron-3-Ultra-550b-a55b')).toBe('NVIDIA Nemotron 3 Ultra');
+});
+
 test('a Fireworks account path reads as the model it serves', () => {
   expect(modelDisplayName('accounts/fireworks/models/deepseek-v4p1-flash')).toBe(
     'DeepSeek V4.1 Flash',

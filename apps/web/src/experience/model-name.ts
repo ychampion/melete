@@ -4,6 +4,8 @@
  * Show the identifier beside it where the exact value matters.
  */
 
+import { modelPreset } from '@melete/contracts';
+
 /** Names whose usual spelling is not simple title case. */
 const SPELLED: Record<string, string> = {
   deepseek: 'DeepSeek',
@@ -39,6 +41,8 @@ function word(token: string): string {
 
 export function modelDisplayName(id: string): string {
   const trimmed = id.trim();
+  const preset = modelPreset('nebius', trimmed);
+  if (preset) return preset.label;
   const last = trimmed.split('/').filter(Boolean).pop() ?? '';
   const tokens = last.split(/[-_:\s]+/).filter((token) => token && !DATE_STAMP.test(token));
   if (tokens.length === 0) return trimmed;
