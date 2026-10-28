@@ -35,6 +35,14 @@ const RESERVED_NAMES: ReadonlySet<string> = new Set([
   'TMPDIR',
   'LANG',
   'TERM',
+  'SHELLOPTS',
+  'BASHOPTS',
+  'CDPATH',
+  'GLOBIGNORE',
+  'GLIBC_TUNABLES',
+  'GCONV_PATH',
+  'LOCPATH',
+  'NLSPATH',
 ]);
 
 /** Why a name cannot hold a sealed secret, or null when it can. */

@@ -181,11 +181,14 @@ withDb('a secret given through a sealed field', () => {
   test('is asked for by name, sealed, and only said to have been given', async () => {
     const { id, claims } = await chatTurn('What will the weather be tomorrow?');
     // A name the computer uses itself, and choices beside a secret, are refused.
-    expect(
-      await rejectionOf(
-        ask(claims, { question: 'Key?', secret: { name: 'PATH', purpose: 'weather' } }),
-      ),
-    ).toMatchObject({ code: 'payload_invalid' });
+    for (const name of ['PATH', 'LD_PRELOAD', 'MELETE_TOKEN', 'GLIBC_TUNABLES', 'SHELLOPTS']) {
+      expect(
+        await rejectionOf(ask(claims, { question: 'Key?', secret: { name, purpose: 'weather' } })),
+      ).toMatchObject({ code: 'payload_invalid' });
+      await expect(secrets().save({ spaceId, name, purpose: 'weather' }, 'x')).rejects.toThrow(
+        'a name the computer uses itself',
+      );
+    }
     expect(
       await rejectionOf(
         ask(claims, {
@@ -387,10 +390,24 @@ withDb('a secret given through a sealed field', () => {
     const bound = await run({ command: 'echo "$SITE_PASSWORD"', secrets: ['SITE_PASSWORD'] });
     expect(bound).toMatchObject({ outcome: 'failed', retryable: false });
     expect((bound as { reason: string }).reason).toContain('kept for example.com only');
+    // A name that is no environment name never reaches a shell.
+    for (const payload of [
+      { command: 'true', secrets: [`${NAME};touch /tmp/x`] },
+      { command: 'true', secret_refs: ['$(touch /tmp/x)'] },
+      { command: 'true', secrets: [NAME.toLowerCase()] },
+    ]) {
+      const refused = await run(payload);
+      expect(refused).toMatchObject({ outcome: 'failed', retryable: false });
+    }
     expect(provider.calls.create).toBe(creates);
 
     // Deleted, it is refused with the reason, and its sealed record is gone.
+    const [kept] = await sql()`select secret_ref from space_secret
+      where space_id = ${scope.spaceId} and name = ${NAME}`;
     expect(await secrets().remove(scope.spaceId, NAME)).toBe(true);
+    expect(await sql()`select 1 from secret where id = ${String(kept?.secret_ref)}`).toHaveLength(
+      0,
+    );
     const gone = await run({ command: `echo "$${NAME}"`, secrets: [NAME] });
     expect(gone).toMatchObject({ outcome: 'failed', retryable: false });
     expect((gone as { reason: string }).reason).toContain(`${NAME} is not saved in this space`);
