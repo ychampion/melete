@@ -27,17 +27,34 @@ test('a step that stays on its page returns the page as it is after it', async (
   expect(await observedAfterStep(async () => observed, now, unobserved)).toBe(observed);
 });
 
-test('a page that cannot be observed answers what the step returned before', async () => {
-  for (const reason of ['sensitive_input_require_takeover', 'observation_too_large'])
-    expect(
-      await observedAfterStep(
+test('a step that ran onto a page that cannot be observed is done, and says why it was not seen', async () => {
+  // A click that went to another page, and a submit whose form was sent.
+  for (const ran of [
+    { ...unobserved, result: { changed: true } },
+    { ...unobserved, result: { changed: true, commit_status: 200 } },
+  ])
+    for (const [reason, why] of [
+      ['sensitive_input_require_takeover', 'a field for a code, a card or another secret'],
+      ['observation_too_large', 'too large'],
+      ['worker_unavailable', 'worker_unavailable'],
+    ] as const) {
+      const done = await observedAfterStep(
         async () => {
           throw new BrowserFault(reason);
         },
         now,
-        unobserved,
-      ),
-    ).toBe(unobserved);
+        ran,
+      );
+      expect(done).toMatchObject({
+        session_id: 'brws_1',
+        control_epoch: 3,
+        result: { ...ran.result, observed: false, not_observed: reason },
+      });
+      const note = String(done.result?.note);
+      expect(note).toContain('The step ran');
+      expect(note).toContain('do not repeat it');
+      expect(note).toContain(why);
+    }
 });
 
 test('a person who took the browser during the step is said so, with the epoch they hold', async () => {
