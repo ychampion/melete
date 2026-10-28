@@ -233,6 +233,36 @@ export const privacyReveal = z.strictObject({
 });
 export type PrivacyReveal = z.infer<typeof privacyReveal>;
 
+/**
+ * One answer's "what the model saw": each piece the person and their sources
+ * contributed, as runs of text and placeholders. A placeholder's value is the
+ * real detail behind it, for the person's own screen; null when it is no
+ * longer held. `route` is null when no request was recorded for the answer.
+ */
+export const privacySeenRequest = z.strictObject({ turn_id: id() });
+export const privacySeenSegment = z.union([
+  z.strictObject({ text: z.string() }),
+  z.strictObject({
+    placeholder: z.string(),
+    category: privacyCategory,
+    value: z.string().nullable(),
+  }),
+]);
+export type PrivacySeenSegment = z.infer<typeof privacySeenSegment>;
+export const privacySeen = z.strictObject({
+  route: z.enum(['cloud', 'local', 'mixed', 'on_device']).nullable(),
+  parts: z.array(
+    z.strictObject({
+      source: z.enum(['you', 'tool']),
+      tool: z.string().nullable(),
+      truncated: z.boolean(),
+      segments: z.array(privacySeenSegment),
+    }),
+  ),
+  categories: z.array(categoryCount),
+});
+export type PrivacySeen = z.infer<typeof privacySeen>;
+
 /** What a model receipt records about one request: never a value. */
 export const privacyReceipt = z.object({
   route: privacyRoute,
@@ -257,5 +287,9 @@ export const privacyOperations = {
   'POST /conversations/{id}/privacy/reveal': {
     request: privacyRevealRequest,
     response: privacyReveal,
+  },
+  'POST /conversations/{id}/privacy/seen': {
+    request: privacySeenRequest,
+    response: privacySeen,
   },
 } satisfies Record<string, { request?: z.ZodType; response: z.ZodType }>;

@@ -1,0 +1,36 @@
+{
+  "id": "bank-letter",
+  "title": "Read a letter from the bank",
+  "summary": "The job reads one mail item that carries an account number and a phone number. The cloud model sees placeholders for both, and the answer's \"What the model saw\" shows the two sides.",
+  "match": ["letter from my bank", "bank letter", "letter from the bank"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "tool",
+      "delay_ms": 600,
+      "name": "email.read",
+      "title": "Read the letter from Harbor Savings",
+      "active_title": "Reading the letter from Harbor Savings",
+      "meta": "today",
+      "arguments": { "query": "from:Harbor Savings", "connection": "inbox" },
+      "result": {
+        "from": "Harbor Savings",
+        "subject": "Your October statement is ready",
+        "body": "Hi Sam, your October statement for checking account 000123456789 is ready to view. A new debit card is on its way and should arrive within 7 days. Questions? Call us on (415) 555-0132."
+      }
+    },
+    {
+      "step": "text",
+      "delay_ms": 400,
+      "text": "Harbor Savings says your October statement is ready and a new debit card should arrive within a week."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Your October statement from Harbor Savings is ready, and a new debit card should arrive within a week. Nothing needs doing; their number is in the letter if anything looks off."
+    }
+  ]
+}
