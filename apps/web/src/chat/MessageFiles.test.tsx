@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test';
-import { originalKind } from '@melete/contracts';
-import type { AttachmentKind } from '@melete/contracts/attachments';
+import { type AttachmentKind, originalKind } from '@melete/contracts/attachments';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { kindWords } from '../screens/Files.tsx';
 import { MessageFiles } from './MessageFiles.tsx';

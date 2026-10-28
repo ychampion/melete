@@ -8,8 +8,9 @@
  * re-counted every table, path and provider listing and found nothing left.
  */
 import { z } from 'zod';
-import { ATTACHMENT_KIND_WORDS, attachmentKindFor } from './attachments.ts';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
+
+export { originalKind } from './attachments.ts';
 
 /**
  * The phases, in the order they run. Each one finishes and is committed before
@@ -272,20 +273,6 @@ export const summariesOnlyChange = z
   .strictObject({ on: z.boolean() })
   .meta({ id: 'SummariesOnlyChange' });
 export type SummariesOnlyChange = z.infer<typeof summariesOnlyChange>;
-
-/**
- * What an opened original is noted as in a summaries-only space: its kind,
- * never its name, since a name can say what the file holds.
- */
-export function originalKind(mime: string): string {
-  const type = mime.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (type.startsWith('image/')) return ATTACHMENT_KIND_WORDS.image;
-  if (type.startsWith('audio/')) return 'A recording';
-  const kind = attachmentKindFor('', type)?.kind;
-  if (kind) return ATTACHMENT_KIND_WORDS[kind];
-  if (type.startsWith('text/') || type === 'application/json') return ATTACHMENT_KIND_WORDS.text;
-  return 'A file';
-}
 
 /** The error code a file's content route answers with in a summaries-only space. */
 export const SUMMARIES_ONLY_CODE = 'summaries_only';

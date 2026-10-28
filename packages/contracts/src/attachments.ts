@@ -132,6 +132,20 @@ export function attachmentKindFor(
   return EXTENSIONS[extension] ?? null;
 }
 
+/**
+ * What an opened original is noted as in a summaries-only space: its kind,
+ * never its name, since a name can say what the file holds.
+ */
+export function originalKind(mime: string): string {
+  const type = mime.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (type.startsWith('image/')) return ATTACHMENT_KIND_WORDS.image;
+  if (type.startsWith('audio/')) return 'A recording';
+  const kind = attachmentKindFor('', type)?.kind;
+  if (kind) return ATTACHMENT_KIND_WORDS[kind];
+  if (type.startsWith('text/') || type === 'application/json') return ATTACHMENT_KIND_WORDS.text;
+  return 'A file';
+}
+
 /** A sentence naming what Melete reads, for a file it refused. */
 export const ATTACHMENT_TYPES_SENTENCE =
   'Melete can read pictures (PNG, JPEG, WebP, GIF), PDFs, Word documents (.docx), spreadsheets (.xlsx, .csv), text files (.txt, .md) and code or data files such as .py, .js, .ts, .json, .yaml, .toml, .xml, .sql and .sh.';

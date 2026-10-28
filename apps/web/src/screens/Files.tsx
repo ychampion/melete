@@ -4,8 +4,7 @@
  * a file card in chat opens, downloads, and (except a file sent in chat, which
  * goes with its chat) deletes into the trash with a moment to undo.
  */
-import { originalKind } from '@melete/contracts';
-import { attachmentSize } from '@melete/contracts/attachments';
+import { attachmentSize, originalKind } from '@melete/contracts/attachments';
 import { useEffect, useState } from 'react';
 import { SavedFileShown } from '../chat/parts.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
