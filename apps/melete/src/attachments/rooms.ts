@@ -14,6 +14,7 @@ import { originalKind, SUMMARIES_ONLY_CODE } from '@melete/contracts';
 import type { Context } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
+import type { Transaction } from '../db/transaction.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { readRoomPolicy } from '../rooms/policy.ts';
 import { noteInActivity, SUMMARIES_ONLY_REFUSAL, summariesOnlyIn } from '../spaces/summaries.ts';
@@ -28,6 +29,7 @@ export type RoomAttachments = {
    */
   admit: (input: {
     roomId: string;
+    fileId: string;
     viewer: string;
     uploader: string | null;
     mediaType: string;
@@ -39,6 +41,25 @@ const notHere = () => new ServiceError('not_found', 'That room is not here.', 40
 
 export const GUESTS_MAY_NOT_ATTACH =
   'Guests can attach files only in rooms where guests may ask the agent.';
+
+/**
+ * Whose files this person reads as they are, and sees named, in this room:
+ * everyone's, unless the room shows only what needs you, where it is their own
+ * and, for the room's maker, everyone's.
+ */
+export async function readsFilesAsTheyAre(
+  reader: Database | Transaction,
+  roomId: string,
+  viewer: string,
+): Promise<(uploader: string | null) => boolean> {
+  if (!(await summariesOnlyIn(reader, roomId))) return () => true;
+  const { ownerId } = await spaceAuthority(reader, roomId, viewer);
+  if (ownerId !== null && ownerId === viewer) return () => true;
+  return (uploader) => uploader !== null && uploader === viewer;
+}
+
+/** How long one person opening one file again is the same open, for the room's activity. */
+export const OPEN_NOTED_FOR_MS = 5 * 60_000;
 
 export function roomAttachments(db: Database): RoomAttachments {
   return {
@@ -59,22 +80,24 @@ export function roomAttachments(db: Database): RoomAttachments {
       return { spaceId: roomId, principalId: actor };
     },
 
-    async admit({ roomId, viewer, uploader, mediaType, read }) {
+    async admit({ roomId, fileId, viewer, uploader, mediaType, read }) {
       if (!(await summariesOnlyIn(db, roomId))) return;
       if (read === 'content') {
-        if (viewer === uploader) return;
-        const { ownerId } = await spaceAuthority(db, roomId, viewer);
-        if (ownerId !== null && ownerId === viewer) return;
+        if ((await readsFilesAsTheyAre(db, roomId, viewer))(uploader)) return;
         throw new ServiceError(SUMMARIES_ONLY_CODE, SUMMARIES_ONLY_REFUSAL, 403);
       }
       // An open nobody can see is what the setting is there to prevent: when
-      // the note cannot be written, the file is not sent either.
+      // the note cannot be written, the file is not sent either. The same
+      // person opening the same file again within a few minutes is one open,
+      // so repeated opens never push the other notes out of view.
+      const window = Math.floor(Date.now() / OPEN_NOTED_FOR_MS);
       await noteInActivity(db, {
         spaceId: roomId,
         principalId: viewer,
         note: 'original_opened',
         where: 'Room',
         destination: originalKind(mediaType),
+        once: `${roomId}:${viewer}:${fileId}:${window}`,
       });
     },
   };

@@ -21,7 +21,7 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { GUESTS_MAY_NOT_ATTACH } from '../attachments/rooms.ts';
+import { GUESTS_MAY_NOT_ATTACH, readsFilesAsTheyAre } from '../attachments/rooms.ts';
 import { holdForRoomMessage, roomMessageAttachments } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import {
@@ -409,6 +409,7 @@ export class RoomService {
     const files = await roomMessageAttachments(
       this.deps.db,
       messages.map((message) => message.id),
+      await readsFilesAsTheyAre(this.deps.db, spaceId, actor),
     );
     const views = [];
     const permissions = this.deps.permissions;
@@ -578,7 +579,11 @@ export class RoomService {
       result.thread.createdBy,
       result.message.authorPrincipalId,
     ]);
-    const files = await roomMessageAttachments(this.deps.db, [result.message.id]);
+    const files = await roomMessageAttachments(
+      this.deps.db,
+      [result.message.id],
+      await readsFilesAsTheyAre(this.deps.db, spaceId, actor),
+    );
     return {
       thread: threadView(result.thread, names),
       message: messageView(result.message, names, files.get(result.message.id)),
@@ -979,9 +984,12 @@ export class RoomService {
       spaceId,
       messages.map((message) => message.authorPrincipalId),
     );
+    // Each viewer's stream is read for that viewer, so a file is shown as
+    // this person may see it, never as the poster or the maker does.
     const files = await roomMessageAttachments(
       this.deps.db,
       messages.map((message) => message.id),
+      await readsFilesAsTheyAre(this.deps.db, spaceId, actor),
     );
     const frames: RoomStreamFrame[] = [
       ...messages.map((message) =>

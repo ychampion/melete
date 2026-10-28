@@ -700,4 +700,109 @@ withDb('photos in a room', () => {
       where space_id = ${roomId} and kind = 'space.original_opened'`;
     expect(noted?.n).toBe(0);
   }, 60_000);
+
+  test("in a room that shows only what needs you, a file's name and details reach only its poster and the maker", async () => {
+    const roomId = await makeRoom([bob, carol]);
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: true }));
+    const name = 'overdue-tax-letter.png';
+    const photo = await upload(bob, roomId, name);
+    const posted = roomMessageResponse.parse(
+      await ok(startThread(bob, roomId, 'This came today', [photo.id]), 201),
+    );
+    // The poster's own answer names their file.
+    expect(posted.message.attachments?.[0]).toMatchObject({ id: photo.id, name });
+    const threadPath = `/rooms/${roomId}/threads/${posted.thread.id}`;
+    const listing = async (person: Person) => {
+      const text = await (await send(person.cookie, threadPath)).text();
+      return { text, view: roomThreadView.parse(JSON.parse(text)) };
+    };
+    const stream = async (person: Person) => {
+      const answered = await send(person.cookie, `${threadPath}/events?after=0`);
+      expect(answered.status).toBe(200);
+      const text = await answered.text();
+      const frames = (JSON.parse(text) as { frames: { kind: string; message?: unknown }[] }).frames;
+      return {
+        text,
+        files: frames.flatMap((frame) =>
+          frame.kind === 'message'
+            ? ((frame.message as { attachments?: unknown[] }).attachments ?? [])
+            : [],
+        ),
+      };
+    };
+    // Another member gets the kind and the id to open it with: no name, size or pages.
+    const kept = [{ id: photo.id, kind: 'image' as const, kept_back: true as const }];
+    const theirs = await listing(carol);
+    expect(theirs.view.messages[0]?.attachments).toEqual(kept);
+    expect(theirs.text).not.toContain(name);
+    const theirStream = await stream(carol);
+    expect(theirStream.files).toEqual(kept);
+    expect(theirStream.text).not.toContain(name);
+    // The poster and the room's maker still see it named, in both.
+    for (const person of [bob, alice]) {
+      const mine = await listing(person);
+      expect(mine.view.messages[0]?.attachments?.[0]).toMatchObject({
+        id: photo.id,
+        name,
+        size: photo.size,
+      });
+      expect((await stream(person)).text).toContain(name);
+    }
+    // Turned off, everyone sees it named again.
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: false }));
+    expect((await listing(carol)).text).toContain(name);
+  }, 60_000);
+
+  test('when the open of an original cannot be noted, no byte of it is sent', async () => {
+    const roomId = await makeRoom([bob, carol]);
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: true }));
+    const photo = await upload(bob, roomId);
+    await ok(startThread(bob, roomId, 'The bill', [photo.id]), 201);
+    const { sql } = database();
+    await sql.unsafe(`create or replace function refuse_room_note() returns trigger
+      language plpgsql as $$ begin raise exception 'notes are down'; end $$`);
+    await sql.unsafe(`create trigger refuse_room_note before insert on activity_record
+      for each row when (new.space_id = '${roomId}') execute function refuse_room_note()`);
+    try {
+      const opened = await send(
+        carol.cookie,
+        `/rooms/${roomId}/attachments/${photo.id}/original`,
+        'POST',
+      );
+      expect(opened.status).toBeGreaterThanOrEqual(500);
+      const bytes = new Uint8Array(await opened.arrayBuffer());
+      expect(Buffer.from(bytes).includes(Buffer.from(TINY_PNG))).toBe(false);
+    } finally {
+      await sql.unsafe('drop trigger if exists refuse_room_note on activity_record');
+      await sql.unsafe('drop function if exists refuse_room_note()');
+    }
+    const [noted] = await sql`select count(*)::int as n from activity_record
+      where space_id = ${roomId} and kind = 'space.original_opened'`;
+    expect(noted?.n).toBe(0);
+  }, 60_000);
+
+  test('in a room that shows only what needs you, a guest opens an original until their time is up, and opening again is one note', async () => {
+    const roomId = await makeRoom([bob, carol]);
+    const { sql } = database();
+    await sql`update space_membership set role = 'guest'
+      where space_id = ${roomId} and principal_id = ${carol.id}`;
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: true }));
+    const photo = await upload(bob, roomId);
+    await ok(startThread(bob, roomId, 'For the guest', [photo.id]), 201);
+    const opens = () => sql`select principal_id from activity_record
+      where space_id = ${roomId} and kind = 'space.original_opened'`;
+    const original = () =>
+      send(carol.cookie, `/rooms/${roomId}/attachments/${photo.id}/original`, 'POST');
+    expect((await content(carol, roomId, photo.id)).status).toBe(403);
+    for (let time = 0; time < 3; time++) {
+      const opened = await original();
+      expect(opened.status).toBe(200);
+      expect(new Uint8Array(await opened.arrayBuffer())).toEqual(TINY_PNG);
+    }
+    expect([...(await opens())]).toEqual([{ principal_id: carol.id }]);
+    await sql`update space_membership set expires_at = now() - interval '1 minute'
+      where space_id = ${roomId} and principal_id = ${carol.id}`;
+    expect((await original()).status).toBe(404);
+    expect(await opens()).toHaveLength(1);
+  }, 60_000);
 });

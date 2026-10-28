@@ -198,6 +198,7 @@ export function mountAttachments(
     return read(c, scope, file(c), (row) =>
       rooms.admit({
         roomId: scope.spaceId,
+        fileId: file(c),
         viewer: scope.principalId as string,
         uploader: row.principalId,
         mediaType: row.mediaType,

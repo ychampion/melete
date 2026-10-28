@@ -12,8 +12,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   ATTACHMENT_LIMITS,
   ATTACHMENT_TYPES_SENTENCE,
+  type AttachmentKept,
   type AttachmentKind,
   type AttachmentView,
+  attachmentKept,
   attachmentKindFor,
   attachmentSize,
   attachmentTooLarge,
@@ -480,12 +482,17 @@ export async function holdForRoomMessage(
   return held;
 }
 
-/** The files posted with each of these room messages, in the order they were posted. */
+/**
+ * The files posted with each of these room messages, in the order they were
+ * posted. A file whose uploader `asItIs` does not accept is shown kept back:
+ * its kind and id only (`rooms.ts`, `readsFilesAsTheyAre`).
+ */
 export async function roomMessageAttachments(
   reader: Pick<Database, 'select'> | Pick<Transaction, 'select'>,
   messageIds: readonly string[],
-): Promise<Map<string, AttachmentView[]>> {
-  const byMessage = new Map<string, AttachmentView[]>();
+  asItIs: (uploader: string | null) => boolean = () => true,
+): Promise<Map<string, (AttachmentView | AttachmentKept)[]>> {
+  const byMessage = new Map<string, (AttachmentView | AttachmentKept)[]>();
   if (!messageIds.length) return byMessage;
   const rows = await reader
     .select()
@@ -494,7 +501,10 @@ export async function roomMessageAttachments(
     .orderBy(asc(attachment.position), asc(attachment.id));
   for (const row of rows) {
     const key = row.roomMessageId as string;
-    byMessage.set(key, [...(byMessage.get(key) ?? []), attachmentRowView(row)]);
+    const view = asItIs(row.principalId)
+      ? attachmentRowView(row)
+      : attachmentKept.parse({ id: row.id, kind: row.kind, kept_back: true });
+    byMessage.set(key, [...(byMessage.get(key) ?? []), view]);
   }
   return byMessage;
 }
