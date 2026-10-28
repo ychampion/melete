@@ -397,7 +397,7 @@ describe('Nemotron through the Token Factory provider', () => {
   });
 
   for (const finishReason of ['length', 'stop']) {
-    test(`an opening think tag that never closes before a ${finishReason} finish is returned as the answer`, async () => {
+    test(`an opening think tag that never closes before a ${finishReason} finish stays separate from the answer`, async () => {
       const model = nemotronModels[0].id;
       const gateway = await start(() =>
         streamed(
@@ -410,8 +410,8 @@ describe('Nemotron through the Token Factory provider', () => {
       );
       const response = await gateway.post(model, { stream: true });
       const events = readEvents(await response.text());
-      expect(answerText(events)).toBe('<think>Still comparing readings.');
-      expect(reasoningText(events)).toBe('');
+      expect(answerText(events)).toBe('');
+      expect(reasoningText(events)).toBe('Still comparing readings.');
       expect(events.flatMap((event) => event.choices).at(-1)?.finish_reason).toBe(finishReason);
     });
   }
@@ -454,13 +454,13 @@ describe('Nemotron through the Token Factory provider', () => {
     expect(reasoningText(events)).toBe('');
   });
 
-  test('a JSON reply whose think tag never closes is returned as the answer', async () => {
+  test('a JSON reply whose think tag never closes keeps reasoning out of the memory answer', async () => {
     const model = nemotronModels[0].id;
     const content = '<think>Still comparing readings.';
     const gateway = await start(() => Response.json(completion(model, { content }, 'length')));
     const response = await gateway.post(model);
     expect(replyOf('chat/completions', await response.json())).toEqual({
-      text: content,
+      text: '',
       end: 'cut_off',
     });
   });

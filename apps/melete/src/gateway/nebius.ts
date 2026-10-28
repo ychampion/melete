@@ -51,8 +51,9 @@ class ThinkingText {
         this.pending = this.pending.slice(at + CLOSE.length);
         this.mode = 'content';
       } else if (final) {
-        // An unclosed tag is not proof of reasoning: return the text as sent.
-        out.content += OPEN + this.pending;
+        // A reply can exhaust its output budget before the closing tag. Keep
+        // the explicit thinking prefix out of answers and memory reads.
+        out.reasoning += this.pending;
         this.pending = '';
         this.mode = 'content';
       }
