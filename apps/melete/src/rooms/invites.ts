@@ -33,8 +33,9 @@ import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { PrincipalService } from '../principals/service.ts';
+import { nameClashesIn, nameTaken } from './name-taken.ts';
 import { roomInvite as roomInviteTable } from './schema.ts';
-import { nameTaken, type RoomService } from './service.ts';
+import type { RoomService } from './service.ts';
 import { namesOf } from './transcript.ts';
 
 /** How long a guest stays when the owner names no time. */
@@ -276,6 +277,13 @@ export class InviteService {
       throw new ServiceError(
         'name_taken',
         'Someone here already goes by that name. Choose another.',
+        409,
+      );
+    // An account that exists already brings its name with it.
+    if (existing && (await nameClashesIn(this.deps.db, existing, invite.spaceId)))
+      throw new ServiceError(
+        'name_taken',
+        'Someone in this room already goes by a name that looks like yours. Change your name, then open the link again.',
         409,
       );
     const passwordHash =

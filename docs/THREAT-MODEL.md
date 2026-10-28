@@ -846,7 +846,7 @@ name before it is self-chosen. People see the name with a tell after it in
 angle brackets (the email before the @, or a code from the account) wherever it
 matters who someone is, and wherever two names in the room read alike; a name
 that reads like the name of someone the person shares a room with, there now
-or since left, is refused, compared after a fold of case, compatibility forms,
+or since left, is refused, and nobody joins a room under one, compared after a fold of case, compatibility forms,
 invisible characters and letters that look like Latin ones; names that differ
 only in I, l, 1 and | or in rn and m are allowed and shown with their tells
 (see ROOMS). A name is one line of plain text without `<`, `>`, `@` or

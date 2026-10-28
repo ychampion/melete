@@ -88,7 +88,9 @@ refused when it reads as the name of someone the person shares a room with, or
 as the part before the @ of their email; everyone a room has had counts,
 members, guests and people who have left, so a name cannot be taken over once
 its owner leaves. A guest's name is compared the same way with the room they
-join. Reads as means the same after `nameSkeleton`
+join, and someone who already has an account joins a room, added by an owner or
+through an invite, only while their name reads as no one's that room has had;
+otherwise they are asked to change it first. Reads as means the same after `nameSkeleton`
 (`@melete/contracts/name-skeleton`): NFKC, lower case, invisible characters
 dropped, spaces collapsed, and a short table of Cyrillic, Greek, Lisu, Cherokee
 and Latin letters that look like Latin ones read as those, so Alice spelled

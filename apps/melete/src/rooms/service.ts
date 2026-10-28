@@ -19,7 +19,6 @@ import {
   roomStreamFrame,
   unavailable,
 } from '@melete/contracts';
-import { nameSkeleton } from '@melete/contracts/name-skeleton';
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { GUESTS_MAY_NOT_ATTACH, readsFilesAsTheyAre } from '../attachments/rooms.ts';
@@ -46,6 +45,7 @@ import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
 import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
+import { nameTaken } from './name-taken.ts';
 import { ROOM_READS_NO_PICTURES } from './pictures.ts';
 import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
@@ -76,58 +76,6 @@ const connectionView = (row: typeof connection.$inferSelect) => ({
 });
 const roomOwnerOnly = () =>
   new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
-
-/**
- * Whether a name reads as the name of someone a person shares a space with:
- * their chosen name, or the part before the @ of their email, read alike (see
- * `nameSkeleton`: case, spacing, invisible characters, fullwidth forms and
- * Cyrillic, Greek, Lisu or Cherokee letters that pass for Latin ones aside).
- * A name is how a room tells people apart at a glance; the handle after it is
- * what settles it for the room's agent, and people see a tell after a name
- * wherever it matters who someone is. `among` is the person renaming, who is
- * compared with everyone in every space they are in now, or the space someone
- * is joining. Everyone a space has had counts, members, guests and people who
- * have left alike, so a name cannot be taken over once its owner leaves. A
- * room's own account carries the room's name and is no one's, so it never
- * counts: otherwise anyone could learn the names of rooms they are not in.
- */
-export async function nameTaken(
-  db: Database,
-  name: string,
-  among: { person: string } | { space: string },
-): Promise<boolean> {
-  const wanted = nameSkeleton(name);
-  // Everyone in each space the person is in now, or in the space being joined.
-  const within =
-    'person' in among
-      ? and(
-          inArray(
-            spaceMembership.spaceId,
-            db
-              .select({ id: spaceMembership.spaceId })
-              .from(spaceMembership)
-              .where(
-                and(
-                  eq(spaceMembership.principalId, among.person),
-                  isNull(spaceMembership.revokedAt),
-                ),
-              ),
-          ),
-          ne(principal.id, among.person),
-        )
-      : eq(spaceMembership.spaceId, among.space);
-  // Read alike is not something SQL can compare, so the names are folded here.
-  const rows = await db
-    .selectDistinct({ displayName: principal.displayName, email: principal.email })
-    .from(spaceMembership)
-    .innerJoin(principal, eq(principal.id, spaceMembership.principalId))
-    .where(and(within, ne(principal.kind, 'room')));
-  return rows.some(
-    (row) =>
-      (row.displayName !== null && nameSkeleton(row.displayName) === wanted) ||
-      nameSkeleton(row.email.split('@')[0] ?? '') === wanted,
-  );
-}
 
 export type RoomDeps = RoomWork & {
   db: Database;
