@@ -705,10 +705,12 @@ withDb('signals', () => {
     const { id: calendarId } = await connectCalendar('Busy calendar');
     await listen(calendarId, 'calendar.event.changed');
     const behaviour: { now: 'slow' | 'busy' | 'large' } = { now: 'busy' };
+    let reads = 0;
     sources.set(calendarId, {
       signals: {
         stream: 'calendar',
         occurrences: async () => {
+          reads += 1;
           if (behaviour.now === 'busy') throw new SourceError(429, 900);
           if (behaviour.now === 'large') throw new CalendarTooLarge();
           return new Promise(() => {});
@@ -718,7 +720,9 @@ withDb('signals', () => {
     const poller = new SignalPoller({
       sql: required(handle).sql,
       triggers: required(triggers),
-      connectors: sources,
+      // The short deadline belongs to this source alone. Reading accounts left by
+      // earlier tests can time them out and open their shared provider's breaker.
+      connectors: { get: (id) => (id === calendarId ? sources.get(id) : undefined) },
       now: () => clock,
       readTimeoutMs: 200,
     });
@@ -727,19 +731,27 @@ withDb('signals', () => {
     let row = await cursorOf(calendarId);
     expect(new Date(row?.next_poll_at).getTime()).toBe(at + 900_000);
     expect(row?.last_error).toContain('slow down');
+    expect(reads).toBe(1);
 
-    clock += 3_600_000;
+    clock = at + 900_000 - 1;
+    await poller.runOnce();
+    expect(reads).toBe(1);
+
+    clock += 1;
     behaviour.now = 'slow';
     await poller.runOnce();
     row = await cursorOf(calendarId);
     expect(row?.last_error).toContain('too long');
     expect(row?.failures).toBe(2);
+    expect(reads).toBe(2);
 
     clock += 3_600_000;
     behaviour.now = 'large';
     await poller.runOnce();
     row = await cursorOf(calendarId);
     expect(row?.last_error).toContain('repeating events');
+    expect(row?.failures).toBe(3);
+    expect(reads).toBe(3);
     clock += 3_600_000;
   }, 60_000);
 
