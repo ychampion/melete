@@ -12,6 +12,7 @@ import {
   headerMessage,
   MAX_HEADER_BYTES,
   MAX_MAIL_MESSAGE_BYTES,
+  MAX_MESSAGE_BYTES,
   type MailFolder,
   type MailMessage,
   type MailTransport,
@@ -84,7 +85,7 @@ export class OutlookMailTransport implements MailTransport {
     return Array.isArray(answer?.value) ? (answer.value as Record<string, unknown>[]) : [];
   }
 
-  private async message(id: string, limit = MAX_MAIL_MESSAGE_BYTES): Promise<MailMessage | null> {
+  private async message(id: string, limit: number): Promise<MailMessage | null> {
     if (!GRAPH_MESSAGE_ID.test(id)) return null;
     const response = await this.request(`/messages/${encodeURIComponent(id)}/$value`);
     if (response.status === 404) {
@@ -115,7 +116,8 @@ export class OutlookMailTransport implements MailTransport {
     const path = folder === 'sent' ? 'sentitems' : 'inbox';
     for (const entry of await this.list(`/mailFolders/${path}/messages?${params}`)) {
       if (typeof entry.id !== 'string') continue;
-      const message = await this.message(entry.id);
+      // A search reads only messages within the body bound; a larger one is opened by email.read.
+      const message = await this.message(entry.id, MAX_MESSAGE_BYTES);
       if (message) messages.push(withoutMailAttachmentBytes(message));
     }
     return messages;

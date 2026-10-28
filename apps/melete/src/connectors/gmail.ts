@@ -11,6 +11,7 @@ import {
   headerMessage,
   MAX_HEADER_BYTES,
   MAX_MAIL_MESSAGE_BYTES,
+  MAX_MESSAGE_BYTES,
   type MailFolder,
   type MailMessage,
   type MailTransport,
@@ -81,7 +82,7 @@ export class GmailApiTransport implements MailTransport {
       .filter((id): id is string => typeof id === 'string' && GMAIL_MESSAGE_ID.test(id));
   }
 
-  private async message(id: string, limit = MAX_MAIL_MESSAGE_BYTES): Promise<MailMessage | null> {
+  private async message(id: string, limit: number): Promise<MailMessage | null> {
     if (!GMAIL_MESSAGE_ID.test(id)) return null;
     let body: { raw?: unknown; sizeEstimate?: unknown } | null;
     try {
@@ -109,7 +110,8 @@ export class GmailApiTransport implements MailTransport {
     if (query) params.set('q', query);
     const messages: MailMessage[] = [];
     for (const id of await this.ids(params)) {
-      const message = await this.message(id);
+      // A search reads only messages within the body bound; a larger one is opened by email.read.
+      const message = await this.message(id, MAX_MESSAGE_BYTES);
       if (message) messages.push(withoutMailAttachmentBytes(message));
     }
     return messages;

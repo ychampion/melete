@@ -6,7 +6,7 @@ import { pdfWith } from '../attachments/fixtures.ts';
 import { fileBlock } from '../attachments/render.ts';
 import { PrivacyRouter } from '../privacy/router.ts';
 import { MemoryPrivacyStore } from '../privacy/store.ts';
-import { EmailConnector } from './email.ts';
+import { codePointCut, EmailConnector } from './email.ts';
 import { GmailApiTransport } from './gmail.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 import {
@@ -328,9 +328,16 @@ describe('mail attachments', () => {
   });
 });
 
+test('attachment text is cut on a code point boundary, never through a surrogate pair', () => {
+  const text = `${'a'.repeat(9)}\u{1F600}b`;
+  expect(codePointCut(text, 10)).toBe('a'.repeat(9));
+  expect(codePointCut(text, 11)).toBe(`${'a'.repeat(9)}\u{1F600}`);
+  expect(codePointCut(text, 50)).toBe(text);
+});
+
 describe('mail attachment API transports', () => {
   for (const provider of ['gmail', 'outlook'])
-    test(`${provider} reads attachments above the old message cap with bounded MIME reads`, async () => {
+    test(`${provider} reads attachments above the body cap, and its search leaves that message out`, async () => {
       const raw = await source('Statement', ' '.repeat(300_000));
       const access = { token: async () => 'test', renew: async () => 'test' };
       const fetcher: typeof fetch = Object.assign(
@@ -364,9 +371,6 @@ describe('mail attachment API transports', () => {
         media_type: 'application/pdf',
         size: PDF.length + 300_000,
       });
-      const found = await transport.search('', 10);
-      expect(found).toHaveLength(1);
-      expect(found[0]?.attachments?.[0]).toMatchObject({ media_type: 'image/png' });
-      expect(found[0]?.attachments?.[0]?.content).toBeUndefined();
+      expect(await transport.search('', 10)).toEqual([]);
     });
 });

@@ -256,6 +256,13 @@ function messageView({ html: _html, attachments, ...message }: MailMessage): Jso
   return safe;
 }
 
+/** At most `limit` UTF-16 units of `text`, never ending on half of a surrogate pair. */
+export function codePointCut(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const last = text.charCodeAt(limit - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit);
+}
+
 /** Deliberately best-effort, including decoded body text as well as the subject. */
 export function sensitiveInboxMessage(message: MailMessage): boolean {
   const text = `${message.subject}\n${message.text}\n${message.html}`.normalize('NFKC');
@@ -574,7 +581,7 @@ export class EmailConnector implements Connector {
                 ? '[No text could be read. This PDF may contain scanned pages.]'
                 : '[No text could be read from this file.]'),
           );
-          detail.text = text.slice(0, ATTACHMENT_LIMITS.prompt_characters);
+          detail.text = codePointCut(text, ATTACHMENT_LIMITS.prompt_characters);
           detail.pages = extracted.pages;
           detail.truncated = text.length > ATTACHMENT_LIMITS.prompt_characters;
         } else

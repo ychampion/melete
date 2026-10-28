@@ -721,8 +721,9 @@ resets and magic links; a sensitive message in any other shape is read like any
 other message.
 
 `email.read` includes an `attachments` list with each part's `id`, `name`,
-`media_type` and decoded `size` in bytes. Search results also include attachment
-metadata when present. Media types come from the decoded bytes, so a misleading
+`media_type` and decoded `size` in bytes. Search reads only messages of up to
+256 KiB, and lists their attachment metadata too; a larger message is left out
+of search without its body being fetched, and is opened with `email.read`. Media types come from the decoded bytes, so a misleading
 filename or Content-Type header cannot turn a PNG into a PDF. Unknown binary
 files are listed as `application/octet-stream`.
 
@@ -748,8 +749,9 @@ for a model that cannot see it.
 
 One file uses the upload size limit, 20 MiB by default; a picture sent directly
 to the model must also fit the existing 1 MiB image limit. Complete MIME messages
-are bounded to 28.25 MiB, including base64 framing, with at most 100 parts and
-256 KiB of decoded body text and HTML. A message that exceeds these bounds is
+are bounded to 28.25 MiB, including base64 framing, with at most 100 attachments and
+256 KiB of decoded body text and HTML. MIME delimiter lines are counted in the raw
+bytes first, so a message with far more parts is refused before it is parsed. A message that exceeds these bounds is
 withheld whole, so a truncated prefix cannot hide sign-in material. Mail image
 storage uses the upload storage quota and blob lifecycle, including deletion
 with its job.

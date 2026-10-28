@@ -99,16 +99,59 @@ type Found = { id: string; start: number; end: number; holder: TextHolder; mail:
 /** A piece of user or tool text, and how to replace it with text or media. */
 type TextHolder = {
   text: string;
-  tool: boolean;
+  /** The tool whose result this is, '' when its call is not found; null for the person's own turn. */
+  tool: string | null;
   replace: (parts: Node[], files: ModelFile[]) => void;
   replaceText: (text: string) => void;
 };
+
+/** The only tool whose result may carry a mail picture block. */
+export const MAIL_ATTACHMENT_TOOL = 'email.read_attachment';
+/** That tool's name as offered, alone or for one of several mail accounts (`broker/catalog.ts`). */
+const MAIL_ATTACHMENT_CALL = /^email\.read_attachment(?:__[0-9a-f]{12})?$/;
+
+/**
+ * Each tool call's id and the tool it named, as the request's own assistant
+ * turns record them. An id named for two different tools names neither.
+ */
+function toolCallNames(body: Node, protocol: GatewayProtocol): Map<string, string> {
+  const names = new Map<string, string>();
+  const add = (id: unknown, name: unknown) => {
+    if (typeof id !== 'string' || typeof name !== 'string') return;
+    const known = names.get(id);
+    names.set(id, known === undefined || known === name ? name : '');
+  };
+  if (protocol === 'responses') {
+    if (Array.isArray(body.input))
+      for (const item of body.input)
+        if (isNode(item) && item.type === 'function_call') add(item.call_id, item.name);
+    return names;
+  }
+  if (!Array.isArray(body.messages)) return names;
+  for (const message of body.messages) {
+    if (!isNode(message) || message.role !== 'assistant') continue;
+    if (protocol === 'messages' && Array.isArray(message.content))
+      for (const part of message.content)
+        if (isNode(part) && part.type === 'tool_use') add(part.id, part.name);
+    if (protocol === 'chat/completions' && Array.isArray(message.tool_calls))
+      for (const call of message.tool_calls)
+        if (isNode(call) && isNode(call.function)) add(call.id, call.function.name);
+  }
+  return names;
+}
 
 /** The text of user turns and tool results, in each protocol's own shape. */
 function fileTexts(body: Node, protocol: GatewayProtocol): TextHolder[] {
   const holders: TextHolder[] = [];
   const textType = protocol === 'responses' ? 'input_text' : 'text';
-  const fromContent = (owner: Node, key: string, kind: 'user' | 'tool' | 'chatTool' = 'user') => {
+  const calls = toolCallNames(body, protocol);
+  const toolOf = (id: unknown) => (typeof id === 'string' ? (calls.get(id) ?? '') : '');
+  const fromContent = (
+    owner: Node,
+    key: string,
+    kind: 'user' | 'tool' | 'chatTool' = 'user',
+    tool: string | null = null,
+  ) => {
     const chatTool = kind === 'chatTool';
     // Chat tool messages accept text only. Keep the receipt as text and put
     // its pictures in a user message after the complete set of tool replies.
@@ -140,7 +183,7 @@ function fileTexts(body: Node, protocol: GatewayProtocol): TextHolder[] {
     if (typeof content === 'string') {
       holders.push({
         text: content,
-        tool: kind !== 'user',
+        tool,
         replace: (parts, files) => {
           const adapted = withMedia(parts, files);
           owner[key] = chatTool ? adapted.map((part) => part.text).join('') : adapted;
@@ -156,7 +199,7 @@ function fileTexts(body: Node, protocol: GatewayProtocol): TextHolder[] {
       if (!isNode(part) || part.type !== textType || typeof part.text !== 'string') continue;
       holders.push({
         text: part.text,
-        tool: kind !== 'user',
+        tool,
         replace: (parts, files) => {
           const current = owner[key] as unknown[];
           const at = current.indexOf(part);
@@ -174,7 +217,7 @@ function fileTexts(body: Node, protocol: GatewayProtocol): TextHolder[] {
     if (typeof body.input === 'string') {
       holders.push({
         text: body.input,
-        tool: false,
+        tool: null,
         replace: (parts) => {
           body.input = [{ role: 'user', content: parts }];
         },
@@ -188,7 +231,8 @@ function fileTexts(body: Node, protocol: GatewayProtocol): TextHolder[] {
     for (const item of body.input) {
       if (!isNode(item)) continue;
       if (item.role === 'user') fromContent(item, 'content');
-      else if (item.type === 'function_call_output') fromContent(item, 'output', 'tool');
+      else if (item.type === 'function_call_output')
+        fromContent(item, 'output', 'tool', toolOf(item.call_id));
     }
     return holders;
   }
@@ -196,12 +240,13 @@ function fileTexts(body: Node, protocol: GatewayProtocol): TextHolder[] {
   for (const message of body.messages) {
     if (!isNode(message)) continue;
     if (protocol === 'chat/completions' && message.role === 'tool') {
-      fromContent(message, 'content', 'chatTool');
+      fromContent(message, 'content', 'chatTool', toolOf(message.tool_call_id));
     } else if (message.role === 'user') {
       fromContent(message, 'content');
       if (protocol === 'messages' && Array.isArray(message.content))
         for (const part of message.content)
-          if (isNode(part) && part.type === 'tool_result') fromContent(part, 'content', 'tool');
+          if (isNode(part) && part.type === 'tool_result')
+            fromContent(part, 'content', 'tool', toolOf(part.tool_use_id));
     }
   }
   return holders;
@@ -281,10 +326,10 @@ export async function withAttachedFiles(input: {
       if (!blockIntact(match[0], match[1] as string, match[2] as string)) continue;
       const canonical = fileBlock(match[1] as string, MAIL_PICTURE_NOT_SHOWN);
       const mail = match[0] === canonical || match[0] === JSON.stringify(canonical).slice(1, -1);
-      // Tool text is untrusted. A digest proves its text stayed intact, not
-      // that it came from the service: only the mail picture placeholder is
-      // accepted here, and it can never stand in for a document's redacted text.
-      if (holder.tool && !mail) continue;
+      // Tool text is untrusted. Only the mail picture placeholder is accepted
+      // there, only in the result of the mail tool that wrote it, and it can
+      // never stand in for a document's redacted text.
+      if (holder.tool !== null && !(mail && MAIL_ATTACHMENT_CALL.test(holder.tool))) continue;
       found.push({
         id: match[1] as string,
         start: match.index ?? 0,

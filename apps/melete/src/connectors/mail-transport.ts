@@ -336,11 +336,53 @@ export interface MailTransport {
   }>;
 }
 
-/** Decoded body limit, including all text used for inbox hygiene. */
+/**
+ * Decoded body limit, including all text used for inbox hygiene. A search reads
+ * each message whole, so it reads only messages within this many raw bytes.
+ */
 export const MAX_MESSAGE_BYTES = 256 * 1024;
-/** Bounded MIME read: one upload's worth of files plus base64 wrapping and body. */
+/** Bounded MIME read for one opened message: one upload's worth of files plus base64 wrapping and body. */
 export const MAX_MAIL_MESSAGE_BYTES =
   Math.ceil(ATTACHMENT_LIMITS.file_bytes * 1.4) + MAX_MESSAGE_BYTES;
+/** Delimiter lines a message may carry: its files, plus body parts, containers and closings. */
+export const MAX_MIME_PARTS = ATTACHMENT_LIMITS.per_message_ceiling + 16;
+
+const DELIMITER_LINE = /^--([^\r\n]+)\r?$/gm;
+const BOUNDARY_PARAM = /boundary\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;"\r\n]+))/gi;
+
+/**
+ * An upper bound on a message's MIME parts, read from its raw bytes without
+ * decoding them. Every part opens with a delimiter line naming a boundary the
+ * message declares, so those lines are counted. A boundary declared in RFC 2231
+ * pieces is not read here; then every line shaped like a delimiter counts.
+ * Counting stops once it passes `cap`.
+ */
+export function mimePartCount(source: Buffer, cap = MAX_MIME_PARTS): number {
+  const raw = source.toString('latin1');
+  // Header lines are unfolded before their parameters are read, as the parser does.
+  const unfolded = raw.replace(/\r?\n[ \t]+/g, ' ');
+  const pieces = /boundary\s*\*/i.test(unfolded);
+  const boundaries = new Set<string>();
+  for (const match of unfolded.matchAll(BOUNDARY_PARAM)) {
+    const value =
+      match[1] !== undefined ? match[1].replace(/\\(.)/g, '$1') : (match[2] ?? '').trim();
+    if (value) boundaries.add(value);
+  }
+  if (!pieces && !boundaries.size) return 1;
+  let count = 0;
+  for (const match of raw.matchAll(DELIMITER_LINE)) {
+    const line = match[1] as string;
+    if (
+      pieces ||
+      boundaries.has(line) ||
+      (line.endsWith('--') && boundaries.has(line.slice(0, -2)))
+    ) {
+      count += 1;
+      if (count > cap) return count;
+    }
+  }
+  return count;
+}
 
 /** Read an entire bounded MIME message, never a prefix that could hide sign-in material. */
 export async function parseMailMessage(
@@ -348,6 +390,8 @@ export async function parseMailMessage(
   source: Buffer,
 ): Promise<MailMessage | null> {
   if (source.length > MAX_MAIL_MESSAGE_BYTES) return null;
+  // Too many parts is refused from the raw bytes, before the parser decodes any of them.
+  if (mimePartCount(source) > MAX_MIME_PARTS) return null;
   const parsed = await simpleParser(source, { skipImageLinks: true });
   if (!parsed.headerLines?.length) return null;
   if (parsed.attachments.length > ATTACHMENT_LIMITS.per_message_ceiling) return null;
@@ -485,11 +529,7 @@ export class ImapSmtpTransport implements MailTransport {
     }
   }
 
-  private async message(
-    client: ImapFlow,
-    uid: number,
-    limit = MAX_MAIL_MESSAGE_BYTES,
-  ): Promise<MailMessage | null> {
+  private async message(client: ImapFlow, uid: number, limit: number): Promise<MailMessage | null> {
     const metadata = await client.fetchOne(uid, { size: true }, { uid: true });
     // A truncated message cannot be filtered safely. Omit it rather than expose
     // a harmless prefix while an authentication link sits beyond the limit.
@@ -534,7 +574,8 @@ export class ImapSmtpTransport implements MailTransport {
       const uids = await client.search(query ? { text: query } : { all: true }, { uid: true });
       const messages: MailMessage[] = [];
       for (const uid of (uids || []).slice(-limit).reverse()) {
-        const message = await this.message(client, uid);
+        // A search reads only messages within the body bound; a larger one is opened by email.read.
+        const message = await this.message(client, uid, MAX_MESSAGE_BYTES);
         if (message) messages.push(withoutMailAttachmentBytes(message));
       }
       return messages;
