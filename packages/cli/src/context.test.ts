@@ -234,18 +234,52 @@ for (;;) { out.write(new Uint8Array(65536)); await out.flush(); await Bun.sleep(
   }, 20_000);
 
   test('a sink that has read every byte may exit before the source closes, as tar does at its end marker', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melete-stream-'));
     const size = 300_000;
+    const sinkPid = join(dir, 'sink.pid');
+    const observed = 'sink exited before source closed';
     const source = {
       command: [
         bun,
         '-e',
-        `const out = Bun.stdout.writer(); out.write(new Uint8Array(${size})); await out.flush(); await Bun.sleep(400);`,
+        // A FileSink's flush can stay pending after all bytes reached the pipe.
+        // Write synchronously, then keep stdout open until the sink has exited.
+        `const { writeSync, existsSync, readFileSync } = require('node:fs');
+const data = new Uint8Array(${size});
+for (let offset = 0; offset < data.length;) offset += writeSync(1, data, offset);
+while (!existsSync(${JSON.stringify(sinkPid)})) await Bun.sleep(1);
+const pid = Number(readFileSync(${JSON.stringify(sinkPid)}, 'utf8'));
+for (;;) {
+  try { process.kill(pid, 0); }
+  catch (error) { if (error.code === 'ESRCH') break; throw error; }
+  await Bun.sleep(1);
+}
+process.stderr.write(${JSON.stringify(observed)});`,
       ],
     };
-    const result = await stream(source, [
-      { command: ['sh', '-c', `head -c ${size} >/dev/null; exit 0`] },
-    ]);
-    expect(result).toMatchObject({ ok: true, bytes: size, detail: '' });
+    try {
+      const result = await stream(source, [
+        {
+          command: [
+            'sh',
+            '-c',
+            'head -c "$1" >/dev/null; printf "%s" "$$" > "$2.tmp"; mv "$2.tmp" "$2"',
+            'sink',
+            String(size),
+            sinkPid,
+          ],
+        },
+      ]);
+      expect(result).toMatchObject({
+        ok: true,
+        bytes: size,
+        detail: '',
+        sha256: createHash('sha256').update(new Uint8Array(size)).digest('hex'),
+        stderr: observed,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 20_000);
 
   test('a long stream holds only the bytes on their way, never the whole stream', async () => {
