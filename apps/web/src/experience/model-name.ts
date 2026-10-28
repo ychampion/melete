@@ -4,7 +4,7 @@
  * Show the identifier beside it where the exact value matters.
  */
 
-import { modelPreset } from '@melete/contracts';
+import { modelPreset } from '@melete/contracts/model-presets';
 
 /** Names whose usual spelling is not simple title case. */
 const SPELLED: Record<string, string> = {
