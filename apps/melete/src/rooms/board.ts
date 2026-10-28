@@ -572,7 +572,7 @@ export async function pushToAssignee(
     insert into push_intent (id, principal_id, kind, title, body, because, url, dedup_key)
     select ${newId('pint')}, ${row.assigneePrincipalId}, 'decision', ${title.slice(0, 120)},
            ${row.title}, ${'Because it was put on the board for you.'},
-           ${`/#/rooms/${row.spaceId}/board`}, ${`board:${row.id}`}
+           ${`/#/rooms/${row.spaceId}/board`}, ${`board:${row.id}:${row.assigneePrincipalId}`}
     where exists (select 1 from push_subscription s where s.principal_id = ${row.assigneePrincipalId})
       -- An item for the owners alone is never pushed to someone who is not one.
       and (${row.visibility} <> 'owners' or exists (select 1 from space_membership m

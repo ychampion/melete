@@ -23,7 +23,7 @@ import {
   type JsonValue,
   type Receipt,
 } from '@melete/contracts';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import type { Sql } from 'postgres';
 import { BrokerFault } from '../broker/errors.ts';
@@ -240,8 +240,14 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       await facts(tx, ctx);
       return payload;
     }
-    await mayChange(tx, ctx);
+    const job = await mayChange(tx, ctx);
     checkDates(payload);
+    // Work with nobody behind it is the room's own, and goes as an owner's would.
+    const owner =
+      !job.requested_by_principal_id ||
+      (await roleOf(tx, ctx.space_id, job.requested_by_principal_id)) === 'owner';
+    if (payload.visibility === 'owners' && !owner)
+      throw new BrokerFault('scope_denied', 'Only an owner keeps an item for the owners.');
     const next: JsonObject = { ...payload };
     if ('title' in payload) next.title = titleOf(payload.title);
     if ('assignee' in payload) {
@@ -277,9 +283,11 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
         );
     }
     if (kind === 'board.update') {
-      const [row] = await tx`select id from room_board_item
+      const [row] = await tx`select id, kind from room_board_item
         where id = ${String(payload.item_id)} and space_id = ${ctx.space_id}`;
       if (!row) throw new BrokerFault('payload_invalid', 'That item is not on this board.');
+      if (row.kind === 'question' && payload.state === 'done')
+        throw new BrokerFault('payload_invalid', 'Only an answer closes a question.');
     }
     return next;
   }
@@ -441,6 +449,9 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     const payload = action.canonical_payload;
     // Read before the transaction, which holds the event order lock.
     const job = await facts(options.sql, ctx);
+    const requester = job.requested_by_principal_id;
+    const owner = !requester || (await roleOf(options.sql, ctx.space_id, requester)) === 'owner';
+    const newAssignee = typeof payload.assignee === 'string' ? payload.assignee : null;
     return serviceTransaction(db, async (tx) => {
       const reader = await readerOf(tx, job);
       const itemId = String(payload.item_id);
@@ -453,6 +464,29 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
         .where(and(eq(roomBoardItem.id, itemId), eq(roomBoardItem.spaceId, ctx.space_id)))
         .for('update');
       if (!row) return failed('That item is not on this board.');
+      if (row.kind === 'question' && payload.state === 'done')
+        return failed('Only an answer closes a question.');
+      if (!owner) {
+        // As on the board itself: someone who is not an owner changes only
+        // what they are on, or what nobody is on, and keeps nothing for the
+        // owners. They take an item on themselves; only an owner gives it to
+        // someone else.
+        const holder =
+          seen.state === 'claimed'
+            ? (seen.claimed_by?.principal_id ?? null)
+            : row.state === 'done'
+              ? row.claimedBy
+              : null;
+        const onIt =
+          seen.assignee?.principal_id === reader ||
+          holder === reader ||
+          (!seen.assignee && !holder && seen.kind !== 'note' && seen.kind !== 'question');
+        if (!onIt) return failed('Only the person on it or an owner changes this item.');
+        if (payload.visibility === 'owners')
+          return failed('Only an owner keeps an item for the owners.');
+        if ('assignee' in payload && newAssignee !== null && newAssignee !== reader)
+          return failed('Only an owner gives an item to someone else.');
+      }
       const patch: Partial<typeof roomBoardItem.$inferInsert> = {};
       if (typeof payload.title === 'string') patch.title = payload.title;
       if ('detail' in payload)
@@ -470,7 +504,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       }
       if (typeof payload.visibility === 'string')
         patch.visibility = payload.visibility as BoardVisibility;
-      if (payload.state === 'done') patch.state = row.kind === 'question' ? 'answered' : 'done';
+      if (payload.state === 'done') patch.state = 'done';
       if (payload.state === 'open') {
         patch.state = 'open';
         patch.claimedBy = null;
@@ -480,6 +514,19 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
         'assigneePrincipalId' in patch ? patch.assigneePrincipalId : row.assigneePrincipalId;
       if (visibilityNow === 'assignee' && !assigneeNow)
         return failed('An item only its assignee sees needs an assignee.');
+      // The person a question asks must be able to see it, as with board.ask.
+      const assigneeIsOwner = assigneeNow
+        ? (
+            (await tx.execute(sql`select 1 from space_membership m
+            where m.space_id = ${ctx.space_id} and m.principal_id = ${assigneeNow}
+              and m.role = 'owner' and m.revoked_at is null
+              and (m.expires_at is null or m.expires_at > now())`)) as unknown as unknown[]
+          ).length > 0
+        : false;
+      if (row.kind === 'question' && visibilityNow === 'owners' && assigneeNow && !assigneeIsOwner)
+        return failed(
+          'Only the owners see a question for the owners, so ask an owner or let the person see it.',
+        );
       const [changed] = await tx
         .update(roomBoardItem)
         .set(patch)
@@ -487,6 +534,14 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
         .returning();
       if (!changed) return failed('That item is not on this board.');
       await touchItem(tx, changed);
+      // Someone newly given a question or a note is told, as when it was made.
+      if (changed.assigneePrincipalId && changed.assigneePrincipalId !== row.assigneePrincipalId) {
+        const [named] = await tx
+          .select({ name: space.name })
+          .from(space)
+          .where(eq(space.id, ctx.space_id));
+        await pushToAssignee(tx, changed, named?.name ?? 'a room');
+      }
       return {
         outcome: 'succeeded' as const,
         receipt: receiptFor(action, { item_id: itemId, state: changed.state }, itemId),
