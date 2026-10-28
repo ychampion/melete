@@ -62,6 +62,34 @@
   height: 100%;
   object-fit: cover;
 }
+/* A file kept back in a room that shows only what needs you: its kind, and a way to open it. */
+.bubble-file-kept {
+  flex-wrap: wrap;
+}
+.bubble-file-kept .attach-note {
+  white-space: normal;
+}
+.kept-open {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.kept-open:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+.kept-open:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.kept-open:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 @media (max-width: 767px) {
   .bubble-file[data-picture="true"] {
     width: 96px;

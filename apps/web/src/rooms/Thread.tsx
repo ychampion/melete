@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Markdown } from '../chat/Markdown.tsx';
+import { MessageFiles } from '../chat/MessageFiles.tsx';
 import { ReceiptRow, ResultCard } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
@@ -201,12 +202,12 @@ export function Thread({
     if (node && atBottom.current) node.scrollTop = node.scrollHeight;
   }, [tailKey]);
 
-  const send = async (text: string, ask: boolean, key: string) => {
+  const send = async (text: string, ask: boolean, key: string, files: readonly string[]) => {
     const body =
       ask && !namesAgent(text, detail.room.agent_name)
         ? `${mentionFor(detail.room.agent_name)} ${text}`
         : text;
-    const result = await roomsApi.post(roomId, threadId, body, key);
+    const result = await roomsApi.post(roomId, threadId, body, key, files);
     if (!result.data) {
       toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t send that' });
       return false;
@@ -301,6 +302,7 @@ export function Thread({
             entry.type === 'message' ? (
               <Message
                 key={entry.message.id}
+                roomId={roomId}
                 message={entry.message}
                 agent={agent}
                 mine={entry.message.author.principal_id === me?.id}
@@ -323,17 +325,24 @@ export function Thread({
           )}
         </div>
       </div>
-      <RoomComposer agentName={agent} placeholder="Reply to the thread" onSend={send} />
+      <RoomComposer
+        roomId={roomId}
+        agentName={agent}
+        placeholder="Reply to the thread"
+        onSend={send}
+      />
     </div>
   );
 }
 
 function Message({
+  roomId,
   message,
   agent,
   mine,
   onDelete,
 }: {
+  roomId: string;
   message: RoomMessage;
   agent: string;
   mine: boolean;
@@ -388,7 +397,13 @@ function Message({
             Deleted by its author
           </p>
         ) : (
-          <p className="room-msg-text">{message.text}</p>
+          <>
+            <p className="room-msg-text">{message.text}</p>
+            <MessageFiles
+              files={message.attachments ?? []}
+              base={`/rooms/${encodeURIComponent(roomId)}`}
+            />
+          </>
         )}
         {confirming ? (
           <fieldset className="room-msg-confirm">
@@ -569,11 +584,12 @@ export function NewThread({
         </p>
       </div>
       <RoomComposer
+        roomId={roomId}
         agentName={agent}
         placeholder="Write the first message"
         autoFocus
-        onSend={async (text, ask, key) => {
-          const result = await roomsApi.startThread(roomId, text, ask, key);
+        onSend={async (text, ask, key, files) => {
+          const result = await roomsApi.startThread(roomId, text, ask, key, files);
           if (!result.data) {
             toast({
               kind: 'err',

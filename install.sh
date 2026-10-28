@@ -13,8 +13,8 @@
 #   MELETE_DIR        where the files go (default ~/melete)
 #   MELETE_REF        the branch, tag or commit the files come from (default main)
 #   MELETE_IMAGE_TAG  the image tag to run (default main)
-#   MELETE_MODEL      the model id to use with ANTHROPIC_API_KEY, OPENAI_API_KEY
-#                     or GOOGLE_API_KEY
+#   MELETE_MODEL      the model id to use with ANTHROPIC_API_KEY, OPENAI_API_KEY,
+#                     GOOGLE_API_KEY or NEBIUS_API_KEY
 #   MELETE_NO_OPEN    set to 1 to leave the browser closed
 #   MELETE_COMPUTER   1 (the default for a new installation) gives every agent
 #                     a computer of its own, a container on this Docker engine;
@@ -229,7 +229,7 @@ choose_provider() {
   PROVIDER=fake
   PROVIDER_KEY_NAME=''
   local name provider
-  for name in FIREWORKS_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY; do
+  for name in FIREWORKS_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY NEBIUS_API_KEY; do
     local value="${!name:-}"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
@@ -242,6 +242,7 @@ choose_provider() {
       ANTHROPIC_API_KEY) provider=anthropic ;;
       OPENAI_API_KEY) provider=openai ;;
       GOOGLE_API_KEY) provider=google ;;
+      NEBIUS_API_KEY) provider=nebius ;;
     esac
     if [ "$provider" != fireworks ] && [ -z "${MELETE_MODEL:-}" ]; then
       say "Found $name. To use it, set MELETE_MODEL to the model id, written exactly as the $provider API expects it, or add it later in Settings → Models."

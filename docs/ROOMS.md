@@ -138,6 +138,26 @@ resumes from `Last-Event-ID`. A room view says who is looking at it with a
 heartbeat (`POST /rooms/{id}/presence`); presence is shown, and decides
 nothing about who may read.
 
+A message can carry photos and files: upload each to `POST /rooms/{id}/attachments`
+and name it in the message's `attachments`. Everyone in the room reads them
+(`GET /rooms/{id}/attachments/{file}/content`), except in a summaries-only room
+(below); someone removed from the room, or never in it, does not. An ask hands
+them to its request, and the room's model reads a photo itself, or the
+operator's vision model (`MELETE_MODEL_VISION`) takes the call and answers it.
+Where neither can read photos, an ask with one is refused with a plain sentence
+saying so, and the photo can still be posted without asking. A guest attaches
+files only where guests may ask.
+
+In a room set to "Show me only what needs me", a posted file is read as it is
+only by the person who posted it and the room's maker. Everyone else sees what
+kind of file it is and its id, with no name, size or pages, in the thread and
+its live stream, and `content` (and its `preview`) answers `403 summaries_only`.
+They read it with `POST /rooms/{id}/attachments/{file}/original`, which notes
+the open in the room's activity, naming who opened what kind of file, before a
+byte is sent; if the note cannot be written, nothing is sent. The same person
+opening the same file again within a few minutes is one note. The room's request
+still reads every file.
+
 ## Permissions in a room
 
 When a request needs permission (posting to people through the room's
@@ -181,7 +201,9 @@ changes through one of them follows the room's team-account rule
   person who asked included;
 - `owners`: the room's owners.
 
-Everything else a request asks permission for follows the general rule above.
+Adding an event to a member's explicitly shared personal calendar asks only
+that member, whatever either room rule says. Everything else a request asks
+permission for follows the general rule above.
 Guests never answer under either rule, auto-review never answers, and the card,
 the decision push and the agent all name the people the rule for that action
 names. A room created before this setting existed keeps `owners` for its team
@@ -226,7 +248,8 @@ is waiting for.
 
 ## Connections in a room
 
-A room's requests act only through the connections marked for the room. Its own
+A room's requests use the connections marked for the room and the limited
+calendar shares its members explicitly allow. Its own
 tools (files, the web, its computer) are marked so from the start. A connection
 an owner installs into the room's space (`space_id` set to the room's space)
 serves the room from the start too: everyone's requests in the room can use it
@@ -239,6 +262,22 @@ room also sees the ones kept for them. Only the person who made the room changes
 serves, since one kept back serves only their work. Changing what a connection
 serves starts work under way in the room again and withdraws the permissions
 waiting in it.
+
+Each member can share one calendar connection from their own space in the
+room's settings (`PUT /rooms/{id}/calendar-shares`). The room reads it through
+`room.member_freebusy` as busy time blocks only, without event titles, locations
+or attendees. The `freebusy` mode permits only this read. With `freebusy_add`,
+`room.add_to_member_calendar` can add an event after that member approves the
+exact event. Other members and owners cannot approve for them, whatever the
+room's approval rules say. Read-only calendar feeds cannot allow additions.
+Sharing gives the room no other access to the connection.
+
+`GET /rooms/{id}/calendar-shares` shows only the signed-in member's share and
+their own calendar choices. `DELETE /rooms/{id}/calendar-shares` revokes that
+share. Leaving the room ends access too. Each tool call checks the share and
+membership again, so requests already running cannot keep reading or adding
+events after access ends. Rejoining requires a new share. Guests cannot share
+a personal calendar.
 
 A room's connections are held to public addresses, because its requests come
 from everyone in it. A team that runs its own MCP servers, calendars or mail on
@@ -256,12 +295,14 @@ For a request, the agent reads:
 - the room's memory: what people said in the room, with who said it;
 - details people chose to share into the room from their own memory, each
   marked with who shared it;
+- free/busy blocks from calendars members explicitly shared with the room;
 - the request itself, and who asked it.
 
-Beyond the details people shared, it reads nothing from anyone's personal
-space: no personal memory, no personal files, no personal chats and no personal
-connections. A room's own tools and the connections marked for the room are the
-only ones its requests use.
+Beyond the memory details and revocable calendar shares people explicitly
+allow, it reads nothing from anyone's personal space: no other personal memory,
+files, chats or connections. A shared personal calendar is read as free/busy
+only. Its event titles, locations and attendees stay private, and adding an
+event requires the calendar member's approval.
 
 ## Memory in a room
 
@@ -343,6 +384,49 @@ When the people in a room change, work under way in it starts again with the
 new roster, and permissions its requests were waiting on are withdrawn. The
 requests someone asked end when they leave, since only they could answer them
 (a turn under way stops), and an ask of theirs still waiting its turn is dropped.
+
+## The board
+
+A room keeps a board of dated items: events, tasks, questions and notes. Each
+item can be assigned to one person in the room who is not a guest, and says who
+sees it:
+
+| Visibility | Who sees it |
+|---|---|
+| `everyone` | Everyone in the room, guests included |
+| `owners` | The room's owners |
+| `assignee` | The person it is assigned to, and the room's owners |
+
+The service applies this rule in the query that reads the board, so a member
+sees items for everyone and the items assigned to them, a guest sees items for
+everyone, and an owner sees everything. The same rule holds for the room's
+board (`GET /rooms/{id}/board`), its live stream
+(`GET /rooms/{id}/board/events`, resumable with `Last-Event-ID`, closed the
+moment the reader leaves the room) and `GET /board`, which shows the items from
+every room the signed-in person is in (`?mine=1` keeps the open items assigned
+to them, `from` and `to` keep a window of dates). A room you are not in
+contributes nothing.
+
+People claim a task or an event (`POST .../board/{item}/claim`; one claim
+stands, and a second gets 409), mark it done (`.../done`) and answer a question
+put to them (`.../answer`). Guests read the board and change nothing on it.
+Only the person a question asks can answer it. The answer is posted in the
+room as that person's own message to the agent, in the thread the question was
+asked in, so the agent goes on as a new request of theirs. When the question
+was for one person, the message does not repeat its words in the thread.
+
+The room's agent has five tools for the board: `board.list`, `board.add`,
+`board.update`, `board.ask` and `board.note`. They change only the room's own
+board and ask nobody. The agent reads the board as the person whose request it
+is working on would see it, and changes only what that person can see; a
+request from a guest reads the board and changes nothing. It assigns items only
+to people in the room who are not guests. A note is always for its person
+alone. A question or a note sends a push to that person only, paced like any
+other push and held in their quiet hours.
+
+When someone leaves the room, items assigned to them read as unassigned and a
+claim of theirs reads as open again. Titles are written by the agent, so `board.add` tells it
+to keep the titles of items for everyone short and free of private detail.
 
 ## Talking to a room from a chat platform
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { loadEnv } from '../env.ts';
 import { configuredProviders, signInIssuers } from './configured.ts';
 import { authorizeUrl, CHATGPT, type OAuthIssuer } from './oauth.ts';
-import { resolveRoute } from './providers.ts';
+import { PROVIDER_KEY_VARIABLES, resolveRoute } from './providers.ts';
 
 function configure(source: Record<string, string>) {
   const warnings: string[] = [];
@@ -51,6 +51,22 @@ describe('the providers a service starts with', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('FIREWORKS_API_KEY');
     expect(configure({ FIREWORKS_API_KEY: 'key' }).warnings).toEqual([]);
+  });
+
+  test('every hosted provider key in the environment reaches the gateway', () => {
+    for (const [name, variables] of Object.entries(PROVIDER_KEY_VARIABLES)) {
+      const variable = variables[0];
+      if (!variable || name === 'openai-compatible') continue;
+      const { providers, warnings } = configure({
+        MELETE_DEFAULT_PROVIDER: name,
+        [variable]: `${name}-operator-key`,
+      });
+      expect([name, providers.find((provider) => provider.name === name)?.apiKey]).toEqual([
+        name,
+        `${name}-operator-key`,
+      ]);
+      expect([name, warnings]).toEqual([name, []]);
+    }
   });
 
   test('Anthropic is reached at the gateway ANTHROPIC_BASE_URL names, with its own key', () => {

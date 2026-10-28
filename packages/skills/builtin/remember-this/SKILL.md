@@ -1,6 +1,6 @@
 ---
 name: remember-this
-description: Take in something the person wants kept in mind, check it against what is known, and say it back.
+description: Keep something in mind, check it against what is known, say it back.
 triggers:
   - remember
   - note that

@@ -54,6 +54,7 @@ import {
   spaceAuditQuery,
   spaceAuditResponse,
 } from './audit.ts';
+import { boardPaths } from './board-openapi.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
@@ -282,6 +283,12 @@ import {
   submissionResponse,
 } from './responsibility.ts';
 import {
+  roomCalendarShareResult,
+  roomCalendarShareRevoked,
+  roomCalendarShareSettings,
+  roomCalendarShareUpdate,
+} from './room-calendar-shares.ts';
+import {
   acceptInviteRequest,
   acceptInviteResponse,
   addRoomMemberRequest,
@@ -356,6 +363,8 @@ import {
   spaceRemoval,
   spaceRemovalPreview,
   spaceRemovalReport,
+  summariesOnlyChange,
+  summariesOnlySetting,
 } from './spaces.ts';
 import { needsYouItemResponse, needsYouList } from './triage.ts';
 import { healthDetailResponse, myUsageResponse, usageResponse } from './usage.ts';
@@ -884,6 +893,98 @@ const admission = <T extends z.ZodType>(
   },
 });
 
+/** A room's files: uploaded by one of its people, read by whoever is in the room now. */
+function roomAttachmentPaths(room: ReturnType<typeof idParam>, notIn: ReturnType<typeof problem>) {
+  const file = { path: z.object({ id: z.string(), fileId: z.string() }) };
+  return {
+    '/rooms/{id}/attachments': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Upload a file to post in the room',
+        description:
+          'Multipart form data, as `POST /attachments` takes it. The file waits, visible only to ' +
+          'whoever uploaded it, until a message in this room names it in `attachments`; from ' +
+          'then on everyone in the room reads it. A guest uploads only where guests may ask.',
+        requestParams: room,
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: z.object({
+                file: z.string().meta({ format: 'binary' }),
+                preview: z.string().meta({ format: 'binary' }).optional(),
+              }),
+            },
+          },
+        },
+        responses: {
+          '201': jsonResponse('The file, ready to post', attachmentResponse),
+          '400': problem('Empty, unreadable, or not the kind of file it says it is'),
+          '403': problem('A guest, where guests may not ask'),
+          '404': notIn,
+          '413': problem('Larger than the limit'),
+          '415': problem('A kind of file Melete does not read'),
+          '429': problem('More uploads at once, or in a while, than the operator allows'),
+        },
+      },
+    },
+    '/rooms/{id}/attachments/{fileId}/content': {
+      get: {
+        tags: ['rooms'],
+        summary: 'Read a file posted in the room',
+        description:
+          'For everyone in the room once it is posted, and for its uploader before. ' +
+          '`variant=preview` reads the small copy a picture has. In a room set to summaries ' +
+          'only, only the person who posted it and the room’s maker read it here; everyone ' +
+          'else opens the original.',
+        requestParams: { ...file, query: attachmentContentQuery },
+        responses: {
+          '200': {
+            description: 'The bytes',
+            content: {
+              'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+            },
+          },
+          '403': problem('The room shows only what needs you (`summaries_only`)'),
+          '404': problem('Not in this room, or no such file'),
+        },
+      },
+    },
+    '/rooms/{id}/attachments/{fileId}/original': {
+      post: {
+        tags: ['rooms'],
+        summary: 'Open the original of a file posted in the room, noted in its activity',
+        description:
+          'The same bytes `GET /rooms/{id}/attachments/{fileId}/content` serves, read on ' +
+          'purpose. In a room set to summaries only this is how its people read a file someone ' +
+          'else posted, and each open is noted in the room’s activity before it is sent.',
+        requestParams: { ...file, query: attachmentContentQuery },
+        responses: {
+          '200': {
+            description: 'The bytes',
+            content: {
+              'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+            },
+          },
+          '404': problem('Not in this room, or no such file'),
+        },
+      },
+    },
+    '/rooms/{id}/attachments/{fileId}': {
+      delete: {
+        tags: ['rooms'],
+        summary: 'Take back a file not posted yet',
+        requestParams: file,
+        responses: {
+          '200': jsonResponse('Deleted', z.object({ ok: z.literal(true) })),
+          '404': problem('Not in this room, or no such file'),
+          '409': problem('Already posted'),
+        },
+      },
+    },
+  };
+}
+
 /** The rooms routes. Each names its room in the path and checks the caller's membership itself. */
 function roomsPaths() {
   const room = idParam('id', 'Room id');
@@ -1056,6 +1157,7 @@ function roomsPaths() {
         },
       },
     },
+    ...roomAttachmentPaths(room, notIn),
     '/rooms/{id}/threads': {
       get: {
         tags: ['rooms'],
@@ -1100,7 +1202,7 @@ function roomsPaths() {
           '200': jsonResponse('The message', roomMessageResponse),
           '404': notIn,
           '409': problem(
-            'The thread is closed, or the submission ID belongs to a different message',
+            "The thread is closed, the submission ID belongs to a different message, or it asks with a photo the room's model cannot read",
           ),
         },
       },
@@ -1193,7 +1295,7 @@ function roomsPaths() {
         tags: ['rooms'],
         summary: "Answer one of a room's permissions",
         description:
-          "Only the people the room's rule names may answer: the person who asked (the default), any member who is not a guest, or the room's owners. The answer names the exact content and the card it answers; if either changed, it is refused. The answer is recorded as the person's.",
+          "Only the people the room's rule names may answer: the person who asked (the default), any member who is not a guest, or the room's owners. Adding an event to a member's explicitly shared personal calendar asks only that member, whatever the room's rules say. The answer names the exact content and the card it answers; if either changed, it is refused. The answer is recorded as the person's.",
         requestParams: { path: z.object({ id: z.string(), approvalId: z.string() }) },
         requestBody: json(roomPermissionDecision),
         responses: {
@@ -1203,6 +1305,45 @@ function roomsPaths() {
           '409': problem(
             'What it asks for changed, it was withdrawn, or someone already answered it (the message says who, and how)',
           ),
+        },
+      },
+    },
+    '/rooms/{id}/calendar-shares': {
+      get: {
+        tags: ['rooms'],
+        summary: 'My calendar share and personal calendars I can share with this room',
+        description:
+          'Returns only the signed-in member’s share and calendar connection labels. Guests have no personal calendars to share.',
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('My calendar sharing settings', roomCalendarShareSettings),
+          '404': notIn,
+        },
+      },
+      put: {
+        tags: ['rooms'],
+        summary: 'Share one of my personal calendars with this room',
+        description:
+          'Members and owners share only a calendar connection in their own space. The room reads free/busy blocks without titles, locations or attendees. With freebusy_add, every added event requires the calendar member’s approval, whatever the room’s approval rules say.',
+        requestParams: room,
+        requestBody: json(roomCalendarShareUpdate),
+        responses: {
+          '200': jsonResponse('My calendar share', roomCalendarShareResult),
+          '400': problem('The connection is not a calendar or cannot add events'),
+          '403': problem('Only a member can share a calendar from their own space'),
+          '404': notIn,
+        },
+      },
+      delete: {
+        tags: ['rooms'],
+        summary: 'Revoke my calendar share with this room',
+        description:
+          'Stops subsequent reads and additions immediately, including in requests already running. Leaving the room also ends access.',
+        requestParams: room,
+        responses: {
+          '200': jsonResponse('Calendar share revoked', roomCalendarShareRevoked),
+          '403': problem('Only a member can revoke their calendar share'),
+          '404': notIn,
         },
       },
     },
@@ -2202,6 +2343,34 @@ export function buildOpenApiDocument() {
               '200': jsonResponse('The rules', spacePolicyResponse),
               '400': problem('A model or kind is not written the way the rules need'),
               '403': problem("Only the space's owner or the setup owner changes its rules"),
+            },
+          },
+        },
+        '/spaces/{id}/summaries-only': {
+          get: {
+            tags: ['spaces'],
+            summary: 'Whether a space shows only what needs its people',
+            description:
+              'Off by default. When on, Melete still reads everything the space holds and does ' +
+              'the work, but the people in it see summaries and action cards: the content routes ' +
+              'of its files refuse with `summaries_only`, and an original is read only through ' +
+              'its `original` route, which notes the open in the space’s activity.',
+            requestParams: idParam('id', 'Space id'),
+            responses: {
+              '200': jsonResponse('The setting', summariesOnlySetting),
+              '403': problem('No such space, or not one this person can see'),
+            },
+          },
+          put: {
+            tags: ['spaces'],
+            summary: 'Turn summaries only on or off for a space',
+            description:
+              "Set by the space's owner. Turning it on or off is noted in the space's activity.",
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(summariesOnlyChange),
+            responses: {
+              '200': jsonResponse('The setting', summariesOnlySetting),
+              '403': problem("Only the space's owner turns it on or off"),
             },
           },
         },
@@ -3608,6 +3777,29 @@ export function buildOpenApiDocument() {
             responses: { '200': jsonResponse('Skills', skillListResponse) },
           },
         },
+        '/artifacts/{id}/original': {
+          post: {
+            tags: ['artifacts'],
+            summary: 'Open the original of an artifact, noted in the space’s activity',
+            description:
+              'The same file `GET /artifacts/{id}/content` serves, read on purpose. In a space set to summaries only this is the one way to read it, and each open is noted in the space’s activity for everyone in it.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'Artifact id from the action receipt'),
+              query: fileDisposition,
+            },
+            responses: {
+              '200': {
+                description: 'File bytes',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person, or it has changed since it was saved'),
+            },
+          },
+        },
         '/artifacts/{id}/content': {
           get: {
             tags: ['artifacts'],
@@ -3636,6 +3828,7 @@ export function buildOpenApiDocument() {
                 },
               },
               '401': problem('A session is required'),
+              '403': problem('This space shows summaries only; open the original instead'),
               '404': problem('No matching artifact in this space'),
               '416': { description: 'Requested range is outside the artifact' },
             },
@@ -3687,6 +3880,29 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/files/{id}/original': {
+          post: {
+            tags: ['artifacts'],
+            summary: 'Open the original of a saved file, noted in the space’s activity',
+            description:
+              'The same file `GET /files/{id}/content` serves, read on purpose. In a space set to summaries only this is the one way to read it, and each open is noted in the space’s activity for everyone in it.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'The files action, from a result card'),
+              query: fileDisposition,
+            },
+            responses: {
+              '200': {
+                description: 'File bytes',
+                content: {
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No such file for this person, or it has changed since it was saved'),
+            },
+          },
+        },
         '/files/{id}/content': {
           get: {
             tags: ['artifacts'],
@@ -3713,6 +3929,7 @@ export function buildOpenApiDocument() {
                 },
               },
               '401': problem('A session is required'),
+              '403': problem('This space shows summaries only; open the original instead'),
               '404': problem('No such file for this person, or it has changed since it was saved'),
               '416': { description: 'Requested range is outside the file' },
             },
@@ -4911,6 +5128,7 @@ export function buildOpenApiDocument() {
         },
         ...devicePaths(),
         ...appsPaths(),
+        ...boardPaths(),
         ...pagesPaths(),
         ...processPreviewPaths(),
         ...operatorPaths(),

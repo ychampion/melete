@@ -4,6 +4,7 @@
  * itself; a header never selects a room.
  */
 import { z } from 'zod';
+import { ATTACHMENT_LIMITS, attachmentKept, attachmentView } from './attachments.ts';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 import {
   conversationTurn,
@@ -205,6 +206,15 @@ export const roomMessage = z.strictObject({
   /** `pending`: it asked the agent and waits its turn in the thread. `started`: it reached a request. */
   request_state: z.enum(['none', 'pending', 'started']),
   request_job_id: id.nullable(),
+  /**
+   * The files posted with it; none once the message is deleted. In a room set
+   * to show only what needs you, everyone but the poster and the room's maker
+   * gets each as `attachmentKept`: its kind and id, never its name.
+   */
+  attachments: z
+    .array(z.union([attachmentView, attachmentKept]))
+    .max(ATTACHMENT_LIMITS.per_message_ceiling)
+    .optional(),
   created_at: timestamp,
 });
 export type RoomMessage = z.infer<typeof roomMessage>;
@@ -242,15 +252,19 @@ export const roomThreadView = z.strictObject({
 });
 
 const messageText = z.string().trim().min(1).max(20_000);
+/** Files uploaded with `POST /rooms/{id}/attachments` and not posted yet, in the order shown. */
+const roomAttachmentIds = z.array(id).max(ATTACHMENT_LIMITS.per_message_ceiling).optional();
 export const createRoomThreadRequest = z.strictObject({
   title: z.string().trim().min(1).max(200).optional(),
   text: messageText,
   /** Start the thread by asking the room's agent. */
   ask_agent: z.boolean().optional(),
+  attachments: roomAttachmentIds,
   submission_id: submissionId,
 });
 export const postRoomMessageRequest = z.strictObject({
   text: messageText,
+  attachments: roomAttachmentIds,
   submission_id: submissionId,
 });
 export const roomMessageResponse = z.strictObject({

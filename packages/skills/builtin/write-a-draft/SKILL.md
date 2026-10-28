@@ -1,10 +1,12 @@
 ---
 name: write-a-draft
-description: Write, rewrite or proofread a piece of text in the person's voice, and hand it over as a draft.
+description: Write, rewrite or proofread text in the person's voice as a draft.
 triggers:
   - write a
   - write me
   - draft a
+  - write this
+  - draft this
   - rewrite
   - proofread
   - reword

@@ -27,6 +27,13 @@ const failures = (file: ComposeFile) =>
     .map((r) => r.name);
 
 describe('the shipped compose file', () => {
+  test('the Nebius key reaches only the API, like the other provider keys', () => {
+    expect(compose.services?.melete?.environment?.NEBIUS_API_KEY).toBe('${NEBIUS_API_KEY:-}');
+    for (const [name, service] of Object.entries(compose.services ?? {})) {
+      if (name !== 'melete') expect(service.environment ?? {}).not.toHaveProperty('NEBIUS_API_KEY');
+    }
+  });
+
   test('requires an explicit Docker socket group without a root default', () => {
     const service = compose.services?.['melete-cells'];
     expect(service?.group_add?.some((entry) => /^\$\{DOCKER_GID:\?/.test(entry))).toBe(true);

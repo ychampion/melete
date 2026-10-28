@@ -114,6 +114,42 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   { text: 'Make a podcast about the history of tea', expect: ['make-a-podcast'] },
   // apps
   { text: 'Make me a dashboard of open deals', expect: ['build-an-app'] },
+  // paperwork
+  { text: 'Here are photos of my mail, what do I need to do?', expect: ['read-mail-photos'] },
+  { text: 'Can you read this letter and tell me what it wants?', expect: ['read-mail-photos'] },
+  { text: "Here's a photo of our mail", expect: ['read-mail-photos'] },
+  { text: 'What does this photo of the mail need from me?', expect: ['read-mail-photos'] },
+  { text: 'I took photos of the paper mail, what is due?', expect: ['read-mail-photos'] },
+  { text: 'Is this text from the bank a scam?', expect: ['scam-check'] },
+  { text: 'Is this real? It says my Medicare card will be cancelled', expect: ['scam-check'] },
+  { text: 'My claim for the MRI was denied', expect: ['appeal-a-denial'] },
+  { text: 'Help me appeal this insurance decision', expect: ['appeal-a-denial'] },
+  {
+    text: 'Compare Part D plans for my mom in 33139',
+    expect: ['compare-drug-plans'],
+    tolerate: ['plan-a-responsibility'],
+  },
+  {
+    text: 'Find the cheapest drug plan for my prescriptions',
+    expect: ['compare-drug-plans'],
+    tolerate: ['plan-a-responsibility'],
+  },
+  // a shared household room
+  {
+    text: 'The school says early dismissal Friday, who can pick up?',
+    expect: ['coordinate-the-household'],
+  },
+  { text: 'Permission slip due Thursday for the field trip', expect: ['coordinate-the-household'] },
+  { text: 'Can someone take carpool at 5:30?', expect: ['coordinate-the-household'] },
+  // near misses: words the paperwork skills use, in requests that are not paperwork
+  { text: 'Write this letter to the council', expect: ['write-a-draft'] },
+  { text: 'Draft this letter to my landlord', expect: ['write-a-draft'] },
+  { text: 'Check my mail', expect: ['triage-the-inbox'] },
+  { text: 'Go through my mail', expect: ['triage-the-inbox'] },
+  { text: 'Make a slideshow of photos of the kids', expect: [] },
+  { text: 'My card was denied at the store', expect: [] },
+  { text: 'Does this logo appeal to you?', expect: [] },
+  { text: 'Is this a genuine leather bag?', expect: [] },
   // nothing to select
   { text: 'Thanks!', expect: [] },
   { text: 'Hi there', expect: [] },
@@ -126,11 +162,17 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   { text: 'Which airplane seats have the most legroom?', expect: [] },
   { text: 'What does check-in time mean at a hotel?', expect: [] },
   { text: 'Book a table for two on Saturday', expect: [] },
+  // asking the room for help is not household coordination by itself
+  { text: 'Can someone review the deck?', expect: [] },
+  { text: 'Who can take the client call?', expect: [] },
+  // a calendar question of one person is not household coordination
+  { text: 'What is on my calendar on Friday?', expect: ['schedule-a-check-in'] },
 ];
 
 /**
  * The tools a first-week installation has: the default connections, a mailbox,
- * a CalDAV calendar, a speech provider, and the broker's own tools. These are
+ * a CalDAV calendar, a speech provider, the browser, a room's board and shared
+ * calendars, and the broker's own tools. These are
  * the names on main; a skill naming anything else is never offered.
  */
 export const DAY_ONE_TOOLS: readonly string[] = [
@@ -152,6 +194,18 @@ export const DAY_ONE_TOOLS: readonly string[] = [
   'calendar.delete',
   'react',
   'job.wait',
+  'browser.open',
+  'browser.observe',
+  'browser.fill',
+  'browser.click',
+  'browser.select',
+  'board.list',
+  'board.add',
+  'board.update',
+  'board.ask',
+  'board.note',
+  'room.member_freebusy',
+  'room.add_to_member_calendar',
 ];
 
 export type SelectionScore = {
@@ -266,6 +320,19 @@ export const HELD_OUT_REQUESTS: readonly EvalRequest[] = [
     tolerate: ['draft-follow-up'],
   },
   { text: 'Turn this article into something I can listen to', expect: ['make-a-podcast'] },
+  {
+    text: 'Grandpa got a stack of letters, can you go through the pictures?',
+    expect: ['read-mail-photos'],
+  },
+  {
+    text: 'Someone called saying they are from Social Security, is that legit?',
+    expect: ['scam-check'],
+  },
+  { text: 'The insurer refused to pay for my physical therapy', expect: ['appeal-a-denial'] },
+  {
+    text: 'Which Medicare plan covers my insulin for the least money?',
+    expect: ['compare-drug-plans'],
+  },
   { text: 'Good morning!', expect: [] },
   { text: 'How many ounces are in a pound?', expect: [] },
   { text: 'Who won the match last night?', expect: [] },

@@ -48,6 +48,10 @@
     "./starters": {
       "types": "./src/starters.ts",
       "default": "./src/starters.ts"
+    },
+    "./model-presets": {
+      "types": "./src/model-presets.ts",
+      "default": "./src/model-presets.ts"
     }
   },
   "scripts": {

@@ -35,6 +35,7 @@ const LABELS: Record<ModelProvider, string> = {
   openai: 'OpenAI',
   google: 'Google',
   fireworks: 'Fireworks',
+  nebius: 'Nebius Token Factory',
   'openai-compatible': 'OpenAI-compatible endpoint',
   chatgpt: 'ChatGPT',
 };
@@ -50,6 +51,12 @@ const FIXTURE_MODELS: Record<string, string[]> = {
     'accounts/fireworks/models/fixture-open-model',
   ],
   'openai-compatible': ['local-fixture-model'],
+  nebius: [
+    'nvidia/nemotron-3-super-120b-a12b',
+    'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+    'nvidia/Nemotron-3-Ultra-550b-a55b',
+    'nvidia/Nemotron-3.5-Super-VL',
+  ],
 };
 
 const OPERATOR_DEFAULT = {

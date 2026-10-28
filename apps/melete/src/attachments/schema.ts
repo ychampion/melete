@@ -7,12 +7,15 @@
  * for a day is deleted. The bytes are in the blob store, named by `blob_key`
  * and, for a picture, `preview_key` (the small copy the model is shown); each
  * is referred to in `blob_ref` by this row. `text` is what could be read from
- * the file, kept so every later turn and read gives the same words.
+ * the file, kept so every later turn and read gives the same words. A file
+ * posted in a room is held by its message (`room_message_id`) instead, and
+ * reaches the room's request only when that message does.
  */
 
 import { sql } from 'drizzle-orm';
 import { check, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import { job, space } from '../db/schema.ts';
+import { roomMessage } from '../rooms/schema.ts';
 
 export const attachment = pgTable(
   'attachment',
@@ -26,6 +29,13 @@ export const attachment = pgTable(
     /** The chat it was sent in; null until then. The chat's deletion takes the row. */
     jobId: text('job_id').references(() => job.id, { onDelete: 'cascade' }),
     turnId: text('turn_id'),
+    /**
+     * The room message it was posted with. From then on every current member
+     * of the room reads it, and it reaches a request only through that message.
+     */
+    roomMessageId: text('room_message_id').references(() => roomMessage.id, {
+      onDelete: 'set null',
+    }),
     /** Its place among the files of its message. */
     position: integer('position').notNull().default(0),
     name: text('name').notNull(),
@@ -41,6 +51,7 @@ export const attachment = pgTable(
   },
   (table) => [
     index('attachment_job_idx').on(table.jobId),
+    index('attachment_room_message_idx').on(table.roomMessageId),
     index('attachment_space_idx').on(table.spaceId),
     // How much one person keeps is summed by who uploaded it (storage/per-person.ts).
     index('attachment_principal_idx').on(table.principalId),

@@ -20,6 +20,32 @@ import { connection, job, principal, space, trigger } from '../db/schema.ts';
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
+/** A member's explicit, revocable access to one of their personal calendars. */
+export const roomCalendarShare = pgTable(
+  'room_calendar_share',
+  {
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id, { onDelete: 'cascade' }),
+    mode: text('mode').$type<'freebusy' | 'freebusy_add'>().notNull(),
+    // Coming back to a room never restores consent from an earlier membership.
+    membershipGeneration: integer('membership_generation').notNull(),
+    createdAt: created(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.spaceId, t.principalId] }),
+    check('room_calendar_share_mode', sql`${t.mode} in ('freebusy', 'freebusy_add')`),
+    check('room_calendar_share_generation', sql`${t.membershipGeneration} >= 0`),
+  ],
+);
+
 export const roomThread = pgTable(
   'room_thread',
   {

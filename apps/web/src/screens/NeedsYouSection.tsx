@@ -22,6 +22,7 @@ import { useApp, useDecisions } from '../experience/hooks.ts';
 import { pastDay } from '../experience/past-day.ts';
 import type { NeedsYou, NeedsYouItem } from '../experience/types.ts';
 import { unreadChats } from '../experience/unread.ts';
+import { WaitingOnYou } from '../rooms/Board.tsx';
 import { href } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -261,6 +262,8 @@ export function NeedsYouSection({
         <h2 id="home-needs-you">Needs you</h2>
         {meta ? <span className="home-section-meta">{meta}</span> : null}
       </div>
+      {/* Board items in the person's rooms that are assigned to them. */}
+      <WaitingOnYou />
       {view.items.length ? (
         <ul className="needs-you-list">
           {view.items.map((item) => (

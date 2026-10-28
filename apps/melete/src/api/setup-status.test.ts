@@ -231,6 +231,7 @@ describe('the multiplayer switch', () => {
     ['POST', '/invites/view', { token: 'x' }],
     ['POST', '/invites/accept', { token: 'x', password: 'a long password' }],
     ['GET', '/handoffs'],
+    ['GET', '/board'],
     ['POST', '/handoffs/hof_01M2000000000000000000000A', { decision: 'accept' }],
     ['GET', '/me/linked-accounts'],
     ['DELETE', '/me/linked-accounts/slack/U1'],

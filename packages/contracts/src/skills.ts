@@ -172,5 +172,13 @@ export const BUILT_IN_SKILLS = [
   'chase-reply',
   /** A small web app, published for the people the person chooses. */
   'build-an-app',
+  /** Paper mail, and the paperwork that comes with it. */
+  'read-mail-photos',
+  'scam-check',
+  'appeal-a-denial',
+  /** Works in the browser, so it is offered only where the browser is. */
+  'compare-drug-plans',
+  /** Shared dates in a room, so it is offered only where the board is. */
+  'coordinate-the-household',
 ] as const;
 export type BuiltInSkill = (typeof BUILT_IN_SKILLS)[number];

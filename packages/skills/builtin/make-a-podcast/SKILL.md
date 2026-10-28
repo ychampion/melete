@@ -1,6 +1,6 @@
 ---
 name: make-a-podcast
-description: Research a subject from sources you read, write a two-voice script, and produce an audio file that cites them.
+description: Research a subject and make a two-voice audio episode citing its sources.
 triggers:
   - podcast
   - audio summary

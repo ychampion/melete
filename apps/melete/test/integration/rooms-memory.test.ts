@@ -7,8 +7,8 @@
  * detail forgotten from the room.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { randomBytes } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,6 +23,7 @@ import {
 } from '@melete/contracts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
+import { EventStream } from '../../src/events/stream.ts';
 import { createApp } from '../../src/index.ts';
 import { buildBundle } from '../../src/jobs/bundle.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -38,8 +39,11 @@ import { recall } from '../../src/memory/recall.ts';
 import { restoreMemory } from '../../src/memory/restore.ts';
 import { runExtractionWork } from '../../src/memory/service.ts';
 import { startServiceMemory } from '../../src/memory/start.ts';
+import { HELD_BACK } from '../../src/rooms/memory.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { RECEIPT_KEPT_BACK, SUMMARIES_ONLY_INSTRUCTION } from '../../src/spaces/summaries.ts';
+import { BrowserSessionService } from '../../src/workers/browser/routes.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 /** What the scripted extractor reads out of a message: a key and the exact words of its value. */
@@ -136,6 +140,7 @@ const registry = new ConnectorRegistry();
 const signingKey = 'room-memory-signing-key-32-bytes!!';
 const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
 const runner = jobs ? new AttemptRunner(jobs, new StubRuntimeAdapter(), { key: signingKey }) : null;
+const events = handle ? new EventStream(handle) : null;
 const app =
   handle && jobs && runner && memory
     ? createApp({
@@ -143,10 +148,12 @@ const app =
           MELETE_PREVIEW_MULTIPLAYER: 'true',
           NODE_ENV: 'test',
           MELETE_SPACES_DIR: join(directory, 'spaces'),
+          MELETE_WORK_DIR: join(directory, 'work'),
         }),
         db: handle.db,
         sql: handle.sql,
         jobs,
+        ...(events ? { events } : {}),
         runner,
         registry,
         memory,
@@ -863,5 +870,178 @@ withDb('room memory', () => {
     await post(bob, roomId, opened.thread.id, 'Forget that.');
     await settle(roomId);
     expect(Object.keys(await items(carol))).toEqual([]);
+  }, 120_000);
+  test('a room set to show only what needs its people keeps originals back, and notes each open', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Grandma’s mail', [bob]);
+    // Carol is an owner too, but not the room's maker.
+    await ok(
+      send(alice.cookie, `/rooms/${roomId}/members`, 'POST', {
+        principal_id: carol.id,
+        role: 'owner',
+      }),
+      201,
+    );
+    const opened = await startThread(alice, roomId, 'The venue deposit is 300 euros.');
+    await settle(roomId);
+    expect(JSON.stringify(await roomMemory(bob, roomId))).toContain('300 euros');
+
+    // Only the maker turns it on or off: not a member, not another owner.
+    const turn = (person: Person, on: boolean) =>
+      send(person.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on });
+    expect((await turn(bob, true)).status).toBe(403);
+    expect((await turn(carol, true)).status).toBe(403);
+    expect(await ok<{ on: boolean; can_change: boolean }>(turn(alice, true))).toMatchObject({
+      on: true,
+      can_change: true,
+    });
+    expect(
+      await ok<{ on: boolean; can_change: boolean }>(
+        send(carol.cookie, `/spaces/${roomId}/summaries-only`),
+      ),
+    ).toMatchObject({ on: true, can_change: false });
+    expect((await turn(carol, false)).status).toBe(403);
+    expect((await turn(bob, false)).status).toBe(403);
+
+    // A member reads what the room remembers by its label, never its words.
+    const held = await roomMemory(bob, roomId);
+    expect(held.items.length).toBeGreaterThan(0);
+    expect(held.items.every((item) => item.content === HELD_BACK)).toBe(true);
+    expect(JSON.stringify(held)).not.toContain('300 euros');
+
+    // A room request's agent is told to answer with summaries and not to quote.
+    const asked = await ask(bob, roomId, 'what is due this week?');
+    const attempt = await attemptOf(asked.jobId);
+    expect(attempt.bundle.job.objective).toContain(SUMMARIES_ONLY_INSTRUCTION);
+    await attempt.finish();
+
+    // A file the room's request saved: its content route refuses, the original opens and is noted.
+    const text = 'Statement: $86.40 due Nov 12\n';
+    // A ULID's first character is at most 7.
+    const artifactId = `art_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    const folder = join(directory, 'spaces', roomId, 'artifacts', 'mail');
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, 'statement.txt'), text);
+    await sql`insert into artifact
+      (id, space_id, job_id, source_job_id, area, path, kind, content_hash, mime, size)
+      values (${artifactId}, ${roomId}, ${asked.jobId}, null, 'artifacts', 'mail/statement.txt',
+        'text', ${createHash('sha256').update(text).digest('hex')}, 'text/plain',
+        ${Buffer.byteLength(text)})`;
+    const refused = await send(bob.cookie, `/artifacts/${artifactId}/content`);
+    expect(refused.status).toBe(403);
+    expect(await refused.text()).not.toContain('86.40');
+    const before = Date.now();
+    const original = await send(bob.cookie, `/artifacts/${artifactId}/original`, 'POST');
+    expect(original.status).toBe(200);
+    expect(await original.text()).toBe(text);
+    const [note] = await sql`select principal_id, source, destination, happened_at
+      from activity_record where space_id = ${roomId} and kind = 'space.original_opened'`;
+    expect(note).toMatchObject({
+      principal_id: bob.id,
+      source: 'Bob',
+      destination: 'A text document',
+    });
+    expect(new Date(note?.happened_at).getTime()).toBeGreaterThanOrEqual(before - 1000);
+    // Everyone in the room sees who opened what and when, beside the switch.
+    const seen = await ok<{
+      recent: { note: string; by: string; what: string | null; at: string }[];
+    }>(send(alice.cookie, `/spaces/${roomId}/summaries-only`));
+    expect(seen.recent[0]).toMatchObject({
+      note: 'original_opened',
+      by: 'Bob',
+      what: 'A text document',
+    });
+
+    // The request's own work is the room's: its receipts, screenshots and live
+    // browser are not a member's or another owner's, even with the room selected.
+    const [ran] = await sql`select id from attempt where job_id = ${asked.jobId} limit 1`;
+    const connection = `con_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${connection}, ${roomId}, 'test', 'Grandma mail', '[]'::jsonb)`;
+    const step = (kind: string, detail: Record<string, unknown>) => {
+      const id = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+      const receipt = {
+        action_id: id,
+        connection_id: connection,
+        external_ref: null,
+        detail,
+        received_at: new Date().toISOString(),
+        late: false,
+      };
+      return sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, status, idempotency_key, receipt, resolved_at)
+        values (${id}, ${asked.jobId}, ${ran?.id}, ${connection}, ${kind}, 'read', '{}'::jsonb,
+          ${'0'.repeat(64)}, 'succeeded', ${id}, ${JSON.stringify(receipt)}::jsonb, now())
+        returning id`.then((rows) => rows[0]?.id as string);
+    };
+    const mail = await step('email.read', {
+      message: { subject: 'Your statement', text: 'Account 4417-9981, balance $86.40' },
+    });
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await mkdir(join(directory, 'work', asked.jobId), { recursive: true });
+    await writeFile(join(directory, 'work', asked.jobId, 'shot.png'), png);
+    const shot = await step('computer.screenshot', {
+      path: 'shot.png',
+      sha256: createHash('sha256').update(png).digest('hex'),
+    });
+    const binding = `bsb_${randomBytes(8).toString('hex')}`;
+    await sql`insert into browser_session_binding (id, space_id, job_id, control_epoch, control)
+      values (${binding}, ${roomId}, ${asked.jobId}, 0, 'automation')`;
+    const browser = new BrowserSessionService(sql, {} as never);
+    const [room] = await sql`select principal_id from job where id = ${asked.jobId}`;
+    const reads = async (person: Person) => {
+      // The person selects the room as their session's space, as the room's own screen does.
+      await sql`update session set space_id = ${roomId}, membership_generation = (
+          select generation from space_membership where space_id = ${roomId}
+            and principal_id = ${person.id} and revoked_at is null)
+        where principal_id = ${person.id}`;
+      const said = [];
+      for (const path of ['/actions', '/snapshot', `/jobs/${asked.jobId}/snapshot`]) {
+        const answered = await send(person.cookie, path);
+        said.push(`${path} ${answered.status} ${await answered.text()}`);
+      }
+      const picture = await send(person.cookie, `/screenshots/${shot}`);
+      const live = await browser.live.open(binding, person.id, '127.0.0.1').then(
+        () => 'opened',
+        (error: unknown) => String((error as { reason?: string }).reason ?? error),
+      );
+      return { said: said.join('\n'), picture: picture.status, live };
+    };
+    for (const person of [bob, carol]) {
+      const seenBy = await reads(person);
+      expect(seenBy.said).not.toContain('4417-9981');
+      expect(seenBy.said).not.toContain(mail);
+      expect(seenBy.picture).toBe(404);
+      expect(seenBy.live).toBe('session_not_found');
+    }
+    // The same reads, had the work been Bob's own: they reach it, so the refusals
+    // above are the room's rule and not a fixture that cannot be read. The space
+    // still shows only what needs him, so the receipt names the message, never its words.
+    await sql`update job set principal_id = ${bob.id} where id = ${asked.jobId}`;
+    const own = await reads(bob);
+    expect(own.said).toContain(mail);
+    expect(own.said).toContain('Your statement');
+    expect(own.said).toContain(RECEIPT_KEPT_BACK);
+    expect(own.said).not.toContain('4417-9981');
+    expect(own.picture).toBe(200);
+    expect((await browser.steerable(binding, bob.id)).job_id).toBe(asked.jobId);
+    await sql`update job set principal_id = ${room?.principal_id} where id = ${asked.jobId}`;
+    await sql`update session set space_id = null, membership_generation = null
+      where principal_id in (${bob.id}, ${carol.id})`;
+
+    // Turning it off is noted too, and the room reads as before.
+    await ok(turn(alice, false));
+    const notes = await sql`select kind, principal_id from activity_record
+      where space_id = ${roomId} and kind like 'space.summaries_%' order by happened_at`;
+    expect(notes.map((row) => [row.kind, row.principal_id])).toEqual([
+      ['space.summaries_on', alice.id],
+      ['space.summaries_off', alice.id],
+    ]);
+    expect(JSON.stringify(await roomMemory(bob, roomId))).toContain('300 euros');
+    expect((await send(bob.cookie, `/artifacts/${artifactId}/content`)).status).toBe(200);
+    void opened;
   }, 120_000);
 });
