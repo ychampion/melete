@@ -391,7 +391,7 @@ export class ComputerPayloadRefusal extends Error {
 const SETTLE_MS = 300;
 
 /**
- * How a click or a key press that may lead to another page waits for it,
+ * How a step that may lead to another page (`leadsAway`) waits for it,
  * read from the title of the window in front: a link starts loading, and the
  * window still shows the page it left until the new one lands.
  */
@@ -405,8 +405,41 @@ export type PageWatch = {
 };
 export const PAGE_WATCH: PageWatch = { startMs: 1_500, landMs: 8_000, pollMs: 250 };
 
-/** Steps that can take the browser to another page: a click on a link, Return in a search box. */
-const LEADS_AWAY = new Set<DesktopCommand['kind']>(['click', 'key']);
+/**
+ * Keys that can take the browser to another page: Enter submits a form or an
+ * address, Alt+Left and Alt+Right go back and forward, F5 and Ctrl+R reload.
+ * Each is matched with any other modifiers held, so Ctrl+Return or
+ * Ctrl+Shift+R count too.
+ */
+const NAVIGATING_KEYS: readonly ((parts: readonly string[]) => boolean)[] = [
+  (parts) => ['return', 'enter', 'kp_enter'].includes(parts.at(-1) ?? ''),
+  (parts) => parts.includes('alt') && ['left', 'right'].includes(parts.at(-1) ?? ''),
+  (parts) => parts.at(-1) === 'f5',
+  (parts) => parts.includes('ctrl') && parts.at(-1) === 'r',
+];
+
+const navigatingKey = (name: string) => {
+  const parts = name.toLowerCase().split('+');
+  return NAVIGATING_KEYS.some((matches) => matches(parts));
+};
+
+/**
+ * Whether a step can take the browser to another page: a click on a link, a
+ * key that submits or navigates, or typing that ends in a newline, which
+ * presses Return. Other typing, other keys and scrolling stay on their page.
+ */
+export function leadsAway(command: DesktopCommand): boolean {
+  switch (command.kind) {
+    case 'click':
+      return true;
+    case 'key':
+      return command.keys.some(navigatingKey);
+    case 'type':
+      return /[\r\n]$/.test(command.text);
+    default:
+      return false;
+  }
+}
 
 /** Titles a browser window shows while no page has landed in it yet. */
 const BLANK_TITLE =
@@ -579,7 +612,7 @@ export async function runComputerAction(options: {
   settleMs?: number;
   /** How long a bot check is given to pass by itself; `CHALLENGE_WAIT_MS` unless set. */
   challengeWaitMs?: number;
-  /** How a click or key that may lead to another page waits for it; `PAGE_WATCH` unless set. */
+  /** How a step that may lead to another page waits for it (`leadsAway`); `PAGE_WATCH` unless set. */
   pageWatch?: PageWatch;
   /** The chat's display of the computer; absent means display 0, as before displays. */
   display?: DesktopDisplay | null;
@@ -700,13 +733,13 @@ export async function runComputerAction(options: {
     return now.control === 'human' || now.epoch !== held.epoch;
   };
   if (await takenOver()) return notTaken;
-  // A click or key that led to another page is captured once that page has
+  // A step that led to another page is captured once that page has
   // landed, so the screen the model is shown is the page it would describe.
   // The window it left is the one the step itself read, right after it.
   const from = steps.at(-1)?.window;
   const last = commands[steps.length - 1];
   let landing: Landing | null = null;
-  if (last && LEADS_AWAY.has(last.kind) && typeof from === 'string' && from) {
+  if (last && leadsAway(last) && typeof from === 'string' && from) {
     landing = await watchPage(
       from,
       started,

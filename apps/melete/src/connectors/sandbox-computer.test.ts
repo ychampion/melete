@@ -18,6 +18,7 @@ import {
   desktopCommandFor,
   desktopCommandsFor,
   HumanControlRefusal,
+  leadsAway,
   MAX_BATCH_ACTIONS,
   PAGE_NOT_OBSERVED,
   PAGE_STILL_LOADING,
@@ -744,4 +745,53 @@ test('a person who takes the computer while a new page loads is not captured', a
   });
   expect(seen).not.toContain('screenshot');
   await controls.change(sandbox, 'agent');
+});
+
+test('only steps that can lead to another page wait for one', () => {
+  const key = (...keys: string[]) => ({ kind: 'key', keys }) as const;
+  const type = (text: string) => ({ kind: 'type', text }) as const;
+  for (const step of [
+    { kind: 'click', x: 1, y: 1, button: 1, count: 1 } as const,
+    key('Return'),
+    key('KP_Enter'),
+    key('ctrl+Return'),
+    key('ctrl+l', 'Return'),
+    key('alt+Left'),
+    key('alt+Right'),
+    key('F5'),
+    key('ctrl+r'),
+    key('ctrl+shift+R'),
+    type('bun runtime\n'),
+  ])
+    expect(leadsAway(step)).toBe(true);
+  for (const step of [
+    key('Tab'),
+    key('Left'),
+    key('Down'),
+    key('ctrl+l'),
+    key('ctrl+a'),
+    key('BackSpace'),
+    key('r'),
+    type('bun runtime'),
+    { kind: 'scroll', x: 1, y: 1, dy: 3 } as const,
+  ])
+    expect(leadsAway(step)).toBe(false);
+});
+
+test('a key that cannot navigate keeps the short settle, whatever the window does', async () => {
+  const { session } = fixture();
+  const { provider, seen } = navigatingDesktop(0);
+  const detail = await runComputerAction({
+    action: action('computer.key', { keys: ['Tab'] }),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+    pageWatch: FAST_WATCH,
+  });
+  expect(seen).toEqual(['key', 'screenshot', 'text']);
+  expect(detail.page_changed).toBeUndefined();
 });
