@@ -674,9 +674,10 @@ function projectSeries(
   const recurs = component
     .getAllProperties('rrule')
     .map((property) => property.getFirstValue() as ICAL.Recur);
-  // A date-only UNTIL on a timed series runs through that whole local date.
-  // ical.js would stop at its midnight, so it is given two days' slack and
-  // the exact end is checked here.
+  // UNTIL is enforced here on normalized instants: for IANA-only or floating
+  // times the iterator cannot compare a UTC UNTIL correctly, and a date-only
+  // UNTIL on a timed series runs through that whole local date, where
+  // ical.js would stop at its midnight.
   let until =
     parsed.ok && parsed.value.until && 'at' in parsed.value.until
       ? parsed.value.until.at.getTime()
@@ -693,9 +694,22 @@ function projectSeries(
         { year: after.year, month: after.month, day: after.day, hour: 0, minute: 0, second: 0 },
         wallTime(0, seriesZone) ? seriesZone : 'UTC',
       ) - 1;
-    const slack = date.clone();
-    slack.adjust(2, 0, 0, 0);
-    rrule.until = slack;
+  }
+  // RDATE is independent of RRULE's UNTIL, so keep those candidates apart.
+  const extraDates: ICAL.Time[] = [];
+  if (until !== null) {
+    for (const property of component.getAllProperties('rrule')) {
+      const rule = property.getFirstValue();
+      if (rule instanceof ICAL.Recur) {
+        rule.until = null;
+        property.setValue(rule);
+      }
+    }
+    for (const property of component.getAllProperties('rdate')) {
+      for (const value of property.getValues())
+        if (value instanceof ICAL.Time) extraDates.push(value);
+    }
+    component.removeAllProperties('rdate');
   }
   if (recurs.some(neverOnDate)) return null;
   // Only a lone rule without extra dates is checked for rolled-over dates.
@@ -759,6 +773,12 @@ function projectSeries(
     const key = icalInstant(regular, propertyZone(exception, 'recurrence-id') ?? zone);
     if (id instanceof ICAL.Time && excluded.has(key)) continue;
     consider(exception, exception.startDate, exception.endDate, regular, instantMs(key));
+  }
+  for (const extra of extraDates) {
+    const key = icalInstant(extra, zone);
+    if (excluded.has(key)) continue;
+    const details = projected.getOccurrenceDetails(extra);
+    consider(details.item, details.startDate, details.endDate, extra, instantMs(key));
   }
   const iterator = projected.iterator();
   for (let step = 0; step < MAX_EXPANSION_STEPS; step++) {

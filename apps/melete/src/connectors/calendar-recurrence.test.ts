@@ -427,4 +427,36 @@ describe('the next date of a calendar series', () => {
     });
     expect(listed.truncated).toBe(true);
   });
+
+  test('UTC UNTIL does not end an eastern-zone series before its valid last occurrence', () => {
+    expect(
+      project(
+        [
+          'DTSTART;TZID=Asia/Kolkata:20260908T090000',
+          'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261103T040000Z',
+        ],
+        '2026-10-28T12:00:00Z',
+        'Asia/Kolkata',
+      ),
+    ).toMatchObject({
+      start: '2026-11-03T03:30:00.000Z',
+      recurrence_status: 'active',
+    });
+  });
+
+  test('an explicit extra date remains valid after the RRULE UNTIL bound', () => {
+    expect(
+      project(
+        [
+          'DTSTART:20260908T090000Z',
+          'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261027T090000Z',
+          'RDATE:20261105T090000Z',
+        ],
+        '2026-10-28T12:00:00Z',
+      ),
+    ).toMatchObject({
+      start: '2026-11-05T09:00:00.000Z',
+      recurrence_status: 'active',
+    });
+  });
 });
