@@ -242,6 +242,45 @@ export function fileNote(
     : null;
 }
 
+/**
+ * Open the original of a room's file on purpose (`POST .../original`): in a
+ * room that shows only what needs you, the open is noted in its activity
+ * before the file is sent. Answers the file and the name it was sent under.
+ */
+export async function openOriginal(
+  id: string,
+  base: string,
+): Promise<Result<{ blob: Blob; name: string }>> {
+  try {
+    const response = await client.options.fetch(
+      `${API_BASE_URL}${base}/attachments/${encodeURIComponent(id)}/original`,
+      {
+        method: 'POST',
+        headers: client.options.headers as Record<string, string>,
+        credentials: client.options.credentials,
+      },
+    );
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as UploadAnswer;
+      return response.status < 500 && body?.error?.message
+        ? { data: null, error: body.error.message, unavailable: null }
+        : { data: null, error: null, unavailable: body?.error?.message || offline() };
+    }
+    const named = /filename\*=UTF-8''([^;]+)/i.exec(
+      response.headers.get('content-disposition') ?? '',
+    );
+    let name = 'original';
+    try {
+      if (named?.[1]) name = decodeURIComponent(named[1]);
+    } catch {
+      // A name that does not decode is not needed to save the file.
+    }
+    return { data: { blob: await response.blob(), name }, error: null, unavailable: null };
+  } catch {
+    return { data: null, error: null, unavailable: offline() };
+  }
+}
+
 /** Take back an uploaded file that was not sent. Failing quietly is fine: it is swept after a day. */
 export async function removeAttachment(id: string, base = ''): Promise<void> {
   try {
