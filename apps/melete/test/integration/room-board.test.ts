@@ -1044,11 +1044,11 @@ withDb('room board', () => {
     const [item] = await listOf(world.alice, roomId);
     expect(item?.starts_at).toBe('2026-11-06T17:00:00.000Z');
     // The agent reads the board, and moves the trip by giving the time it read on another day.
-    const listed = await tool(claims, roomId, 'board.list', {});
-    const read = (listed.detail?.items as { id: string; starts_at: string }[]).find(
+    const listed = (await tool(claims, roomId, 'board.list', {})).detail ?? {};
+    const read = (listed.items as { id: string; starts_at: string }[]).find(
       (entry) => entry.id === made.item,
     );
-    expect(listed.detail?.time_zone).toBe('America/Los_Angeles');
+    expect(listed.time_zone).toBe('America/Los_Angeles');
     expect(read?.starts_at).toBe('2026-11-06T09:00');
     const moved = await tool(claims, roomId, 'board.update', {
       item_id: made.item,
