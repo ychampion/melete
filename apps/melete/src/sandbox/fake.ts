@@ -407,7 +407,9 @@ type Redirect =
   | { kind: 'errToOut' }
   | { kind: 'outToErr' }
   /** `3>&1`: descriptor 3 is what standard output is at that point. */
-  | { kind: 'fd3ToOut' };
+  | { kind: 'fd3ToOut' }
+  /** `3>&-`: descriptor 3 is closed. */
+  | { kind: 'fd3Close' };
 type Command =
   | { kind: 'simple'; words: Word[]; redirects: Redirect[] }
   | { kind: 'subshell'; body: List; redirects: Redirect[] }
@@ -525,6 +527,7 @@ function parse(tokens: Token[]): List {
       const value = token.value;
       if (value === '2>&1') found.push({ kind: 'errToOut' });
       else if (value === '3>&1') found.push({ kind: 'fd3ToOut' });
+      else if (value === '3>&-') found.push({ kind: 'fd3Close' });
       else if (value === '>&2') found.push({ kind: 'outToErr' });
       else if (['>', '>>', '2>', '2>>', '<'].includes(value)) {
         const target = tokens[position + 1];
@@ -574,7 +577,7 @@ function parse(tokens: Token[]): List {
         position += 1;
         continue;
       }
-      if (['>', '>>', '2>', '2>>', '2>&1', '3>&1', '>&2', '<'].includes(current.value)) {
+      if (['>', '>>', '2>', '2>>', '2>&1', '3>&1', '3>&-', '>&2', '<'].includes(current.value)) {
         found.push(...redirects());
         continue;
       }
@@ -1164,7 +1167,10 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
   for (const redirect of command.redirects) {
     if (redirect.kind === 'errToOut') current = { ...current, err: current.out };
     else if (redirect.kind === 'fd3ToOut') current = { ...current, fd3: current.out };
-    else if (redirect.kind === 'outToErr') current = { ...current, out: current.err };
+    else if (redirect.kind === 'fd3Close') {
+      const { fd3: _closed, ...rest } = current;
+      current = rest;
+    } else if (redirect.kind === 'outToErr') current = { ...current, out: current.err };
     else {
       const target = expand(redirect.target, shell);
       if (redirect.stream === 'in') {

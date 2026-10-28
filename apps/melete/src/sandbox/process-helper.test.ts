@@ -9,6 +9,7 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
+import { keptOutput, launchScript } from './marker.ts';
 import {
   helperComputer,
   type ProcessComputer,
@@ -244,5 +245,54 @@ withLinux('the process helper in a computer', () => {
     if (started.outcome !== 'started') throw new Error('expected a start');
     expect(started.process).toMatchObject({ state: 'exited', exit_code: 127 });
     expect(text(started.data)).toContain('could not start');
+  }, 60_000);
+});
+
+withLinux("a terminal command's wrapper run as a process", () => {
+  const computer = helperComputer(local, handle);
+  const markerRoot = local.capabilities.markerRoot;
+
+  test('a command that leaves a child running with its output sent elsewhere ends when it ends', async () => {
+    const command = launchScript(
+      markerRoot,
+      {
+        marker: 'act_01J0LEAVESACHILD000000000',
+        argv: ['sh', '-c', 'sleep 8 > /dev/null 2>&1 & echo started'],
+      },
+      { keep: keptOutput(), envFile: null },
+    );
+    const began = Date.now();
+    const started = await start(computer, 'prc_leaves_child', command);
+    if (started.outcome !== 'started') throw new Error('expected a start');
+    await waitFor(
+      async () =>
+        (await computer.status(['prc_leaves_child'], signal())).processes[0]?.state === 'exited',
+      6_000,
+    );
+    // The child still runs, and it does not hold the helper's output open.
+    expect(Date.now() - began).toBeLessThan(6_000);
+    const facts = (await computer.status(['prc_leaves_child'], signal())).processes[0];
+    expect(facts?.exit_code).toBe(0);
+    const read = await computer.read('prc_leaves_child', 0, 4096, 0, signal());
+    expect(text(read.data)).toBe('started\n');
+    const marker = await shell(`cat ${markerRoot}/act_01J0LEAVESACHILD000000000/exit`);
+    expect(text(marker.output)).toBe('0');
+  }, 60_000);
+
+  test("the command sees none of the launcher's descriptors past its own three", async () => {
+    const command = launchScript(
+      markerRoot,
+      { marker: 'act_01J0SEESNODESCRIPTOR00000', argv: ['sh', '-c', 'ls /proc/self/fd'] },
+      { keep: keptOutput(), envFile: null },
+    );
+    const started = await start(computer, 'prc_descriptors', command);
+    if (started.outcome !== 'started') throw new Error('expected a start');
+    await waitFor(
+      async () =>
+        (await computer.status(['prc_descriptors'], signal())).processes[0]?.state === 'exited',
+    );
+    const read = await computer.read('prc_descriptors', 0, 4096, 0, signal());
+    // 0, 1, 2 and the one `ls` opens to read the directory.
+    expect(text(read.data).split('\n').filter(Boolean).map(Number).sort()).toEqual([0, 1, 2, 3]);
   }, 60_000);
 });

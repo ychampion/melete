@@ -206,8 +206,10 @@ export const ROOT_UNUSABLE_MESSAGE = 'melete_exec_root_unusable';
  * process's output ring), the output also goes on to the wrapper's own output
  * as the command prints it; the marker keeps `asProcess.head` bytes of its
  * start and `asProcess.tail` of its newest bytes, and the memory kill count
- * before and after the command. The wrapper a provider's own exec runs is
- * unchanged by any of this.
+ * before and after the command. The command itself gets no descriptor of the
+ * launcher's: a child it leaves running with its output sent elsewhere does
+ * not hold the launcher's output open, so the command ends when it ends. The
+ * wrapper a provider's own exec runs is unchanged by any of this.
  *
  * Before the command starts, the wrapper removes the markers named in
  * `forget` (earlier commands whose outcome the service has recorded) and any
@@ -239,10 +241,10 @@ export function markCommand(
   const usable = '[ -d "$r" ] && [ -w "$r" ] && [ -x "$r" ]';
   const command = argv.map(shellQuote).join(' ');
   // The command, its status, and the stage that keeps its output. Only a
-  // process's wrapper differs: it echoes to descriptor 3, keeps the start and
-  // the end, and counts memory kills.
+  // process's wrapper differs: it echoes to descriptor 3, which the command
+  // itself never gets, keeps the start and the end, and counts memory kills.
   const run = ends
-    ? `{ { ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(PROCESS_KEEP_STAGE)} melete-keep ${ends.head} ${ends.tail + 1}; } 3>&1 > "$d/out"`
+    ? `{ { ( ${command} ) 3>&- 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(PROCESS_KEEP_STAGE)} melete-keep ${ends.head} ${ends.tail + 1}; } 3>&1 > "$d/out"`
     : `{ { ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(KEEP_STAGE)} melete-keep ${keepBytes}; } > "$d/out"`;
   const script = [
     `r=${root}`,

@@ -493,13 +493,13 @@ test("the wrapper a provider's exec runs is the one its recorded fixtures hold",
   expect(script).not.toContain('memory.events');
 });
 
-test("a process's wrapper keeps the start and the end", () => {
+test("a process's wrapper keeps the start and the end, and its command gets no descriptor of the launcher's", () => {
   const [, , script] = markCommand(MARKER_ROOT, MARKER, ['sleep', '9'], {
     asProcess: { head: 4, tail: 6 },
   });
   const line = (script ?? '').split('\n').find((each) => each.includes('"$d/status"; }'));
-  // Descriptor 3 is the launcher's output: the keeping stage copies to it.
-  expect(line?.startsWith(`{ { ( 'sleep' '9' ) 2>&1; `)).toBe(true);
+  // Descriptor 3 is the launcher's output: the keeping stage copies to it, the command never has it.
+  expect(line?.startsWith(`{ { ( 'sleep' '9' ) 3>&- 2>&1; `)).toBe(true);
   expect(line?.split(' | ').slice(1).join(' | ')).toBe(
     `setsid -w sh -c 'trap '\\'''\\'' PIPE; tee /dev/fd/3 | { head -c "$1"; exec tail -c "$2"; }' melete-keep 4 7; } 3>&1 > "$d/out"`,
   );
