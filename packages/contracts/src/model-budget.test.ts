@@ -34,6 +34,18 @@ test('the catalog names both spellings of the default million-token model', () =
   expect(hasKnownContextWindow('accounts/fireworks/models/deepseek-v4p1-flash')).toBe(true);
 });
 
+test('Nemotron uses the context served by Token Factory, with room reserved for output', () => {
+  for (const [model, window] of [
+    ['nvidia/nemotron-3-super-120b-a12b', 262_144],
+    ['nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B', 262_144],
+    ['nvidia/Nemotron-3-Ultra-550b-a55b', 1_048_576],
+  ] as const) {
+    expect(hasKnownContextWindow(model)).toBe(true);
+    expect(modelContextWindow(model)).toBe(window);
+    expect(inputTokenAllowance(model, 8192)).toBe(window - 8192);
+  }
+});
+
 test('the Claude 5.5 models have their million-token windows', () => {
   for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
     expect(hasKnownContextWindow(model)).toBe(true);

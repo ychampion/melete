@@ -13,6 +13,7 @@ export const MODEL_PROVIDERS = [
   'openai',
   'google',
   'fireworks',
+  'nebius',
   'openai-compatible',
   'chatgpt',
 ] as const;
@@ -25,6 +26,7 @@ export const KEYED_MODEL_PROVIDERS = [
   'openai',
   'google',
   'fireworks',
+  'nebius',
   'openai-compatible',
 ] as const;
 export const keyedModelProvider = z.enum(KEYED_MODEL_PROVIDERS);

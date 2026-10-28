@@ -5,6 +5,7 @@ export const PROVIDER_HOSTS = [
   'api.anthropic.com',
   'api.openai.com',
   'generativelanguage.googleapis.com',
+  'api.tokenfactory.nebius.com',
 ] as const;
 
 /** The name an operator-configured OpenAI-compatible endpoint is selected by. */
@@ -26,11 +27,12 @@ const PROVIDER_PROTOCOLS = {
   openai: ['chat/completions', 'responses'],
   anthropic: ['messages'],
   google: ['chat/completions'],
+  nebius: ['chat/completions'],
   [CHATGPT_PROVIDER]: ['responses'],
   [OPENAI_COMPATIBLE]: ['chat/completions', 'responses'],
 } as const satisfies Record<string, readonly GatewayProtocol[]>;
 
-/** How the pinned engine is told to speak to the gateway. */
+/** How the engine is told to speak to the gateway. */
 export type ModelApiMode = 'anthropic_messages' | 'codex_responses' | 'chat_completions';
 
 const API_MODE_PROTOCOLS: Record<ModelApiMode, GatewayProtocol> = {
@@ -86,6 +88,12 @@ export function providersFromEnv(
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
       apiKey: env.GOOGLE_API_KEY,
       protocols: [...PROVIDER_PROTOCOLS.google],
+    },
+    {
+      name: 'nebius',
+      baseUrl: 'https://api.tokenfactory.nebius.com/v1/',
+      apiKey: env.NEBIUS_API_KEY,
+      protocols: [...PROVIDER_PROTOCOLS.nebius],
     },
     {
       // Its credential is the owner's sign-in, attached where the service
@@ -171,6 +179,7 @@ export const PROVIDER_KEY_VARIABLES = {
   openai: ['OPENAI_API_KEY'],
   anthropic: ['ANTHROPIC_API_KEY'],
   google: ['GOOGLE_API_KEY'],
+  nebius: ['NEBIUS_API_KEY'],
   [CHATGPT_PROVIDER]: [],
   [OPENAI_COMPATIBLE]: ['OPENAI_COMPAT_API_KEY', 'OPENAI_API_KEY'],
 } as const satisfies Record<keyof typeof PROVIDER_PROTOCOLS, readonly string[]>;

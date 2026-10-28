@@ -78,6 +78,7 @@ export async function startLearning(
           ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
           ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
           GOOGLE_API_KEY: env.GOOGLE_API_KEY,
+          NEBIUS_API_KEY: env.NEBIUS_API_KEY,
           OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
           OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
         }),
