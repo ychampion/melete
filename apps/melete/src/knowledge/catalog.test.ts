@@ -8,6 +8,7 @@ import type { ConnectorManifest } from '@melete/contracts';
 import { loadBuiltInSkills } from '@melete/skills';
 import { appsManifest } from '../connectors/apps.ts';
 import { artifactsManifest } from '../connectors/artifacts.ts';
+import { browserManifest } from '../connectors/browser.ts';
 import { calendarManifest } from '../connectors/calendar.ts';
 import { grantedToolCatalog } from '../connectors/catalog.ts';
 import { emailManifest } from '../connectors/email.ts';
@@ -22,7 +23,7 @@ const speech = createCapabilityConnector({
   adapter: fakeSpeechAdapter,
   provider: 'fake',
 });
-/** Mail, a CalDAV calendar and speech, beside the connections every space is given. */
+/** Mail, a CalDAV calendar, speech and the browser, beside the connections every space is given. */
 const MANIFESTS: ConnectorManifest[] = [
   filesManifest,
   webManifest,
@@ -31,6 +32,7 @@ const MANIFESTS: ConnectorManifest[] = [
   emailManifest,
   calendarManifest,
   speech.manifest,
+  browserManifest,
 ];
 const connections = MANIFESTS.map((manifest, index) => ({
   id: `conn_${index}`,
@@ -55,7 +57,7 @@ const unreachable = (reachable: Set<string>) =>
   );
 
 describe('a production attempt reaches every built-in skill', () => {
-  test('with mail, a calendar and speech connected, every built-in and playbook is usable', () => {
+  test('with mail, a calendar, speech and the browser connected, every built-in and playbook is usable', () => {
     expect(unreachable(reachableToolNames(granted, scopes))).toEqual([]);
   });
 
