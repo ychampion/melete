@@ -50,6 +50,16 @@ export const ATTACHMENT_KINDS = ['image', 'pdf', 'docx', 'xlsx', 'csv', 'text'] 
 export const attachmentKind = z.enum(ATTACHMENT_KINDS);
 export type AttachmentKind = z.infer<typeof attachmentKind>;
 
+/** A kept-back file's kind, shared by its tile and the activity note for opening it. */
+export const ATTACHMENT_KIND_WORDS: Record<AttachmentKind, string> = {
+  image: 'A picture',
+  pdf: 'A PDF document',
+  docx: 'A Word document',
+  xlsx: 'A spreadsheet',
+  csv: 'A spreadsheet',
+  text: 'A text document',
+};
+
 /** The media types each kind is stored as, the first being the one a file is given. */
 const MEDIA_TYPES: Record<AttachmentKind, readonly string[]> = {
   image: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],

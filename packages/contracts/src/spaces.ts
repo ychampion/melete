@@ -8,6 +8,7 @@
  * re-counted every table, path and provider listing and found nothing left.
  */
 import { z } from 'zod';
+import { ATTACHMENT_KIND_WORDS, attachmentKindFor } from './attachments.ts';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 
 /**
@@ -257,7 +258,7 @@ export const summariesOnlySetting = z
         z.object({
           note: z.enum(['original_opened', 'summaries_on', 'summaries_off']),
           by: z.string().max(200),
-          /** The file's name, for an open. */
+          /** The kind of file opened, never its name. */
           what: z.string().max(500).nullable(),
           at: timestamp,
         }),
@@ -278,11 +279,11 @@ export type SummariesOnlyChange = z.infer<typeof summariesOnlyChange>;
  */
 export function originalKind(mime: string): string {
   const type = mime.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (type === 'application/pdf') return 'A PDF document';
-  if (type.startsWith('image/')) return 'A picture';
+  if (type.startsWith('image/')) return ATTACHMENT_KIND_WORDS.image;
   if (type.startsWith('audio/')) return 'A recording';
-  if (type === 'text/csv') return 'A spreadsheet';
-  if (type.startsWith('text/') || type === 'application/json') return 'A text document';
+  const kind = attachmentKindFor('', type)?.kind;
+  if (kind) return ATTACHMENT_KIND_WORDS[kind];
+  if (type.startsWith('text/') || type === 'application/json') return ATTACHMENT_KIND_WORDS.text;
   return 'A file';
 }
 
