@@ -7,6 +7,9 @@
  * most half of either, so nobody can keep everyone else out; the client reads
  * that number from `GET /attachments/limits` and queues to it. How many one
  * person may start in a while is limited only where the operator sets it.
+ *
+ * A room's files go through `/rooms/{id}/attachments`, under the same bounds:
+ * uploaded by one of its people, and read by whoever is in the room now.
  */
 import { attachmentContentQuery, attachmentResponse, attachmentSize } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
@@ -20,6 +23,7 @@ import {
   UPLOAD_FORM_OVERHEAD,
   uploadBounds,
 } from './limits.ts';
+import type { RoomAttachments } from './rooms.ts';
 import type { AttachmentScope, AttachmentService } from './store.ts';
 
 export function mountAttachments(
@@ -28,6 +32,8 @@ export function mountAttachments(
   resolveSpace: SpaceResolver,
   /** Where upload counts are kept, shared by every instance; left out, this process counts. */
   limits: LimitStore = new MemoryLimitStore(),
+  /** Who may use a room's files; left out, rooms take no files. */
+  rooms?: RoomAttachments,
 ): void {
   const { fileBytes, uploadRate, serverUploads } = attachments.settings;
   // Room for at least one file at the largest size, whatever the setting, and
@@ -67,8 +73,8 @@ export function mountAttachments(
     return c.json(attachmentLimitsView(attachments.settings));
   });
 
-  app.post('/attachments', async (c) => {
-    const scope = await scopeFor(c);
+  /** One upload, into the space and for the person `scope` names. */
+  const take = async (c: Context, scope: AttachmentScope) => {
     const declared = Number(c.req.header('content-length') ?? 0);
     if (declared > fileBytes + UPLOAD_FORM_OVERHEAD)
       throw new ServiceError(
@@ -78,7 +84,9 @@ export function mountAttachments(
       );
     if (!/^multipart\/form-data/i.test(c.req.header('content-type') ?? ''))
       throw new ServiceError('invalid_request', 'Send the file as multipart/form-data.', 400);
-    const who = `${scope.spaceId}:${scope.principalId ?? 'owner'}`;
+    // One person's bounds, whichever space the file goes to: a room is not a
+    // fresh allowance. Without a principal, the space is the owner's own.
+    const who = scope.principalId ? `principal:${scope.principalId}` : `${scope.spaceId}:owner`;
     // Checked and counted together, before anything is awaited: parallel
     // uploads cannot all pass the check while none has been counted yet.
     const mine = underWay.get(who) ?? { count: 0, bytes: 0 };
@@ -120,7 +128,8 @@ export function mountAttachments(
       if (left.count > 1) underWay.set(who, { count: left.count - 1, bytes: left.bytes - bytes });
       else underWay.delete(who);
     }
-  });
+  };
+  app.post('/attachments', async (c) => take(c, await scopeFor(c)));
 
   const receive = async (c: Context, scope: AttachmentScope) => {
     let form: FormData;
@@ -143,13 +152,19 @@ export function mountAttachments(
     return c.json(attachmentResponse.parse({ attachment: view }), 201);
   };
 
-  app.get('/attachments/:id/content', async (c) => {
-    const scope = await scopeFor(c);
+  /** One file's bytes; `admit`, when given, decides first whether they may be sent. */
+  const read = async (
+    c: Context,
+    scope: AttachmentScope,
+    id: string,
+    admit?: (row: { principalId: string | null; mediaType: string }) => Promise<void>,
+  ) => {
     const query = attachmentContentQuery.safeParse(c.req.query());
     if (!query.success) throw new ServiceError('invalid_request', 'Unknown variant.', 400);
+    if (admit) await admit(await attachments.visible(scope, id));
     const { row, bytes, mediaType } = await attachments.content(
       scope,
-      c.req.param('id'),
+      id,
       query.data.variant ?? 'original',
     );
     const inline = mediaType.startsWith('image/') || mediaType === 'application/pdf';
@@ -165,10 +180,37 @@ export function mountAttachments(
         'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`,
       },
     });
-  });
+  };
+  app.get('/attachments/:id/content', async (c) => read(c, await scopeFor(c), c.req.param('id')));
 
   app.delete('/attachments/:id', async (c) => {
     await attachments.remove(await scopeFor(c), c.req.param('id'));
+    return c.json({ ok: true as const });
+  });
+
+  if (!rooms) return;
+  const room = (c: Context) => c.req.param('id') ?? '';
+  const file = (c: Context) => c.req.param('fileId') ?? '';
+  app.post('/rooms/:id/attachments', async (c) => take(c, await rooms.scope(c, room(c), 'upload')));
+  /** A room's file, read as it is (`content`) or opened on purpose (`original`). */
+  const roomRead = async (c: Context, how: 'content' | 'original') => {
+    const scope = await rooms.scope(c, room(c), 'read');
+    return read(c, scope, file(c), (row) =>
+      rooms.admit({
+        roomId: scope.spaceId,
+        fileId: file(c),
+        viewer: scope.principalId as string,
+        uploader: row.principalId,
+        mediaType: row.mediaType,
+        read: how,
+      }),
+    );
+  };
+  app.get('/rooms/:id/attachments/:fileId/content', (c) => roomRead(c, 'content'));
+  // Opening an original on purpose: a POST, because each one is noted.
+  app.post('/rooms/:id/attachments/:fileId/original', (c) => roomRead(c, 'original'));
+  app.delete('/rooms/:id/attachments/:fileId', async (c) => {
+    await attachments.remove(await rooms.scope(c, room(c), 'read'), file(c));
     return c.json({ ok: true as const });
   });
 }

@@ -1,6 +1,6 @@
 ---
 name: research-with-sources
-description: Answer from sources you read, and say what you could not confirm.
+description: Answer from sources you read; say what you could not confirm.
 triggers:
   - research
   - find out

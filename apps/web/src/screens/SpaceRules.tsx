@@ -13,6 +13,7 @@ import { useLoad } from '../experience/hooks.ts';
 import { assistantName } from '../experience/instance.ts';
 import type { SpaceRulesChange, SpaceRulesView } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
+import { SummariesOnlySetting } from './SummariesOnly.tsx';
 
 type ListKey = keyof SpaceRulesChange;
 
@@ -118,15 +119,22 @@ export function SpaceRules({ spaceId }: { spaceId: string | undefined }) {
     });
   };
 
-  if (loaded.error)
-    return <LoadError what="this space’s rules" error={loaded.error} onRetry={loaded.reload} />;
-  if (!loaded.data)
+  // The switch is read on its own, so it shows while the rules load or fail to.
+  if (loaded.error || !loaded.data)
     return (
-      <p style={{ fontSize: 13, color: 'var(--muted)' }}>{loaded.unavailable ?? 'Loading…'}</p>
+      <div className="col" style={{ gap: 16, maxWidth: 640 }}>
+        <SummariesOnlySetting spaceId={spaceId} />
+        {loaded.error ? (
+          <LoadError what="this space’s rules" error={loaded.error} onRetry={loaded.reload} />
+        ) : (
+          <p style={{ fontSize: 13, color: 'var(--muted)' }}>{loaded.unavailable ?? 'Loading…'}</p>
+        )}
+      </div>
     );
 
   return (
     <div className="col" style={{ gap: 16, maxWidth: 640 }}>
+      <SummariesOnlySetting spaceId={spaceId} />
       <p style={{ fontSize: 13, color: 'var(--muted)' }}>
         {canChange
           ? 'What work in this space may use. With nothing listed, nothing is restricted.'

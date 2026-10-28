@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Select, Toggle } from '../design/primitives.tsx';
 import { href } from '../router.ts';
 import { AddConnection } from '../screens/ConnectionInstall.tsx';
+import { SummariesOnlySetting } from '../screens/SummariesOnly.tsx';
 import { toast } from '../shell/Shell.tsx';
 import {
   type RoomCalendarMode,
@@ -119,14 +120,21 @@ export function RoomSettings({
     >
       <div className="col" style={{ gap: 18 }}>
         {owner ? (
-          <div className="col" style={{ gap: 4 }}>
-            <a className="settings-choice-title" href={href(`/rooms/${detail.room.id}/activity`)}>
-              Activity log
-            </a>
-            <span className="people-hint">
-              Everything {detail.room.agent_name} did through a connected account in this room: who
-              asked, who approved, and when. Only owners see it.
+          <div className="settings-switch">
+            <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
+              <span className="settings-choice-title">Activity log</span>
+              <span className="people-hint">
+                Everything {detail.room.agent_name} did through a connected account in this room:
+                who asked, who approved, and when. Only owners see it.
+              </span>
             </span>
+            <a
+              className="btn btn-sm btn-outline"
+              href={href(`/rooms/${detail.room.id}/activity`)}
+              aria-label="Open the activity log"
+            >
+              <span>Open</span>
+            </a>
           </div>
         ) : null}
         <fieldset className="settings-group" disabled={!owner}>
@@ -166,6 +174,7 @@ export function RoomSettings({
             onChange={(next) => void save({ guests_may_ask: next })}
           />
         </div>
+        <SummariesOnlySetting spaceId={detail.room.id} room />
         <div className="col" style={{ gap: 8 }}>
           <span className="people-field-label">Accounts the room uses</span>
           <span className="people-hint">
@@ -309,7 +318,9 @@ function MyCalendarShare({ roomId, agentName }: { roomId: string; agentName: str
             }}
           />
           <div className="settings-switch">
-            <span className="settings-choice-title">Share my free/busy</span>
+            <span className="col grow" style={{ minWidth: 0 }}>
+              <span className="settings-choice-title">Share my free/busy</span>
+            </span>
             <Toggle
               label="Share my calendar free/busy with this room"
               on={Boolean(settings.share)}

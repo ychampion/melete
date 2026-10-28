@@ -838,12 +838,19 @@ room's members, and it is never added to a room. Its membership generation is
 the room's roster generation, bumped with every change of who is in the room,
 so a capability minted before the change is refused at the broker.
 
-Every speaker is shown, to people and to the agent, as their chosen name
-followed by the handle the room gives them in angle brackets. The handle is
-derived from the room and the person's account, both made by the service, so
-nobody chooses it or takes another's, and it is what identifies a speaker; the
-agent is told the name before it is self-chosen. A name is one line of plain
-text without `<`, `>` or `@`, so it cannot pass for a handle or an email, and
+Every speaker is shown to the agent as their chosen name followed by the
+handle the room gives them in angle brackets. The handle is derived from the
+room and the person's account, both made by the service, so nobody chooses it
+or takes another's, and it is what identifies a speaker; the agent is told the
+name before it is self-chosen. People see the name with a tell after it in
+angle brackets (the email before the @, or a code from the account) wherever it
+matters who someone is, and wherever two names in the room read alike; a name
+that reads like the name of someone the person shares a room with, there now
+or since left, is refused, and nobody joins a room under one, compared after a fold of case, compatibility forms,
+invisible characters and letters that look like Latin ones; names that differ
+only in I, l, 1 and | or in rn and m are allowed and shown with their tells
+(see ROOMS). A name is one line of plain text without `<`, `>`, `@` or
+characters that show as nothing, so it cannot pass for a handle or an email, and
 where a name enters the agent's input it is quoted; characters that read as
 `<`, `>` or `@` are refused as well. No label carries any part of an email;
 people who are not guests see emails only in the room's list of people. Each ask is its own request job, recorded with the person who asked, and only

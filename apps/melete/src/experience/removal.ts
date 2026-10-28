@@ -361,6 +361,7 @@ export async function removeJobs(
     await tx`delete from privacy_vault where conversation_id = any(${list})`;
     await tx`delete from privacy_conversation where conversation_id = any(${list})`;
     await tx`delete from privacy_request where job_id = any(${list}) or conversation_id = any(${list})`;
+    await tx`delete from privacy_seen where conversation_id = any(${list})`;
     // What memory handed these jobs and what their outputs used. Memory itself,
     // the details and their sources, is untouched here. An output's manifest
     // names the output row, so it goes before the output.

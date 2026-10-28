@@ -1200,6 +1200,8 @@ export class BrokerService implements BrokerOperations {
     // agent's own "ask before acting" does not ask again. "Ask me for
     // everything" still does.
     const handsOff = tool.name === 'room.handoff' && provider === 'room';
+    // A room's board stays inside the room, and its people can change anything on it back.
+    const keepsBoard = tool.name.startsWith('board.') && provider === 'board';
     // The connector itself says the person decides this one, whatever the settings.
     const connectorAsks =
       this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
@@ -1240,7 +1242,7 @@ export class BrokerService implements BrokerOperations {
       toolAsks ||
       connectorAsks ||
       afterResponses ||
-      (agentAsks && changes && !handsOff) ||
+      (agentAsks && changes && !handsOff && !keepsBoard) ||
       // The person's own Files are not the agent's workspace. A new file there
       // stays in their space and goes through like other work; saving over one
       // of theirs or taking one out is asked, or reviewed when the person lets

@@ -135,6 +135,7 @@ export const DEFAULT_MODEL_PRICES: Record<string, ModelPrice> = {
     cached_input: 0.012,
   },
   'nebius/nvidia/Nemotron-3-Ultra-550b-a55b': { input: 1, output: 3, cached_input: 0.12 },
+  'nebius/nvidia/Nemotron-3.5-Super-VL': { input: 0.3, output: 0.9, cached_input: 0.06 },
   // Embedding models semantic recall uses: input only, at their listed prices.
   'fireworks/*embed*': { input: 0.016, output: 0 },
   'fireworks/nomic-ai/nomic-embed-text-v1.5': { input: 0.008, output: 0 },

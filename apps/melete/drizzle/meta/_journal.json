@@ -1023,6 +1023,34 @@
       "when": 1789232400125,
       "tag": "0145_room_calendar_share",
       "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1789232400126,
+      "tag": "0146_summaries_only_space",
+      "breakpoints": true
+    },
+    {
+      "idx": 147,
+      "version": "7",
+      "when": 1789232400127,
+      "tag": "0147_room_board",
+      "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1789232400128,
+      "tag": "0148_room_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1789232400129,
+      "tag": "0149_privacy_seen",
+      "breakpoints": true
     }
   ]
 }

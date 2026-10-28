@@ -44,6 +44,8 @@ export type SpaceMember = SpaceMembers['members'][number];
 /** What work in a space may use, and whether the person asking may change it. */
 export type SpaceRulesView = Ok<paths['/spaces/{id}/policy'], 'get'>;
 export type SpaceRulesChange = Body<paths['/spaces/{id}/policy'], 'put'>;
+/** Whether a space shows only what needs its people, and whether this person may change it. */
+export type SummariesOnlyView = Ok<paths['/spaces/{id}/summaries-only'], 'get'>;
 export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
 /** A page of a chat's turns: `next_cursor` is absent when the service sent every turn. */
 export type TurnPage = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>;
@@ -316,6 +318,7 @@ export type LocalModelCheck = Success<Ok<paths['/privacy/local-model/check'], 'p
 export type LocalModelCheckRequest = Body<paths['/privacy/local-model/check'], 'post'>;
 export type ConversationPrivacy = Success<Ok<paths['/conversations/{id}/privacy'], 'get'>>;
 export type PrivacyReveal = Success<Ok<paths['/conversations/{id}/privacy/reveal'], 'post'>>;
+export type PrivacySeen = Success<Ok<paths['/conversations/{id}/privacy/seen'], 'post'>>;
 
 export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
 export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;

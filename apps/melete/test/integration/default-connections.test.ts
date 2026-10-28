@@ -487,11 +487,12 @@ const journey = late ? await database() : null;
       });
       expect(shared.status).toBe(201);
       const made = ((await shared.json()) as { space: { id: string } }).space.id;
-      expect(await providers(made)).toEqual(['apps', 'artifacts', 'files', 'room', 'web']);
+      expect(await providers(made)).toEqual(['apps', 'artifacts', 'board', 'files', 'room', 'web']);
       // A room's space gets Apps and the hand-off to a person, never a person's room tools.
       expect(await defaults(made)).toEqual([
         ['apps', expect.arrayContaining(['apps.publish'])],
         'artifacts',
+        'board',
         'files',
         ['room_handoff', ['room.handoff', 'room.member_freebusy', 'room.add_to_member_calendar']],
         'web',

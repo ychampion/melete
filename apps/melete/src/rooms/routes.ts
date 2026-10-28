@@ -25,6 +25,7 @@ import type { Env } from '../env.ts';
 import type { EventChanges } from '../experience/events.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import type { MemoryRouteOptions } from '../memory/routes.ts';
+import { mountBoard } from './board-routes.ts';
 import { HandoffService } from './handoffs.ts';
 import { InviteService, mountInvites } from './invites.ts';
 import { mountRoomMemory } from './memory.ts';
@@ -134,6 +135,7 @@ export function mountRooms(
         submission_id: input.submission_id,
         title: input.title,
         ask_agent: input.ask_agent,
+        attachments: input.attachments,
       }),
       201,
     );
@@ -150,6 +152,7 @@ export function mountRooms(
         author: actor(c),
         text: input.text,
         submission_id: input.submission_id,
+        attachments: input.attachments,
       }),
     );
   });
@@ -243,6 +246,8 @@ export function mountRooms(
     const input = handoffResultDecision.parse(await c.req.json());
     return c.json(await handoffs.result(param(c, 'id'), actor(c), input));
   });
+  // The room's board, and the boards of every room the person is in.
+  mountBoard(app, { db: deps.db, rooms: service, changes: deps.changes });
   return service;
 }
 

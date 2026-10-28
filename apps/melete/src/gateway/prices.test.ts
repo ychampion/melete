@@ -72,6 +72,7 @@ test('each Nemotron model on Nebius is charged its catalog price, not the unknow
     ['nvidia/nemotron-3-super-120b-a12b', 0.3, 0.9, 0.06],
     ['nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B', 0.06, 0.24, 0.012],
     ['nvidia/Nemotron-3-Ultra-550b-a55b', 1, 3, 0.12],
+    ['nvidia/Nemotron-3.5-Super-VL', 0.3, 0.9, 0.06],
   ] as const) {
     expect(table.priceFor('nebius', model)).toMatchObject({ entry: `nebius/${model}` });
     expect(table.cost('nebius', model, usage)).toBeCloseTo(input + output, 6);

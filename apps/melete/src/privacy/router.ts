@@ -29,6 +29,7 @@ import {
   type PrivacyCategory,
   type PrivacyPreview,
   type PrivacyReceipt,
+  type PrivacySeen,
   type QuestionSpecInput,
   type SensitiveTopic,
 } from '@melete/contracts';
@@ -44,6 +45,7 @@ import {
 import type { Detection } from './detect.ts';
 import { isLocalUrl, type LocalModel, localDetect, pinLocalModel } from './local.ts';
 import { type Protocol, Redactor } from './redact.ts';
+import { SEEN_PARTS_PER_REQUEST, seenSegments, sentParts } from './seen.ts';
 import {
   type PrivacyStore,
   type ResolvedSettings,
@@ -497,6 +499,10 @@ export class PrivacyRouter {
       await state.saving;
     }
     await this.log(scope, receipt);
+    // What the person and their sources said, as this request carried it, for
+    // the answer's "what the model saw". Only an engine attempt's own turn.
+    if (principal.privacy.kind === 'job' && scope.conversationId && scope.turnId)
+      await this.keepSeen(scope, redacted, protocol);
     return {
       body: redacted,
       route: 'cloud',
@@ -728,6 +734,14 @@ export class PrivacyRouter {
     }
   }
 
+  private async keepSeen(scope: Scope, body: Record<string, unknown>, protocol: Protocol) {
+    try {
+      await this.store.recordSeen(scope, sentParts(body, protocol).slice(-SEEN_PARTS_PER_REQUEST));
+    } catch (error) {
+      this.report(error);
+    }
+  }
+
   /** Ask the local model about strings it has not read before. */
   private async detectLocally(
     state: ConversationState,
@@ -952,6 +966,44 @@ export class PrivacyRouter {
         const entry = state.vault.entry(placeholder);
         return entry ? [{ placeholder, category: entry.category, value: entry.value }] : [];
       }),
+    };
+  }
+
+  /**
+   * One answer's pieces side by side: as the cloud model saw them, with
+   * placeholders, and as the person sees them, with the vault's values put
+   * back. The values are for the person's own screen only.
+   */
+  async seen(conversationId: string, spaceId: string, turnId: string): Promise<PrivacySeen> {
+    const routes = new Set(
+      (await this.store.turns(conversationId))
+        .filter((row) => row.turnId === turnId)
+        .map((row) => row.route as NonNullable<PrivacySeen['route']>),
+    );
+    const route = routes.size === 0 ? null : routes.size === 1 ? [...routes][0] : 'mixed';
+    const kept = await this.store.seen(conversationId, turnId);
+    if (!kept.length) return { route: route ?? null, parts: [], categories: [] };
+    const state = await this.state(
+      { jobId: conversationId, attemptId: '', spaceId, conversationId, agentId: null, turnId },
+      await this.settingsFor(spaceId),
+    );
+    const lookup = (placeholder: string) => state.vault.entry(placeholder);
+    const parts = kept.map((piece) => ({
+      source: piece.source,
+      tool: piece.tool,
+      truncated: piece.truncated,
+      segments: seenSegments(piece.text, lookup),
+    }));
+    const swapped = new Map<string, PrivacyCategory>();
+    for (const piece of parts)
+      for (const segment of piece.segments)
+        if ('placeholder' in segment) swapped.set(segment.placeholder, segment.category);
+    const counts = new Map<PrivacyCategory, number>();
+    for (const category of swapped.values()) counts.set(category, (counts.get(category) ?? 0) + 1);
+    return {
+      route: route ?? null,
+      parts,
+      categories: [...counts].map(([category, count]) => ({ category, count })),
     };
   }
 

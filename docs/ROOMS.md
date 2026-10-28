@@ -61,15 +61,43 @@ room always keeps at least one owner. Each change of role moves that person's
 membership generation on, so work of theirs under way checks again with what
 they may now do. A guest stays a guest.
 
-In a room every person is shown as the name they chose followed by the handle
-the room gives them, as in `Alice <k7q2mx3a>`, to the people in the room and
-to its agent. The handle is what tells people apart: nobody chooses it, nobody
-can take someone else's, and it differs from room to room. No label in a room
-carries any part of an email: someone who has not chosen a name is shown as
-`Someone` with their handle. People who are not guests also see each other's email in the
-room's list of people (`GET /rooms/{id}`). Each person sets their name with
-`PATCH /me`: one line of plain text, without `<`, `>` or `@` or anything that
-reads as one, and not a name someone else already goes by.
+In a room the service labels every person with the name they chose followed by
+the handle the room gives them, as in `Alice <k7q2mx3a>`, and the room's agent
+reads them that way. The handle is what tells people apart for the agent:
+nobody chooses it, nobody can take someone else's, and it differs from room to
+room. No label in a room carries any part of an email: someone who has not
+chosen a name is labelled `Someone` with their handle. People who are not
+guests also see each other's email in the room's list of people
+(`GET /rooms/{id}`).
+
+The web app shows a person by their name and, after it in angle brackets, a
+tell that stays theirs in every room: the part of their email before the @
+when the reader can see emails, or else a four letter code made from their
+account. The tell always shows where it matters who someone is: who may answer
+a permission and who answered it, who asked, and the room's list of people.
+Elsewhere, in messages, the thread list and the board, a name shows alone
+unless two people the room knows of, there now or since left, have names that
+read alike; then each shows its tell. Hovered or read aloud, every name
+carries its tell.
+
+Each person sets their name with `PATCH /me`: one line of plain text, without
+`<`, `>` or `@` or anything that reads as one, and without characters that show
+as nothing (the default ignorable characters and the Hangul fillers), so no
+name can carry a tell or a handle of its own or hide a difference. It is
+refused when it reads as the name of someone the person shares a room with, or
+as the part before the @ of their email; everyone a room has had counts,
+members, guests and people who have left, so a name cannot be taken over once
+its owner leaves. A guest's name is compared the same way with the room they
+join, and someone who already has an account joins a room, added by an owner or
+through an invite, only while their name reads as no one's that room has had;
+otherwise they are asked to change it first. Reads as means the same after `nameSkeleton`
+(`@melete/contracts/name-skeleton`): NFKC, lower case, invisible characters
+dropped, spaces collapsed, and a short table of Cyrillic, Greek, Lisu, Cherokee
+and Latin letters that look like Latin ones read as those, so Alice spelled
+with a Cyrillic or a fullwidth A is Alice. The web app decides which names read
+alike by a looser fold, `clashSkeleton`, which also reads `I`, `l`, `1` and `|`
+as one letter and `rn` as `m`. That fold would join ordinary names such as Eli
+and Ell, so it only makes both names show their tells; it never refuses one.
 
 ## Guests
 
@@ -137,6 +165,26 @@ stream (`GET /rooms/{id}/threads/{thread}/events` with
 resumes from `Last-Event-ID`. A room view says who is looking at it with a
 heartbeat (`POST /rooms/{id}/presence`); presence is shown, and decides
 nothing about who may read.
+
+A message can carry photos and files: upload each to `POST /rooms/{id}/attachments`
+and name it in the message's `attachments`. Everyone in the room reads them
+(`GET /rooms/{id}/attachments/{file}/content`), except in a summaries-only room
+(below); someone removed from the room, or never in it, does not. An ask hands
+them to its request, and the room's model reads a photo itself, or the
+operator's vision model (`MELETE_MODEL_VISION`) takes the call and answers it.
+Where neither can read photos, an ask with one is refused with a plain sentence
+saying so, and the photo can still be posted without asking. A guest attaches
+files only where guests may ask.
+
+In a room set to "Show me only what needs me", a posted file is read as it is
+only by the person who posted it and the room's maker. Everyone else sees what
+kind of file it is and its id, with no name, size or pages, in the thread and
+its live stream, and `content` (and its `preview`) answers `403 summaries_only`.
+They read it with `POST /rooms/{id}/attachments/{file}/original`, which notes
+the open in the room's activity, naming who opened what kind of file, before a
+byte is sent; if the note cannot be written, nothing is sent. The same person
+opening the same file again within a few minutes is one note. The room's request
+still reads every file.
 
 ## Permissions in a room
 
@@ -364,6 +412,49 @@ When the people in a room change, work under way in it starts again with the
 new roster, and permissions its requests were waiting on are withdrawn. The
 requests someone asked end when they leave, since only they could answer them
 (a turn under way stops), and an ask of theirs still waiting its turn is dropped.
+
+## The board
+
+A room keeps a board of dated items: events, tasks, questions and notes. Each
+item can be assigned to one person in the room who is not a guest, and says who
+sees it:
+
+| Visibility | Who sees it |
+|---|---|
+| `everyone` | Everyone in the room, guests included |
+| `owners` | The room's owners |
+| `assignee` | The person it is assigned to, and the room's owners |
+
+The service applies this rule in the query that reads the board, so a member
+sees items for everyone and the items assigned to them, a guest sees items for
+everyone, and an owner sees everything. The same rule holds for the room's
+board (`GET /rooms/{id}/board`), its live stream
+(`GET /rooms/{id}/board/events`, resumable with `Last-Event-ID`, closed the
+moment the reader leaves the room) and `GET /board`, which shows the items from
+every room the signed-in person is in (`?mine=1` keeps the open items assigned
+to them, `from` and `to` keep a window of dates). A room you are not in
+contributes nothing.
+
+People claim a task or an event (`POST .../board/{item}/claim`; one claim
+stands, and a second gets 409), mark it done (`.../done`) and answer a question
+put to them (`.../answer`). Guests read the board and change nothing on it.
+Only the person a question asks can answer it. The answer is posted in the
+room as that person's own message to the agent, in the thread the question was
+asked in, so the agent goes on as a new request of theirs. When the question
+was for one person, the message does not repeat its words in the thread.
+
+The room's agent has five tools for the board: `board.list`, `board.add`,
+`board.update`, `board.ask` and `board.note`. They change only the room's own
+board and ask nobody. The agent reads the board as the person whose request it
+is working on would see it, and changes only what that person can see; a
+request from a guest reads the board and changes nothing. It assigns items only
+to people in the room who are not guests. A note is always for its person
+alone. A question or a note sends a push to that person only, paced like any
+other push and held in their quiet hours.
+
+When someone leaves the room, items assigned to them read as unassigned and a
+claim of theirs reads as open again. Titles are written by the agent, so `board.add` tells it
+to keep the titles of items for everyone short and free of private detail.
 
 ## Talking to a room from a chat platform
 

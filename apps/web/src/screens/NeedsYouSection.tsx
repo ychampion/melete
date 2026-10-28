@@ -22,6 +22,7 @@ import { useApp, useDecisions } from '../experience/hooks.ts';
 import { pastDay } from '../experience/past-day.ts';
 import type { NeedsYou, NeedsYouItem } from '../experience/types.ts';
 import { unreadChats } from '../experience/unread.ts';
+import { useWaitingOnYou, WaitingOnYou } from '../rooms/Board.tsx';
 import { href } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 
@@ -82,6 +83,17 @@ export function unsortedLine(count: number, reason: NeedsYou['unsorted_reason'])
   if (count <= 0) return null;
   return reason ? `${count} not sorted yet: ${WAITING_BECAUSE[reason]}` : `${count} not sorted yet`;
 }
+
+/**
+ * Whether the section can say nothing needs the person: what `/needs-you`
+ * listed is empty, and so are the board items in their rooms that wait on
+ * them, which it draws first, once those are read. A board that is still being
+ * read, or could not be, says nothing of the kind.
+ */
+export const nothingNeedsYou = (
+  listed: number,
+  board: { loaded: boolean; error: string | null; count: number },
+) => listed === 0 && board.loaded && board.error === null && board.count === 0;
 
 /**
  * The line for an empty list. Decisions waiting on the person sit just above
@@ -204,6 +216,7 @@ export function NeedsYouSection({
   const [busy, setBusy] = useState<string | null>(null);
   const live = useRef(true);
   const waiting = useDecisions().count;
+  const board = useWaitingOnYou();
   const { conversations, refreshConversations } = useApp();
   // A reminder that comes due, or is seen elsewhere, changes the list: read it again.
   const unread = unreadChats(conversations)
@@ -261,6 +274,8 @@ export function NeedsYouSection({
         <h2 id="home-needs-you">Needs you</h2>
         {meta ? <span className="home-section-meta">{meta}</span> : null}
       </div>
+      {/* Board items in the person's rooms that are assigned to them. */}
+      <WaitingOnYou waiting={board} />
       {view.items.length ? (
         <ul className="needs-you-list">
           {view.items.map((item) => (
@@ -274,9 +289,9 @@ export function NeedsYouSection({
             />
           ))}
         </ul>
-      ) : (
+      ) : nothingNeedsYou(view.items.length, { ...board, count: board.items.length }) ? (
         <p className="needs-you-empty voice">{emptyLine(waiting)}</p>
-      )}
+      ) : null}
     </section>
   );
 }

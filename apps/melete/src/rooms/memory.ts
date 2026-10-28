@@ -31,6 +31,7 @@ import { notifyInvalidated } from '../memory/invalidate.ts';
 import type { RestrictionRecord } from '../memory/restore.ts';
 import { applyRoomRecord } from '../memory/room-records.ts';
 import type { MemoryRouteOptions } from '../memory/routes.ts';
+import { summariesOnlyIn } from '../spaces/summaries.ts';
 import { messageView } from './projection.ts';
 import { roomMessage } from './schema.ts';
 import type { RoomService } from './service.ts';
@@ -40,6 +41,9 @@ import { namesOf } from './transcript.ts';
 type RoomMemory = Required<Pick<MemoryRouteOptions, 'sql' | 'journal' | 'storageScope'>>;
 
 const notHere = () => new ServiceError('not_found', 'That is not in this room.', 404);
+
+/** What a detail's words read as in a room that shows only what needs its people. */
+export const HELD_BACK = 'Kept back: this room shows only what needs you.';
 
 /** A memory refusal as the room routes answer it. */
 function translate(error: unknown): never {
@@ -123,6 +127,9 @@ export class RoomMemoryService {
       );
     }
     const shares = await roomShares(sql, spaceId, access.role === 'guest');
+    // A room set to show only what needs its people keeps each detail's words
+    // back: its label and who it rests on are shown, never what was said.
+    const held = await summariesOnlyIn(this.db, spaceId);
     const names = await namesOf(this.db, spaceId, [
       ...[...said.values()].flat(),
       ...shares.map((share) => share.granted_by),
@@ -135,7 +142,7 @@ export class RoomMemoryService {
         claim_id: id,
         key: (row.key as string | null) ?? null,
         label: memoryKeyLabel((row.key as string | null) ?? (row.domain_key as string)),
-        content: String(row.content),
+        content: held ? HELD_BACK : String(row.content),
         said_by: (said.get(id) ?? []).map(author),
         can_forget: access.role === 'owner' || (await mayForgetRoomClaim(sql, spaceId, id, actor)),
         recorded_at: new Date(row.recorded_at as string).toISOString(),
@@ -149,7 +156,7 @@ export class RoomMemoryService {
         shared_by: author(share.granted_by),
         members_only: share.members_only,
         label: share.content === null ? null : memoryKeyLabel(share.key),
-        content: share.content,
+        content: held ? null : share.content,
         created_at: share.created_at.toISOString(),
         can_withdraw: access.role === 'owner' || share.granted_by === actor,
       })),

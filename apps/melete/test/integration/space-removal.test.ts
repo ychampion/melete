@@ -399,6 +399,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   saved_sign_in_use: 'operational',
   privacy_conversation: 'operational',
   privacy_request: 'operational',
+  privacy_seen: 'operational',
   privacy_settings: 'operational',
   privacy_vault: 'operational',
   skill: 'operational',
@@ -408,6 +409,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   room_handoff: 'operational',
   room_invite: 'operational',
   room_policy: 'operational',
+  room_board_item: 'operational',
   room_message: 'operational',
   room_thread: 'operational',
   space_policy: 'operational',
@@ -800,6 +802,8 @@ describe.if(handle !== null)('removing a space', () => {
       values (${conversation}, ${seeded.spaceId}, 'finance')`;
     await sql`insert into privacy_request (space_id, conversation_id, job_id, attempt_id, route)
       values (${seeded.spaceId}, ${conversation}, ${conversation}, 'att_privacy', 'cloud')`;
+    await sql`insert into privacy_seen (space_id, conversation_id, turn_id, source, digest, text)
+      values (${seeded.spaceId}, ${conversation}, 'trn_privacy', 'you', 'd', 'Pay ⟦ACCOUNT_1⟧')`;
     // A file uploaded for a message that was never sent.
     await sql`insert into attachment (id, space_id, principal_id, name, media_type, kind, size, blob_key)
       values (${`file_${seeded.spaceId}`}, ${seeded.spaceId}, ${seeded.principalId}, 'notes.txt',
