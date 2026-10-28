@@ -1,6 +1,6 @@
 ---
 name: build-an-app
-description: Build a small web app, such as a dashboard or tracker, and share it.
+description: Build a small web app, like a dashboard or tracker, and share it.
 triggers:
   - dashboard
   - build an app

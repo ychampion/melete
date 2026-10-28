@@ -1,6 +1,6 @@
 ---
 name: wrong-charge
-description: Query a charge the person did not agree to, quoting what the company billed.
+description: Query a charge the person never agreed to, quoting what the company billed.
 triggers:
   - wrong-charge
   - charged me twice

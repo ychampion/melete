@@ -117,6 +117,9 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   // paperwork
   { text: 'Here are photos of my mail, what do I need to do?', expect: ['read-mail-photos'] },
   { text: 'Can you read this letter and tell me what it wants?', expect: ['read-mail-photos'] },
+  { text: "Here's a photo of our mail", expect: ['read-mail-photos'] },
+  { text: 'What does this photo of the mail need from me?', expect: ['read-mail-photos'] },
+  { text: 'I took photos of the paper mail, what is due?', expect: ['read-mail-photos'] },
   { text: 'Is this text from the bank a scam?', expect: ['scam-check'] },
   { text: 'Is this real? It says my Medicare card will be cancelled', expect: ['scam-check'] },
   { text: 'My claim for the MRI was denied', expect: ['appeal-a-denial'] },
@@ -131,6 +134,13 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
     expect: ['compare-drug-plans'],
     tolerate: ['plan-a-responsibility'],
   },
+  // a shared household room
+  {
+    text: 'The school says early dismissal Friday, who can pick up?',
+    expect: ['coordinate-the-household'],
+  },
+  { text: 'Permission slip due Thursday for the field trip', expect: ['coordinate-the-household'] },
+  { text: 'Can someone grab Sofia at 5:30?', expect: ['coordinate-the-household'] },
   // near misses: words the paperwork skills use, in requests that are not paperwork
   { text: 'Write this letter to the council', expect: ['write-a-draft'] },
   { text: 'Draft this letter to my landlord', expect: ['write-a-draft'] },
@@ -152,11 +162,14 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   { text: 'Which airplane seats have the most legroom?', expect: [] },
   { text: 'What does check-in time mean at a hotel?', expect: [] },
   { text: 'Book a table for two on Saturday', expect: [] },
+  // a calendar question of one person is not household coordination
+  { text: 'What is on my calendar on Friday?', expect: ['schedule-a-check-in'] },
 ];
 
 /**
  * The tools a first-week installation has: the default connections, a mailbox,
- * a CalDAV calendar, a speech provider, the browser, and the broker's own tools. These are
+ * a CalDAV calendar, a speech provider, the browser, a room's board and shared
+ * calendars, and the broker's own tools. These are
  * the names on main; a skill naming anything else is never offered.
  */
 export const DAY_ONE_TOOLS: readonly string[] = [
@@ -183,6 +196,13 @@ export const DAY_ONE_TOOLS: readonly string[] = [
   'browser.fill',
   'browser.click',
   'browser.select',
+  'board.list',
+  'board.add',
+  'board.update',
+  'board.ask',
+  'board.note',
+  'room.member_freebusy',
+  'room.add_to_member_calendar',
 ];
 
 export type SelectionScore = {

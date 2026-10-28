@@ -4,15 +4,17 @@
  * the service builds them, plus the broker's own lifecycle wait.
  */
 import { describe, expect, test } from 'bun:test';
-import type { ConnectorManifest } from '@melete/contracts';
+import { type ConnectorManifest, ROOM_TOOL_SCOPES } from '@melete/contracts';
 import { loadBuiltInSkills } from '@melete/skills';
 import { appsManifest } from '../connectors/apps.ts';
 import { artifactsManifest } from '../connectors/artifacts.ts';
+import { boardManifest } from '../connectors/board.ts';
 import { browserManifest } from '../connectors/browser.ts';
 import { calendarManifest } from '../connectors/calendar.ts';
 import { grantedToolCatalog } from '../connectors/catalog.ts';
 import { emailManifest } from '../connectors/email.ts';
 import { filesManifest } from '../connectors/files.ts';
+import { roomManifest } from '../connectors/room.ts';
 import { createCapabilityConnector, fakeSpeechAdapter } from '../connectors/tts.ts';
 import type { Connector } from '../connectors/types.ts';
 import { webManifest } from '../connectors/web.ts';
@@ -23,7 +25,10 @@ const speech = createCapabilityConnector({
   adapter: fakeSpeechAdapter,
   provider: 'fake',
 });
-/** Mail, a CalDAV calendar, speech and the browser, beside the connections every space is given. */
+/**
+ * Mail, a CalDAV calendar, speech and the browser, beside the connections every space is given,
+ * and in a room its board and the room's own tools.
+ */
 const MANIFESTS: ConnectorManifest[] = [
   filesManifest,
   webManifest,
@@ -33,6 +38,13 @@ const MANIFESTS: ConnectorManifest[] = [
   calendarManifest,
   speech.manifest,
   browserManifest,
+  boardManifest,
+  {
+    ...roomManifest,
+    tools: roomManifest.tools.filter((tool) =>
+      (ROOM_TOOL_SCOPES.room as readonly string[]).includes(tool.name),
+    ),
+  },
 ];
 const connections = MANIFESTS.map((manifest, index) => ({
   id: `conn_${index}`,
@@ -57,7 +69,7 @@ const unreachable = (reachable: Set<string>) =>
   );
 
 describe('a production attempt reaches every built-in skill', () => {
-  test('with mail, a calendar, speech and the browser connected, every built-in and playbook is usable', () => {
+  test('with mail, a calendar, speech, the browser and a room connected, every built-in and playbook is usable', () => {
     expect(unreachable(reachableToolNames(granted, scopes))).toEqual([]);
   });
 
