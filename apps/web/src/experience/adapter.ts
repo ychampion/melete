@@ -1212,6 +1212,12 @@ export const adapter = {
     guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/takeover', path(sessionId))),
   handBack: (sessionId: string) =>
     guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/handback', path(sessionId))),
+  /** Take over and record the person's steps, to show the agent how. */
+  teach: (sessionId: string) =>
+    guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/teach', path(sessionId))),
+  /** Hand back and throw the recorded steps away. */
+  discardTeaching: (sessionId: string) =>
+    guard<BrowserControl>(() => api.POST('/browser/sessions/{id}/teach/discard', path(sessionId))),
   liveOpen: (sessionId: string) =>
     guard<LiveOpen>(() => api.POST('/browser/sessions/{id}/live', path(sessionId))),
   liveInput: (sessionId: string, body: LiveUp) =>

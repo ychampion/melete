@@ -839,6 +839,20 @@ export function computerEmptyWords(
   };
 }
 
+/** What the person is told once control has changed hands. */
+export function controlChangedWords(
+  to: 'take' | 'teach' | 'give' | 'discard',
+  agentName: string,
+  shownSteps?: number,
+): string {
+  if (to === 'take') return 'You have the browser';
+  if (to === 'teach') return `Recording your steps. Do the task, then press Done`;
+  if (to === 'discard') return `Your steps were thrown away. ${agentName} has the browser again`;
+  if (shownSteps)
+    return `${agentName} has your ${shownSteps === 1 ? 'step' : `${shownSteps} steps`} and will draft a skill for you to check`;
+  return `${agentName} has the browser again`;
+}
+
 export function ComputerPanel({
   agent,
   computer,
@@ -865,15 +879,16 @@ export function ComputerPanel({
   const [live, setLive] = useState<{ url: string; title: string } | null>(null);
   const browser = computer?.browser ?? null;
   const sessionId = browser?.session_id;
+  const teaching = browser?.control === 'you' && browser.teaching === true;
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new session or control starts from the recorded page
   useEffect(() => {
     setLive(null);
     setReleasing(false);
   }, [sessionId, browser?.control]);
-  const change = async (to: 'take' | 'give') => {
+  const change = async (to: 'take' | 'teach' | 'give' | 'discard') => {
     if (!browser) return;
     setBusy(true);
-    if (to === 'give') {
+    if (to === 'give' || to === 'discard') {
       // The live view closes first; a hand-back ends it anyway, and a late close would be refused.
       setReleasing(true);
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -882,7 +897,11 @@ export function ComputerPanel({
     const result =
       to === 'take'
         ? await adapter.takeOver(browser.session_id)
-        : await adapter.handBack(browser.session_id);
+        : to === 'teach'
+          ? await adapter.teach(browser.session_id)
+          : to === 'discard'
+            ? await adapter.discardTeaching(browser.session_id)
+            : await adapter.handBack(browser.session_id);
     setBusy(false);
     if (result.data === null) {
       setReleasing(false);
@@ -891,14 +910,11 @@ export function ComputerPanel({
         title:
           result.error ??
           result.unavailable ??
-          (to === 'take' ? 'Couldn’t take over' : 'Couldn’t hand back'),
+          (to === 'take' || to === 'teach' ? 'Couldn’t take over' : 'Couldn’t hand back'),
       });
       return;
     }
-    toast({
-      kind: 'ok',
-      title: to === 'take' ? 'You have the browser' : `${agentName} has the browser again`,
-    });
+    toast({ kind: 'ok', title: controlChangedWords(to, agentName, result.data.shown_steps) });
     onChanged();
   };
   const empty =
@@ -967,32 +983,59 @@ export function ComputerPanel({
         {computer ? <ProcessesPanel processes={computer.processes} onChanged={onChanged} /> : null}
       </div>
       {browser ? (
-        <div className="computer-foot" data-control={browser.control}>
+        <div
+          className="computer-foot"
+          data-control={browser.control}
+          data-teaching={teaching ? 'yes' : undefined}
+        >
           <span className="computer-holder">
             <span className="computer-dot" aria-hidden="true" />
             <span className="col" style={{ gap: 0, minWidth: 0 }}>
-              <span className="computer-holder-name">
-                {browser.control === 'you'
-                  ? 'You have control'
-                  : working
-                    ? `${agentName} has control`
-                    : `${agentName} isn’t using it now`}
+              <span className="computer-holder-name" role={teaching ? 'status' : undefined}>
+                {teaching
+                  ? 'Recording your steps'
+                  : browser.control === 'you'
+                    ? 'You have control'
+                    : working
+                      ? `${agentName} has control`
+                      : `${agentName} isn’t using it now`}
               </span>
               <span className="computer-holder-sub">
-                {browser.control === 'you'
-                  ? `${agentName} waits until you hand it back.`
-                  : 'Take over to use the browser yourself.'}
+                {teaching
+                  ? `Do the task once. Pages, clicks and field names are kept, never what you type. Done gives them to ${agentName}.`
+                  : browser.control === 'you'
+                    ? `${agentName} waits until you hand it back.`
+                    : 'Take over to use the browser yourself.'}
               </span>
             </span>
           </span>
-          {browser.control === 'you' ? (
+          {teaching ? (
+            <>
+              <Button variant="ghost" disabled={busy} onClick={() => void change('discard')}>
+                Discard
+              </Button>
+              <Button icon="check" disabled={busy} onClick={() => void change('give')}>
+                Done
+              </Button>
+            </>
+          ) : browser.control === 'you' ? (
             <Button icon="arrowUpRight" disabled={busy} onClick={() => void change('give')}>
               Hand back
             </Button>
           ) : (
-            <Button icon="hand" variant="ghost" disabled={busy} onClick={() => void change('take')}>
-              Take over
-            </Button>
+            <>
+              <Button variant="ghost" disabled={busy} onClick={() => void change('teach')}>
+                Show {agentName} how
+              </Button>
+              <Button
+                icon="hand"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => void change('take')}
+              >
+                Take over
+              </Button>
+            </>
           )}
         </div>
       ) : null}

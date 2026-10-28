@@ -6,7 +6,7 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Agent, AgentComputer } from '../experience/types.ts';
-import { ComputerPanel, computerEmptyWords } from './ComputerPanel.tsx';
+import { ComputerPanel, computerEmptyWords, controlChangedWords } from './ComputerPanel.tsx';
 import { keyInput, modsOf, pagePoint, pasteInput, shownAddress } from './live.ts';
 
 const AT = '2026-09-30T09:00:00.000Z';
@@ -109,6 +109,63 @@ test('while the person holds the browser, the page is live and can be handed bac
   expect(html).toContain('Press Escape twice to leave it');
   // The recorded picture is not shown in place of the live page.
   expect(html).not.toContain('/artifacts/art_page/content');
+});
+
+test('the agent’s browser can be taken over or shown how; a plain takeover records nothing', () => {
+  const watching = render({
+    browser: browser('agent'),
+    terminal: [],
+    processes: [],
+    available: { browser: true, terminal: false },
+  });
+  expect(watching).toContain('Show Nova how');
+  expect(watching).toContain('Take over');
+  expect(watching).not.toContain('Recording your steps');
+  const holding = render({
+    browser: { ...browser('you'), teaching: false },
+    terminal: [],
+    processes: [],
+    available: { browser: true, terminal: false },
+  });
+  expect(holding).toContain('Hand back');
+  expect(holding).not.toContain('Recording your steps');
+  expect(holding).not.toContain('Show Nova how');
+});
+
+test('while the person shows the agent how, the panel says the steps are recorded, with Done and Discard', () => {
+  const html = render({
+    browser: { ...browser('you'), teaching: true },
+    terminal: [],
+    processes: [],
+    available: { browser: true, terminal: false },
+  });
+  expect(html).toContain('data-teaching="yes"');
+  expect(html).toContain('role="status"');
+  expect(html).toContain('Recording your steps');
+  expect(html).toContain('never what you type');
+  expect(html).toContain('Done');
+  expect(html).toContain('Discard');
+  expect(html).not.toContain('Hand back');
+  expect(html).not.toContain('Show Nova how');
+  // The page is still live for the person to use.
+  expect(html).toContain('role="application"');
+  // Plain words, with no dashes standing in for punctuation.
+  expect(html).not.toContain('—');
+});
+
+test('what the person is told when control changes hands', () => {
+  expect(controlChangedWords('teach', 'Nova')).toBe(
+    'Recording your steps. Do the task, then press Done',
+  );
+  expect(controlChangedWords('give', 'Nova', 4)).toBe(
+    'Nova has your 4 steps and will draft a skill for you to check',
+  );
+  expect(controlChangedWords('give', 'Nova', 1)).toContain('your step and');
+  expect(controlChangedWords('give', 'Nova', 0)).toBe('Nova has the browser again');
+  expect(controlChangedWords('discard', 'Nova')).toBe(
+    'Your steps were thrown away. Nova has the browser again',
+  );
+  expect(controlChangedWords('take', 'Nova')).toBe('You have the browser');
 });
 
 test('a page with no picture says so rather than showing an old one', () => {
