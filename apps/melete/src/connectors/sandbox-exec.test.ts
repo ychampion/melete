@@ -242,6 +242,15 @@ withDb('a command in a remote sandbox', () => {
     expect(session).toMatchObject({ status: 'ready', adapter: 'fake' });
   }, 60_000);
 
+  test('a working directory given as the workspace path runs there, not inside itself', async () => {
+    const { run } = await setup();
+    for (const cwd of ['/work', '/work/', './']) {
+      const { result } = await run({ command: "printf 'here'", cwd });
+      if (result.outcome !== 'succeeded') throw new Error(`${cwd}: ${JSON.stringify(result)}`);
+      expect(result.receipt.detail).toMatchObject({ cwd, exit_code: 0 });
+    }
+  }, 60_000);
+
   test("a remote command's digest is verified because the service wrote the file", async () => {
     const { scope, run } = await setup();
     const slow = await run({ command: 'printf started; sleep 5; printf never', timeout_ms: 1_000 });
