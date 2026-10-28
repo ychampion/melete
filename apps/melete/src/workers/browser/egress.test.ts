@@ -1499,39 +1499,78 @@ test("an opened page's script sends its own XHR, fetch and beacon writes, and a 
   expect(fixture.calls).toHaveLength(3);
 });
 
-test("a script's write from a signed-in page keeps every check: domains, addresses, and no cookies to another site", async () => {
-  const sent: Array<{ host: string; cookie?: string }> = [];
+test("a script's write from a signed-in page keeps every check and goes as no one: no cookies or authorization, to its own site or another", async () => {
+  const sent: Array<{ host: string; method: string; cookie?: string; authorization?: string }> = [];
   const fixture = await setup(
     {
       transport: async (url, _address, request) => {
-        sent.push({ host: url.hostname, cookie: request.headers.cookie });
-        return OK;
+        sent.push({
+          host: url.hostname,
+          method: request.method,
+          cookie: request.headers.cookie,
+          authorization: request.headers.authorization,
+        });
+        return { ...OK, headers: { ...OK.headers, 'set-cookie': 'sid=anonymous' } };
       },
     },
     { public_compartment: false, allowed_domains: ['public.example', 'api.partner.example'] },
   );
   const top = 'https://public.example/form';
+  const signedIn = { cookie: 'sid=signed-in', authorization: 'Bearer person-token' };
   const write = (url: string) =>
     fixture.dispatch({
       method: 'POST',
       url,
       resourceType: 'fetch',
       top,
-      headers: { 'content-type': 'application/json', cookie: 'sid=signed-in' },
+      headers: { 'content-type': 'application/json', ...signedIn },
       body: Buffer.from('{}'),
     });
   await fixture.egress.run('navigate', async () => {
-    expect((await write('https://public.example/api')).aborted).toBe(false);
-    expect((await write('https://api.partner.example/api')).aborted).toBe(false);
+    // Opening a page changes nothing of the person's: a write its script sends as it opens,
+    // such as one a crafted address sets off, carries none of their sign-in, and what its answer
+    // would set is dropped, so it cannot sign them out either.
+    for (const url of ['https://public.example/api', 'https://api.partner.example/api']) {
+      const answered = await write(url);
+      expect(answered.aborted).toBe(false);
+      expect(answered.response?.headers?.['set-cookie']).toBeUndefined();
+    }
+    // What the page reads of its own site still carries the person's sign-in.
+    const read = await fixture.dispatch({
+      url: 'https://public.example/api/me',
+      resourceType: 'fetch',
+      top,
+      headers: signedIn,
+    });
+    expect(read.response?.headers?.['set-cookie']).toBe('sid=anonymous');
   });
   expect(sent).toEqual([
-    { host: 'public.example', cookie: 'sid=signed-in' },
-    { host: 'api.partner.example', cookie: undefined },
+    { host: 'public.example', method: 'POST', cookie: undefined, authorization: undefined },
+    { host: 'api.partner.example', method: 'POST', cookie: undefined, authorization: undefined },
+    { host: 'public.example', method: 'GET', ...signedIn },
   ]);
   await expect(
     fixture.egress.run('navigate', () => write('https://elsewhere.example/api')),
   ).rejects.toMatchObject({ code: 'domain_not_allowed' });
-  expect(sent).toHaveLength(2);
+  expect(sent).toHaveLength(3);
+  // A research browser holds nothing of the person's, so its page's writes go as the page sent them.
+  const research: Array<string | undefined> = [];
+  const open = await setup({
+    transport: async (_url, _address, request) => {
+      research.push(request.headers.cookie);
+      return OK;
+    },
+  });
+  await open.egress.run('navigate', () =>
+    open.dispatch({
+      method: 'POST',
+      url: 'https://public.example/api',
+      resourceType: 'fetch',
+      top,
+      headers: { 'content-type': 'application/json', cookie: 'bot_check=passed' },
+    }),
+  );
+  expect(research).toEqual(['bot_check=passed']);
 });
 
 test('once the page has its document, the opening stays open for what its script asks for, and a refusal leaves that request out', async () => {

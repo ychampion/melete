@@ -1933,8 +1933,9 @@ export function unreachableResult(hosts: readonly string[]): Record<string, unkn
  * What a look says about the requests that would change something which were held back: a
  * form a page or its frame submitted by itself while it loaded, or a write its script tried
  * during a step's input. Only an approved submit sends a change of the person's; what a page's
- * script sends as it loads, and what it reads in answer to a step, goes. As for unreachable
- * hosts, the page chose the names, so the note carries none of them and the list is bounded.
+ * script sends as it loads goes without their sign-in, and what it reads in answer to a step
+ * goes. As for unreachable hosts, the page chose the names, so the note carries none of them and
+ * the list is bounded.
  */
 export function droppedResult(requests: readonly string[]): Record<string, unknown> {
   if (!requests.length) return {};

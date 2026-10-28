@@ -441,7 +441,8 @@ const READ_METHODS = new Set(['GET', 'HEAD']);
 /**
  * How a page's own script sends in the background: an XHR, a fetch or a beacon. An opened page
  * sends these as it draws itself (a page its script builds asks its server what to show), and
- * they go. A form the browser submits is a document instead, a page's or a frame's, and only an
+ * they go; from the signed-in profile, a write among them goes without the person's sign-in (see
+ * relay). A form the browser submits is a document instead, a page's or a frame's, and only an
  * approved submit sends one.
  */
 const SCRIPT_SENDS = new Set(['xhr', 'fetch', 'ping']);
@@ -1032,7 +1033,14 @@ export function createBrowserEgress(
       // The persistent profile sends no cookies to a site other than the page's own, so a page
       // cannot ride the person's other signed-in sessions through cross-site requests.
       const crossSite = !publicCompartment && thirdParty(url, place);
-      if (crossSite) delete headers.cookie;
+      // Opening a page changes nothing of the person's, whatever address it was opened at: a write
+      // its script sends as it opens goes as no one, without their cookies or authorization, and
+      // what its answer would set is dropped, so it can neither act for them nor sign them out.
+      // Only an approved submit acts as them. A research browser holds nothing of theirs.
+      const anonymous =
+        !publicCompartment && operation.mode === 'navigate' && !READ_METHODS.has(request.method());
+      if (crossSite || anonymous) delete headers.cookie;
+      if (anonymous) delete headers.authorization;
       const address = await checkAddress(url, abort.signal, Boolean(human));
       requireOperation(operation);
       // DNS and header reads yielded after the input was planned. The controller
@@ -1063,7 +1071,7 @@ export function createBrowserEgress(
         networkError('live_budget', 'the takeover has used its browser byte budget');
       }
       const responseHeaders = relayHeaders(response.headers, maxHeaderBytes, false);
-      if (crossSite) delete responseHeaders['set-cookie'];
+      if (crossSite || anonymous) delete responseHeaders['set-cookie'];
       if (human && /^\s*attachment/i.test(responseHeaders['content-disposition'] ?? '')) {
         human.notice('download_refused');
         networkError('download_refused', 'browser downloads are refused during a takeover');
