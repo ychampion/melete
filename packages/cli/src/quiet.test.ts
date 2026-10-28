@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { deployOptions, runDeploy } from './commands/deploy.ts';
 import {
@@ -103,7 +103,7 @@ describe('the time of day', () => {
 });
 
 describe('melete deploy --when-quiet', () => {
-  test('waits for --at, then for quiet, drains, and only then changes anything', async () => {
+  test('waits for --at, pulls, then waits for quiet and drains before the switch', async () => {
     const deployDir = temporaryDeployDir();
     try {
       const rig = deployRig(deployDir, {}, {}, { MELETE_OPERATOR_TOKEN: TOKEN });
@@ -116,11 +116,16 @@ describe('melete deploy --when-quiet', () => {
       rig.context.now = clock.now;
       rig.context.sleep = clock.sleep;
       rig.context.fetch = service.fetch;
-      const pullsWhenDrained: number[] = [];
+      // For each pull and each start: when it ran, and how many drains had been asked for.
+      const pulls: { at: string; drains: number }[] = [];
+      const starts: number[] = [];
       const run = rig.context.run;
+      const drains = () => service.calls.filter((call) => call.method === 'POST').length;
       rig.context.run = (command, timeoutMs) => {
-        if (command.join(' ').startsWith('docker pull'))
-          pullsWhenDrained.push(service.calls.filter((call) => call.method === 'POST').length);
+        const line = command.join(' ');
+        if (line.startsWith('docker pull'))
+          pulls.push({ at: clock.now().toISOString(), drains: drains() });
+        if (/ (up|restart) /.test(line)) starts.push(drains());
         return run(command, timeoutMs);
       };
       const code = await runDeploy(
@@ -140,8 +145,13 @@ describe('melete deploy --when-quiet', () => {
       expect(post?.at).toBe('2026-10-02T03:20:00.000Z');
       expect(post?.body).toEqual({ limit_minutes: 70 });
       expect(quiet.filter((call) => call.method === 'POST')).toHaveLength(1);
-      // Every pull came after the drain, and the drain was cancelled at the end.
-      expect(pullsWhenDrained).toEqual([1, 1, 1]);
+      // Every pull came at 03:00, before the wait for quiet and the drain, so
+      // nothing new was held while they ran; every start and restart after it.
+      expect(pulls).toHaveLength(3);
+      for (const pull of pulls) expect(pull).toEqual({ at: '2026-10-02T03:00:00.000Z', drains: 0 });
+      expect(starts.length).toBeGreaterThan(0);
+      expect(starts.every((count) => count === 1)).toBe(true);
+      // The drain was cancelled at the end.
       expect(quiet.at(-1)?.method).toBe('DELETE');
       expect(rig.state.restarts).toBe(1);
       expect(rig.context.printed()).toMatch(/ok\s+deploy\.quiet\s+Drained/);
@@ -152,7 +162,7 @@ describe('melete deploy --when-quiet', () => {
     }
   });
 
-  test('on timeout cancels the drain and exits 1, with nothing stopped or changed', async () => {
+  test('on timeout cancels the drain and exits 1, with nothing running stopped or changed', async () => {
     const deployDir = temporaryDeployDir();
     try {
       const rig = deployRig(deployDir, {}, {}, { MELETE_OPERATOR_TOKEN: TOKEN });
@@ -173,8 +183,12 @@ describe('melete deploy --when-quiet', () => {
       expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
       expect(methods.at(-1)).toBe('DELETE');
       expect(rig.context.printed()).toMatch(/fail\s+deploy\.quiet\s+No quiet moment.*att_late/);
-      // No container, process or attempt was stopped, removed or recreated.
-      expect(rig.state.pulls).toEqual([]);
+      // The images were pulled before the wait, and are kept for the next run.
+      expect(rig.state.pulls).toHaveLength(3);
+      expect(rig.context.printed()).toContain('The pulled images wait, unused');
+      // No container, process or attempt was stopped, removed or recreated, and
+      // the installation still names the images it runs.
+      expect(readFileSync(join(deployDir, '.env'), 'utf8')).toBe(rig.envBefore);
       expect(rig.state.ups).toBe(0);
       expect(rig.state.restarts).toBe(0);
       expect(rig.state.tagged).toEqual([]);
@@ -182,6 +196,33 @@ describe('melete deploy --when-quiet', () => {
       expect(
         rig.state.calls.filter((call) => / (stop|kill|down|restart|rm|prune)( |$)/.test(call)),
       ).toEqual([]);
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
+  });
+
+  test('a service that cannot answer is found before the backup or any pull', async () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      const rig = deployRig(deployDir, {}, {}, { MELETE_OPERATOR_TOKEN: TOKEN });
+      // A service from before the busy report answers its routes with 404.
+      rig.context.fetch = async (url: string) =>
+        url.endsWith('/api/health')
+          ? Response.json({ status: 'ok', database: 'ok' })
+          : new Response(null, { status: 404 });
+      const code = await runDeploy(
+        rig.context,
+        ['--checkout', '--when-quiet'],
+        false,
+        rig.dependencies,
+      );
+      expect(code).toBe(1);
+      expect(rig.context.printed()).toMatch(
+        /fail\s+deploy\.quiet\s+GET \S+\/health\/busy answered 404.*Nothing was changed/,
+      );
+      expect(rig.state.pulls).toEqual([]);
+      expect(rig.state.ups).toBe(0);
+      expect(readFileSync(join(deployDir, '.env'), 'utf8')).toBe(rig.envBefore);
     } finally {
       rmSync(join(deployDir, '..'), { recursive: true, force: true });
     }
@@ -233,6 +274,37 @@ describe('waiting for quiet', () => {
       '2026-10-02T03:05:00.000Z',
     );
     expect(said).toContain('Someone was active recently.');
+  });
+
+  test('melete quiet --time-only waits for --at, if given, and drains nothing', async () => {
+    const deployDir = temporaryDeployDir();
+    try {
+      const rig = deployRig(deployDir, {}, {}, { MELETE_OPERATOR_TOKEN: TOKEN });
+      const clock = fakeClock('2026-10-02T02:00:00Z');
+      const service = fakeService(clock, { runningUntil: '2026-10-02T05:00:00Z' });
+      rig.context.now = clock.now;
+      rig.context.sleep = clock.sleep;
+      rig.context.fetch = service.fetch;
+      expect(await runQuiet(rig.context, ['--at', '03:00', '--time-only'])).toBe(0);
+      expect(clock.now().toISOString()).toBe('2026-10-02T03:00:00.000Z');
+      expect(service.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+        'GET /health/busy',
+      ]);
+      // It takes no limit: the wait for quiet has its own.
+      expect(await runQuiet(rig.context, ['--at', '03:00', '--time-only', '--max-wait', '5'])).toBe(
+        2,
+      );
+      expect(service.calls).toHaveLength(1);
+      // With no time, it only checks that the service answers.
+      expect(await runQuiet(rig.context, ['--time-only'])).toBe(0);
+      expect(clock.now().toISOString()).toBe('2026-10-02T03:00:00.000Z');
+      expect(service.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+        'GET /health/busy',
+        'GET /health/busy',
+      ]);
+    } finally {
+      rmSync(join(deployDir, '..'), { recursive: true, force: true });
+    }
   });
 
   test('melete quiet refuses without the operator token, before asking anything', async () => {

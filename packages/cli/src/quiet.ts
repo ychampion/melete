@@ -7,13 +7,16 @@
  *      long run is mid-shift, and nobody has been active for a few minutes;
  *   3. ask for a drain, so nothing new starts, and wait until it says drained.
  *
- * Past --max-wait (counted from --at) it cancels the drain it asked for and
- * says what was still running. It never stops any work itself. Background
- * processes in the agents' computers are reported but do not hold an update
- * back: they run in the computer, which a service restart leaves running.
+ * The update downloads its images and code between 1 and 2, so new work is
+ * never held while they download. Past --max-wait (counted from the start of
+ * 2) it cancels the drain it asked for and says what was still running. It
+ * never stops any work itself. Background processes in the agents' computers
+ * are reported but do not hold an update back: they run in the computer,
+ * which a service restart leaves running.
  *
- * `melete deploy --when-quiet` runs this before it changes anything, and
- * `melete quiet` runs it alone for deploy/scripts/update.sh.
+ * `melete deploy --when-quiet` runs 1 before its backup, and 2 and 3 after its
+ * pulls. deploy/scripts/update.sh runs `melete quiet --at HH:MM --time-only`
+ * for 1, pulls, then `melete quiet` for 2 and 3.
  */
 import { webPort } from '../../../deploy/scripts/status.ts';
 import type { Context } from './context.ts';
@@ -28,7 +31,7 @@ const POLL_MS = 30_000;
 const AT_STEP_MS = 15 * 60_000;
 
 export const QUIET_USAGE =
-  'Usage: bun run melete quiet [--at HH:MM] [--max-wait <minutes>] | bun run melete quiet --cancel';
+  'Usage: bun run melete quiet [--at HH:MM] [--max-wait <minutes>] | bun run melete quiet [--at HH:MM] --time-only | bun run melete quiet --cancel';
 
 export class QuietRefusal extends Error {}
 
@@ -145,6 +148,32 @@ function stillDraining(status: DrainStatusResponse): string {
   ].join('; ');
 }
 
+/**
+ * With `at`, waits until that time of day in the owner's time zone. It reads
+ * the busy report even without one, so a service that cannot answer (no
+ * operator token, or a version without the report) is found before the update
+ * changes anything.
+ */
+export async function waitForTime(
+  api: QuietApi,
+  clock: QuietClock,
+  at: string | null,
+  say: (line: string) => void,
+): Promise<void> {
+  const zone = (await api.busy()).time_zone;
+  if (!at) return;
+  let left = untilTimeOfDay(clock.now(), zone, at);
+  if (left > 0) say(`Waiting until ${at} (${zone}).`);
+  while (left > 0) {
+    await clock.sleep(Math.min(left, AT_STEP_MS));
+    const next = untilTimeOfDay(clock.now(), zone, at);
+    // Wrapped round to tomorrow: the time has been reached, or skipped by a clock change.
+    if (next === 0 || next > left) break;
+    left = next;
+  }
+}
+
+/** Waits for `options.at` when given, then for quiet, then drains. */
 export async function waitForQuiet(
   api: QuietApi,
   clock: QuietClock,
@@ -153,18 +182,7 @@ export async function waitForQuiet(
 ): Promise<QuietResult> {
   const pollMs = options.pollMs ?? POLL_MS;
   const idleMs = (options.idleMinutes ?? IDLE_MINUTES) * 60_000;
-  if (options.at) {
-    const zone = (await api.busy()).time_zone;
-    let left = untilTimeOfDay(clock.now(), zone, options.at);
-    if (left > 0) say(`Waiting until ${options.at} (${zone}).`);
-    while (left > 0) {
-      await clock.sleep(Math.min(left, AT_STEP_MS));
-      const next = untilTimeOfDay(clock.now(), zone, options.at);
-      // Wrapped round to tomorrow: the time has been reached, or skipped by a clock change.
-      if (next === 0 || next > left) break;
-      left = next;
-    }
-  }
+  if (options.at) await waitForTime(api, clock, options.at, say);
   const deadline = clock.now().getTime() + options.maxWaitMinutes * 60_000;
   let busy: string[] = [];
   for (;;) {
@@ -253,8 +271,10 @@ export function serviceQuietApi(context: Context): QuietApi {
 
 /**
  * `melete quiet`: wait for a quiet moment and drain, then exit 0 and leave the
- * drain on for the update that follows; its restart ends it. `--cancel` ends a
- * drain by hand.
+ * drain on for the update that follows; its restart ends it. `--time-only`
+ * checks that the service answers and waits for --at, and nothing else, so an
+ * update can download before it waits for quiet. `--cancel` ends a drain by
+ * hand.
  */
 export async function runQuiet(
   context: Context,
@@ -263,13 +283,21 @@ export async function runQuiet(
 ): Promise<ExitCode> {
   try {
     const parsed = quietArguments(args);
-    const cancel = parsed.rest.length === 1 && parsed.rest[0] === '--cancel';
-    if (parsed.rest.length > 0 && !(cancel && !parsed.at && parsed.maxWaitMinutes === null))
-      throw new QuietRefusal(`quiet takes no ${parsed.rest.join(' ')}. ${QUIET_USAGE}`);
+    const only = parsed.rest.length === 1 ? parsed.rest[0] : null;
+    const cancel = only === '--cancel' && !parsed.at && parsed.maxWaitMinutes === null;
+    const timeOnly = only === '--time-only' && parsed.maxWaitMinutes === null;
+    if (parsed.rest.length > 0 && !cancel && !timeOnly)
+      throw new QuietRefusal(`quiet takes no ${parsed.rest.join(' ')} here. ${QUIET_USAGE}`);
     const service = api(context);
     if (cancel) {
       await service.cancel();
       context.out('The drain is off; held work starts now.\n');
+      return EXIT.ok;
+    }
+    // Only the time, and that the service answers: the update downloads next,
+    // and then waits for quiet.
+    if (timeOnly) {
+      await waitForTime(service, context, parsed.at, (line) => context.out(`${line}\n`));
       return EXIT.ok;
     }
     context.interruptHint?.(

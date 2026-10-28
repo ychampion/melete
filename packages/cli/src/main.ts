@@ -30,9 +30,10 @@ export const USAGE = `Usage: bun run melete <command> [--deploy-dir <path>] [opt
   deploy [--tag <tag>]       Update to published images: plan, back up, pull one at a time, switch, verify
          [--dry-run] [--checkout | --allow-compose-mismatch] [--skip-backup | --backup-to ssh://host:/path]
          [--when-quiet [--at HH:MM] [--max-wait <minutes>]]
-                             With --when-quiet, first wait until nothing runs and nobody is active, then drain
+                             With --when-quiet, pull, then wait until nothing runs and nobody is active, and drain
   quiet [--at HH:MM] [--max-wait <minutes>]
-                             Wait for that quiet moment and drain, for deploy/scripts/update.sh; --cancel ends a drain
+                             Wait for that quiet moment and drain, for deploy/scripts/update.sh; --time-only waits
+                             for --at alone; --cancel ends a drain
   rollback [--dry-run]       Back to the images before the last deploy, or the restore steps if migrations ran
   backup [--estimate]        Back up the database, journal, settings, files and agents' computers to backup.dir
          [--database-only | --offline] [--dir <path>] [--to ssh://host:/path]

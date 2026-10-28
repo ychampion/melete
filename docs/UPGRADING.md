@@ -29,32 +29,36 @@ To avoid that, update when nothing is running:
 bun run melete deploy --when-quiet --at 03:00 --max-wait 120
 ```
 
-With `--when-quiet`, `melete deploy` plans the update as usual, then waits
-before it changes anything:
+With `--when-quiet`, `melete deploy` plans the update as usual, then:
 
 1. With `--at HH:MM`, it waits until that time in the owner's time zone (the
    one set in the app; UTC until they set one).
-2. It asks the service what is running until no attempt runs, no action is on
+2. It takes its backup, if the release needs one, and pulls the new images.
+   Everything still runs as usual while they download.
+3. It asks the service what is running until no attempt runs, no action is on
    its way to a service, no long run is mid-shift, and nobody has used the app
    or reached their assistant for ten minutes.
-3. It drains the service: nothing new starts, and it waits until what was
+4. It drains the service: nothing new starts, and it waits until what was
    running has finished. Messages still arrive and queue. Timers, waits and
    watches that fall due are held, not dropped, and run after the restart.
-4. It updates. The restart ends the drain.
+5. It switches to the new images and restarts. The restart ends the drain.
 
 If no quiet moment comes within `--max-wait` minutes (default 120, counted from
-`--at`), it cancels the drain, says what was still running, and exits 1. It
-never stops any work, and nothing has changed.
+when the images are in place), it cancels the drain, says what was still
+running, and exits 1. It never stops any work, and the running service is
+unchanged. The pulled images are kept for the next try.
 
 Background processes in the agent's computer, such as a dev server, do not
 hold an update back. They run in the computer, not in the service, so they
 keep running through a service restart.
 
 `deploy/scripts/update.sh --when-quiet [--at HH:MM] [--max-wait MIN]` waits the
-same way. For a release you build here, run `bun run melete quiet --at 03:00`
-first and `bun run melete upgrade <tag>` when it exits 0; the drain stays on
-until the upgrade restarts the service. `bun run melete quiet --cancel` ends a
-drain by hand.
+same way: it waits for `--at`, updates the checkout and pulls the images, and
+only then waits for quiet and drains. For a release you build here, run
+`bun run melete quiet --at 03:00` first and `bun run melete upgrade <tag>` when
+it exits 0; the drain stays on until the upgrade restarts the service, so new
+work waits while the images build. `bun run melete quiet --cancel` ends a drain
+by hand.
 
 The wait needs `MELETE_OPERATOR_TOKEN` in `deploy/.env`: it reads
 `GET /health/busy` and uses `POST`, `GET` and `DELETE /operator/drain` with that

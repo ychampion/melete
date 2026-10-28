@@ -20,9 +20,11 @@
  *      first failure or the first breach of the floor;
  *   6. switch: check out the commit if asked, then write MELETE_IMAGE_TAG.
  *
- * With --when-quiet, the plan is followed by a wait for a quiet moment and a
- * drain (quiet.ts) before step 4, and a deploy that finds none in time stops
- * there with exit 1, having changed nothing.
+ * With --when-quiet (quiet.ts), the plan is followed by a wait for --at, then
+ * the backup and the pulls run as usual, and only then does it wait for a
+ * quiet moment and drain, so new work is not held while images download. A
+ * deploy that finds no quiet moment in time stops before step 6 with exit 1,
+ * the running stack unchanged and the pulled images kept for the next run.
  *
  * Then it starts the new images, restarts the service so it picks up the new
  * engine image, checks health, migrations and status, and only then removes
@@ -95,6 +97,7 @@ import {
   quietArguments,
   serviceQuietApi,
   waitForQuiet,
+  waitForTime,
 } from '../quiet.ts';
 import { EXIT, type ExitCode, type Result, report } from '../schema.ts';
 import { BackupRefusal, duBytes, expandHome, parseSshTarget, takeBackup } from './backup.ts';
@@ -123,7 +126,7 @@ export type DeployOptions = {
   command?: 'deploy' | 'rollback';
   /** Set by rollback: recorded migrations the target ran beside before the deploy it undoes. */
   accepted?: number[];
-  /** --when-quiet: wait for a quiet moment and drain before changing anything (quiet.ts). */
+  /** --when-quiet: wait for --at, pull, then wait for a quiet moment and drain before the switch (quiet.ts). */
   quiet?: QuietOptions | null;
 };
 
@@ -740,39 +743,25 @@ export async function runDeploy(
       return finish(summary);
     };
 
-    // With --when-quiet, the plan holds; now wait for a quiet moment and drain
-    // before the first change. The update's restart ends the drain, and so
-    // does the cancel at the end, whatever happened.
+    // With --when-quiet, the plan holds; wait for --at here, before the backup,
+    // so the backup is taken at the time of the update. The wait for quiet and
+    // the drain come after the pulls, so new work is not held while they run.
+    let quietService: QuietApi | null = null;
+    const notQuiet = (detail: string, fix?: string) => {
+      steps.add({ id: 'deploy.quiet', level: 'fail', detail, ...(fix ? { fix } : {}) });
+      appendHistory(context.deployDir, entry('refused', 'deploy.quiet'));
+      outcome = 'refused';
+      code = EXIT.failed;
+      return finish(summary);
+    };
     if (options.quiet) {
-      let result: QuietResult;
       try {
-        drainedBy = quietApi(context);
-        context.interruptHint?.(
-          'A drain may be on, holding new work: run bun run melete quiet --cancel to let it go. Nothing else was changed.',
-        );
-        result = await waitForQuiet(drainedBy, context, options.quiet, (line) => steps.say(line));
+        quietService = quietApi(context);
+        await waitForTime(quietService, context, options.quiet.at, (line) => steps.say(line));
       } catch (error) {
         if (!(error instanceof QuietRefusal)) throw error;
-        result = { quiet: false, running: error.message };
+        return notQuiet(`${error.message} Nothing was changed.`);
       }
-      context.interruptHint?.(null);
-      if (!result.quiet) {
-        steps.add({
-          id: 'deploy.quiet',
-          level: 'fail',
-          detail: `No quiet moment within ${options.quiet.maxWaitMinutes} minutes; the drain is off and nothing was stopped. Still running: ${result.running}`,
-          fix: 'Run it again later, or give --max-wait more minutes.',
-        });
-        appendHistory(context.deployDir, entry('refused', 'deploy.quiet'));
-        outcome = 'refused';
-        code = EXIT.failed;
-        return finish(summary);
-      }
-      steps.add({
-        id: 'deploy.quiet',
-        level: 'ok',
-        detail: 'Drained: nothing runs, and new work waits for the restart.',
-      });
     }
 
     const fromImages = inspectLocal(
@@ -844,6 +833,36 @@ export async function runDeploy(
         return refuse('the disk floor was reached while pulling');
       }
       steps.add({ id, level: 'ok', detail: `${pull.ref}; ${Math.floor(free / MB)} MB free.` });
+    }
+
+    // With --when-quiet, the images are here: now wait for a quiet moment and
+    // drain before the switch. The update's restart ends the drain, and so
+    // does the cancel at the end, whatever happened.
+    if (options.quiet && quietService) {
+      let result: QuietResult;
+      try {
+        drainedBy = quietService;
+        context.interruptHint?.(
+          'A drain may be on, holding new work: run bun run melete quiet --cancel to let it go. The running stack was not changed.',
+        );
+        result = await waitForQuiet(quietService, context, { ...options.quiet, at: null }, (line) =>
+          steps.say(line),
+        );
+      } catch (error) {
+        if (!(error instanceof QuietRefusal)) throw error;
+        result = { quiet: false, running: error.message };
+      }
+      context.interruptHint?.(null);
+      if (!result.quiet)
+        return notQuiet(
+          `No quiet moment within ${options.quiet.maxWaitMinutes} minutes; the drain is off and nothing running was stopped or changed. Still running: ${result.running}`,
+          `Run it again later, or give --max-wait more minutes.${pulled.length > 0 ? ` The pulled images wait, unused, for it: ${pulled.join(', ')}.` : ''}`,
+        );
+      steps.add({
+        id: 'deploy.quiet',
+        level: 'ok',
+        detail: 'Drained: nothing runs, and new work waits for the restart.',
+      });
     }
 
     // 6. Switch.
