@@ -198,7 +198,30 @@ function roomDecisions(principalId: string, since: Date) {
     where a.decided_at is null
       and (a.expires_at is null or a.expires_at > now())
       and (parent.audience = 'room' or j.audience = 'room' or holder.kind = 'room')
-      and case when team.id is not null then
+      and case when ac.kind = 'room.add_to_member_calendar' then
+        m.principal_id = ac.canonical_payload->>'member'
+        and p.disabled_at is null
+        and (m.expires_at is null or m.expires_at > now())
+        and exists (
+          select 1 from room_calendar_share cs
+          join connection cc on cc.id = cs.connection_id
+          join space personal on personal.id = cc.space_id
+          where cs.space_id = r.space_id and cs.principal_id = m.principal_id
+            and cs.revoked_at is null and cs.mode = 'freebusy_add'
+            and cs.membership_generation = m.generation
+            and cs.connection_id = ac.canonical_payload->>'calendar_connection_id'
+            and cs.membership_generation::text = ac.canonical_payload->>'membership_generation'
+            and to_char(cs.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+              = ac.canonical_payload->>'share_created_at'
+            and personal.kind = 'personal' and personal.removed_at is null
+            and coalesce(personal.owner_principal_id, (select id from owner limit 1)) = m.principal_id
+            and cc.status = 'active' and cc.setup_state = 'connected' and cc.key_change is null
+            and cc.provider = 'caldav' and cc.scopes ? 'calendar.freebusy'
+            and cc.scopes ? 'calendar.create'
+            and coalesce(cc.configuration->>'kind', '') <> 'ics'
+            and coalesce(cc.configuration->>'mode', '') <> 'ics'
+        )
+      when team.id is not null then
         coalesce(rp.team_account_approvers, 'any_member') = 'any_member' or m.role = 'owner'
       else case coalesce(rp.approvers, 'requester')
         when 'requester' then r.requested_by_principal_id = m.principal_id

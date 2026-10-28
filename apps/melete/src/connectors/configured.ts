@@ -9,6 +9,7 @@ import {
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { jobPaidMeter } from '../broker/paid-meter.ts';
+import type { Query } from '../broker/records.ts';
 import { createDeviceConnector } from '../devices/connector.ts';
 import type { DeviceHub } from '../devices/hub.ts';
 import {
@@ -481,7 +482,10 @@ export class ConnectorFactory {
   }
 
   /** Undefined when the row selects nothing this service can run. */
-  async open(row: ConnectionSource): Promise<Connector | undefined> {
+  async open(
+    row: ConnectionSource,
+    query: Query = this.options.sql,
+  ): Promise<Connector | undefined> {
     const options = this.options;
     // The owner-controlled file wins over what the row stores, so an operator can still pin an endpoint.
     const setting =
@@ -558,6 +562,7 @@ export class ConnectorFactory {
             sql: options.sql,
             workRoot: options.workRoot,
             spacesRoot: options.spacesRoot,
+            openCalendar: (connection, tx) => this.open(connection, tx),
           });
     if (row.provider === 'skills')
       return createSkillsConnector({
@@ -913,7 +918,7 @@ export class ConnectorFactory {
           },
           this.currentCredential(row),
           // Added in the app: every request is checked and pinned to the space's reach.
-          asFetch(reachFetch({ reach: await spaceReach(options.sql, row.spaceId) })),
+          asFetch(reachFetch({ reach: await spaceReach(query, row.spaceId) })),
         ),
       );
     if (row.provider === 'caldav' && stored?.kind === 'ics' && row.secretRef)

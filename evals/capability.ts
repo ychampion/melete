@@ -23,6 +23,7 @@ import type { Sql } from 'postgres';
 import { browserManifest, createBrowserConnector } from '../apps/melete/src/connectors/browser.ts';
 import { emailManifest } from '../apps/melete/src/connectors/email.ts';
 import { filesManifest } from '../apps/melete/src/connectors/files.ts';
+import { roomManifest } from '../apps/melete/src/connectors/room.ts';
 import { COMPUTER_TOOLS } from '../apps/melete/src/connectors/sandbox-computer.ts';
 import {
   sandboxDispatchBudgetMs,
@@ -40,6 +41,7 @@ const PRODUCT_TOOLS = new Map<string, ManifestTool>(
     ...webManifest.tools,
     ...emailManifest.tools,
     ...filesManifest.tools,
+    ...roomManifest.tools,
     ...sandboxTerminalManifest.tools,
     ...browserManifest.tools,
     ...COMPUTER_TOOLS,
