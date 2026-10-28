@@ -35,6 +35,7 @@ export function multiplayerEnabled(
 export function multiplayerPath(method: string, path: string): boolean {
   if (path === '/rooms' || path.startsWith('/rooms/')) return true;
   if (path === '/handoffs' || path.startsWith('/handoffs/')) return true;
+  if (path === '/board') return true;
   if (path === '/invites/view' || path === '/invites/accept') return true;
   if (path === '/me/linked-accounts' || path.startsWith('/me/linked-accounts/')) return true;
   if (method === 'POST' && path === '/spaces/shared') return true;

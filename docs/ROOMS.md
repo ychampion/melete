@@ -374,6 +374,49 @@ new roster, and permissions its requests were waiting on are withdrawn. The
 requests someone asked end when they leave, since only they could answer them
 (a turn under way stops), and an ask of theirs still waiting its turn is dropped.
 
+## The board
+
+A room keeps a board of dated items: events, tasks, questions and notes. Each
+item can be assigned to one person in the room who is not a guest, and says who
+sees it:
+
+| Visibility | Who sees it |
+|---|---|
+| `everyone` | Everyone in the room, guests included |
+| `owners` | The room's owners |
+| `assignee` | The person it is assigned to, and the room's owners |
+
+The service applies this rule in the query that reads the board, so a member
+sees items for everyone and the items assigned to them, a guest sees items for
+everyone, and an owner sees everything. The same rule holds for the room's
+board (`GET /rooms/{id}/board`), its live stream
+(`GET /rooms/{id}/board/events`, resumable with `Last-Event-ID`, closed the
+moment the reader leaves the room) and `GET /board`, which shows the items from
+every room the signed-in person is in (`?mine=1` keeps the open items assigned
+to them, `from` and `to` keep a window of dates). A room you are not in
+contributes nothing.
+
+People claim a task or an event (`POST .../board/{item}/claim`; one claim
+stands, and a second gets 409), mark it done (`.../done`) and answer a question
+put to them (`.../answer`). Guests read the board and change nothing on it.
+Only the person a question asks can answer it. The answer is posted in the
+room as that person's own message to the agent, in the thread the question was
+asked in, so the agent goes on as a new request of theirs. When the question
+was for one person, the message does not repeat its words in the thread.
+
+The room's agent has five tools for the board: `board.list`, `board.add`,
+`board.update`, `board.ask` and `board.note`. They change only the room's own
+board and ask nobody. The agent reads the board as the person whose request it
+is working on would see it, and changes only what that person can see; a
+request from a guest reads the board and changes nothing. It assigns items only
+to people in the room who are not guests. A note is always for its person
+alone. A question or a note sends a push to that person only, paced like any
+other push and held in their quiet hours.
+
+When someone leaves the room, items assigned to them read as unassigned and a
+claim of theirs reads as open again. Titles are written by the agent, so `board.add` tells it
+to keep the titles of items for everyone short and free of private detail.
+
 ## Talking to a room from a chat platform
 
 A room can be reached from a chat platform as well as from the web. Each

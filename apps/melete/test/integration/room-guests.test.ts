@@ -174,6 +174,7 @@ function everyRoute(): Array<{ method: string; path: string }> {
 const GUEST_ROUTES = [
   /^(GET|POST|PUT|PATCH|DELETE) \/rooms(\/.*)?$/,
   /^(GET|PATCH) \/me$/,
+  /^GET \/board$/,
   /^GET \/me\/linked-accounts$/,
   /^DELETE \/me\/linked-accounts\/:[A-Za-z_]+\/:[A-Za-z_]+$/,
   /^POST \/(signout|account\/password)$/,

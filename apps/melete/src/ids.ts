@@ -34,6 +34,7 @@ export function newId(
     | 'rho'
     | 'rch'
     | 'rcn'
+    | 'rbi'
     | 'file'
     | 'sms',
 ): string {

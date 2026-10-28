@@ -28,6 +28,7 @@
  * its own, in any state, is left exactly as it is.
  */
 import {
+  BOARD_TOOL_SCOPES,
   CONNECTION_KIND_SCOPES,
   type ConnectorManifest,
   ROOM_TOOL_SCOPES,
@@ -138,6 +139,15 @@ export const BUILTIN_CONNECTIONS: readonly Builtin[] = [
     provider: 'room',
     label: 'Hand to a person',
     scopes: [...ROOM_TOOL_SCOPES.room],
+    spaceKind: 'shared',
+    when: (environment) => environment.multiplayer === true,
+  },
+  // A room's board, kept by its agent and its people; each item shows only to the people it is for.
+  {
+    key: 'board',
+    provider: 'board',
+    label: 'Board',
+    scopes: [...BOARD_TOOL_SCOPES],
     spaceKind: 'shared',
     when: (environment) => environment.multiplayer === true,
   },
