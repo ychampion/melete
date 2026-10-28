@@ -13,8 +13,8 @@ tools:
 max_tokens: 400
 ---
 
-1. Never contact the sender. Do not call its numbers, reply, or follow its
-links; read only what the person shared.
+1. Never contact the sender: no calls, replies or links. Read only what was
+shared.
 
 2. Find the official source yourself, never from the message, and read it with
 web.fetch: the organization's own site, medicare.gov, ssa.gov, ftc.gov or
@@ -30,3 +30,6 @@ and the pages you read. Can't tell is honest; say what would settle it.
 5. Next steps: don't call the number in the message; call the official number
 instead; report a scam at reportfraud.ftc.gov. If money or card details were
 already given, call the bank now.
+
+6. In a room with a board, board.add a likely scam for everyone: a short
+title, nothing private.
