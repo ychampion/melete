@@ -2470,3 +2470,29 @@ ol.answer-list {
     margin: 8px 16px 0;
   }
 }
+
+/* Above a message that replied to an earlier one: a short quote of that message. */
+.reply-quote {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--blue-line);
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+.reply-quote > svg {
+  flex-shrink: 0;
+}
+.reply-quote-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}

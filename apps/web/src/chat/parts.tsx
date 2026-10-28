@@ -5,6 +5,7 @@
  * thing a person can do to it.
  */
 
+import type { ReplyQuote } from '@melete/contracts';
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { AgentFace, faceStateFor } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
@@ -117,11 +118,19 @@ export function UserBubble({
   turn,
   reactions = [],
   onRetry,
+  quote,
+  onReply,
+  touch = false,
 }: {
   turn: TranscriptTurn;
   /** The agent's glyphs on this message, drawn under the bubble. */
   reactions?: Reaction[];
   onRetry?: () => void;
+  /** The earlier message this one replied to, quoted above it. */
+  quote?: ReplyQuote | null;
+  /** Absent until the message has an id to reply to. */
+  onReply?: () => void;
+  touch?: boolean;
 }) {
   const delivery = turn.delivery;
   const [whole, setWhole] = useState(false);
@@ -132,6 +141,7 @@ export function UserBubble({
   const long = longMessage(turn.turn.text);
   return (
     <div className="bubble-wrap">
+      {quote ? <ReplyQuoteLine quote={quote} /> : null}
       <MessageFiles files={files} />
       {turn.turn.text ? (
         <div
@@ -183,9 +193,33 @@ export function UserBubble({
             </button>
           </>
         ) : (
-          <span>{timeOf(turn.turn.created_at)}</span>
+          <>
+            <span>{timeOf(turn.turn.created_at)}</span>
+            {onReply ? (
+              <IconButton
+                name="reply"
+                label="Reply to your message"
+                title="Reply"
+                size={touch ? 40 : 28}
+                iconSize={touch ? 18 : 15}
+                onClick={onReply}
+              />
+            ) : null}
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+/** A short quote of the earlier message a message replied to. */
+export function ReplyQuoteLine({ quote }: { quote: ReplyQuote }) {
+  const whose = quote.by === 'person' ? 'your message' : 'the agent';
+  return (
+    <div className="reply-quote" data-by={quote.by} title={quote.text}>
+      <Icon name="reply" size={13} />
+      <span className="sr-only">{`In reply to ${whose}:`}</span>
+      <span className="reply-quote-text">{quote.text}</span>
     </div>
   );
 }
@@ -1432,6 +1466,7 @@ export function ActionBar({
   touch,
   reactions = [],
   onReact,
+  onReply,
 }: {
   turn: TranscriptTurn;
   onCopy: () => void;
@@ -1439,6 +1474,8 @@ export function ActionBar({
   reactions?: Reaction[];
   /** Absent when this message cannot be reacted to; then no control is drawn. */
   onReact?: (emoji: string) => void;
+  /** Absent when this answer has no id to reply to yet. */
+  onReply?: () => void;
 }) {
   const s = touch ? 40 : 28;
   const i = touch ? 18 : 15;
@@ -1448,6 +1485,16 @@ export function ActionBar({
       {reactions.length ? <ReactionRow reactions={reactions} /> : null}
       <div className="action-bar">
         <IconButton name="copy" label="Copy" size={s} iconSize={i} onClick={onCopy} />
+        {onReply ? (
+          <IconButton
+            name="reply"
+            label="Reply to this answer"
+            title="Reply"
+            size={s}
+            iconSize={i}
+            onClick={onReply}
+          />
+        ) : null}
         {onReact && reactionMessageSeq(turn) !== null
           ? FEEDBACK.map(({ emoji, icon, label }) => (
               <button

@@ -6,6 +6,7 @@
  * gap marker says where streamed text may be missing.
  */
 
+import type { ReplyQuote } from '@melete/contracts';
 import type { AttachmentView } from '@melete/contracts/attachments';
 import { mentionedAgent } from '@melete/contracts/mention';
 import { namedOption } from '@melete/contracts/options';
@@ -102,6 +103,7 @@ import {
 } from './parts.tsx';
 import { followDraft, type PastedSpan, sentSpans, wholeDraft } from './pasted.ts';
 import { pauseOrStop } from './pause.ts';
+import { replyTarget, shownReply, withLocalReply } from './reply.ts';
 import { useStepUp } from './step-up.tsx';
 import { OlderTurns, TurnSlot, WINDOW_FROM } from './TranscriptWindow.tsx';
 import { takeOverFromCard } from './take-over.ts';
@@ -333,6 +335,7 @@ function TurnView({
   onResolve,
   reactions = [],
   onReact,
+  onReply,
   busy,
   onRetry,
   conversationAgentId,
@@ -367,6 +370,8 @@ function TurnView({
   reactions?: Reaction[];
   /** Absent when the agent's bubble cannot be reacted to. */
   onReact?: (emoji: string) => void;
+  /** Hold one of this turn's messages above the composer, to reply to it. */
+  onReply?: (target: ReplyQuote) => void;
   /** Whether a decision's request is in flight. */
   busy: (id: string) => boolean;
   /** Resend this turn's message when it failed to send. */
@@ -469,12 +474,17 @@ function TurnView({
   const handedTo = agent && conversationAgentId && agent.id !== conversationAgentId ? agent : null;
   const answer = finalText(turn);
   const hasBody = unconfirmed.length > 0 || finished;
+  const asked = onReply ? replyTarget(transcript, turn, 'person') : null;
+  const answered = onReply ? replyTarget(transcript, turn, 'assistant') : null;
   return (
     <>
       <UserBubble
         turn={turn}
+        touch={touch}
         reactions={reactions.filter((r) => r.by === 'assistant')}
         onRetry={onRetry ? () => onRetry(turn.id) : undefined}
+        quote={shownReply(transcript, turn)}
+        onReply={asked && onReply ? () => onReply(asked) : undefined}
       />
       <div className="turn" data-turn={turn.id}>
         <div className="turn-text">
@@ -529,6 +539,7 @@ function TurnView({
                 touch={touch}
                 reactions={reactions.filter((r) => r.by === 'person')}
                 onReact={onReact}
+                onReply={answered && onReply ? () => onReply(answered) : undefined}
                 onCopy={() => {
                   void navigator.clipboard?.writeText(answer);
                   toast({ kind: 'ok', title: 'Copied' });
@@ -638,6 +649,10 @@ export function ChatScreen({ id }: { id: string | null }) {
   const [stuck, setStuck] = useState(true);
   const [unknown, setUnknown] = useState<LedgerAction[]>([]);
   const [reactions, setReactions] = useState<Reaction[]>([]);
+  /** The earlier message the next one replies to, held above the composer. */
+  const [replyTo, setReplyTo] = useState<ReplyQuote | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a reply belongs to the chat it was chosen in
+  useEffect(() => setReplyTo(null), [conversationId]);
   /** Turns whose bubble the service refused a reaction on; the control goes away. */
   const [unreactable, setUnreactable] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -924,6 +939,8 @@ export function ChatScreen({ id }: { id: string | null }) {
       attached: readonly AttachmentView[] = [],
       /** Where `body` holds pasted text, when `body` is the draft. */
       marks: readonly PastedSpan[] = [],
+      /** The earlier message in this chat these words reply to. */
+      reply: ReplyQuote | null = null,
     ): Promise<boolean> => {
       const clean = body.trim();
       if (!clean && !attached.length) return false;
@@ -979,7 +996,14 @@ export function ChatScreen({ id }: { id: string | null }) {
       // While a turn runs, plain words go to it at its next step, drawn inside it.
       if (joinsRunningTurn(clean, working, attached.length) && navigator.onLine) {
         const steerId = state.steer(clean);
-        const accepted = await adapter.send(conversationId, clean, messageKey(), [], pasted);
+        const accepted = await adapter.send(
+          conversationId,
+          clean,
+          messageKey(),
+          [],
+          pasted,
+          reply?.message_id,
+        );
         if (accepted.data === null) {
           state.steered(steerId, null);
           changeDraft(clean);
@@ -996,6 +1020,7 @@ export function ChatScreen({ id }: { id: string | null }) {
         if (!taken) {
           // The turn ended as they were sent: they are the next turn's message.
           const next = state.local(clean, speaker, 'sending');
+          if (reply) setTranscript((previous) => withLocalReply(previous, next, reply));
           state.accepted(next, accepted.data.turn_id, accepted.data.receipt.received_at);
         }
         refreshConversations();
@@ -1009,13 +1034,21 @@ export function ChatScreen({ id }: { id: string | null }) {
         wait ? 'waiting_turn' : navigator.onLine ? 'sending' : 'queued_offline',
         [...attached],
       );
+      if (reply) setTranscript((previous) => withLocalReply(previous, localId, reply));
       // Every try of this message carries this key, so the service keeps one copy.
       const key = messageKey();
       const box = outbox.current;
       if (!box) return false;
       const post = async (): Promise<boolean> => {
         state.settle(localId, 'sending');
-        const accepted = await adapter.send(conversationId, clean, key, fileIds, pasted);
+        const accepted = await adapter.send(
+          conversationId,
+          clean,
+          key,
+          fileIds,
+          pasted,
+          reply?.message_id,
+        );
         if (accepted.data === null) {
           state.settle(localId, 'failed_retry');
           toast({
@@ -1057,6 +1090,7 @@ export function ChatScreen({ id }: { id: string | null }) {
       restoreFiles,
       changeDraft,
       working,
+      setTranscript,
     ],
   );
 
@@ -1522,6 +1556,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                             ? (emoji) => react(turn, emoji)
                             : undefined
                         }
+                        onReply={conversation?.automation_id ? undefined : setReplyTo}
                       />
                     </TurnSlot>
                   </Fragment>
@@ -1681,7 +1716,28 @@ ${words}`
                 <Composer
                   value={text}
                   onChange={changeDraft}
-                  onSend={() => void send(text, files.ready, pasteMarks.current)}
+                  onSend={() => {
+                    const reply = replyTo;
+                    setReplyTo(null);
+                    void send(text, files.ready, pasteMarks.current, reply).then((sent) => {
+                      // Words put back in the box keep the message they replied to;
+                      // a message left in the chat to retry keeps it on its own.
+                      if (!sent && reply && draft.current.trim())
+                        setReplyTo((current) => current ?? reply);
+                    });
+                  }}
+                  reply={
+                    replyTo
+                      ? {
+                          who:
+                            replyTo.by === 'person'
+                              ? 'your message'
+                              : agent?.name?.trim() || assistantName(),
+                          text: replyTo.text,
+                        }
+                      : null
+                  }
+                  onCancelReply={() => setReplyTo(null)}
                   attachments={files}
                   onPasteText={() => {
                     pasting.current = true;
