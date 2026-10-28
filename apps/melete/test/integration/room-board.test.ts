@@ -1105,8 +1105,26 @@ withDb('room board', () => {
           title: 'Unclear',
           starts_at: given,
         });
-        expect(refused.refused ?? '').toContain("must be a date and time in the room's time zone");
+        expect(refused.refused ?? '').toContain("date and time in the room's time zone");
       }
+      // A day or hour that does not exist is refused, never rolled into the next.
+      for (const given of ['2026-11-31T09:00', '2026-11-06T25:00', '2026-02-30T09:00Z']) {
+        const refused = await tool(bobs.claims, roomId, 'board.add', {
+          kind: 'event',
+          title: 'No such day',
+          starts_at: given,
+        });
+        expect([given, refused.refused ?? '']).toEqual([
+          given,
+          expect.stringContaining('must be a real date and time'),
+        ]);
+      }
+      const leap = await tool(bobs.claims, roomId, 'board.add', {
+        kind: 'event',
+        title: 'Leap day',
+        starts_at: '2028-02-29T09:00',
+      });
+      expect(await startsAt(leap.item)).toBe('2028-02-29T17:00:00.000Z');
       await database().runner.commitOutcome(bobs.claims, {
         kind: 'completed',
         summary: 'Added.',
@@ -1253,5 +1271,52 @@ withDb('room board', () => {
     expect(opened.status).toBe('succeeded');
     expect(String(opened.detail?.note)).toContain('because this request read a shared calendar');
     expect(await seenBy(world.carol)).not.toContain(kept.item);
+  }, 60_000);
+
+  test('after a shared calendar is read, a retitle or a new assignee keeps an item with its person', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Rota');
+    const seenBy = async (person: Person) => (await listOf(person, roomId)).map((item) => item.id);
+    // Put up for everyone before the request read anyone's calendar.
+    const before = await request(world.alice, roomId);
+    const assigned = await tool(before.claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Drive on Monday',
+      assignee: world.bob.id,
+      visibility: 'everyone',
+    });
+    const open = await tool(before.claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Drive on Tuesday',
+    });
+    expect(await seenBy(world.carol)).toEqual(expect.arrayContaining([assigned.item, open.item]));
+    await database().runner.commitOutcome(before.claims, {
+      kind: 'completed',
+      summary: 'Added.',
+      evidence: [],
+    });
+    const { claims } = await request(world.alice, roomId);
+    const read = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, status, idempotency_key, resolved_at)
+      values (${read}, ${claims.job_id}, ${claims.attempt_id}, ${await boardConnection(roomId)},
+        'room.member_freebusy', 'read', '{}'::jsonb, ${'0'.repeat(64)}, 'succeeded', ${read}, now())`;
+    // A retitle of one person's item, sending no visibility.
+    const retitled = await tool(claims, roomId, 'board.update', {
+      item_id: assigned.item,
+      title: 'Drive on Monday at 3',
+    });
+    expect(retitled.status).toBe('succeeded');
+    expect(String(retitled.detail?.note)).toContain('because this request read a shared calendar');
+    // Assigning an item everyone sees.
+    const given = await tool(claims, roomId, 'board.update', {
+      item_id: open.item,
+      assignee: world.bob.id,
+    });
+    expect(given.status).toBe('succeeded');
+    const carols = await seenBy(world.carol);
+    expect(carols).not.toContain(assigned.item);
+    expect(carols).not.toContain(open.item);
+    expect(await seenBy(world.bob)).toEqual(expect.arrayContaining([assigned.item, open.item]));
   }, 60_000);
 });

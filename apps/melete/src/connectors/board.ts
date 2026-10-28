@@ -187,6 +187,34 @@ const WALL = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/;
 const DAY = /^(\d{4}-\d{2}-\d{2})$/;
 /** An instant written with its own offset, or in UTC: taken as given. */
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
+/** The parts of any of those forms, and an offset's, to check against the calendar. */
+const PARTS =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-](\d{2}):?(\d{2}))?)?$/i;
+
+/**
+ * Whether a time names a real day and time of day. A date's own parser rolls
+ * November 31 into December and 25:00 into the next day; this refuses them.
+ */
+function realTime(text: string): boolean {
+  const parts = PARTS.exec(text);
+  if (!parts) return false;
+  const [year, month, day, hour, minute, second] = parts
+    .slice(1, 7)
+    .map((part) => Number(part ?? 0));
+  const at = new Date(Date.UTC(year ?? 0, (month ?? 1) - 1, day ?? 0, hour, minute, second));
+  return (
+    year !== undefined &&
+    year >= 1000 &&
+    at.getUTCFullYear() === year &&
+    at.getUTCMonth() === (month ?? 0) - 1 &&
+    at.getUTCDate() === day &&
+    at.getUTCHours() === hour &&
+    at.getUTCMinutes() === minute &&
+    at.getUTCSeconds() === second &&
+    Number(parts[7] ?? 0) <= 14 &&
+    Number(parts[8] ?? 0) <= 59
+  );
+}
 
 /**
  * Times the agent writes as wall times in the room's zone, made instants. A
@@ -201,6 +229,11 @@ function inRoomTime(payload: JsonObject, timeZone: string): JsonObject {
     const value = payload[field];
     if (value === undefined || value === null) continue;
     const text = typeof value === 'string' ? value.trim() : '';
+    if (!realTime(text))
+      throw new BrokerFault(
+        'payload_invalid',
+        `${field} must be a real date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,
+      );
     const wall = WALL.exec(text);
     const day = DAY.exec(text);
     if (wall?.[1] && wall[2]) next[field] = zonedInstant(wall[1], wall[2], timeZone).toISOString();
@@ -232,7 +265,7 @@ async function roomZone(tx: Query, spaceId: string, requester: string | null): P
       from space s join chosen c on c.space_id = s.id where s.kind = 'personal')
     select coalesce(
       (select time_zone from chosen where space_id = ${spaceId}),
-      (select time_zone from personal where principal_id = ${requester}),
+      (select time_zone from personal where principal_id = ${requester} limit 1),
       (select p.time_zone from personal p join space r on r.id = ${spaceId}
         where p.principal_id = coalesce(r.owner_principal_id, (select id from owner limit 1))
         limit 1)) as zone`;
@@ -397,7 +430,10 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       if (row.kind === 'question' && payload.state === 'done')
         throw new BrokerFault('payload_invalid', 'Only an answer closes a question.');
       const assigneeNow = 'assignee' in next ? next.assignee : row.assignee_principal_id;
-      if (next.visibility === 'everyone' && assigneeNow) await keepWithPerson();
+      // What the item will show once changed: a retitle or a new assignee
+      // leaves an item for everyone, so it is kept with its person too.
+      const visibleTo = 'visibility' in next ? next.visibility : row.visibility;
+      if (visibleTo === 'everyone' && assigneeNow) await keepWithPerson();
     }
     return next;
   }
