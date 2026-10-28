@@ -9,7 +9,7 @@
  * Beside the primary, a person may link a secondary model for cheaper work:
  * the same picker sets it, and a short list says which work runs on it.
  */
-import { modelPresetHint, recommendedModelIds } from '@melete/contracts';
+import { modelPresetHint, recommendedModelIds } from '@melete/contracts/model-presets';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Badge, Button, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
