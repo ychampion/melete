@@ -21,6 +21,12 @@
  * Only a person's own work in their personal space keeps skills, and a skill
  * that carries a password, key or token is refused: it is read into every
  * attempt it matches.
+ *
+ * A skill made in work the person has shown steps to (a teaching takeover of
+ * the browser, `workers/browser/teach.ts`) is the one exception to "asks no
+ * one": admission marks it as shown by the person, and the person confirms it
+ * on an approval card before it is saved, or discards it there. The mark is
+ * written into the skill's file, so where it came from stays with it.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -66,6 +72,8 @@ const TAKEN_NAMES = new Set(['create', 'update', 'delete', 'restore', 'list', 'r
 const TRASH_ID = '^del_[0-9]{13}_[0-9a-f]{12}$';
 
 const NAME = '^[a-z][a-z0-9-]{0,63}$';
+/** The demonstration a skill was drafted from (`workers/browser/routes.ts`, `shownRecord`). */
+const SHOWN = '^shown_[A-Za-z0-9_-]{1,64}$';
 const TRIGGERS = {
   type: 'array',
   minItems: 1,
@@ -108,6 +116,11 @@ export const skillsManifest: ConnectorManifest = {
           triggers: TRIGGERS,
           tools: TOOLS,
           body: BODY,
+          shown: {
+            type: 'string',
+            pattern: SHOWN,
+            description: 'Filled in by Melete when the person showed you the steps; leave it out.',
+          },
         },
       },
       effect_class: 'write_reversible',
@@ -175,7 +188,15 @@ type Definition = {
   triggers: string[];
   tools: string[];
   body: string;
+  /** Set when the skill was drafted from steps the person showed. */
+  shown?: string;
 };
+
+/** How a skill's file says where it came from, when the person showed the steps. */
+export const SHOWN_BY_PERSON = 'shown by the person';
+const SHOWN_LINE = `\nprovenance: ${JSON.stringify(SHOWN_BY_PERSON)}\n`;
+/** A change to a skill keeps where it came from. */
+const shownIn = (file: string) => (file.includes(SHOWN_LINE) ? { shown: SHOWN_BY_PERSON } : {});
 
 /**
  * The file a skill is saved as. Every string is written as a JSON string,
@@ -191,6 +212,7 @@ export function skillFile(skill: Definition): string {
     `description: ${JSON.stringify(skill.description)}`,
     `triggers:${list(skill.triggers)}`,
     `tools:${list(skill.tools)}`,
+    ...(skill.shown ? [`provenance: ${JSON.stringify(SHOWN_BY_PERSON)}`] : []),
     'max_tokens: 400',
     '---',
     '',
@@ -313,15 +335,16 @@ export async function rewriteOwnSkill(
   change: { description?: string; triggers?: string[]; body?: string },
 ): Promise<void> {
   const skills = await skillsDirectory(spacesRoot, spaceId, true);
+  const where = path.join(skills, own.entry);
+  const previous = await readFile(own.folder ? path.join(where, 'SKILL.md') : where, 'utf8');
   const file = checkedSkillFile({
     name: own.name,
     description: change.description?.trim() || own.description,
     triggers: change.triggers?.length ? change.triggers : own.triggers,
     tools: own.tools,
     body: change.body?.trim() || own.body,
+    ...shownIn(previous),
   });
-  const where = path.join(skills, own.entry);
-  const previous = await readFile(own.folder ? path.join(where, 'SKILL.md') : where, 'utf8');
   if (file === previous) return;
   if (own.folder) {
     await saveSkill(skills, own.entry, file, previous);
@@ -425,7 +448,23 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
     triggers: strings(payload.triggers) ?? [],
     tools: strings(payload.tools) ?? [],
     body: text(payload.body) ?? '',
+    ...(text(payload.shown) ? { shown: text(payload.shown) } : {}),
   });
+
+  /**
+   * The newest demonstration this work was given that no saved skill has come from yet. A skill
+   * made while one is waiting is taken as drafted from it; the model cannot say otherwise.
+   */
+  const pendingShown = async (jobId: string, query: Query): Promise<string | null> => {
+    const [row] = await query`select e.payload->'event'->>'shown_id' as shown_id from event e
+      where e.job_id = ${jobId} and e.type = 'notice' and e.payload->>'kind' = 'trigger_event'
+        and e.payload->'event'->>'kind' = 'shown_by_person'
+        and not exists (select 1 from action a where a.job_id = e.job_id
+          and a.kind = 'skills.create' and a.status = 'succeeded'
+          and a.canonical_payload->>'shown' = e.payload->'event'->>'shown_id')
+      order by e.seq desc limit 1`;
+    return typeof row?.shown_id === 'string' ? row.shown_id : null;
+  };
 
   const fileOf = async (spaceId: string, name: string): Promise<string | null> => {
     const skills = await directory(spaceId, false);
@@ -437,6 +476,9 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
 
   return {
     manifest: skillsManifest,
+    // A skill drafted from steps the person showed waits for them to confirm it.
+    asksFirst: (action) =>
+      action.kind === 'skills.create' && typeof action.canonical_payload.shown === 'string',
     // A skill made, deleted into the trash or put back stays in the person's own space.
     staysInSpace: (action) =>
       action.kind === 'skills.create' ||
@@ -448,7 +490,11 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
       if (kind === 'skills.list') return payload;
       await ownWork(ctx, tx);
       if (kind === 'skills.create') {
-        const skill = definitionOf(payload);
+        // Where the skill came from is the record's to say, never the model's.
+        const { shown: _claimed, ...rest } = payload;
+        const shown = await pendingShown(ctx.job_id, tx);
+        const marked = shown ? { ...rest, shown } : rest;
+        const skill = definitionOf(marked);
         checkedSkillFile(skill);
         // A skill is found in discovery as `skills.<name>`, so a name these tools take is not free.
         if (
@@ -464,6 +510,7 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
             'payload_invalid',
             `The person already has a skill named "${skill.name}". Change it with skills.update, or choose another name.`,
           );
+        return marked;
       }
       if (kind === 'skills.update' || kind === 'skills.delete') {
         const name = text(payload.name) ?? '';
@@ -526,7 +573,8 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
             {
               name: skill.name,
               saved: true,
-              note: `Saved as the person's skill "${skill.name}". It is used from their next message on when one of its triggers comes up; they can ask you to change or delete it at any time.`,
+              ...(skill.shown ? { provenance: SHOWN_BY_PERSON } : {}),
+              note: `Saved as the person's skill "${skill.name}"${skill.shown ? ', from the steps they showed you' : ''}. It is used from their next message on when one of its triggers comes up; they can ask you to change or delete it at any time.`,
             },
             `skills/${skill.name}`,
           ),
@@ -551,6 +599,7 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
           triggers: change.triggers.length ? change.triggers : own.frontmatter.triggers,
           tools: strings(action.canonical_payload.tools) ?? own.frontmatter.tools,
           body: change.body || own.body,
+          ...shownIn(previous),
         });
         if (file !== previous) await saveSkill(skills, name, file, previous);
         return {
