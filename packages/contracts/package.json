@@ -52,6 +52,10 @@
     "./model-presets": {
       "types": "./src/model-presets.ts",
       "default": "./src/model-presets.ts"
+    },
+    "./name-skeleton": {
+      "types": "./src/name-skeleton.ts",
+      "default": "./src/name-skeleton.ts"
     }
   },
   "scripts": {

@@ -23,6 +23,7 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
+import { nameClashesIn } from '../rooms/name-taken.ts';
 import { installationRole } from './admin.ts';
 import { principalContext, spaceAuthority } from './authority.ts';
 
@@ -194,6 +195,14 @@ export class PrincipalService {
             : await changeRole(tx, spaceId, existing, role, access.ownerId);
         return { membership: membershipView(membership), controls: [] as ContextInvalidated[] };
       }
+      // Nobody joins under a name that reads as the name of someone the room
+      // has had, now or before: the room would show two people alike.
+      if (await nameClashesIn(tx, target, spaceId))
+        throw new ServiceError(
+          'name_taken',
+          'Someone in this room already goes by a name that looks like this person’s. Ask them to change theirs first, then add them.',
+          409,
+        );
       // Someone coming back starts afresh: the role they are given now, a
       // member's unless one is named, with no end date left from an earlier place.
       const given = role ?? 'member';

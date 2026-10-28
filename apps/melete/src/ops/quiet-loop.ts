@@ -9,6 +9,11 @@ export type QuietLoopOptions = {
   /** Runs a pass as soon as allowed when a change may have been committed. */
   wakeOn?: Commits | undefined;
   onError?: (error: unknown) => void;
+  /** The clock and its timers share one time source. */
+  clock?: {
+    now(): number;
+    schedule(callback: () => void, ms: number): () => void;
+  };
 };
 
 /**
@@ -22,9 +27,17 @@ export type QuietLoopOptions = {
  */
 export function quietLoop(pass: () => Promise<boolean>, options: QuietLoopOptions) {
   const { busyMs } = options;
+  const clock = options.clock ?? {
+    now: Date.now,
+    schedule(callback: () => void, ms: number) {
+      const timer = setTimeout(callback, ms);
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    },
+  };
   const idleMs = options.wakeOn ? Math.max(options.idleMs, busyMs) : busyMs;
   let wait = busyMs;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelTimer: (() => void) | undefined;
   let dueAt = Number.POSITIVE_INFINITY;
   let lastStart = Number.NEGATIVE_INFINITY;
   let running: Promise<void> | undefined;
@@ -32,20 +45,19 @@ export function quietLoop(pass: () => Promise<boolean>, options: QuietLoopOption
   let stopped = false;
 
   const arm = (ms: number) => {
-    const at = Date.now() + ms;
-    if (stopped || (timer !== undefined && dueAt <= at)) return;
-    clearTimeout(timer);
+    const at = clock.now() + ms;
+    if (stopped || (cancelTimer !== undefined && dueAt <= at)) return;
+    cancelTimer?.();
     dueAt = at;
-    timer = setTimeout(start, ms);
-    timer.unref?.();
+    cancelTimer = clock.schedule(start, ms);
   };
 
   function start() {
-    clearTimeout(timer);
-    timer = undefined;
+    cancelTimer?.();
+    cancelTimer = undefined;
     if (stopped) return;
     again = false;
-    lastStart = Date.now();
+    lastStart = clock.now();
     running = Promise.resolve()
       .then(pass)
       .then(
@@ -70,7 +82,7 @@ export function quietLoop(pass: () => Promise<boolean>, options: QuietLoopOption
       again = true;
       return;
     }
-    arm(Math.max(0, lastStart + busyMs - Date.now()));
+    arm(Math.max(0, lastStart + busyMs - clock.now()));
   }
 
   const unsubscribe = options.wakeOn?.subscribe(wake);
@@ -81,7 +93,7 @@ export function quietLoop(pass: () => Promise<boolean>, options: QuietLoopOption
     async stop() {
       stopped = true;
       unsubscribe?.();
-      clearTimeout(timer);
+      cancelTimer?.();
       await running;
     },
   };

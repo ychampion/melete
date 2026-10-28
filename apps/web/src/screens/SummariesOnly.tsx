@@ -110,16 +110,19 @@ export function SummariesOnlySetting({
           {SUMMARIES_TITLE}
         </span>
         <span className={room ? 'people-hint' : 'summaries-sub'}>{summariesLine()}</span>
-        <span className={room ? 'people-hint' : 'summaries-sub'}>
-          {on ? 'On.' : 'Off.'}
-          {room ? null : (
-            <>
-              {' '}
-              <a href={href('/settings/activity')}>See what was opened</a>
-            </>
-          )}
-          {canChange ? null : ` Only the person who made this ${place} turns this on or off.`}
-        </span>
+        {/* In a room's settings the switch beside it says on or off, as every switch there does. */}
+        {room ? (
+          canChange ? null : (
+            <span className="people-hint">
+              Only the person who made this room turns this on or off.
+            </span>
+          )
+        ) : (
+          <span className="summaries-sub">
+            {on ? 'On.' : 'Off.'} <a href={href('/settings/activity')}>See what was opened</a>
+            {canChange ? null : ` Only the person who made this ${place} turns this on or off.`}
+          </span>
+        )}
         {recent.length ? (
           <ul className="summaries-notes" aria-label="Latest opens and changes">
             {recent.slice(0, 5).map((note) => (
