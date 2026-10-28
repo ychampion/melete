@@ -68,6 +68,7 @@ export * from './reactions.ts';
 export * from './recurrence.ts';
 export * from './redact.ts';
 export * from './repair.ts';
+export * from './replies.ts';
 export * from './reply-voice.ts';
 export * from './responsibility.ts';
 export * from './room-calendar-shares.ts';

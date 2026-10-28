@@ -216,6 +216,11 @@ export const postMessageRequest = z
      * when it names the latest answer on the same job.
      */
     corrects: messageId.optional(),
+    /**
+     * The earlier message in the same job this one answers, by its message id:
+     * the person's or the assistant's. The agent is shown a short quote of it.
+     */
+    replies_to: messageId.optional(),
     /** Files uploaded for this message, checked as the person's own and unsent when it is accepted. */
     attachments: z
       .array(z.string().min(1).max(240))

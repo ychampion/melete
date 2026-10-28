@@ -6,11 +6,16 @@
  * same attempt. Either way the model is told who said them and that the work
  * goes on: they change the task, they do not start a new one.
  */
-import type { SteerMessage } from '@melete/contracts';
+import { type SteerMessage, withReplyQuote } from '@melete/contracts';
 
-/** What a run in progress is handed: the person's words, marked as theirs. */
+/**
+ * What a run in progress is handed: the person's words, marked as theirs, each
+ * with the quote of the earlier message it replies to when it is a reply.
+ */
 export function steerInput(messages: readonly SteerMessage[]): string {
-  const said = messages.map((message) => message.text.trim()).filter(Boolean);
+  const said = messages
+    .filter((message) => message.text.trim())
+    .map((message) => withReplyQuote(message.text.trim(), message.quote));
   return [
     `The person just added${said.length > 1 ? ' these messages' : ''} while you were working:`,
     ...said.map((text) => `> ${text.replaceAll('\n', '\n> ')}`),

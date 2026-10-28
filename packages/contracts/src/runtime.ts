@@ -13,6 +13,7 @@ import { executionMode } from './execution.ts';
 import { hookCaptureErrorCode, hookObservation } from './hooks.ts';
 import { claimHandle, memoryKey, originTrust } from './memory.ts';
 import { repairBrief } from './provenance.ts';
+import type { ReplyQuote } from './replies.ts';
 import { replyVoice } from './reply-voice.ts';
 
 export const runtimeCapabilities = z.object({
@@ -673,8 +674,11 @@ export interface EventSink {
   emit(event: RuntimeEvent): Promise<void>;
 }
 
-/** A message the person sent while a turn was running, already recorded by the service. */
-export type SteerMessage = { id: string; text: string };
+/**
+ * A message the person sent while a turn was running, already recorded by the
+ * service, with the quote of the earlier message it answers when it is a reply.
+ */
+export type SteerMessage = { id: string; text: string; quote?: ReplyQuote };
 
 export interface RuntimeAdapter {
   capabilities(): Promise<RuntimeCapabilities>;

@@ -812,6 +812,8 @@ export const conversationMessage = z
     text: z.string().max(100000),
     /** The answer this message corrects, when the person replies to it as a correction. */
     corrects: messageId.optional(),
+    /** The earlier message in this chat this one answers, the person's or the assistant's. */
+    replies_to: messageId.optional(),
     /** Files uploaded with `POST /attachments` and not yet sent, in the order shown. */
     attachments: z.array(id).max(ATTACHMENT_LIMITS.per_message_ceiling).optional(),
     /** Stretches of `text` the person pasted rather than typed, when the composer can tell. */

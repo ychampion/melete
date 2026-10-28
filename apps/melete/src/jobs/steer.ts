@@ -20,6 +20,7 @@
  * before the turn settles is carried by it, and one that arrives after is an
  * ordinary next message.
  */
+import { type ReplyQuote, replyQuote } from '@melete/contracts';
 import { and, eq, sql } from 'drizzle-orm';
 import { agent, event, experienceTurn, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -27,7 +28,7 @@ import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import type { JobRow } from './service.ts';
 
-export type PendingSteer = { id: string; text: string; seq: number };
+export type PendingSteer = { id: string; text: string; seq: number; quote?: ReplyQuote };
 
 /** Records the person's words for the running turn, once per id. */
 export async function recordSteer(
@@ -38,6 +39,8 @@ export async function recordSteer(
     text: string;
     principalId: string | null;
     clientTimeZone?: string | null;
+    /** The earlier message these words reply to, quoted (`reply-to.ts`). */
+    quote?: ReplyQuote;
   },
 ): Promise<{ id: string; seq: number; at: Date }> {
   const written = await appendEvent(tx, {
@@ -51,6 +54,7 @@ export async function recordSteer(
       steer_id: input.id,
       ...(row.currentTurnId ? { turn_id: row.currentTurnId } : {}),
       ...(input.clientTimeZone ? { client_time_zone: input.clientTimeZone } : {}),
+      ...(input.quote ? { replies_to: input.quote.message_id, reply_quote: input.quote } : {}),
     },
     dedupKey: `${row.id}:steer:${input.id}`,
   });
@@ -90,15 +94,29 @@ export async function pendingSteers(
   jobId: string,
 ): Promise<PendingSteer[]> {
   const rows = (await tx.execute(sql`
-    select e.seq, e.payload->>'steer_id' as id, e.payload->>'text' as text
+    select e.seq, e.payload->>'steer_id' as id, e.payload->>'text' as text,
+      e.payload->'reply_quote' as quote
     from event e
     where e.job_id = ${jobId} and e.type = 'notice'
       and e.payload->>'kind' = 'user_message' and e.payload->>'steer' = 'true'
       and not exists (select 1 from event d where d.job_id = e.job_id
         and d.type in ('steer_delivered', 'steer_carried')
         and d.payload->>'steer_id' = e.payload->>'steer_id')
-    order by e.seq`)) as unknown as Array<{ seq: number | string; id: string; text: string }>;
-  return rows.map((row) => ({ id: row.id, text: row.text, seq: Number(row.seq) }));
+    order by e.seq`)) as unknown as Array<{
+    seq: number | string;
+    id: string;
+    text: string;
+    quote: unknown;
+  }>;
+  return rows.map((row) => {
+    const quote = replyQuote.safeParse(row.quote);
+    return {
+      id: row.id,
+      text: row.text,
+      seq: Number(row.seq),
+      ...(quote.success ? { quote: quote.data } : {}),
+    };
+  });
 }
 
 /**

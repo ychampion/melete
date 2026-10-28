@@ -24,12 +24,14 @@ import {
   readReplyVoice,
   receipt,
   receipt as receiptContract,
+  replyQuote,
   responsibilityAttemptBundle,
   type SinceLast,
   sinceLast as sinceLastContract,
   TERMINAL_ACTION_STATUSES,
   triggerSpec,
   waitSpec,
+  withReplyQuote,
 } from '@melete/contracts';
 import {
   and,
@@ -531,13 +533,21 @@ export function assembleHistory(
   };
 }
 
-/** The person's words, then the files they sent with them, fenced as untrusted data. */
+/**
+ * The person's words, then the files they sent with them, fenced as untrusted
+ * data; a reply opens with the quote of the earlier message it answers.
+ */
 const userContent = (
   text: string,
-  payload: { chosen?: unknown; attachments?: unknown },
+  payload: { chosen?: unknown; attachments?: unknown; reply_quote?: unknown },
   fileTexts: ReadonlyMap<string, string | null>,
-): string =>
-  withFiles(pickedForAgent(text, payload.chosen), messageFiles(payload.attachments), fileTexts);
+): string => {
+  const quote = replyQuote.safeParse(payload.reply_quote);
+  return withReplyQuote(
+    withFiles(pickedForAgent(text, payload.chosen), messageFiles(payload.attachments), fileTexts),
+    quote.success ? quote.data : undefined,
+  );
+};
 
 /** What a tool result's message carries, from its stored payload. */
 const resultContent = (payload: unknown): { tool_call_id: string; content: string } => {
