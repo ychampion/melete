@@ -1,6 +1,6 @@
 ---
 name: triage-the-inbox
-description: Go through recent mail and say what needs the person, what can wait, and which replies to draft.
+description: Go through recent mail and say what needs the person and what can wait.
 triggers:
   - inbox
   - through my email

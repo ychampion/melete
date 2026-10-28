@@ -1021,7 +1021,21 @@
       "idx": 145,
       "version": "7",
       "when": 1789232400125,
-      "tag": "0145_room_attachments",
+      "tag": "0145_room_calendar_share",
+      "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1789232400126,
+      "tag": "0146_summaries_only_space",
+      "breakpoints": true
+    },
+    {
+      "idx": 147,
+      "version": "7",
+      "when": 1789232400127,
+      "tag": "0147_room_attachments",
       "breakpoints": true
     }
   ]

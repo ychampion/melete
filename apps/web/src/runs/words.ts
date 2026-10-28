@@ -67,10 +67,13 @@ export function statusOf(run: Pick<Run, 'status' | 'status_line'>): {
  * its latest update rather than "Working on it".
  */
 export function lineUnderStatus(
-  run: Pick<Run, 'status' | 'status_line' | 'latest_report'>,
+  run: Pick<Run, 'status' | 'status_line' | 'latest_report'> & {
+    next_shift_at?: string | null;
+  },
   word: string,
+  now = new Date(),
 ): string | null {
-  const line = run.status_line.trim();
+  const line = localResume(run.status_line.trim(), run.next_shift_at ?? null, now);
   const latest = run.latest_report?.title?.trim() || null;
   if (line === word || line === `${word}.`) return latest;
   if (line.startsWith(`${word} · `)) {
@@ -79,6 +82,31 @@ export function lineUnderStatus(
   }
   if (run.status === 'working' && line === 'Working on it' && latest) return latest;
   return line || latest;
+}
+
+/** The words the server gives work resting on a spending limit, when it picks up told in UTC. */
+const LIMIT_REST =
+  /^(Background work reached (?:today's|this month's) limit; picks up again )[^·]*?(\s·\s.*)?$/;
+
+/**
+ * Work resting on a spending limit says when it picks up in the person's own time: "at 5:00 PM"
+ * today, "tomorrow at 5:00 PM", or "on Oct 29 at 5:00 PM".
+ */
+export function localResume(line: string, at: string | null, now = new Date()): string {
+  const match = LIMIT_REST.exec(line);
+  const when = at ? new Date(at) : null;
+  if (!match || !when || Number.isNaN(when.getTime())) return line;
+  const time = when.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const day = (date: Date) =>
+    new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.round((day(when) - day(now)) / 86_400_000);
+  const said =
+    days === 0
+      ? `at ${time}`
+      : days === 1
+        ? `tomorrow at ${time}`
+        : `on ${when.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${time}`;
+  return `${match[1]}${said}${match[2] ?? ''}`;
 }
 
 /** A helper's state in a word. */

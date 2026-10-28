@@ -7,10 +7,12 @@ import {
   protocolForApiMode,
   providerAddressProblem,
   providerKeyProblem,
+  providerKeyVariables,
   providerSelectionProblem,
   providersFromEnv,
   providerUrl,
   requiresResponsesProtocol,
+  resolveRoute,
 } from './providers.ts';
 import { providerIsLocal } from './routing.ts';
 import type { GatewayProvider } from './types.ts';
@@ -51,9 +53,40 @@ describe('the API mode a runtime is told to speak', () => {
       'openai',
       'anthropic',
       'google',
+      'nebius',
       'chatgpt',
       'openai-compatible',
     ]);
+  });
+});
+
+describe('Nebius Token Factory', () => {
+  test('uses its own key and the fixed HTTPS chat-completions endpoint', () => {
+    const configured = providersFromEnv({ NEBIUS_API_KEY: 'nebius-test-key' });
+    const provider = configured.find((entry) => entry.name === 'nebius');
+    expect(provider).toMatchObject({
+      baseUrl: 'https://api.tokenfactory.nebius.com/v1/',
+      apiKey: 'nebius-test-key',
+      protocols: ['chat/completions'],
+    });
+    expect(providerKeyVariables('nebius')).toEqual(['NEBIUS_API_KEY']);
+    expect(providerSelectionProblem('nebius', configured)).toBeNull();
+    expect(providerKeyProblem('nebius', configured)).toBeNull();
+    expect(providerKeyProblem('nebius', providersFromEnv({}))).toContain('NEBIUS_API_KEY');
+    for (const path of ['/v1/chat/completions', '/providers/nebius/v1/chat/completions']) {
+      expect(resolveRoute(path, configured, 'nebius').upstream.href).toBe(
+        'https://api.tokenfactory.nebius.com/v1/chat/completions',
+      );
+    }
+    expect(modelApiMode('nebius', 'nvidia/nemotron-3-super-120b-a12b')).toBe('chat_completions');
+    expect(() => resolveRoute('/providers/nebius/v1/responses', configured, 'nebius')).toThrow(
+      'protocol_not_supported',
+    );
+    const withoutKey = providersFromEnv({ OPENAI_API_KEY: 'another-provider-key' }).find(
+      (entry) => entry.name === 'nebius',
+    );
+    expect(withoutKey?.apiKey).toBeUndefined();
+    expect(provider && providerIsLocal(provider)).toBe(false);
   });
 });
 

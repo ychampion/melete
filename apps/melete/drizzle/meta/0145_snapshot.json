@@ -1,5 +1,5 @@
 {
-  "id": "81aa2695-61e4-411c-b84b-eea9204d038e",
+  "id": "9837c8f5-8bd2-44b8-936e-ae999341053b",
   "prevId": "4c03cdb3-7e1f-45da-9b01-359ca16a6224",
   "version": "7",
   "dialect": "postgresql",
@@ -19372,6 +19372,119 @@
       },
       "isRLSEnabled": false
     },
+    "public.room_calendar_share": {
+      "name": "room_calendar_share",
+      "schema": "",
+      "columns": {
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "membership_generation": {
+          "name": "membership_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "room_calendar_share_space_id_space_id_fk": {
+          "name": "room_calendar_share_space_id_space_id_fk",
+          "tableFrom": "room_calendar_share",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_calendar_share_principal_id_principal_id_fk": {
+          "name": "room_calendar_share_principal_id_principal_id_fk",
+          "tableFrom": "room_calendar_share",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_calendar_share_connection_id_connection_id_fk": {
+          "name": "room_calendar_share_connection_id_connection_id_fk",
+          "tableFrom": "room_calendar_share",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "room_calendar_share_space_id_principal_id_pk": {
+          "name": "room_calendar_share_space_id_principal_id_pk",
+          "columns": [
+            "space_id",
+            "principal_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "room_calendar_share_mode": {
+          "name": "room_calendar_share_mode",
+          "value": "\"room_calendar_share\".\"mode\" in ('freebusy', 'freebusy_add')"
+        },
+        "room_calendar_share_generation": {
+          "name": "room_calendar_share_generation",
+          "value": "\"room_calendar_share\".\"membership_generation\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.room_handoff": {
       "name": "room_handoff",
       "schema": "",
@@ -20409,12 +20522,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "room_message_id": {
-          "name": "room_message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "position": {
           "name": "position",
           "type": "integer",
@@ -20500,21 +20607,6 @@
           "method": "btree",
           "with": {}
         },
-        "attachment_room_message_idx": {
-          "name": "attachment_room_message_idx",
-          "columns": [
-            {
-              "expression": "room_message_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "attachment_space_idx": {
           "name": "attachment_space_idx",
           "columns": [
@@ -20571,19 +20663,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "attachment_room_message_id_room_message_id_fk": {
-          "name": "attachment_room_message_id_room_message_id_fk",
-          "tableFrom": "attachment",
-          "tableTo": "room_message",
-          "columnsFrom": [
-            "room_message_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

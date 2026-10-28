@@ -60,6 +60,8 @@ export type MockOptions = {
   /** What the installation and its assistant are called; Melete when left out. */
   instanceName?: string;
   assistantName?: string;
+  /** "Show me only what needs me" on, with saved files and the notes they left. */
+  summariesOnly?: boolean;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -99,6 +101,7 @@ export function createMock(given: MockOptions = {}) {
     featuresOff: options.featuresOff ?? [],
     ...(options.instanceName ? { instanceName: options.instanceName } : {}),
     ...(options.assistantName ? { assistantName: options.assistantName } : {}),
+    summariesOnly: options.summariesOnly ?? false,
   });
   if (options.connections === 'none') store.connections.clear();
   if (options.connections === 'apps') {
@@ -129,6 +132,7 @@ if (import.meta.main) {
     instanceName: process.env.MELETE_INSTANCE_NAME?.trim() || undefined,
     assistantName: process.env.MELETE_ASSISTANT_NAME?.trim() || undefined,
     space: process.env.MELETE_MOCK_SPACE === 'shared' ? 'shared' : 'personal',
+    summariesOnly: process.env.MELETE_MOCK_SUMMARIES_ONLY === 'on',
     signIn:
       process.env.MELETE_MOCK_SIGNIN === 'both' || process.env.MELETE_MOCK_SIGNIN === 'oidc'
         ? process.env.MELETE_MOCK_SIGNIN

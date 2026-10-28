@@ -124,6 +124,25 @@ describe('the provider the configuration is written for', () => {
     MELETE_DEFAULT_MODEL: 'accounts/fireworks/models/deepseek-v4p1-flash',
   };
 
+  test('Nebius is configured with its own key and an exact model id', async () => {
+    const options = configureOptions([
+      '--provider',
+      'nebius',
+      '--model',
+      'nvidia/nemotron-3-super-120b-a12b',
+    ]);
+    const settings = providerSettings(options, example, { NEBIUS_API_KEY: 'nebius-test-key' });
+    expect(settings).toMatchObject({
+      MELETE_DEFAULT_PROVIDER: 'nebius',
+      MELETE_DEFAULT_MODEL: 'nvidia/nemotron-3-super-120b-a12b',
+      NEBIUS_API_KEY: 'nebius-test-key',
+      MELETE_ENABLE_FAKE_PROVIDER: 'false',
+    });
+    const template = await Bun.file(new URL('../.env.example', import.meta.url)).text();
+    expect(parseEnvFile(fillTemplate(template, settings)).NEBIUS_API_KEY).toBe('nebius-test-key');
+    expect(() => providerSettings(options, example, {})).toThrow('NEBIUS_API_KEY');
+  });
+
   test('--provider and --model are read, and --fake takes neither', () => {
     expect(configureOptions(['--provider', 'anthropic', '--model', 'claude-sonnet-5'])).toEqual({
       fake: false,

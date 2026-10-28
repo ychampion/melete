@@ -34,6 +34,9 @@ export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit' | 'human' 
  */
 export const SIGN_IN_MUTATIONS = 16;
 
+/** How long a page asks for nothing before it is taken to have finished answering. */
+export const SETTLE_QUIET_MS = 500;
+
 /**
  * A secret shorter than this is looked for only as a whole part of what is sent. Sites are
  * expected to ask for at least 8 characters (NIST SP 800-63B's floor), so anything shorter is
@@ -434,6 +437,19 @@ function subresource(request: Request): boolean {
 }
 
 const READ_METHODS = new Set(['GET', 'HEAD']);
+
+/**
+ * How a page's own script sends in the background: an XHR, a fetch or a beacon. An opened page
+ * sends these as it draws itself (a page its script builds asks its server what to show), and
+ * they go; from the signed-in profile, a write among them goes without the person's sign-in (see
+ * relay). A form the browser submits is a document instead, a page's or a frame's, and only an
+ * approved submit sends one.
+ */
+const SCRIPT_SENDS = new Set(['xhr', 'fetch', 'ping']);
+
+function scriptSend(request: Request): boolean {
+  return SCRIPT_SENDS.has(request.resourceType()) && !request.isNavigationRequest();
+}
 /** Refusals of a person's navigation that leave them on the page they were on. */
 const STAY_ON_PAGE = new Set([
   'off_scope',
@@ -700,6 +716,16 @@ type Operation = {
   abort: AbortController;
   error: Error | undefined;
   ending: boolean;
+  /**
+   * An opening whose page has its document. What the page's script asks for from then on, as it
+   * draws itself, goes under the same checks, and one they refuse is left out instead of ending
+   * the opening, as one asked for after the opening ended is.
+   */
+  loaded: boolean;
+  /** When a request of this operation last started or finished, for how long it has been quiet. */
+  lastActivity: number;
+  /** Cuts off each request for a part of the page still in flight. */
+  cuts: Set<() => void>;
 };
 
 async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -799,12 +825,6 @@ export function createBrowserEgress(
       networkError('network_idle', 'browser network requires an active controller operation');
     }
     if (operation.error) throw operation.error;
-    if (operation.mode === 'reversible') {
-      networkError(
-        'network_reversible',
-        'reversible browser input cannot dispatch network requests',
-      );
-    }
   }
 
   function admitRequest(
@@ -842,8 +862,20 @@ export function createBrowserEgress(
       networkError('request_limit', 'browser operation exceeds the request limit');
     }
     const read = READ_METHODS.has(request.method());
-    if (operation.mode === 'navigate' && !read) {
+    if (operation.mode === 'navigate' && !read && !scriptSend(request)) {
       networkError('mutation_requires_commit', 'browser mutation requires an approved submit');
+    }
+    // A step's input (a fill, a click, a choice) changes the page and sends nothing: what the
+    // page's script reads in answer, such as the towns for a ZIP code, goes, and a write it tries
+    // or a page it opens does not.
+    if (
+      operation.mode === 'reversible' &&
+      !(read && request.resourceType() !== 'document' && !request.isNavigationRequest())
+    ) {
+      networkError(
+        'network_reversible',
+        "reversible browser input sends nothing but the page script's reads",
+      );
     }
     const secret = operation.mode === 'sign_in' ? operation.secret : undefined;
     // An address is logged, shown and kept, by the browser and by every site it passes: a form
@@ -964,6 +996,13 @@ export function createBrowserEgress(
     let sent = false;
     const abort = new AbortController();
     const abortOperation = () => abort.abort(operation?.abort.signal.reason);
+    // A part of the page still on its way when the page is looked at is cut off, so a stream or
+    // a slow host does not hold up the look; the page stands without it.
+    const cut = () =>
+      abort.abort(
+        new BrowserNetworkError('network_idle', 'the page was looked at before this arrived'),
+      );
+    if (operation && subresource(route.request())) operation.cuts.add(cut);
     operation?.abort.signal.addEventListener('abort', abortOperation, { once: true });
     try {
       requireOperation(operation);
@@ -994,7 +1033,14 @@ export function createBrowserEgress(
       // The persistent profile sends no cookies to a site other than the page's own, so a page
       // cannot ride the person's other signed-in sessions through cross-site requests.
       const crossSite = !publicCompartment && thirdParty(url, place);
-      if (crossSite) delete headers.cookie;
+      // Opening a page changes nothing of the person's, whatever address it was opened at: a write
+      // its script sends as it opens goes as no one, without their cookies or authorization, and
+      // what its answer would set is dropped, so it can neither act for them nor sign them out.
+      // Only an approved submit acts as them. A research browser holds nothing of theirs.
+      const anonymous =
+        !publicCompartment && operation.mode === 'navigate' && !READ_METHODS.has(request.method());
+      if (crossSite || anonymous) delete headers.cookie;
+      if (anonymous) delete headers.authorization;
       const address = await checkAddress(url, abort.signal, Boolean(human));
       requireOperation(operation);
       // DNS and header reads yielded after the input was planned. The controller
@@ -1025,7 +1071,7 @@ export function createBrowserEgress(
         networkError('live_budget', 'the takeover has used its browser byte budget');
       }
       const responseHeaders = relayHeaders(response.headers, maxHeaderBytes, false);
-      if (crossSite) delete responseHeaders['set-cookie'];
+      if (crossSite || anonymous) delete responseHeaders['set-cookie'];
       if (human && /^\s*attachment/i.test(responseHeaders['content-disposition'] ?? '')) {
         human.notice('download_refused');
         networkError('download_refused', 'browser downloads are refused during a takeover');
@@ -1062,7 +1108,8 @@ export function createBrowserEgress(
         if (!READ_METHODS.has(request.method()) && [307, 308].includes(response.status)) {
           networkError('redirect_mutation', 'browser submit redirect cannot replay a mutation');
         }
-        if (request.resourceType() !== 'document') {
+        // A frame's document is a part of the page too: its redirect never moves the page.
+        if (subresource(request)) {
           networkError(
             'subresource_redirect_unsupported',
             'browser subresource redirects are not supported',
@@ -1102,7 +1149,9 @@ export function createBrowserEgress(
       // browser would load it; the look after says which hosts. Every refusal still ends the
       // operation, and so does a failure of the page's own document, by a plain name.
       const pageResource =
-        (operation?.mode === 'navigate' || operation?.mode === 'sign_in') &&
+        (operation?.mode === 'navigate' ||
+          operation?.mode === 'sign_in' ||
+          operation?.mode === 'reversible') &&
         !operation.abort.signal.aborted &&
         subresource(route.request());
       if (pageResource && failed) {
@@ -1115,16 +1164,20 @@ export function createBrowserEgress(
       ) {
         // A resource asked for once the page had loaded is refused, and the load stands.
       } else if (
-        pageResource &&
+        (pageResource || operation?.loaded) &&
         error instanceof BrowserNetworkError &&
         (error.code === 'mutation_requires_commit' ||
           error.code === 'sign_in_origin' ||
-          error.code === 'sign_in_budget')
+          error.code === 'sign_in_budget' ||
+          (error.code === 'network_reversible' &&
+            !READ_METHODS.has(route.request().method()) &&
+            !route.request().isNavigationRequest()))
       ) {
-        // Something the page sends as it loads (an analytics beacon, a log) is held back, as
-        // every change is outside an approved submit, and the page loads without it; the look
-        // after says what was held back. So is what a page's script sends past a sign-in step's
-        // budget; the sign-in itself is never among it (see admitRequest).
+        // A form a page or its frame submits by itself as it loads is held back, as every form
+        // is outside an approved submit, and the page loads without it; so is a write the page's
+        // script tries during a step's input. The look after says what was held back. So is what
+        // a page's script sends past a sign-in step's budget; the sign-in itself is never among
+        // it (see admitRequest).
         if (url) {
           dropped.add(`${route.request().method()} ${hostname(url)}`);
           if (operation?.mode === 'sign_in')
@@ -1135,6 +1188,17 @@ export function createBrowserEgress(
               credentials: maySignIn(operation, url, route.request().postDataBuffer()),
             });
         }
+      } else if (
+        (operation?.loaded ||
+          (pageResource &&
+            operation?.mode === 'reversible' &&
+            !route.request().isNavigationRequest())) &&
+        !operation.abort.signal.aborted &&
+        error instanceof BrowserNetworkError
+      ) {
+        // Once the page has its document, or during a step's input, a request of its script's
+        // that is refused is left out and the page stands. A page a step's input would open
+        // still ends the step, in the page or in one of its frames.
       } else if (operation && operation.mode !== 'human' && !operation.error) {
         // A person's refused request fails alone; it never ends the takeover's network window.
         operation.error =
@@ -1153,6 +1217,7 @@ export function createBrowserEgress(
     } finally {
       if (timer) clearTimeout(timer);
       operation?.abort.signal.removeEventListener('abort', abortOperation);
+      operation?.cuts.delete(cut);
     }
   }
 
@@ -1187,6 +1252,34 @@ export function createBrowserEgress(
       return signInHeld.splice(0);
     },
 
+    /**
+     * Says the page an opening loaded has its document, so the opening stays open while the page's
+     * script draws the rest of it (see Operation.loaded). Only an opening is changed.
+     */
+    pageLoaded(): void {
+      if (active?.mode === 'navigate' && !active.ending) active.loaded = true;
+    },
+
+    /**
+     * Waits while the running operation's page is still asking for things: until none of its
+     * requests has started or finished for `quietMs`, or `limitMs` has passed, or the operation
+     * has met what ends it.
+     */
+    async settle(limitMs: number, quietMs = SETTLE_QUIET_MS): Promise<void> {
+      const operation = active;
+      if (!operation) return;
+      const end = Date.now() + limitMs;
+      while (active === operation && !operation.error && !operation.ending) {
+        const now = Date.now();
+        const quietFor = now - operation.lastActivity;
+        if (!operation.pending.size && quietFor >= quietMs) return;
+        if (now >= end) return;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(10, Math.min(100, end - now, quietMs - quietFor))),
+        );
+      }
+    },
+
     /** The requests held back while a page loaded since the last call, then forgets them. */
     takeDropped(): string[] {
       const requests = [...dropped].sort();
@@ -1213,14 +1306,18 @@ export function createBrowserEgress(
       context = target;
       await target.route('**/*', (route) => {
         const operation = active;
+        if (operation) operation.lastActivity = Date.now();
         const pending = relay(route, operation);
         operation?.pending.add(pending);
-        void pending.finally(() => operation?.pending.delete(pending));
+        void pending.finally(() => {
+          operation?.pending.delete(pending);
+          if (operation) operation.lastActivity = Date.now();
+        });
         return pending;
       });
       await target.routeWebSocket('**/*', async (socket) => {
         if (active?.human) active.human.notice('websocket_refused');
-        else if (active && !active.error) {
+        else if (active && !active.error && !active.loaded && active.mode !== 'reversible') {
           active.error = new BrowserNetworkError(
             'websocket_denied',
             'browser WebSockets are denied',
@@ -1282,11 +1379,17 @@ export function createBrowserEgress(
         abort: new AbortController(),
         error: undefined,
         ending: false,
+        loaded: false,
+        lastActivity: Date.now(),
+        cuts: new Set(),
       };
       active = current;
       try {
         const result = await operation();
         current.ending = true;
+        // The page is looked at as it stands: what it still asks for is left out, as what it
+        // asks for later is.
+        if (mode === 'navigate' || mode === 'reversible') for (const cut of current.cuts) cut();
         while (current.pending.size) await Promise.all([...current.pending]);
         if (current.error) throw current.error;
         if (mode === 'commit' && current.mutations !== 1) {

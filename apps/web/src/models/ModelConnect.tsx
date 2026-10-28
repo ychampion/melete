@@ -9,6 +9,7 @@
  * Beside the primary, a person may link a secondary model for cheaper work:
  * the same picker sets it, and a short list says which work runs on it.
  */
+import { modelPresetHint, recommendedModelIds } from '@melete/contracts';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
 import { Badge, Button, Field, Input, Segmented, Select, Toggle } from '../design/primitives.tsx';
@@ -35,6 +36,7 @@ const KEY_HINT: Partial<Record<ModelProvider, string>> = {
   openai: 'Create one on the OpenAI platform under API keys.',
   google: 'Create one in Google AI Studio under Get API key.',
   fireworks: 'Create one in your Fireworks account under API keys.',
+  nebius: 'Create one in your Nebius Token Factory account under API keys.',
   'openai-compatible':
     'Any server that speaks the OpenAI API: a hosted gateway, or a model server on your own network. If it checks no key, enter any value.',
 };
@@ -44,6 +46,7 @@ const BLURB: Record<ModelProvider, string> = {
   openai: 'GPT models',
   google: 'Gemini models',
   fireworks: 'Open models, hosted',
+  nebius: 'NVIDIA Nemotron and other open models',
   'openai-compatible': 'Your own endpoint',
   chatgpt: 'Your ChatGPT plan',
 };
@@ -458,7 +461,8 @@ function KeyPanel({
   const addressChanged =
     compatible && !operatorAddress && address.trim() !== (status.base_url ?? '');
   const hasKey = key.trim().length > 0 || (status.connected && !addressChanged);
-  const listed = result?.ok ? result.models : [];
+  const listed = recommendedModelIds(status.provider, result?.ok ? result.models : undefined);
+  const presetHint = modelPresetHint(status.provider, model);
   const canTest = hasKey && (!compatible || address.trim().length > 0 || operatorAddress);
   // A typed key has to be stored before it can be used, which needs the master key.
   const canUse = model.trim().length > 0 && canTest && (settings.can_store_keys || !key.trim());
@@ -622,6 +626,7 @@ function KeyPanel({
         options={listed}
         placeholder="The model id, as the provider writes it"
       />
+      {presetHint ? <span className="models-hint">{presetHint}</span> : null}
       <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <Button
           loading={saving}

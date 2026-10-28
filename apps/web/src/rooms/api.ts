@@ -42,6 +42,8 @@ export type InviteCreated = Ok<paths['/rooms/{id}/invites'], 'post'>;
 export type InviteView = Ok<paths['/invites/view'], 'post'>;
 export type Handoff = Ok<paths['/handoffs'], 'get'>['handoffs'][number];
 export type RoomConnection = Ok<paths['/rooms/{id}/connections'], 'get'>['connections'][number];
+export type RoomCalendarSettings = Ok<paths['/rooms/{id}/calendar-shares'], 'get'>;
+export type RoomCalendarMode = NonNullable<RoomCalendarSettings['share']>['mode'];
 export type AuditPage = Ok<paths['/spaces/{spaceId}/audit'], 'get'>;
 export type AuditEntry = AuditPage['entries'][number];
 /** What the activity log is narrowed to; the export takes the same. */
@@ -104,6 +106,16 @@ export const roomsApi = {
   /** The accounts in the room's space; owners also see those kept for their own work. */
   connections: (id: string) =>
     call<{ connections: RoomConnection[] }>(() => api.GET('/rooms/{id}/connections', room(id))),
+  calendarShares: (id: string) =>
+    call<RoomCalendarSettings>(() => api.GET('/rooms/{id}/calendar-shares', room(id))),
+  shareCalendar: (id: string, connection_id: string, mode: RoomCalendarMode) =>
+    call<Ok<paths['/rooms/{id}/calendar-shares'], 'put'>>(() =>
+      api.PUT('/rooms/{id}/calendar-shares', { ...room(id), body: { connection_id, mode } }),
+    ),
+  revokeCalendarShare: (id: string) =>
+    call<Ok<paths['/rooms/{id}/calendar-shares'], 'delete'>>(() =>
+      api.DELETE('/rooms/{id}/calendar-shares', room(id)),
+    ),
   people: (query: string) =>
     call<{ people: Person[] }>(() =>
       api.GET('/people', { params: { query: query.trim() ? { query } : {} } }),
