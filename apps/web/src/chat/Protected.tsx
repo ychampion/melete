@@ -2,7 +2,8 @@
  * Under a finished answer: how many details were swapped for placeholders
  * before the cloud model saw the conversation, or that it stayed on the
  * person's own model. The reveal asks this person's own Melete for the values
- * and shows them here only; nothing is stored in the page.
+ * and shows them here only; nothing is stored in the page. Beside it, "What
+ * the model saw" opens the answer as the cloud model received it.
  */
 import { useEffect, useState } from 'react';
 import { Icon } from '../design/icons.tsx';
@@ -10,6 +11,7 @@ import { adapter } from '../experience/adapter.ts';
 import { instanceName } from '../experience/instance.ts';
 import { CATEGORY_NAMES } from '../experience/privacy.ts';
 import type { ConversationPrivacy, PrivacyReveal } from '../experience/types.ts';
+import { ModelSaw } from './ModelSaw.tsx';
 
 type Summary = ConversationPrivacy['turns'][number];
 
@@ -30,6 +32,7 @@ export function Protected({ conversationId, turnId }: { conversationId: string; 
   const [summary, setSummary] = useState<Summary | null>(null);
   const [revealed, setRevealed] = useState<PrivacyReveal['items'] | null>(null);
   const [open, setOpen] = useState(false);
+  const [saw, setSaw] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -49,7 +52,18 @@ export function Protected({ conversationId, turnId }: { conversationId: string; 
         {summary.route === 'local' ? 'Answered on your local model' : 'Answered on your own model'}
       </div>
     );
-  if (!summary.protected) return null;
+  const sawButton = (
+    <>
+      <button type="button" className="saw-open" onClick={() => setSaw(true)}>
+        <Icon name="frame" size={12} />
+        What the model saw
+      </button>
+      {saw ? (
+        <ModelSaw conversationId={conversationId} turnId={turnId} onClose={() => setSaw(false)} />
+      ) : null}
+    </>
+  );
+  if (!summary.protected) return <div className="row protected">{sawButton}</div>;
 
   const toggle = async () => {
     if (open) {
@@ -65,26 +79,29 @@ export function Protected({ conversationId, turnId }: { conversationId: string; 
 
   return (
     <div className="col protected" style={{ gap: 6 }}>
-      <button
-        type="button"
-        className="row"
-        aria-expanded={open}
-        onClick={() => void toggle()}
-        style={{
-          gap: 6,
-          fontSize: 12,
-          color: 'var(--muted)',
-          background: 'none',
-          border: 0,
-          padding: '2px 0',
-          cursor: 'pointer',
-          alignSelf: 'flex-start',
-        }}
-      >
-        <Icon name="lock" size={12} />
-        Protected {summary.protected} detail{summary.protected === 1 ? '' : 's'}
-        <Icon name={open ? 'chevronDown' : 'chevronRight'} size={12} />
-      </button>
+      <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="row"
+          aria-expanded={open}
+          onClick={() => void toggle()}
+          style={{
+            gap: 6,
+            fontSize: 12,
+            color: 'var(--muted)',
+            background: 'none',
+            border: 0,
+            padding: '2px 0',
+            cursor: 'pointer',
+            alignSelf: 'flex-start',
+          }}
+        >
+          <Icon name="lock" size={12} />
+          Protected {summary.protected} detail{summary.protected === 1 ? '' : 's'}
+          <Icon name={open ? 'chevronDown' : 'chevronRight'} size={12} />
+        </button>
+        {sawButton}
+      </div>
       {open && revealed ? (
         <div
           className="col"

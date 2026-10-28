@@ -2,8 +2,9 @@
  * Settings → Privacy and the per-answer summary, served by the service's own
  * privacy router over an in-memory store, so the preview shows exactly what the
  * real detectors do. The mock has no model gateway: a conversation's summary is
- * worked out from what the person wrote in each turn, as the gateway would have
- * swapped it before sending.
+ * worked out from what the person wrote in each turn and what its tools brought
+ * back, as the gateway would have swapped it before sending. "What the model
+ * saw" is drawn from the same pieces.
  */
 import * as C from '@melete/contracts';
 import type { Hono } from 'hono';
@@ -12,11 +13,19 @@ import { PrivacyError } from '../../melete/src/privacy/local.ts';
 import { Redactor } from '../../melete/src/privacy/redact.ts';
 import { PrivacyRouter } from '../../melete/src/privacy/router.ts';
 import { settingsView, updateSettings } from '../../melete/src/privacy/routes.ts';
+import { seenSegments } from '../../melete/src/privacy/seen.ts';
 import { MemoryPrivacyStore } from '../../melete/src/privacy/store.ts';
 import { Vault } from '../../melete/src/privacy/vault.ts';
 import type { AppDeps } from './app.ts';
 
-type Turns = () => Map<string, { turns: z.infer<typeof C.conversationTurn>[] }>;
+type Turns = () => Map<
+  string,
+  {
+    turns: z.infer<typeof C.conversationTurn>[];
+    /** Each tool step's result, by turn. */
+    visited?: { turn: string | null; kind: string; receipt: unknown }[];
+  }
+>;
 
 export function mountPrivacyMock(app: Hono, deps: AppDeps, conversations: Turns): void {
   const router = new PrivacyRouter({
@@ -35,8 +44,18 @@ export function mountPrivacyMock(app: Hono, deps: AppDeps, conversations: Turns)
     vaults.set(id, vault);
     return chat.turns.map((turn) => {
       const redactor = new Redactor(vault, { enabled: settings.enabled, known: settings.known });
-      redactor.text(`${turn.text}\n${turn.answer}`);
-      return { turn, placeholders: [...redactor.used], vault };
+      const pieces = [
+        { source: 'you' as const, tool: null, text: turn.text },
+        ...(chat.visited ?? [])
+          .filter((step) => step.turn === turn.id)
+          .map((step) => ({
+            source: 'tool' as const,
+            tool: step.kind,
+            text: JSON.stringify((step.receipt as { detail?: unknown } | null)?.detail ?? {}),
+          })),
+      ].map((piece) => ({ ...piece, sent: redactor.text(piece.text) }));
+      redactor.text(turn.answer ?? '');
+      return { turn, placeholders: [...redactor.used], vault, pieces };
     });
   };
 
@@ -122,6 +141,35 @@ export function mountPrivacyMock(app: Hono, deps: AppDeps, conversations: Turns)
     if (!(await summary(c.req.param('id'))))
       return fail('not_found', 'That conversation was not found.', 404);
     return c.json(C.conversationPrivacy.parse({ sensitive: input.data.sensitive, turns: [] }));
+  });
+
+  app.post('/conversations/:id/privacy/seen', async (c) => {
+    const input = C.privacySeenRequest.safeParse(await c.req.json().catch(() => null));
+    if (!input.success) return fail('invalid_request', 'Choose an answer.', 400);
+    const turns = await summary(c.req.param('id'));
+    if (!turns) return fail('not_found', 'That conversation was not found.', 404);
+    const entry = turns.find((item) => item.turn.id === input.data.turn_id);
+    c.header('cache-control', 'no-store');
+    if (!entry?.turn.answer)
+      return c.json(C.privacySeen.parse({ route: null, parts: [], categories: [] }));
+    const swapped = new Map<C.PrivacyCategory, Set<string>>();
+    const parts = entry.pieces.map((piece) => {
+      const segments = seenSegments(piece.sent, (placeholder) => entry.vault.entry(placeholder));
+      for (const segment of segments)
+        if ('placeholder' in segment)
+          swapped.set(
+            segment.category,
+            (swapped.get(segment.category) ?? new Set()).add(segment.placeholder),
+          );
+      return { source: piece.source, tool: piece.tool, truncated: false, segments };
+    });
+    return c.json(
+      C.privacySeen.parse({
+        route: 'cloud',
+        parts,
+        categories: [...swapped].map(([category, kept]) => ({ category, count: kept.size })),
+      }),
+    );
   });
 
   app.post('/conversations/:id/privacy/reveal', async (c) => {

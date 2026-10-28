@@ -8,9 +8,12 @@ import {
   ibanValid,
   luhn,
   nhsNumber,
+  resolveOverlaps,
   spanishId,
   verhoeff,
 } from './detect.ts';
+import { Redactor } from './redact.ts';
+import { Vault } from './vault.ts';
 
 const ALL = new Set<PrivacyCategory>(PRIVACY_CATEGORIES);
 
@@ -318,6 +321,54 @@ describe('overlaps', () => {
   test('an IBAN is one detail, not an IBAN and an account number', () => {
     expect(found('account IBAN DE89 3704 0044 0532 0130 00')).toEqual([
       ['account', 'DE89 3704 0044 0532 0130 00'],
+    ]);
+  });
+
+  test('a phone number whose last digits read as an account goes whole, area code included', () => {
+    expect(found('Statement for account 000123456789. Call (415) 555-0132.')).toEqual([
+      ['account', '000123456789'],
+      ['phone', '(415) 555-0132'],
+    ]);
+    expect(found('Statement for account 000123456789. Call +1 (415) 555-0132.')).toEqual([
+      ['account', '000123456789'],
+      ['phone', '+1 (415) 555-0132'],
+    ]);
+  });
+
+  test('a span holding a narrower one takes its place; an equal or partial overlap does not', () => {
+    const inner = { start: 6, end: 14, category: 'account' as const };
+    const outer = { start: 0, end: 14, category: 'phone' as const };
+    expect(resolveOverlaps([inner, outer])).toEqual([outer]);
+    expect(resolveOverlaps([outer], [inner])).toEqual([outer]);
+    // The same span twice keeps the one that ranks first.
+    const routing = { start: 0, end: 9, category: 'routing' as const };
+    expect(resolveOverlaps([{ ...routing, category: 'account' }, routing])).toEqual([routing]);
+    // A span reaching past the one it overlaps is not a holder of it.
+    expect(resolveOverlaps([inner, { start: 10, end: 20, category: 'phone' }])).toEqual([inner]);
+  });
+
+  test('a conversation that already swapped the tail of a phone number still sends none of it', () => {
+    const vault = new Vault();
+    vault.assign('account', '555-0132');
+    const redactor = new Redactor(vault, { enabled: ALL });
+    const sent = redactor.text('Questions? Call us on (415) 555-0132.');
+    expect(sent).not.toContain('415');
+    expect(sent).not.toContain('555');
+    expect(sent).toMatch(/^Questions\? Call us on ⟦PHONE_\d+⟧\.$/);
+  });
+
+  test('an address around a name already known goes whole: no house number, town or ZIP', () => {
+    const vault = new Vault();
+    vault.assign('name', 'Wallace');
+    const sent = new Redactor(vault, { enabled: ALL }).text(
+      'Send it to 42 Wallace Street, Springfield, IL 62704 please.',
+    );
+    expect(sent).toMatch(/^Send it to ⟦ADDRESS_\d+⟧ please\.$/);
+  });
+
+  test('a password in a connection string stays a password; the host is not swallowed', () => {
+    expect(found('postgres://app:s3cretPw@db.internal:5432/app')).toEqual([
+      ['credential', 's3cretPw'],
     ]);
   });
 
