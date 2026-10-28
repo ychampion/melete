@@ -46,6 +46,10 @@ export const SEEN_PARTS_PER_CONVERSATION = 240;
  * that old is rarely re-sent.
  */
 export const SEEN_ROWS_PER_CONVERSATION = 2_400;
+/** The space keeps at most 28.8 million characters across its conversations. */
+export const SEEN_PARTS_PER_SPACE = 2_400;
+/** Bound retained blanked digests across conversations as well as their text. */
+export const SEEN_ROWS_PER_SPACE = 24_000;
 
 const PLACEHOLDER = /⟦[A-Z][A-Z_]*_\d{1,6}⟧/g;
 
