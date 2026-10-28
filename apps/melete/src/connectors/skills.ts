@@ -22,11 +22,12 @@
  * that carries a password, key or token is refused: it is read into every
  * attempt it matches.
  *
- * A skill made in work the person has shown steps to (a teaching takeover of
- * the browser, `workers/browser/teach.ts`) is the one exception to "asks no
- * one": admission marks it as shown by the person, and the person confirms it
- * on an approval card before it is saved, or discards it there. The mark is
- * written into the skill's file, so where it came from stays with it.
+ * A skill made by the attempt the person's shown steps were given to (a
+ * teaching takeover of the browser, `workers/browser/teach.ts`) is the one
+ * exception to "asks no one": admission marks it as shown by the person, and
+ * the person confirms it on an approval card before it is saved, or discards
+ * it there, whatever standing permission they have given. The mark is written
+ * into the skill's file, so where it came from stays with it.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -452,16 +453,28 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
   });
 
   /**
-   * The newest demonstration this work was given that no saved skill has come from yet. A skill
-   * made while one is waiting is taken as drafted from it; the model cannot say otherwise.
+   * The newest demonstration the proposing attempt was given (its input reached the record and
+   * the attempt before it had not) that no saved skill has come from yet. A skill that attempt
+   * makes is taken as drafted from it; the model cannot say otherwise. Steps reach only the
+   * attempt after the handback, so a later attempt, or another conversation, is not drafting
+   * from them, and once a skill from them is saved they are used.
    */
-  const pendingShown = async (jobId: string, query: Query): Promise<string | null> => {
-    const [row] = await query`select e.payload->'event'->>'shown_id' as shown_id from event e
+  const pendingShown = async (
+    jobId: string,
+    attemptId: string | undefined,
+    query: Query,
+  ): Promise<string | null> => {
+    if (!attemptId) return null;
+    const [row] = await query`select e.payload->'event'->>'shown_id' as shown_id
+      from event e join attempt a on a.id = ${attemptId} and a.job_id = e.job_id
       where e.job_id = ${jobId} and e.type = 'notice' and e.payload->>'kind' = 'trigger_event'
         and e.payload->'event'->>'kind' = 'shown_by_person'
-        and not exists (select 1 from action a where a.job_id = e.job_id
-          and a.kind = 'skills.create' and a.status = 'succeeded'
-          and a.canonical_payload->>'shown' = e.payload->'event'->>'shown_id')
+        and e.seq <= a.input_cursor
+        and e.seq > coalesce((select p.input_cursor from attempt p
+          where p.job_id = a.job_id and p.epoch < a.epoch order by p.epoch desc limit 1), 0)
+        and not exists (select 1 from action d where d.job_id = e.job_id
+          and d.kind = 'skills.create' and d.status = 'succeeded'
+          and d.canonical_payload->>'shown' = e.payload->'event'->>'shown_id')
       order by e.seq desc limit 1`;
     return typeof row?.shown_id === 'string' ? row.shown_id : null;
   };
@@ -476,8 +489,9 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
 
   return {
     manifest: skillsManifest,
-    // A skill drafted from steps the person showed waits for them to confirm it.
-    asksFirst: (action) =>
+    // A skill drafted from steps the person showed waits for them to confirm it, whatever
+    // standing permission they have given for skills.
+    asksEveryTime: (action) =>
       action.kind === 'skills.create' && typeof action.canonical_payload.shown === 'string',
     // A skill made, deleted into the trash or put back stays in the person's own space.
     staysInSpace: (action) =>
@@ -492,7 +506,7 @@ export function createSkillsConnector(options: SkillsConnectorOptions): Connecto
       if (kind === 'skills.create') {
         // Where the skill came from is the record's to say, never the model's.
         const { shown: _claimed, ...rest } = payload;
-        const shown = await pendingShown(ctx.job_id, tx);
+        const shown = await pendingShown(ctx.job_id, ctx.attempt_id, tx);
         const marked = shown ? { ...rest, shown } : rest;
         const skill = definitionOf(marked);
         checkedSkillFile(skill);

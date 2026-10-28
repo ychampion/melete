@@ -51,6 +51,8 @@ export type ConnectorContext = {
    * connector can withhold what the job could not read itself.
    */
   granted?: readonly string[];
+  /** At proposal only: the attempt proposing, so a connector can tell what it was given. */
+  attempt_id?: string;
   /**
    * Trusted delegated-calendar boundary, rechecked after provider reads and
    * before sending a mutation. Never supplied by a tool's arguments.
@@ -173,6 +175,12 @@ export interface Connector {
    * never remove one.
    */
   asksFirst?(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean;
+  /**
+   * True when only the person's own answer on this action's card lets it
+   * through: it asks as `asksFirst` does, and no standing or scoped grant,
+   * policy or reviewer answers for them. It can only add a question.
+   */
+  asksEveryTime?(action: Pick<Action, 'kind' | 'canonical_payload'>): boolean;
   /**
    * True when this particular action stays in the person's own space, where
    * they can open and delete it, although its tool can also reach outside: an

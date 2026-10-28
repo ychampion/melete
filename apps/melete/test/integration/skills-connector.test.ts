@@ -12,9 +12,9 @@ import path from 'node:path';
 import type { JsonObject } from '@melete/contracts';
 import { chooseSkills, loadSkills } from '@melete/skills';
 import { BrokerFault } from '../../src/broker/errors.ts';
-import { appendEvent, loadAction } from '../../src/broker/records.ts';
+import { appendEvent, loadAction, recordId } from '../../src/broker/records.ts';
 import { planReversal, undoDecides } from '../../src/broker/reversals.ts';
-import { BrokerService } from '../../src/broker/service.ts';
+import { type BrokerOptions, BrokerService } from '../../src/broker/service.ts';
 import { createSkillsConnector, skillsManifest } from '../../src/connectors/skills.ts';
 import { shownRecord } from '../../src/workers/browser/routes.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
@@ -42,7 +42,10 @@ suite("the person's own skills", () => {
     await fixture?.close();
   });
 
-  async function setup(spaceKind: 'personal' | 'shared' = 'personal') {
+  async function setup(
+    spaceKind: 'personal' | 'shared' = 'personal',
+    grants: Pick<BrokerOptions, 'resolveStandingGrant' | 'resolveScopedGrant'> = {},
+  ) {
     if (!fixture) throw new Error('Postgres fixture unavailable');
     const spacesRoot = await mkdtemp(path.join(tmpdir(), 'melete-skills-'));
     roots.push(spacesRoot);
@@ -53,6 +56,7 @@ suite("the person's own skills", () => {
     const broker = new BrokerService({
       sql: fixture.sql,
       connectors: { get: (id: string) => (id === seed.connectionId ? connector : undefined) },
+      ...grants,
     });
     const skillsDir = path.join(spacesRoot, seed.claims.space_id, 'skills');
     const call = (kind: string, payload: JsonObject) =>
@@ -202,23 +206,41 @@ suite("the person's own skills", () => {
       '2. Press the button for the month asked for, then "Download PDF".',
     ].join('\n'),
   };
-  const showSteps = (s: Awaited<ReturnType<typeof setup>>) =>
-    appendEvent(
+  /**
+   * The handback's record, read by the attempt `s.claims` names: its input reaches past it, as
+   * the next attempt's does when it starts after the person handed back.
+   */
+  const showSteps = async (s: Awaited<ReturnType<typeof setup>>, epoch = 3) => {
+    await appendEvent(
       s.db,
       s.claims.job_id,
       null,
       'notice',
       shownRecord(
         'brws_fixture',
-        3,
+        epoch,
         [
           { kind: 'click', role: 'link', name: 'Statements', title: 'Accounts' },
           { kind: 'click', role: 'button', name: 'Download PDF', title: 'Statements' },
         ],
         false,
       ),
-      `shown:${s.claims.job_id}`,
+      `shown:${s.claims.job_id}:${epoch}`,
     );
+    await s.db`update attempt set input_cursor = (select max(seq) from event where job_id = ${s.claims.job_id})
+      where id = ${s.claims.attempt_id}`;
+  };
+  /** The same work's next attempt, which starts after the one before it ended. */
+  const nextAttempt = async (s: Awaited<ReturnType<typeof setup>>) => {
+    const epoch = s.claims.epoch + 1;
+    const attemptId = recordId('att');
+    await s.db`update attempt set outcome = 'completed', ended_at = now() where id = ${s.claims.attempt_id}`;
+    await s.db`insert into attempt (id, job_id, epoch, runtime_version, provider, model, input_cursor)
+      values (${attemptId}, ${s.claims.job_id}, ${epoch}, 'fake', 'fake', 'scripted',
+        (select max(seq) from event where job_id = ${s.claims.job_id}))`;
+    await s.db`update job set lease_epoch = ${epoch} where id = ${s.claims.job_id}`;
+    return { ...s.claims, epoch, attempt_id: attemptId };
+  };
 
   test('a skill drafted from shown steps waits for the person, records where it came from, and is discarded in one answer', async () => {
     const s = await setup();
@@ -282,6 +304,57 @@ suite("the person's own skills", () => {
     expect(marked.status).toBe('needs_approval');
     const [held] = await s.db`select canonical_payload from action where id = ${marked.action_id}`;
     expect(held?.canonical_payload.shown).toBe('shown_brws_fixture_3');
+  });
+
+  test('a skill drafted from shown steps asks the person whatever standing or scoped grant exists', async () => {
+    const s = await setup('personal', {
+      resolveStandingGrant: async () => true,
+      resolveScopedGrant: async () => 'apr_standing',
+    });
+    // An ordinary skill goes through as before.
+    expect((await s.call('skills.create', WEEKLY)).status).toBe('succeeded');
+    await showSteps(s);
+    const asked = await s.call('skills.create', STATEMENT);
+    expect(asked.status).toBe('needs_approval');
+    expect(asked.approval_id).toBeTruthy();
+    expect(
+      await readFile(path.join(s.skillsDir, STATEMENT.name, 'SKILL.md'), 'utf8').catch(() => null),
+    ).toBeNull();
+  });
+
+  test('only the attempt the steps were given to has its skill marked, and only until one is saved', async () => {
+    const s = await setup();
+    await showSteps(s);
+    // Another conversation in the same space was never shown these steps.
+    const otherJob = recordId('job');
+    const otherAttempt = recordId('att');
+    await s.db`insert into job (id, space_id, title, objective, state, lease_epoch, budget, constraints)
+      select ${otherJob}, space_id, title, objective, state, lease_epoch, budget, constraints
+      from job where id = ${s.claims.job_id}`;
+    await s.db`insert into attempt (id, job_id, epoch, runtime_version, provider, model, input_cursor)
+      values (${otherAttempt}, ${otherJob}, 1, 'fake', 'fake', 'scripted',
+        (select max(seq) from event))`;
+    const elsewhere = await s.broker.propose(
+      { ...s.claims, job_id: otherJob, attempt_id: otherAttempt },
+      { kind: 'skills.create', connection_id: s.connectionId, payload: WEEKLY },
+    );
+    expect(elsewhere.status).toBe('succeeded');
+    const [plain] =
+      await s.db`select canonical_payload from action where id = ${elsewhere.action_id}`;
+    expect(plain?.canonical_payload.shown).toBeUndefined();
+
+    // The attempt that was given them never drafted a skill; a later one in the same work is not
+    // drafting from steps it never read.
+    const later = await nextAttempt(s);
+    const afterwards = await s.broker.propose(later, {
+      kind: 'skills.create',
+      connection_id: s.connectionId,
+      payload: { ...WEEKLY, name: 'weekly-review-two' },
+    });
+    expect(afterwards.status).toBe('succeeded');
+    const [unmarked] =
+      await s.db`select canonical_payload from action where id = ${afterwards.action_id}`;
+    expect(unmarked?.canonical_payload.shown).toBeUndefined();
   });
 
   test('a shared space keeps no one skills', async () => {
