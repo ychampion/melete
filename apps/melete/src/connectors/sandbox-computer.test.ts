@@ -18,9 +18,13 @@ import {
   desktopCommandFor,
   desktopCommandsFor,
   HumanControlRefusal,
+  leadsAway,
   MAX_BATCH_ACTIONS,
+  PAGE_NOT_OBSERVED,
+  PAGE_STILL_LOADING,
   pngSize,
   runComputerAction,
+  TITLE_UNCHANGED,
 } from './sandbox-computer.ts';
 import {
   sandboxDispatchBudgetMs,
@@ -47,6 +51,9 @@ function png(width: number, height: number): Uint8Array {
   view.setUint32(20, height);
   return bytes;
 }
+
+/** For tests about something else: a step's screen is captured without waiting for another page. */
+const NO_PAGE_WATCH = { startMs: 0, landMs: 0, pollMs: 0 };
 
 test('every computer tool is a sandbox tool the manifest offers, with the desktop only where there is one', () => {
   expect([...COMPUTER_TOOL_NAMES]).toEqual([
@@ -316,6 +323,7 @@ test('every step ends with a screenshot kept in the job workspace, so the agent 
     controls,
     signal: AbortSignal.timeout(5_000),
     settleMs: 0,
+    pageWatch: NO_PAGE_WATCH,
   });
   expect(detail).toMatchObject({
     computer: 'click',
@@ -359,6 +367,7 @@ test('an open that leaves an earlier page in front fails, says what the window s
       controls,
       signal: AbortSignal.timeout(5_000),
       settleMs: 0,
+      pageWatch: NO_PAGE_WATCH,
     });
   const failed = run('computer.open', { url: 'https://httpbin.org/forms/post' });
   await expect(failed).rejects.toBeInstanceOf(ComputerOpenFailed);
@@ -389,6 +398,7 @@ test('an open that leaves an earlier page in front fails, says what the window s
     controls,
     signal: AbortSignal.timeout(5_000),
     settleMs: 0,
+    pageWatch: NO_PAGE_WATCH,
   });
   expect(done).toMatchObject({
     computer: 'open',
@@ -435,6 +445,7 @@ test('a batch runs its steps in order and looks once, after the last', async () 
     controls,
     signal: AbortSignal.timeout(5_000),
     settleMs: 0,
+    pageWatch: NO_PAGE_WATCH,
   });
   expect(seen.map((command) => command.kind)).toEqual([
     'click',
@@ -579,4 +590,301 @@ test('a person who takes the computer while it is captured is not kept or shown'
   await expect(
     readFile(path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_CAPTURE1.png')),
   ).rejects.toThrow();
+});
+
+/**
+ * A desktop where a click on a search result starts loading another page that
+ * lands a moment later, the way a real site does: until then the window and
+ * the page in front are still the search results.
+ */
+function navigatingDesktop(
+  landsAfterMs: number,
+  options: { lands?: { window: string; url: string }; screenshot?: Uint8Array } = {},
+) {
+  const seen: string[] = [];
+  let clickedAt: number | null = null;
+  const landed = () => clickedAt !== null && performance.now() - clickedAt >= landsAfterMs;
+  const results = { window: 'bun at DuckDuckGo - Chromium', url: 'https://duckduckgo.com/' };
+  const bun = options.lands ?? { window: 'Bun - Chromium', url: 'https://bun.sh/' };
+  const page = () => (landed() ? bun : results);
+  const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+  const provider = {
+    desktop: true,
+    async computer(_handle: unknown, command: DesktopCommand) {
+      seen.push(command.kind);
+      switch (command.kind) {
+        case 'click':
+        case 'key':
+          clickedAt = performance.now();
+          return json({ window: page().window });
+        case 'screenshot':
+          return options.screenshot ?? png(1024, 768);
+        case 'text':
+          return json({
+            source: 'accessibility',
+            url: page().url,
+            title: page().window.replace(/ - Chromium$/, ''),
+            elements: [],
+          });
+        default:
+          return json({ window: page().window, browser: true });
+      }
+    },
+  } as unknown as DockerSandboxProvider;
+  return { provider, seen };
+}
+
+const FAST_WATCH = { startMs: 300, landMs: 600, pollMs: 20 };
+
+test('a click that opens another page returns that page once it lands, not the one it left', async () => {
+  const { session } = fixture();
+  const { provider } = navigatingDesktop(900);
+  const detail = await runComputerAction({
+    action: action('computer.click', { x: 10, y: 20 }, 'act_NAV1'),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(10_000),
+  });
+  expect(detail).toMatchObject({
+    computer: 'click',
+    page_changed: true,
+    window: 'Bun - Chromium',
+    path: '.melete/computer/act_NAV1.png',
+  });
+  expect((detail.screen_text as { url?: string }).url).toBe('https://bun.sh/');
+  expect(detail.page_note).toBeUndefined();
+});
+
+test('a click after which the title stays the same says only that, never that the page did not change', async () => {
+  const { session } = fixture();
+  const { provider, seen } = navigatingDesktop(Number.POSITIVE_INFINITY);
+  const detail = await runComputerAction({
+    action: action('computer.click', { x: 10, y: 20 }),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+    pageWatch: FAST_WATCH,
+  });
+  expect(detail).toMatchObject({
+    title_changed: false,
+    page_note: TITLE_UNCHANGED,
+    window: 'bun at DuckDuckGo - Chromium',
+  });
+  expect(detail.page_changed).toBeUndefined();
+  expect(seen.at(0)).toBe('click');
+  expect(seen.slice(-2)).toEqual(['screenshot', 'text']);
+  expect(seen).toContain('info');
+});
+
+test('a page still loading when the wait runs out is captured, and the result says it may not show it', async () => {
+  const { session } = fixture();
+  // The window has left the results, but no page has landed in it yet.
+  const { provider } = navigatingDesktop(50, {
+    lands: { window: 'Chromium', url: 'https://duckduckgo.com/' },
+  });
+  const detail = await runComputerAction({
+    action: action('computer.click', { x: 10, y: 20 }),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+    pageWatch: FAST_WATCH,
+  });
+  expect(detail).toMatchObject({ page_changed: true, page_note: PAGE_STILL_LOADING });
+  expect(detail.path).toBeDefined();
+});
+
+test('a new page that could not be captured is said to be unobserved, and the step still happened', async () => {
+  const { session } = fixture();
+  const { provider } = navigatingDesktop(50, {
+    screenshot: new TextEncoder().encode('not a png'),
+  });
+  const detail = await runComputerAction({
+    action: action('computer.key', { keys: ['Return'] }),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+    pageWatch: FAST_WATCH,
+  });
+  expect(detail).toMatchObject({
+    computer: 'key',
+    page_changed: true,
+    page_note: PAGE_NOT_OBSERVED,
+    screenshot: 'not taken: the desktop did not answer with an image',
+  });
+});
+
+test('a person who takes the computer while a new page loads is not captured', async () => {
+  const { session, sandbox } = fixture();
+  const { provider, seen } = navigatingDesktop(Number.POSITIVE_INFINITY);
+  const step = runComputerAction({
+    action: action('computer.click', { x: 10, y: 20 }),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+    pageWatch: FAST_WATCH,
+  });
+  setTimeout(() => void controls.change(sandbox, 'human'), 60);
+  const detail = await step;
+  expect(detail).toMatchObject({
+    control_changed: true,
+    screenshot: 'not taken: a person took control',
+  });
+  expect(seen).not.toContain('screenshot');
+  await controls.change(sandbox, 'agent');
+});
+
+test('only steps that can lead to another page wait for one', () => {
+  const key = (...keys: string[]) => ({ kind: 'key', keys }) as const;
+  const type = (text: string) => ({ kind: 'type', text }) as const;
+  for (const step of [
+    { kind: 'click', x: 1, y: 1, button: 1, count: 1 } as const,
+    key('Return'),
+    key('KP_Enter'),
+    key('ctrl+Return'),
+    key('ctrl+l', 'Return'),
+    key('alt+Left'),
+    key('alt+Right'),
+    key('F5'),
+    key('ctrl+r'),
+    key('ctrl+shift+R'),
+    type('bun runtime\n'),
+  ])
+    expect(leadsAway(step)).toBe(true);
+  for (const step of [
+    key('Tab'),
+    key('Left'),
+    key('Down'),
+    key('ctrl+l'),
+    key('ctrl+a'),
+    key('BackSpace'),
+    key('r'),
+    type('bun runtime'),
+    { kind: 'scroll', x: 1, y: 1, dy: 3 } as const,
+  ])
+    expect(leadsAway(step)).toBe(false);
+});
+
+test('a key that cannot navigate keeps the short settle, whatever the window does', async () => {
+  const { session } = fixture();
+  const { provider, seen } = navigatingDesktop(0);
+  const detail = await runComputerAction({
+    action: action('computer.key', { keys: ['Tab'] }),
+    jobId: 'job_COMPUTER',
+    workRoot: await workRoot(),
+    session,
+    provider,
+    controls,
+    signal: AbortSignal.timeout(5_000),
+    settleMs: 0,
+    pageWatch: FAST_WATCH,
+  });
+  expect(seen).toEqual(['key', 'screenshot', 'text']);
+  expect(detail.page_changed).toBeUndefined();
+});
+
+test('a person who takes the computer once the new title is read is shown none of it', async () => {
+  // The takeover lands as the title is read, or as the capture that follows fails.
+  for (const takeoverOn of ['info', 'screenshot'] as const) {
+    const { session, sandbox } = fixture();
+    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    let clicked = false;
+    let reads = 0;
+    const provider = {
+      desktop: true,
+      async computer(_handle: unknown, command: DesktopCommand) {
+        if (command.kind === 'click') {
+          clicked = true;
+          return json({ window: 'Results - Chromium' });
+        }
+        if (command.kind === 'screenshot') {
+          if (takeoverOn === 'screenshot') await controls.change(sandbox, 'human');
+          return new TextEncoder().encode('not a png');
+        }
+        if (command.kind === 'text')
+          return json({ source: 'accessibility', url: 'https://mail.example/', elements: [] });
+        reads += 1;
+        if (clicked && takeoverOn === 'info') await controls.change(sandbox, 'human');
+        return json({ window: 'Their inbox - Chromium', browser: true });
+      },
+    } as unknown as DockerSandboxProvider;
+    const detail = await runComputerAction({
+      action: action('computer.click', { x: 10, y: 20 }),
+      jobId: 'job_COMPUTER',
+      workRoot: await workRoot(),
+      session,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+      settleMs: 0,
+      pageWatch: FAST_WATCH,
+    });
+    expect(reads).toBeGreaterThan(0);
+    expect(detail).toMatchObject({
+      control_changed: true,
+      screenshot: 'not taken: a person took control',
+    });
+    expect(JSON.stringify(detail)).not.toContain('Their inbox');
+    expect(detail.screen_text).toBeUndefined();
+    await controls.change(sandbox, 'agent');
+  }
+});
+
+test('a screenshot taken while a person takes the computer is kept from the agent', async () => {
+  // The takeover lands as the picture is taken, as the window is read, or as the screen is read.
+  for (const takeoverOn of ['screenshot', 'info', 'text'] as const) {
+    const { session, sandbox } = fixture();
+    const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    const provider = {
+      desktop: true,
+      async computer(_handle: unknown, command: DesktopCommand) {
+        if (command.kind === takeoverOn) await controls.change(sandbox, 'human');
+        if (command.kind === 'screenshot') return png(1024, 768);
+        if (command.kind === 'text')
+          return json({ source: 'accessibility', url: 'https://mail.example/', elements: [] });
+        return json({ window: 'Their inbox - Chromium', browser: true });
+      },
+    } as unknown as DockerSandboxProvider;
+    const root = await workRoot();
+    const detail = await runComputerAction({
+      action: action('computer.screenshot', {}, 'act_HELD1'),
+      jobId: 'job_COMPUTER',
+      workRoot: root,
+      session,
+      provider,
+      controls,
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(detail).toMatchObject({
+      computer: 'screenshot',
+      control_changed: true,
+      screenshot: 'not taken: a person took control',
+    });
+    for (const field of ['path', 'sha256', 'window', 'browser', 'screen_text'])
+      expect(detail[field]).toBeUndefined();
+    expect(JSON.stringify(detail)).not.toContain('Their inbox');
+    if (takeoverOn === 'screenshot')
+      await expect(
+        readFile(path.join(root, 'job_COMPUTER', '.melete', 'computer', 'act_HELD1.png')),
+      ).rejects.toThrow();
+    await controls.change(sandbox, 'agent');
+  }
 });

@@ -127,6 +127,8 @@ test('a computer screenshot result includes the text view built from the page’
         controls: new MemoryComputerControls(),
         signal: AbortSignal.timeout(5_000),
         settleMs: 0,
+        // The click stays on its page; this test is about what the look carries.
+        pageWatch: { startMs: 0, landMs: 0, pollMs: 0 },
       });
       const screen = detail.screen_text as Record<string, string>;
       expect(screen.about_this_text).toBe(SCREEN_TEXT_NOTICE);
@@ -239,9 +241,9 @@ test('a person who takes the computer while its text is read is not shown it', a
     });
     expect(JSON.stringify(detail)).not.toContain('what the person typed');
     expect(detail.control_changed).toBe(true);
-    expect((detail.screen_text as Record<string, string>).unavailable).toContain(
-      'a person took control',
-    );
+    expect(detail.screenshot).toBe('not taken: a person took control');
+    expect(detail.screen_text).toBeUndefined();
+    expect(detail.window).toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

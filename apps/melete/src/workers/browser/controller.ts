@@ -1808,23 +1808,25 @@ export class BrowserController {
         if (handedBackIn !== undefined && (await this.documentOf(cdp)) !== handedBackIn)
           this.handback = false;
         const after = await this.transition(page, cdp);
-        if (action.kind === 'submit') {
-          const observed = await this.observe(command);
-          return commitStatus === undefined
-            ? observed
-            : { ...observed, result: { ...observed.result, commit_status: commitStatus } };
-        }
-        if (before !== after || action.kind === 'open') return this.observe(command);
-        // A step that stayed on the same page still shows what it did, submit
-        // intents with the values now in the form included, so the next step
-        // needs no separate look.
+        // Opening a page is the look itself: one that cannot be observed fails as before.
+        if (action.kind === 'open') return this.observe(command);
+        // Every other step has run by now, whether it stayed on its page or led
+        // to another, and its look shows what it did: submit intents with the
+        // values now in the form included, so the next step needs no separate
+        // look. A look that fails says why, and the step is still done.
+        const sent = commitStatus === undefined ? {} : { commit_status: commitStatus };
         return observedAfterStep(
-          () => this.observe(command),
+          async () => {
+            const observed = await this.observe(command);
+            return commitStatus === undefined
+              ? observed
+              : { ...observed, result: { ...observed.result, ...sent } };
+          },
           () => this.sessions.requireSession(command.session_id, command.job_id),
           {
             session_id: session.id,
             control_epoch: session.control_epoch,
-            result: { changed: false },
+            result: { changed: before !== after, ...sent },
           },
         );
       })
@@ -1917,11 +1919,27 @@ export const TAKEN_OVER_AFTER_STEP =
   'The step ran, then a person took control of the browser. Wait until they hand it back, then observe the page.';
 
 /**
- * The look after a step that stayed on its page. A page that cannot be
- * observed (a sign-in field shows, or it is too large) answers what it did
- * before such a look existed. A person who took the browser meanwhile is said
- * so, with the epoch they hold now: the step ran, and nothing more of the page
- * is shown.
+ * Why the page after a step was not observed, said with the step: it ran, and
+ * a step repeated because its look failed could send a form twice.
+ */
+export function notObservedNote(reason: string): string {
+  const why =
+    reason === 'sensitive_input_require_takeover'
+      ? 'the page it led to shows a field for a code, a card or another secret, which is the person’s to fill'
+      : reason === 'observation_too_large'
+        ? 'the page it led to is too large to observe'
+        : reason === 'observe_failed'
+          ? 'the page after it could not be observed'
+          : `the page after it could not be observed (${reason})`;
+  return `The step ran, so do not repeat it, but ${why}. Nothing of that page was seen: do not describe it.`;
+}
+
+/**
+ * The look after a step that ran: the page as it is now. A page that cannot be
+ * observed (a field for a secret shows, or it is too large) answers what the
+ * step did, never a failure, with why the page was not seen. A person who took
+ * the browser meanwhile is said so, with the epoch they hold now: the step
+ * ran, and nothing more of the page is shown.
  */
 export async function observedAfterStep(
   look: () => Promise<BrowserCommandResult>,
@@ -1931,13 +1949,36 @@ export async function observedAfterStep(
   try {
     return await look();
   } catch (error) {
-    if (!(error instanceof BrowserFault)) throw error;
-    if (error.reason !== 'human_control') return unobserved;
+    // The step has run whatever went wrong with the look: a page torn down by
+    // a redirect, a closed target or a failed screenshot is a page not seen,
+    // never a step that failed.
+    if (!(error instanceof BrowserFault) || error.reason !== 'human_control') {
+      const reason = error instanceof BrowserFault ? error.reason : 'observe_failed';
+      if (!(error instanceof BrowserFault))
+        console.error(
+          'browser look after a step failed:',
+          error instanceof Error ? error.message : String(error),
+        );
+      return {
+        ...unobserved,
+        result: {
+          ...unobserved.result,
+          observed: false,
+          not_observed: reason,
+          note: notObservedNote(reason),
+        },
+      };
+    }
     const now = current();
     return {
       session_id: now.id,
       control_epoch: now.control_epoch,
-      result: { changed: false, human_control: true, note: TAKEN_OVER_AFTER_STEP },
+      result: {
+        ...unobserved.result,
+        changed: unobserved.result?.changed ?? false,
+        human_control: true,
+        note: TAKEN_OVER_AFTER_STEP,
+      },
     };
   }
 }
