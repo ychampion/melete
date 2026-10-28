@@ -24,6 +24,7 @@ import {
   PAGE_STILL_LOADING,
   pngSize,
   runComputerAction,
+  TITLE_UNCHANGED,
 } from './sandbox-computer.ts';
 import {
   sandboxDispatchBudgetMs,
@@ -657,7 +658,7 @@ test('a click that opens another page returns that page once it lands, not the o
   expect(detail.page_note).toBeUndefined();
 });
 
-test('a click that stays on its page is captured once the window has held still, and says so', async () => {
+test('a click after which the title stays the same says only that, never that the page did not change', async () => {
   const { session } = fixture();
   const { provider, seen } = navigatingDesktop(Number.POSITIVE_INFINITY);
   const detail = await runComputerAction({
@@ -671,8 +672,12 @@ test('a click that stays on its page is captured once the window has held still,
     settleMs: 0,
     pageWatch: FAST_WATCH,
   });
-  expect(detail).toMatchObject({ page_changed: false, window: 'bun at DuckDuckGo - Chromium' });
-  expect(detail.page_note).toBeUndefined();
+  expect(detail).toMatchObject({
+    title_changed: false,
+    page_note: TITLE_UNCHANGED,
+    window: 'bun at DuckDuckGo - Chromium',
+  });
+  expect(detail.page_changed).toBeUndefined();
   expect(seen.at(0)).toBe('click');
   expect(seen.slice(-2)).toEqual(['screenshot', 'text']);
   expect(seen).toContain('info');

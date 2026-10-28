@@ -448,6 +448,13 @@ const BLANK_TITLE =
 /** Said with a step whose new page had not landed when the screen was captured. */
 export const PAGE_STILL_LOADING =
   'The step led to another page, which was still loading when the screen was captured, so the screenshot and screen_text may show the page before it. Take a screenshot before describing the new page.';
+/**
+ * Said with a step after which the window's title stayed the same. That is
+ * all the watch can tell: a page with the same title, or one quick enough to
+ * be in front before the step read the title, looks the same to it.
+ */
+export const TITLE_UNCHANGED =
+  'The window’s title did not change after the step, but the page still may have. Look at the screenshot before you repeat the step, and never repeat a click that sends, buys or submits something without first checking that it did not already go through.';
 /** Said with a step whose new page was never captured. */
 export const PAGE_NOT_OBSERVED =
   'The step led to another page, but nothing of that page was observed. Take a screenshot before describing it.';
@@ -767,8 +774,14 @@ export async function runComputerAction(options: {
     ? {
         ...done,
         window: landing.window,
-        page_changed: landing.changed,
-        ...(landing.changed && !landing.settled ? { page_note: PAGE_STILL_LOADING } : {}),
+        // Only a title that moved is evidence the page changed; one that did
+        // not is said as just that.
+        ...(landing.changed
+          ? {
+              page_changed: true,
+              ...(landing.settled ? {} : { page_note: PAGE_STILL_LOADING }),
+            }
+          : { title_changed: false, page_note: TITLE_UNCHANGED }),
       }
     : done;
   try {
