@@ -61,6 +61,7 @@ import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-compa
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
 import { attachmentSettingsFromEnv } from './attachments/limits.ts';
+import { roomAttachments } from './attachments/rooms.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
 import { defaultLevels } from './broker/autonomy.ts';
@@ -247,6 +248,7 @@ import { mountReach } from './reach/routes.ts';
 import { ReachService } from './reach/service.ts';
 import { requestFailureText } from './request-failure.ts';
 import { mountRoomCalendarShares } from './rooms/calendar-share-routes.ts';
+import { roomReadsPictures } from './rooms/pictures.ts';
 import { mountRooms } from './rooms/routes.ts';
 import type { RoomSurface } from './rooms/surface.ts';
 import { attachRuns, RunService } from './runs/service.ts';
@@ -534,7 +536,14 @@ export function createApp(deps: AppDeps) {
       tokens: deps.viewTokens ?? new ViewTokens(deps.env.MELETE_MASTER_KEY),
     });
   if (deps.db) mountScreenshots(app, deps.db, deps.env.MELETE_WORK_DIR, personalSpace);
-  if (deps.attachments) mountAttachments(app, deps.attachments, personalSpace, limits);
+  if (deps.attachments)
+    mountAttachments(
+      app,
+      deps.attachments,
+      personalSpace,
+      limits,
+      multiplayer && deps.db ? roomAttachments(deps.db) : undefined,
+    );
   // After mountPrincipals, so the owner-only guard it installs on every
   // non-GET under /spaces/:id runs before the handler that removes one.
   if (deps.removals && deps.db && deps.sql)
@@ -837,6 +846,12 @@ export function createApp(deps: AppDeps) {
       env: deps.env,
       triggers: deps.triggers,
       surfaces: deps.roomSurfaces,
+      ...(modelSettings
+        ? {
+            readsPictures: (spaceId: string) =>
+              roomReadsPictures(modelSettings, routingFromEnv(deps.env), spaceId),
+          }
+        : {}),
     });
   if (connections && features.sms) {
     const factory = connectorFactoryFor(connections.registry, () =>

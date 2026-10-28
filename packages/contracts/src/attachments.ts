@@ -161,6 +161,19 @@ export const attachmentView = z.strictObject({
 });
 export type AttachmentView = z.infer<typeof attachmentView>;
 
+/**
+ * A file posted in a room set to show only what needs you, as everyone but the
+ * person who posted it and the room's maker sees it: what kind of file it is,
+ * and its id, to open the original with. No name, size or pages, since each
+ * can say what the file holds.
+ */
+export const attachmentKept = z.strictObject({
+  id: z.string().min(1).max(240),
+  kind: attachmentKind,
+  kept_back: z.literal(true),
+});
+export type AttachmentKept = z.infer<typeof attachmentKept>;
+
 export const attachmentResponse = z.strictObject({ attachment: attachmentView });
 
 /** Which copy of a file to read: the file itself, or the small copy a picture has. */

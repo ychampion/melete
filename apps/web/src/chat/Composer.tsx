@@ -371,12 +371,21 @@ export function Composer({
 }
 
 /** One file in the box: a thumbnail or a name, its state, and a way to take it out. */
-function FileTile({ file, onRemove }: { file: PendingFile; onRemove: () => void }) {
+export function FileTile({
+  file,
+  onRemove,
+  base = '',
+}: {
+  file: PendingFile;
+  onRemove: () => void;
+  /** Where the file lives when not in the person's own chat. */
+  base?: string;
+}) {
   // A file waiting to be tried again looks like one that failed, with its own words.
   const failed = file.state === 'failed' || file.state === 'retrying';
   const picture =
     file.kind === 'image'
-      ? (file.thumb ?? (file.view?.has_preview ? attachmentUrl(file.view.id, true) : null))
+      ? (file.thumb ?? (file.view?.has_preview ? attachmentUrl(file.view.id, true, base) : null))
       : null;
   const state =
     file.state === 'uploading'

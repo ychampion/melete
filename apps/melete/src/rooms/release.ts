@@ -9,6 +9,7 @@
 import { randomBytes } from 'node:crypto';
 import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { roomMessageAttachments, roomMessageFiles } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import { agent, job, space, spaceMembership } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
@@ -143,11 +144,20 @@ export async function threadHeld(tx: Transaction, threadId: string, except?: str
 const inputKey = (messageId: string) =>
   `room:${messageId.replace(/^rmg_/, '')}:${randomBytes(6).toString('hex')}`;
 
-/** Give one input to a request, as the person who asked it. Throws when it is refused. */
+/**
+ * Give one input to a request, as the person who asked it, with the files
+ * posted with it. Throws when it is refused.
+ */
 async function speak(tx: Transaction, work: RoomWork, row: JobRow, message: MessageRow) {
+  const files = (await roomMessageAttachments(tx, [message.id])).get(message.id) ?? [];
+  const input = files.length
+    ? { text: message.text, attachments: files.map((file) => file.id) }
+    : { text: message.text };
   const result = await principalContext.run(message.authorPrincipalId, () =>
     roomRequestInput.run(row.id, () =>
-      work.submissions.inputWithin(tx, row.id, { text: message.text }, inputKey(message.id)),
+      roomMessageFiles.run(message.id, () =>
+        work.submissions.inputWithin(tx, row.id, input, inputKey(message.id)),
+      ),
     ),
   );
   if (result.receipt.state !== 'accepted')
