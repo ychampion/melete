@@ -5,6 +5,7 @@ test('Nemotron recommendations have friendly names without changing their exact 
   expect(modelDisplayName('nvidia/nemotron-3-super-120b-a12b')).toBe('NVIDIA Nemotron 3 Super');
   expect(modelDisplayName('nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B')).toBe('NVIDIA Nemotron 3 Nano');
   expect(modelDisplayName('nvidia/Nemotron-3-Ultra-550b-a55b')).toBe('NVIDIA Nemotron 3 Ultra');
+  expect(modelDisplayName('nvidia/Nemotron-3.5-Super-VL')).toBe('NVIDIA Nemotron 3.5 Super VL');
 });
 
 test('a Fireworks account path reads as the model it serves', () => {
