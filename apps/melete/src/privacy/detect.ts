@@ -714,10 +714,22 @@ export function detect(text: string, enabled: ReadonlySet<PrivacyCategory>): Det
 }
 
 /**
- * Overlapping detections, one kept: `fixed` spans first and whole, then the
- * rest by precedence and length. Positions already taken are marked in one
- * array, so a text with tens of thousands of details (a contact export) is
- * resolved in linear time rather than by comparing every pair.
+ * Details whose every part points at the person: a phone number or an address
+ * goes whole even when another rule, or a value already known, read a piece
+ * of it as something else. Kept in part, the rest would leave as written: the
+ * area code beside an account placeholder, or the house number, town and ZIP
+ * around a name. A password inside a connection string is not one of these;
+ * the host around it is not the person's.
+ */
+const GOES_WHOLE = new Set<PrivacyCategory>(['phone', 'address']);
+
+/**
+ * Overlapping detections, one kept: `fixed` spans first, then the rest by
+ * precedence and length. A phone number or address that holds every span it
+ * overlaps, each strictly inside it, takes their place (see `GOES_WHOLE`).
+ * Positions already taken are marked in one array, so a text with tens of
+ * thousands of details (a contact export) is resolved in linear time rather
+ * than by comparing every pair.
  */
 export function resolveOverlaps(found: Detection[], fixed: Detection[] = []): Detection[] {
   const ordered = [...found].sort(
@@ -725,21 +737,37 @@ export function resolveOverlaps(found: Detection[], fixed: Detection[] = []): De
   );
   let size = 0;
   for (const span of [...fixed, ...ordered]) size = Math.max(size, span.end);
-  const taken = new Uint8Array(size);
-  const kept: Detection[] = [];
+  // The kept span at each position, as its index plus one; 0 where none is.
+  const holder = new Int32Array(size);
+  const kept: (Detection | null)[] = [];
   for (const candidate of [...fixed, ...ordered]) {
     if (candidate.end <= candidate.start) continue;
-    let free = true;
-    for (let index = candidate.start; index < candidate.end; index++)
-      if (taken[index]) {
-        free = false;
+    const length = candidate.end - candidate.start;
+    const whole = GOES_WHOLE.has(candidate.category);
+    const inside = new Set<number>();
+    let holds = true;
+    for (let index = candidate.start; index < candidate.end; index++) {
+      const at = (holder[index] ?? 0) - 1;
+      if (at < 0 || inside.has(at)) continue;
+      const span = kept[at];
+      if (
+        !whole ||
+        !span ||
+        span.start < candidate.start ||
+        span.end > candidate.end ||
+        span.end - span.start === length
+      ) {
+        holds = false;
         break;
       }
-    if (!free) continue;
-    taken.fill(1, candidate.start, candidate.end);
+      inside.add(at);
+    }
+    if (!holds) continue;
+    for (const at of inside) kept[at] = null;
+    holder.fill(kept.length + 1, candidate.start, candidate.end);
     kept.push(candidate);
   }
-  return kept.sort((a, b) => a.start - b.start);
+  return kept.filter((span): span is Detection => span !== null).sort((a, b) => a.start - b.start);
 }
 
 /** Placeholder syntax: ⟦CATEGORY_N⟧. */

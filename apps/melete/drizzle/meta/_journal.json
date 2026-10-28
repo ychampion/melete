@@ -1044,6 +1044,13 @@
       "when": 1789232400128,
       "tag": "0148_room_attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1789232400129,
+      "tag": "0149_privacy_seen",
+      "breakpoints": true
     }
   ]
 }

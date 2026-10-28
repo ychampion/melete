@@ -3,8 +3,9 @@
  * own space. The settings belong to the space's owner; a member of a shared
  * space sees only the conversations that are theirs.
  *
- * The reveal is the one response that carries values. It is answered only to
- * the person's own session, never cached, and drawn only in their browser.
+ * The reveal and "what the model saw" are the responses that carry values.
+ * They are answered only to the person's own session, never cached, and drawn
+ * only in their browser.
  */
 import {
   conversationPrivacyUpdate,
@@ -14,6 +15,7 @@ import {
   type PrivacySettingsUpdate,
   privacyPreviewRequest,
   privacyRevealRequest,
+  privacySeenRequest,
   privacySettingsUpdate,
 } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
@@ -267,5 +269,22 @@ export function mountPrivacy(app: Hono, options: PrivacyRouteOptions) {
     const input = privacyRevealRequest.parse(await c.req.json());
     c.header('cache-control', 'no-store');
     return c.json(await router.reveal(id, spaceId, input.turn_id));
+  });
+
+  // What the cloud model was sent for one answer, beside what the person sees.
+  // Only the person whose conversation it is sees it: it puts their private
+  // details back on screen, and the space's owner may not read a member's.
+  app.post('/conversations/:id/privacy/seen', async (c) => {
+    const { spaceId, id, router } = await conversation(c);
+    const input = privacySeenRequest.parse(await c.req.json());
+    const person = await router.store.conversationPerson(id);
+    if (!person || person !== c.get('owner')?.id)
+      throw new ServiceError(
+        'scope_denied',
+        'Only the person whose conversation this is can see what the model saw.',
+        403,
+      );
+    c.header('cache-control', 'no-store');
+    return c.json(await router.seen(id, spaceId, input.turn_id));
   });
 }
