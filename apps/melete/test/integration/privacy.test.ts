@@ -112,6 +112,49 @@ describe.if(handle !== null)('the privacy router over Postgres', () => {
     expect(await keyless.loadVault(CONVERSATION)).toBeNull();
   });
 
+  test('what the model saw keeps only redacted text, once, and reads back after a restart', async () => {
+    const mail = JSON.stringify({
+      body: `Your statement for account ${ACCOUNT} is ready. Questions? Call us on (415) 555-0132.`,
+    });
+    const body = {
+      model: 'm',
+      messages: [
+        { role: 'user', content: 'What does the bank letter say?' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'c1', type: 'function', function: { name: 'mail.read', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'c1', content: mail },
+      ],
+    };
+    const live = router();
+    for (let request = 0; request < 2; request++)
+      await live.prepare({
+        principal: principal(CONVERSATION),
+        provider,
+        protocol: 'chat/completions',
+        body,
+      });
+    const rows = await sql`select turn_id, source, tool, text from privacy_seen
+      where conversation_id = ${CONVERSATION} order by id`;
+    expect(rows.map((row) => [row.turn_id, row.source, row.tool])).toEqual([
+      ['trn_1', 'you', null],
+      ['trn_1', 'tool', 'mail.read'],
+    ]);
+    expect(JSON.stringify(rows)).not.toContain(ACCOUNT);
+    expect(JSON.stringify(rows)).not.toContain('555-0132');
+
+    const seen = await router().seen(CONVERSATION, SPACE, 'trn_1');
+    expect(seen.route).toBe('cloud');
+    expect(seen.parts[1]?.segments.filter((segment) => 'placeholder' in segment)).toEqual([
+      { placeholder: '⟦ACCOUNT_1⟧', category: 'account', value: ACCOUNT },
+      { placeholder: '⟦PHONE_1⟧', category: 'phone', value: '(415) 555-0132' },
+    ]);
+  });
+
   test('listed values are sealed; the audit trail keeps no values; answers reveal locally', async () => {
     const live = router();
     await updateSettings(live, SPACE, {
