@@ -130,6 +130,12 @@ is under way waits its turn, and starts as soon as that request answers or
 stops to wait for something. The person who asked, or a room owner, can stop a
 request (`POST /rooms/{id}/requests/{request}/stop`).
 
+Longer work a room request starts belongs to the room, not to the person who
+asked. A room owner, signed in to the room, wakes it with words for its next
+shift, pauses it, resumes it or stops it with the usual run routes
+(`POST /runs/{id}/message`, `/pause`, `/resume` and `/stop`). A member or a
+guest is refused, and someone outside the room finds nothing.
+
 A thread's page (`GET /rooms/{id}/threads/{thread}`) shows every message with
 its author, and each request with its answer, cards and receipts. Its live
 stream (`GET /rooms/{id}/threads/{thread}/events` with

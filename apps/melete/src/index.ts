@@ -815,6 +815,7 @@ export function createApp(deps: AppDeps) {
       },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
       starters: startersFromSetting(deps.env.MELETE_STARTERS),
+      multiplayer,
     });
   callExperience = experience || null;
   if (calls) callServices.set(app, calls);
