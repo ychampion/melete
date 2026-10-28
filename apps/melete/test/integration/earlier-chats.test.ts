@@ -62,7 +62,7 @@ async function chat(
     clock += 60_000;
     await database.sql`insert into experience_turn (id, job_id, agent_id, submission_id, text, answer, status, created_at)
       values (${`turn_${randomUUID()}`}, ${id}, ${place.agent}, ${randomUUID()}, ${said}, ${answer},
-        'completed', ${new Date(clock)})`;
+        'completed', ${new Date(clock).toISOString()})`;
   }
   return id;
 }
