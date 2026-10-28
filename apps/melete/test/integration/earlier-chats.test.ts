@@ -73,9 +73,21 @@ async function principal(database: TestDatabase, kind: 'person' | 'room') {
   return id;
 }
 
-const options = (database: TestDatabase, kept: string[] = []): EarlierOptions => ({
+/** The attempt every search here is made from; which one matters only to `readsPrivate`. */
+const ATTEMPT = 'att_01J8ZP3QWABCDEFGHJKMNPQRST';
+
+/**
+ * Conversations `kept` stay private. A turn in one of them may read the others
+ * unless its requests go to a cloud model (`cloud`).
+ */
+const options = (
+  database: TestDatabase,
+  kept: string[] = [],
+  cloud: string[] = [],
+): EarlierOptions => ({
   sql: database.sql,
   keepsPrivate: async (jobId) => kept.includes(jobId),
+  readsPrivate: async (jobId) => kept.includes(jobId) && !cloud.includes(jobId),
 });
 
 const PLUMBER: [string, string] = [
@@ -90,7 +102,11 @@ withDb('conversations.search and conversations.read', () => {
     const earlier = await chat(db, place, [PLUMBER], { title: 'Boiler repair' });
     const current = await chat(db, place, [["What was Mario's number?", '']]);
 
-    const found = await searchConversations(options(db), { job_id: current }, { query: 'Mario' });
+    const found = await searchConversations(
+      options(db),
+      { job_id: current, attempt_id: ATTEMPT },
+      { query: 'Mario' },
+    );
     expect(found.status).toBe('found');
     expect(found.guidance).toBe(EARLIER_GUIDANCE.found);
     expect(found.hits.map((hit) => hit.conversation_id)).toEqual([earlier]);
@@ -105,7 +121,7 @@ withDb('conversations.search and conversations.read', () => {
     // The person's own words come back as theirs.
     const said = await searchConversations(
       options(db),
-      { job_id: current },
+      { job_id: current, attempt_id: ATTEMPT },
       { query: 'leaking boiler' },
     );
     expect(said.hits[0]).toMatchObject({ conversation_id: earlier, kind: 'message' });
@@ -113,7 +129,7 @@ withDb('conversations.search and conversations.read', () => {
     // Words found nowhere: an honest nothing, told not to deny it was said.
     const nothing = await searchConversations(
       options(db),
-      { job_id: current },
+      { job_id: current, attempt_id: ATTEMPT },
       { query: 'vacuum cleaner' },
     );
     expect(nothing).toEqual({ status: 'nothing', hits: [], guidance: EARLIER_GUIDANCE.nothing });
@@ -134,20 +150,26 @@ withDb('conversations.search and conversations.read', () => {
 
     const found = await searchConversations(
       options(db),
-      { job_id: current },
+      { job_id: current, attempt_id: ATTEMPT },
       { query: 'Mario', limit: 20 },
     );
     expect(found.hits.map((hit) => hit.conversation_id)).toEqual([mine]);
     for (const id of [theirs, roomChat, unnamed, current])
       expect(
-        (await readConversation(options(db), { job_id: current }, { conversation_id: id })).status,
+        (
+          await readConversation(
+            options(db),
+            { job_id: current, attempt_id: ATTEMPT },
+            { conversation_id: id },
+          )
+        ).status,
       ).toBe('not_found');
 
     // The other person searching finds their own chat, not the owner's.
     const theirTurn = await chat(db, place, [['Who fixes boilers?', '']], { principal: someone });
     const fromThem = await searchConversations(
       options(db),
-      { job_id: theirTurn },
+      { job_id: theirTurn, attempt_id: ATTEMPT },
       { query: 'Mario' },
     );
     expect(fromThem.hits.map((hit) => hit.conversation_id)).toEqual([theirs]);
@@ -158,7 +180,13 @@ withDb('conversations.search and conversations.read', () => {
       audience: 'room',
     });
     expect(
-      (await searchConversations(options(db), { job_id: roomTurn }, { query: 'Mario' })).status,
+      (
+        await searchConversations(
+          options(db),
+          { job_id: roomTurn, attempt_id: ATTEMPT },
+          { query: 'Mario' },
+        )
+      ).status,
     ).toBe('not_available_here');
   });
 
@@ -173,7 +201,7 @@ withDb('conversations.search and conversations.read', () => {
 
     const outside = await searchConversations(
       options(db, [kept]),
-      { job_id: open },
+      { job_id: open, attempt_id: ATTEMPT },
       { query: 'Okafor' },
     );
     expect(outside).toEqual({
@@ -183,22 +211,52 @@ withDb('conversations.search and conversations.read', () => {
       guidance: EARLIER_GUIDANCE.withheld,
     });
     expect(
-      await readConversation(options(db, [kept]), { job_id: open }, { conversation_id: kept }),
+      await readConversation(
+        options(db, [kept]),
+        { job_id: open, attempt_id: ATTEMPT },
+        { conversation_id: kept },
+      ),
     ).toEqual({ status: 'withheld', guidance: EARLIER_GUIDANCE.private });
 
     const inside = await searchConversations(
       options(db, [kept, quiet]),
-      { job_id: quiet },
+      { job_id: quiet, attempt_id: ATTEMPT },
       { query: 'Okafor' },
     );
     expect(inside.status).toBe('found');
     expect(inside.hits.map((hit) => hit.conversation_id)).toEqual([kept]);
     const read = await readConversation(
       options(db, [kept, quiet]),
-      { job_id: quiet },
+      { job_id: quiet, attempt_id: ATTEMPT },
       { conversation_id: kept },
     );
     expect(read.turns?.[0]?.answer).toBe('Dr Okafor: 555-0199.');
+  });
+
+  test("a private chat's words stay out of a private turn whose requests go to a cloud model", async () => {
+    if (!db) return;
+    const place = await setup(db);
+    const kept = await chat(db, place, [
+      ['My therapist is Dr Okafor, can you note her number?', 'Dr Okafor: 555-0199.'],
+    ]);
+    // Private too, but the person let it go to a cloud model redacted: what
+    // another private conversation was about would leave with it.
+    const redacted = await chat(db, place, [['What was the therapist number?', '']]);
+    const rules = options(db, [kept, redacted], [redacted]);
+    expect(
+      await searchConversations(
+        rules,
+        { job_id: redacted, attempt_id: ATTEMPT },
+        { query: 'Okafor' },
+      ),
+    ).toEqual({ status: 'nothing', hits: [], withheld: 1, guidance: EARLIER_GUIDANCE.withheld });
+    expect(
+      await readConversation(
+        rules,
+        { job_id: redacted, attempt_id: ATTEMPT },
+        { conversation_id: kept },
+      ),
+    ).toEqual({ status: 'withheld', guidance: EARLIER_GUIDANCE.private });
   });
 
   test('a read is a bounded excerpt, centred on a position or a phrase', async () => {
@@ -217,7 +275,7 @@ withDb('conversations.search and conversations.read', () => {
 
     const middle = await readConversation(
       options(db),
-      { job_id: current },
+      { job_id: current, attempt_id: ATTEMPT },
       { conversation_id: long, around: 20 },
     );
     expect(middle.status).toBe('found');
@@ -231,7 +289,7 @@ withDb('conversations.search and conversations.read', () => {
 
     const phrase = await readConversation(
       options(db),
-      { job_id: current },
+      { job_id: current, attempt_id: ATTEMPT },
       { conversation_id: long, around: 'Dyson V8' },
     );
     expect(phrase.turns?.map((turn) => turn.position)).toContain(7);
@@ -240,22 +298,77 @@ withDb('conversations.search and conversations.read', () => {
     // Nothing asked for: the latest part.
     const latest = await readConversation(
       options(db),
-      { job_id: current },
+      { job_id: current, attempt_id: ATTEMPT },
       { conversation_id: long },
     );
     expect(latest.turns?.at(-1)?.position).toBe(40);
     expect(latest.more_after).toBe(false);
 
     // A search names the turn to read around.
-    const hit = await searchConversations(options(db), { job_id: current }, { query: 'Dyson' });
+    const hit = await searchConversations(
+      options(db),
+      { job_id: current, attempt_id: ATTEMPT },
+      { query: 'Dyson' },
+    );
     expect(hit.hits[0]?.position).toBe(7);
 
     await expect(
-      readConversation(options(db), { job_id: current }, { conversation_id: long, around: 0 }),
+      readConversation(
+        options(db),
+        { job_id: current, attempt_id: ATTEMPT },
+        { conversation_id: long, around: 0 },
+      ),
     ).rejects.toBeInstanceOf(ZodError);
     await expect(
-      searchConversations(options(db), { job_id: current }, { query: 'x', limit: 21 }),
+      searchConversations(
+        options(db),
+        { job_id: current, attempt_id: ATTEMPT },
+        { query: 'x', limit: 21 },
+      ),
     ).rejects.toBeInstanceOf(ZodError);
+  });
+
+  test('what Melete sent in an earlier chat is found by its subject and reference', async () => {
+    if (!db) return;
+    const place = await setup(db);
+    const earlier = await chat(db, place, [PLUMBER, ['Email him to confirm.', 'Sent.']]);
+    const current = await chat(db, place, [['Did you confirm the boiler visit?', '']]);
+    const [turn] = await db.sql`select id from experience_turn where job_id = ${earlier}
+      order by created_at desc limit 1`;
+    const connection = newId('conn');
+    await db.sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${connection}, ${place.space}, 'imap', 'Mail', '["email.send"]'::jsonb)`;
+    const attempt = newId('att');
+    await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, turn_id)
+      values (${attempt}, ${earlier}, 1, 'scripted-v1', 'fake', 'scripted-v1', ${turn?.id})`;
+    const sent = async (status: string, subject: string) => {
+      const id = newId('act');
+      await db.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, idempotency_key, status, receipt)
+        values (${id}, ${earlier}, ${attempt}, ${connection}, 'email.send', 'write_external',
+          ${JSON.stringify({ to: 'mario@heating.example', subject })}::jsonb, ${'a'.repeat(64)},
+          ${id}, ${status}, ${JSON.stringify({ external_ref: `ref-${status}` })}::jsonb)`;
+    };
+    await sent('succeeded', 'Thursday boiler visit');
+    // Only what went out: a refused send is not something Melete made.
+    await sent('refused', 'Thursday boiler visit');
+
+    const found = await searchConversations(
+      options(db),
+      { job_id: current, attempt_id: ATTEMPT },
+      { query: 'Thursday visit' },
+    );
+    const made = found.hits.filter((hit) => hit.kind === 'made');
+    expect(made).toEqual([
+      {
+        conversation_id: earlier,
+        title: 'New chat',
+        when: expect.any(String),
+        snippet: 'email.send: Thursday boiler visit (ref ref-succeeded)',
+        kind: 'made',
+        position: 2,
+      },
+    ]);
   });
 
   test('a recipient read from an earlier answer is not vouched for at admission', async () => {
@@ -263,7 +376,11 @@ withDb('conversations.search and conversations.read', () => {
     const place = await setup(db);
     await chat(db, place, [PLUMBER]);
     const current = await chat(db, place, [['Email Mario that Thursday works', '']]);
-    const read = await searchConversations(options(db), { job_id: current }, { query: 'Mario' });
+    const read = await searchConversations(
+      options(db),
+      { job_id: current, attempt_id: ATTEMPT },
+      { query: 'Mario' },
+    );
     expect(read.hits[0]?.snippet).toContain('mario@heating.example');
 
     const payload = { to: 'mario@heating.example', subject: 'Thursday', body: 'Thursday works.' };
@@ -291,7 +408,11 @@ withDb('conversations.search and conversations.read', () => {
       values (${quiet}, ${place.space}, 'Scout', 'assistant', 'blue', 'soft', 'dark', 'plain', '', false)`;
     await db.sql`update job set agent_id = ${quiet} where id = ${withheld}`;
     expect(
-      await searchConversations(options(db), { job_id: withheld }, { query: 'Mario' }),
+      await searchConversations(
+        options(db),
+        { job_id: withheld, attempt_id: ATTEMPT },
+        { query: 'Mario' },
+      ),
     ).toEqual({
       status: 'not_available_here',
       hits: [],
@@ -300,8 +421,13 @@ withDb('conversations.search and conversations.read', () => {
     const research = await chat(db, place, [['Who fixes boilers?', '']]);
     await db.sql`update job set constraints = '{"public_compartment": true}'::jsonb where id = ${research}`;
     expect(
-      (await readConversation(options(db), { job_id: research }, { conversation_id: research }))
-        .status,
+      (
+        await readConversation(
+          options(db),
+          { job_id: research, attempt_id: ATTEMPT },
+          { conversation_id: research },
+        )
+      ).status,
     ).toBe('not_available_here');
   });
 

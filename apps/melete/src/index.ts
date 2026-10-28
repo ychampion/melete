@@ -1593,12 +1593,24 @@ export async function bootstrap(
           )
       : undefined;
     // `conversations.search` and `.read`: a new chat that points back is
-    // answered from the earlier conversation itself.
+    // answered from the earlier conversation itself. A private conversation's
+    // words reach only a private attempt that stays on the person's own model,
+    // judged by the model the attempt runs on.
+    const earlierEngine = attemptEngine(env, modelSettings);
     const conversations = handle
       ? (claims: CapabilityClaims, name: string, input: unknown) => {
           const earlier = {
             sql: handle.sql,
             keepsPrivate: (jobId: string) => privacy.keepsPrivate(jobId),
+            readsPrivate: async (jobId: string, attemptId: string) => {
+              const [model] = await handle.sql<{ provider: string; model: string }[]>`
+                select provider, model from attempt where id = ${attemptId} and job_id = ${jobId}`;
+              return (
+                model !== undefined &&
+                (await privacy.keepsPrivate(jobId)) &&
+                (await privacy.recallsPrivateMemory(jobId, attemptId, await earlierEngine(model)))
+              );
+            },
           };
           return name === CONVERSATIONS_READ_TOOL_NAME
             ? readConversation(earlier, claims, input)

@@ -10,7 +10,8 @@
  * Only the person's own chats are searched, decided as Home decides it
  * (`ownJob`): never a room's, never another person's, and never the
  * conversation the turn is in. A conversation that must stay private is read
- * only into a turn that is itself private. What the person said there is their
+ * only into a turn that is itself private and stays on the person's own model,
+ * as memory learned in private is recalled. What the person said there is their
  * own words; what Melete answered is not a verified fact, and nothing read here
  * vouches for a recipient, address or amount at admission: the broker's trust
  * rule finds no origin for it, and the person is asked.
@@ -50,6 +51,13 @@ export type EarlierOptions = {
    * agent is marked private, or it is about a sensitive topic.
    */
   keepsPrivate: (jobId: string) => Promise<boolean>;
+  /**
+   * Whether this attempt may be shown what a private conversation said: it is
+   * private itself, and its requests stay on the person's own model. A private
+   * turn the person let go to a cloud model redacted is not, since redaction
+   * swaps details, not what a conversation was about.
+   */
+  readsPrivate: (jobId: string, attemptId: string) => Promise<boolean>;
 };
 
 export type ConversationHit = {
@@ -106,6 +114,7 @@ type Turn = {
   conversation: string;
   space: string;
   person: string;
+  /** Whether a private conversation's words may be shown to this attempt (`readsPrivate`). */
   private: boolean;
 };
 
@@ -114,7 +123,11 @@ type Turn = {
  * are not read here: a room's work, an agent set not to read memory, or
  * public research.
  */
-async function turnOf(options: EarlierOptions, jobId: string): Promise<Turn | null> {
+async function turnOf(
+  options: EarlierOptions,
+  claims: Pick<CapabilityClaims, 'job_id' | 'attempt_id'>,
+): Promise<Turn | null> {
+  const jobId = claims.job_id;
   const [row] = await options.sql`select j.space_id,
       coalesce(j.experience_parent_id, j.id) as conversation_id,
       coalesce(j.principal_id, (select id from owner limit 1)) as person,
@@ -133,7 +146,7 @@ async function turnOf(options: EarlierOptions, jobId: string): Promise<Turn | nu
     conversation: String(row.conversation_id),
     space: String(row.space_id),
     person: String(row.person),
-    private: await options.keepsPrivate(jobId),
+    private: await options.readsPrivate(jobId, claims.attempt_id),
   };
 }
 
@@ -173,7 +186,7 @@ type Ranked = ConversationHit & { score: number };
 /** Search the person's earlier conversations for an attempt. */
 export async function searchConversations(
   options: EarlierOptions,
-  claims: Pick<CapabilityClaims, 'job_id'>,
+  claims: Pick<CapabilityClaims, 'job_id' | 'attempt_id'>,
   input: unknown,
 ): Promise<ConversationSearchResult> {
   const { query, limit = SEARCH_DEFAULT_LIMIT } = conversationSearchInput.parse(input);
@@ -182,7 +195,7 @@ export async function searchConversations(
     hits: [],
     guidance: EARLIER_GUIDANCE[status],
   });
-  const turn = await turnOf(options, claims.job_id);
+  const turn = await turnOf(options, claims);
   if (!turn) return none('not_available_here');
   const tsquery = lexicalQuery(query);
   if (!tsquery) return none('nothing');
@@ -309,11 +322,11 @@ const clip = (text: string, chars: number) =>
 /** Read a bounded part of one of the person's earlier conversations. */
 export async function readConversation(
   options: EarlierOptions,
-  claims: Pick<CapabilityClaims, 'job_id'>,
+  claims: Pick<CapabilityClaims, 'job_id' | 'attempt_id'>,
   input: unknown,
 ): Promise<ConversationReadResult> {
   const { conversation_id: id, around } = conversationReadInput.parse(input);
-  const turn = await turnOf(options, claims.job_id);
+  const turn = await turnOf(options, claims);
   if (!turn) return { status: 'not_available_here', guidance: EARLIER_GUIDANCE.not_available_here };
   const sql = options.sql;
   let rows: readonly Record<string, unknown>[];
