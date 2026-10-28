@@ -32,7 +32,13 @@
  * action the service records before dispatch.
  */
 import { createHash } from 'node:crypto';
-import { EXEC_LIMITS, execEnvRefusal } from '@melete/contracts';
+import {
+  EXEC_LIMITS,
+  type ExecStopReason,
+  execCutLine,
+  execElisionLine,
+  execEnvRefusal,
+} from '@melete/contracts';
 import {
   type ExecOutcome,
   type FileEntry,
@@ -128,6 +134,58 @@ export const SOURCE_ENV_FILE =
 /** Pass on the first `$1` bytes of the output; read and drop the rest. */
 const KEEP_STAGE = 'head -c "$1"; exec cat > /dev/null';
 
+/**
+ * Pass on the first `$1` bytes of the output, then only the newest `$2` of
+ * what follows. `head -c` reads no further than its count, so the two parts
+ * meet exactly; `tail -c` holds its bytes and writes them when the command's
+ * output ends. A kept file one byte longer than both parts together says the
+ * middle was dropped there.
+ */
+const ENDS_STAGE = 'head -c "$1"; exec tail -c "$2"';
+
+/**
+ * The stage of a command started as a process: every byte goes on to
+ * descriptor 3 as well, the output of the process that started the wrapper,
+ * and the marker keeps the start and the end. A reader there that goes away
+ * is not the command's end: the copy to it stops, and the marker still keeps
+ * what the command prints.
+ */
+const PROCESS_KEEP_STAGE = `trap '' PIPE; tee /dev/fd/3 | { ${ENDS_STAGE}; }`;
+
+/**
+ * An empty file in the marker that says its `out` holds the start and the
+ * newest bytes (`ENDS_STAGE`), not only the first bytes (`KEEP_STAGE`).
+ */
+const ENDS_FILE = 'ends';
+
+/** What the wrapper keeps of a command's output: its start, and its newest bytes after that. */
+export type KeptOutput = { head: number; tail: number };
+
+/** The part of a preview that shows the start of the output. */
+const previewHead = (maxOutputBytes: number) =>
+  Math.floor(
+    (maxOutputBytes * EXEC_LIMITS.preview_head_bytes) /
+      (EXEC_LIMITS.preview_head_bytes + EXEC_LIMITS.preview_tail_bytes),
+  );
+
+/** How a capture of `maxCaptureBytes` is split, for a preview of `maxOutputBytes`. */
+export function keptOutput(
+  maxOutputBytes: number = EXEC_LIMITS.max_output_bytes,
+  maxCaptureBytes: number = EXEC_LIMITS.max_capture_bytes,
+): KeptOutput {
+  const head = Math.min(previewHead(maxOutputBytes), Math.floor(maxCaptureBytes / 2));
+  return { head, tail: maxCaptureBytes - head };
+}
+
+/**
+ * Where the cgroup says how often its processes were killed for memory. The
+ * wrapper copies it into the marker before and after the command, with the
+ * limit itself, where the computer exposes it; nothing is written where it
+ * does not.
+ */
+const MEMORY_EVENTS = '/sys/fs/cgroup/memory.events';
+const MEMORY_MAX = '/sys/fs/cgroup/memory.max';
+
 /** What the wrapper says when no marker root it may use can be made. */
 export const ROOT_UNUSABLE_MESSAGE = 'melete_exec_root_unusable';
 
@@ -144,6 +202,15 @@ export const ROOT_UNUSABLE_MESSAGE = 'melete_exec_root_unusable';
  * and dropped, so the command neither stalls nor dies on a closed pipe, and a
  * runaway command cannot fill the disk with a record nobody reads.
  *
+ * With `asProcess`, for a launcher that keeps the output itself (a background
+ * process's output ring), the output also goes on to the wrapper's own output
+ * as the command prints it; the marker keeps `asProcess.head` bytes of its
+ * start and `asProcess.tail` of its newest bytes, and the memory kill count
+ * before and after the command. The command itself gets no descriptor of the
+ * launcher's: a child it leaves running with its output sent elsewhere does
+ * not hold the launcher's output open, so the command ends when it ends. The
+ * wrapper a provider's own exec runs is unchanged by any of this.
+ *
  * Before the command starts, the wrapper removes the markers named in
  * `forget` (earlier commands whose outcome the service has recorded) and any
  * marker untouched for `MARKER_RETENTION_DAYS`, so a computer that keeps its
@@ -153,7 +220,7 @@ export function markCommand(
   root: string,
   marker: string,
   argv: readonly string[],
-  options: { keepBytes?: number; forget?: readonly string[] } = {},
+  options: { keepBytes?: number; forget?: readonly string[]; asProcess?: KeptOutput } = {},
 ): string[] {
   checkMarkerRoot(root);
   checkMarker(marker);
@@ -161,9 +228,24 @@ export function markCommand(
   const keepBytes = options.keepBytes ?? EXEC_LIMITS.max_capture_bytes + 1;
   if (!Number.isSafeInteger(keepBytes) || keepBytes < 1)
     throw new Error('the output kept must be a positive number of bytes');
+  const ends = options.asProcess;
+  if (
+    ends &&
+    (!Number.isSafeInteger(ends.head) ||
+      !Number.isSafeInteger(ends.tail) ||
+      ends.head < 0 ||
+      ends.tail < 1)
+  )
+    throw new Error('the output kept must be a positive number of bytes');
   const forget = (options.forget ?? []).map(checkMarker).filter((each) => each !== marker);
   const usable = '[ -d "$r" ] && [ -w "$r" ] && [ -x "$r" ]';
   const command = argv.map(shellQuote).join(' ');
+  // The command, its status, and the stage that keeps its output. Only a
+  // process's wrapper differs: it echoes to descriptor 3, which the command
+  // itself never gets, keeps the start and the end, and counts memory kills.
+  const run = ends
+    ? `{ { ( ${command} ) 3>&- 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(PROCESS_KEEP_STAGE)} melete-keep ${ends.head} ${ends.tail + 1}; } 3>&1 > "$d/out"`
+    : `{ { ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(KEEP_STAGE)} melete-keep ${keepBytes}; } > "$d/out"`;
   const script = [
     `r=${root}`,
     `${usable} || { rm -f "$r" 2>/dev/null; mkdir -p -m 0700 "$r" 2>/dev/null; chmod 0700 "$r" 2>/dev/null; }`,
@@ -181,13 +263,23 @@ export function markCommand(
     // A directory already there is this action's own marker; anything else
     // that stops the directory being made means the command never started.
     `mkdir "$d" 2>/dev/null || { [ -e "$d" ] && { echo ${REENTERED_MESSAGE} >&2; exit ${REENTERED_EXIT}; }; echo ${ROOT_UNUSABLE_MESSAGE} >&2; exit ${MARKER_SETUP_EXIT}; }`,
+    ...(ends
+      ? [
+          // Made before the command starts, like `out`: how `out` is laid out.
+          `: > "$d/${ENDS_FILE}"`,
+          // How often the computer has killed for memory so far, to tell after
+          // the command whether it was this command that was killed.
+          `m=${MEMORY_EVENTS}; [ -e "$m" ] && cat "$m" 2>/dev/null > "$d/mem"`,
+        ]
+      : []),
     // The keeping stage is a session of its own, so a kill sent to the
     // command's process group at its timeout leaves it to write what the
     // command printed before it died. It ends when the pipe closes.
     // `out` is opened by the enclosing group before either stage starts, so
     // nothing creates a file in the marker while the command runs: a command
     // that removes its own marker leaves it removed.
-    `{ { ( ${command} ) 2>&1; printf '%s\\n' "$?" > "$d/status"; } | setsid -w sh -c ${shellQuote(KEEP_STAGE)} melete-keep ${keepBytes}; } > "$d/out"`,
+    run,
+    ...(ends ? [`[ -e "$m" ] && cat "$m" ${MEMORY_MAX} 2>/dev/null >> "$d/mem"`] : []),
     'ec=',
     `read ec < "$d/status" 2>/dev/null`,
     'rm -f "$d/status"',
@@ -278,6 +370,10 @@ export type ExecutionRecord = {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  /** Why it stopped, in one word. */
+  stoppedBy: ExecStopReason;
+  /** The memory limit it was killed at, when it was killed for memory and the limit is known. */
+  memoryLimitBytes: number | null;
   /** Null when the command was not watched while it ran. */
   durationMs: number | null;
   /** sha256 of the captured output, before truncation. */
@@ -286,6 +382,10 @@ export type ExecutionRecord = {
   totalBytes: number;
   captureLimited: boolean;
   truncated: boolean;
+  /** What the preview leaves out between its start and its end. */
+  elidedBytes: number;
+  elidedLines: number;
+  /** The start and the end of the output, with a line between them saying what was left out. */
   preview: Uint8Array;
   /** Relative to the job workspace; set when the output did not fit the preview. */
   outputPath: string | null;
@@ -316,7 +416,114 @@ const settings = (options: RunOptions) => ({
   probeTimeoutMs: options.limits?.probeTimeoutMs ?? 30_000,
 });
 
-/** The service reads, hashes and, above the preview cap, stores the output itself. */
+const NEWLINE = 0x0a;
+const continuation = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
+
+/**
+ * Where the shown start ends: after the last line that fits, when one ends in
+ * the last quarter of the room, or else on a character boundary.
+ */
+function headEnd(bytes: Uint8Array, room: number): number {
+  let end = Math.min(room, bytes.byteLength);
+  const line = bytes.subarray(0, end).lastIndexOf(NEWLINE);
+  if (line >= 0 && line + 1 >= end - Math.floor(room / 4)) return line + 1;
+  while (end > 0 && continuation(bytes[end])) end -= 1;
+  return end;
+}
+
+/** Where the shown end starts: at a line's start in its first quarter, or a character boundary. */
+function tailStart(bytes: Uint8Array, room: number): number {
+  let start = Math.max(0, bytes.byteLength - room);
+  const line = bytes.subarray(start, start + Math.floor(room / 4)).indexOf(NEWLINE);
+  if (line >= 0 && start + line + 1 < bytes.byteLength) return start + line + 1;
+  while (start < bytes.byteLength && continuation(bytes[start])) start += 1;
+  return start;
+}
+
+/**
+ * What the model is shown of output that does not fit: its start, one line
+ * saying how much was left out, and its end, all within `maxOutputBytes`: the
+ * line's own bytes come out of the end's room. `gap` says the capture itself
+ * dropped bytes from the middle, so the counts are at least what they say.
+ * `cut` says the capture dropped what came after it, which a last line says.
+ */
+export function previewOf(
+  captured: Uint8Array,
+  options: { maxOutputBytes: number; gap: boolean; path: string | null; cut?: boolean },
+): { preview: Uint8Array; elidedBytes: number; elidedLines: number } {
+  const max = options.maxOutputBytes;
+  if (captured.byteLength <= max && !options.gap && !options.cut)
+    return { preview: captured, elidedBytes: 0, elidedLines: 0 };
+  const encoder = new TextEncoder();
+  const after = options.cut ? encoder.encode(execCutLine(options.path)) : EMPTY;
+  const headRoom = previewHead(max);
+  const head = headEnd(captured, headRoom);
+  const ownLine = head === 0 || captured[head - 1] === NEWLINE;
+  const separatorFor = (tail: number) => {
+    const middle = captured.subarray(head, tail);
+    let lines = 0;
+    for (const byte of middle) if (byte === NEWLINE) lines += 1;
+    const elidedBytes = middle.byteLength + (options.gap ? 1 : 0);
+    const line = execElisionLine(elidedBytes, lines, options.path, options.gap);
+    return { elidedBytes, lines, bytes: encoder.encode(ownLine ? line.slice(1) : line) };
+  };
+  // The line's length depends on what it counts, and what it counts on the
+  // room it leaves; its digits only grow as the end shrinks, so this settles.
+  let reserved = after.byteLength;
+  let tail = captured.byteLength;
+  let separator = separatorFor(tail);
+  for (let round = 0; round < 8; round += 1) {
+    tail = Math.max(head, tailStart(captured, Math.max(0, max - headRoom - reserved)));
+    separator = separatorFor(tail);
+    const needed = separator.bytes.byteLength + after.byteLength;
+    if (needed <= reserved) break;
+    reserved = needed;
+  }
+  const preview = new Uint8Array(
+    head + separator.bytes.byteLength + (captured.byteLength - tail) + after.byteLength,
+  );
+  // Only a cap smaller than the line itself leaves no room for it: the start alone, then.
+  if (preview.byteLength > max) {
+    const start = headEnd(captured, max);
+    return {
+      preview: captured.slice(0, start),
+      elidedBytes: captured.byteLength - start,
+      elidedLines: 0,
+    };
+  }
+  preview.set(captured.subarray(0, head));
+  preview.set(separator.bytes, head);
+  preview.set(captured.subarray(tail), head + separator.bytes.byteLength);
+  preview.set(after, preview.byteLength - after.byteLength);
+  return { preview, elidedBytes: separator.elidedBytes, elidedLines: separator.lines };
+}
+
+/** The cgroup's kill count before and after the command, and its limit, from the marker's copy. */
+export function memoryKill(copied: string): { killed: boolean; limitBytes: number | null } {
+  const counts = [...copied.matchAll(/^oom_kill (\d+)$/gm)].map((match) => Number(match[1]));
+  const killed = counts.length >= 2 && (counts.at(-1) ?? 0) > (counts[0] ?? 0);
+  const last = copied.trimEnd().split('\n').at(-1) ?? '';
+  const limit = /^\d+$/.test(last) ? Number(last) : null;
+  return { killed, limitBytes: limit !== null && limit > 0 ? limit : null };
+}
+
+/** Exit 137 is a KILL; a KILL with the cgroup's kill count up is the memory limit. */
+const killedHard = (facts: Pick<ExecutionRecord, 'exitCode' | 'signal'>) =>
+  facts.exitCode === 137 || facts.signal === 'KILL' || facts.signal === 'SIGKILL';
+
+/** How the wrapper splits what it keeps of the output, under these run options. */
+export const keptFor = (options: Pick<RunOptions, 'limits'>): KeptOutput =>
+  keptOutput(
+    options.limits?.maxOutputBytes ?? EXEC_LIMITS.max_output_bytes,
+    options.limits?.maxCaptureBytes ?? EXEC_LIMITS.max_capture_bytes,
+  );
+
+/**
+ * The service reads, hashes and, above the preview cap, stores the output
+ * itself. A process's wrapper kept the start and the newest bytes, which its
+ * `ends` file says; a provider's exec kept only the first bytes, read here
+ * exactly as before.
+ */
 async function capture(
   options: RunOptions,
   directory: string,
@@ -325,14 +532,29 @@ async function capture(
   signal: AbortSignal,
 ): Promise<ExecutionRecord> {
   const { maxOutputBytes, maxCaptureBytes } = settings(options);
+  const ends = regular(entries, ENDS_FILE) !== undefined;
+  const keep = keptOutput(maxOutputBytes, maxCaptureBytes);
   const out = regular(entries, 'out');
   const listed = out?.size ?? 0;
-  const captured =
+  const kept =
     listed > 0
-      ? await options.provider.getFile(options.handle, `${directory}/out`, maxCaptureBytes, signal)
+      ? await options.provider.getFile(
+          options.handle,
+          `${directory}/out`,
+          ends ? keep.head + keep.tail + 1 : maxCaptureBytes,
+          signal,
+        )
       : EMPTY;
+  // One byte past both parts: the wrapper dropped the middle, right after the start.
+  const gap = ends && kept.byteLength > keep.head + keep.tail;
+  const captured = gap
+    ? new Uint8Array(Buffer.concat([kept.subarray(0, keep.head), kept.subarray(keep.head + 1)]))
+    : kept;
   const outputDigest = digest(captured);
-  const truncated = captured.byteLength > maxOutputBytes;
+  const totalBytes = Math.max(listed, kept.byteLength);
+  // Only the first bytes were kept, and the output went on past them.
+  const cut = !ends && totalBytes > captured.byteLength;
+  const truncated = captured.byteLength > maxOutputBytes || gap || cut;
   let outputPath: string | null = null;
   if (truncated) {
     outputPath = `${EXEC_LIMITS.output_dir}/${options.request.marker}.out`;
@@ -346,15 +568,28 @@ async function capture(
     if (digest(stored) !== outputDigest)
       throw new Error('the stored output does not hash to the recorded digest');
   }
-  const totalBytes = Math.max(listed, captured.byteLength);
+  let memory: { killed: boolean; limitBytes: number | null } = { killed: false, limitBytes: null };
+  if (!facts.timedOut && killedHard(facts) && regular(entries, 'mem'))
+    memory = memoryKill(
+      text(await options.provider.getFile(options.handle, `${directory}/mem`, 4096, signal)),
+    );
+  const stoppedBy: ExecStopReason = facts.timedOut
+    ? 'timeout'
+    : memory.killed
+      ? 'memory_limit'
+      : facts.exitCode === null
+        ? 'signal'
+        : 'exit';
   return {
     ...facts,
+    stoppedBy,
+    memoryLimitBytes: memory.killed ? memory.limitBytes : null,
     outputDigest,
     outputBytes: captured.byteLength,
     totalBytes,
     captureLimited: totalBytes > captured.byteLength,
     truncated,
-    preview: captured.slice(0, maxOutputBytes),
+    ...previewOf(captured, { maxOutputBytes, gap, cut, path: outputPath }),
     outputPath,
   };
 }
@@ -462,6 +697,40 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
       started === 'no' ? 'unknown' : started,
     );
   }
+  return settleOutcome(options, outcome);
+}
+
+/**
+ * The script a process launcher runs: the wrapper of `markCommand` for a
+ * command started as a process (`asProcess`), after the file `envFile` names is read and
+ * removed, when there is one. The file gone means nothing ran (exit 112).
+ */
+export function launchScript(
+  root: string,
+  request: Pick<CommandRequest, 'marker' | 'argv' | 'forget'>,
+  options: { keep: KeptOutput; envFile: string | null },
+): string {
+  const [, , script] = markCommand(root, request.marker, request.argv, {
+    asProcess: options.keep,
+    ...(request.forget ? { forget: request.forget } : {}),
+  });
+  if (!script) throw new Error('the wrapper has no script');
+  if (!options.envFile) return script;
+  const file = shellQuote(options.envFile);
+  return `e=${file}; [ -f "$e" ] || exit ${MARKER_SETUP_EXIT}; . "$e"; rm -f "$e"\n${script}`;
+}
+
+/**
+ * What a command that was started came to, from what its launcher saw of it
+ * and from its marker: the rules in the table at the top of this file. The
+ * launcher is the provider's own exec, or anything else that ran the
+ * wrapped command and saw it end, be killed or be lost.
+ */
+export async function settleOutcome(
+  options: RunOptions,
+  outcome: ExecOutcome,
+): Promise<CommandResult> {
+  const { provider, handle, request } = options;
   if (outcome.state === 'lost')
     return fromMarker(options, 'the sandbox lost track of the command', outcome.started);
   if (reentered(outcome))

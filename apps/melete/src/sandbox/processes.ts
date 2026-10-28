@@ -28,6 +28,7 @@
 import type { ProcessState } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { appendEvent, recordId } from '../broker/records.ts';
+import type { EgressHostSummary } from '../egress/tokens.ts';
 import {
   type ComputerStatus,
   helperComputer,
@@ -179,6 +180,13 @@ const startedByStopped = (sql: Sql) =>
 
 /** How long a start may take to reach the computer before its missing directory means it never did. */
 const STARTING_GRACE_MS = 300_000;
+/**
+ * How long past its time limit a process's egress token is held at most when
+ * nothing here saw it end: the sweep stops it within a minute of the limit.
+ */
+const EGRESS_HOLD_GRACE_MS = 300_000;
+/** The most ended processes whose egress summary waits to be read with their end. */
+const SEEN_AT_END_MAX = 1_024;
 /** A time as Postgres reads it; the driver is given text, never a Date. */
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -200,6 +208,13 @@ export class SandboxProcesses {
   private readonly computerFor: ProcessComputerFor;
   private readonly now: () => Date;
   private readonly say: (line: string) => void;
+  /** Egress tokens held for processes still running, ended when their row ends. */
+  private readonly heldEgress = new Map<
+    string,
+    { settle: () => EgressHostSummary[]; timer: ReturnType<typeof setTimeout> }
+  >();
+  /** What each such token saw, for the wake that tells of the process's end. */
+  private readonly seenAtEnd = new Map<string, EgressHostSummary[]>();
 
   constructor(
     private readonly sql: Sql,
@@ -220,6 +235,49 @@ export class SandboxProcesses {
     return Math.min(requested ?? this.limits.defaultTtlMinutes, this.limits.maxTtlMinutes);
   }
 
+  /**
+   * Keep a command's egress token, and with it any connected account its
+   * traffic uses, until its process ends: the token is settled when this
+   * service closes the row, or at the latest a little past `until`, the
+   * process's time limit, when nothing here saw it end.
+   */
+  holdEgressUntilEnd(id: string, settle: () => EgressHostSummary[], until: Date): void {
+    this.releaseEgress(id);
+    const timer = setTimeout(
+      () => this.releaseEgress(id),
+      Math.max(0, until.getTime() - this.now().getTime()) + EGRESS_HOLD_GRACE_MS,
+    );
+    timer.unref?.();
+    this.heldEgress.set(id, { settle, timer });
+  }
+
+  /** Where a process's held token sent something, once its process has ended; read once. */
+  egressSeen(id: string): EgressHostSummary[] | null {
+    const seen = this.seenAtEnd.get(id) ?? null;
+    this.seenAtEnd.delete(id);
+    return seen;
+  }
+
+  private releaseEgress(id: string): void {
+    const held = this.heldEgress.get(id);
+    if (!held) return;
+    this.heldEgress.delete(id);
+    clearTimeout(held.timer);
+    try {
+      const seen = held.settle();
+      if (this.seenAtEnd.size >= SEEN_AT_END_MAX) this.seenAtEnd.clear();
+      this.seenAtEnd.set(id, seen);
+    } catch (error) {
+      this.say(`the egress token of process ${id} was not settled: ${String(error)}`);
+    }
+  }
+
+  /** Rows that have ended give up what was held for them. */
+  private ended<T extends ProcessRow | null>(row: T): T {
+    if (row && !LIVE_STATES.includes(row.state)) this.releaseEgress(row.id);
+    return row;
+  }
+
   async get(id: string): Promise<ProcessRow | null> {
     const [row] = await this.sql`select * from sandbox_process where id = ${id}`;
     return row ? rowOf(row) : null;
@@ -227,6 +285,29 @@ export class SandboxProcesses {
 
   async byAction(actionId: string): Promise<ProcessRow | null> {
     const [row] = await this.sql`select * from sandbox_process where action_id = ${actionId}`;
+    return row ? rowOf(row) : null;
+  }
+
+  /**
+   * A live process this job started with `kind` (its tool) for the same
+   * command in the same directory: what an identical second proposal reads
+   * back instead of starting another.
+   */
+  async liveTwin(input: {
+    spaceId: string;
+    agentId: string;
+    jobId: string;
+    commandDigest: string;
+    cwd: string;
+    kind: string;
+  }): Promise<ProcessRow | null> {
+    const [row] = await this.sql`select p.* from sandbox_process p
+      join action a on a.id = p.action_id
+      where p.space_id = ${input.spaceId} and p.agent_id = ${input.agentId}
+        and p.job_id = ${input.jobId} and p.command_digest = ${input.commandDigest}
+        and p.cwd = ${input.cwd} and p.state in ('starting', 'running')
+        and a.kind = ${input.kind}
+      order by p.created_at desc limit 1`;
     return row ? rowOf(row) : null;
   }
 
@@ -307,6 +388,17 @@ export class SandboxProcesses {
     await this.sql`update sandbox_process
       set state = 'lost', ended_at = coalesce(ended_at, now()), end_reason = ${reason.slice(0, 500)}
       where id = ${id} and state = 'starting'`;
+    this.releaseEgress(id);
+  }
+
+  /**
+   * Remove the row of a process that has ended and that nobody needs to see:
+   * a command that was waited for to its end, whose result says it all. A
+   * live row stays.
+   */
+  async forget(id: string): Promise<void> {
+    await this.sql`delete from sandbox_process
+      where id = ${id} and state not in ('starting', 'running')`;
   }
 
   /**
@@ -344,8 +436,8 @@ export class SandboxProcesses {
       where id = ${row.id} and state = ${row.state}
         and state in ('starting', 'running')
       returning *`;
-    if (updated) return rowOf(updated);
-    return (await this.get(row.id)) ?? row;
+    if (updated) return this.ended(rowOf(updated));
+    return this.ended((await this.get(row.id)) ?? row);
   }
 
   /** Close a row the service ended, with the reason it ended. */
@@ -365,7 +457,7 @@ export class SandboxProcesses {
       where id = ${id} and state in ('starting', 'running')
       returning *`;
     // A row that ended meanwhile keeps the end it was given first.
-    return row ? rowOf(row) : this.get(id);
+    return this.ended(row ? rowOf(row) : await this.get(id));
   }
 
   /** A later time limit, never past the longest from its start. */
@@ -393,7 +485,10 @@ export class SandboxProcesses {
 
   /**
    * Reconcile one computer's rows with what its helper reports, and end what
-   * the service has decided must end. Returns the rows as they now stand.
+   * the service has decided must end. Returns the rows as they now stand. The
+   * computer is asked only about those rows, never for every process it kept
+   * a record of, so the answer does not grow with the commands of the day; a
+   * computer with no rows is not asked at all.
    */
   async reconcile(
     spaceId: string,
@@ -401,25 +496,35 @@ export class SandboxProcesses {
     computer: ProcessComputer,
     signal: AbortSignal,
   ): Promise<ProcessRow[]> {
+    const rows = await this.forComputer(spaceId, agentId);
+    if (!rows.length) return [];
     return this.reconcileWith(
       spaceId,
       agentId,
       computer,
-      await computer.status('all', signal),
+      await computer.status(
+        rows.map((row) => row.id),
+        signal,
+      ),
       signal,
+      rows,
     );
   }
 
-  /** The same, from an answer to `status('all')` the caller already has. */
+  /**
+   * The same, from an answer to `status` the caller already has, for every
+   * row of `forComputer` (`rows`, when the caller read them already).
+   */
   async reconcileWith(
     spaceId: string,
     agentId: string,
     computer: ProcessComputer,
     status: ComputerStatus,
     signal: AbortSignal,
+    known?: ProcessRow[],
   ): Promise<ProcessRow[]> {
     const found = new Map(status.processes.map((facts) => [facts.id, facts]));
-    const rows = await this.forComputer(spaceId, agentId);
+    const rows = known ?? (await this.forComputer(spaceId, agentId));
     const out: ProcessRow[] = [];
     for (const row of rows) {
       const facts = found.get(row.id);
@@ -533,7 +638,9 @@ export class SandboxProcesses {
         end_reason = coalesce(end_reason, ${reason})
       where connection_id = ${connectionId} and state in ('starting', 'running')
       returning id`;
-    return rows.map((row) => String(row.id));
+    const ids = rows.map((row) => String(row.id));
+    for (const id of ids) this.releaseEgress(id);
+    return ids;
   }
 
   /**

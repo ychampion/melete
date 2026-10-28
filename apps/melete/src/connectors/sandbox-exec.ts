@@ -101,6 +101,7 @@ import {
   PROCESS_TOOLS,
   processDispatchBudgetMs,
 } from './sandbox-process.ts';
+import { canKeepProcesses, NO_HELPER_REASON, runYielding } from './sandbox-yield.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 /** At most this many paths are named on a receipt; the count says the rest. */
@@ -351,6 +352,13 @@ const runSchema = {
     command: { type: 'string', minLength: 1, maxLength: 20000 },
     cwd: { type: 'string', minLength: 1, maxLength: 1024 },
     timeout_ms: { type: 'integer', minimum: 100, maximum: EXEC_LIMITS.max_timeout_ms },
+    yield_after_ms: {
+      type: 'integer',
+      minimum: 1_000,
+      maximum: EXEC_LIMITS.max_yield_ms,
+      description:
+        'How long to wait for the command before it moves to the background and keeps running there. 30 seconds unless set.',
+    },
     run: {
       type: 'string',
       pattern: RUN_PATTERN.source,
@@ -372,7 +380,7 @@ export const sandboxTerminalManifest: ConnectorManifest = {
     {
       name: 'terminal.run',
       description:
-        'Run a shell command in the job workspace inside a remote sandbox. Output above the cap is stored as an artifact. A command ends within two minutes: for longer work or a server, use process.start, and never background a command with & or nohup.',
+        'Run a shell command in the job workspace in a remote sandbox; the result shows the start and end of its output. One still running after 30 s (yield_after_ms) moves to the background: the result gives its process id, output so far and next step. timeout_ms (5 min unless set) stops a command; once it moved, only a set one does. For a server use process.start; never use & or nohup.',
       input_schema: runSchema,
       effect_class: 'write_reversible',
       required_scopes: ['terminal.run'],
@@ -392,14 +400,50 @@ export const sandboxExecManifest: ConnectorManifest = {
   tools: [...sandboxTerminalManifest.tools, ...COMPUTER_TOOLS],
 };
 
-/** What one provider's sandboxes can do: a desktop only where the adapter has one. */
-export function sandboxManifestFor(provider: SandboxProvider): ConnectorManifest {
+/**
+ * `terminal.run` where commands do not move to the background after a wait:
+ * the computer ends its processes when it is suspended, or this installation
+ * keeps none. Only a message from the person can move one, until the turn ends.
+ */
+const heldRunTool: ConnectorManifest['tools'][number] = {
+  ...(sandboxTerminalManifest.tools[0] as ConnectorManifest['tools'][number]),
+  description:
+    'Run a shell command in the job workspace in a remote sandbox; the result shows the start and end of its output. Here a command holds the turn until it ends or timeout_ms (5 min unless set) stops it. If the person sends a message meanwhile it may move to the background for the rest of the turn; the result then says so. For a server use process.start; never use & or nohup.',
+  input_schema: {
+    ...runSchema,
+    properties: {
+      ...runSchema.properties,
+      yield_after_ms: {
+        ...runSchema.properties.yield_after_ms,
+        description: 'Has no effect on this computer: a command here holds the turn until it ends.',
+      },
+    },
+  },
+};
+
+/**
+ * What one provider's sandboxes can do: a desktop only where the adapter has
+ * one, and a `terminal.run` that says whether a long command moves to the
+ * background (`moves`: the computer keeps its processes awake, unless the
+ * caller knows this installation keeps none).
+ */
+export function sandboxManifestFor(
+  provider: SandboxProvider,
+  moves: boolean = provider.capabilities.keepAwake,
+): ConnectorManifest {
   const desktop = desktopOf(provider);
-  if (!desktop) return sandboxTerminalManifest;
-  if (isDesktopProvider(provider)) return sandboxExecManifest;
+  const manifest = !desktop
+    ? sandboxTerminalManifest
+    : isDesktopProvider(provider)
+      ? sandboxExecManifest
+      : {
+          ...sandboxExecManifest,
+          tools: [...sandboxTerminalManifest.tools, ...computerToolsOf(desktop)],
+        };
+  if (moves) return manifest;
   return {
-    ...sandboxExecManifest,
-    tools: [...sandboxTerminalManifest.tools, ...computerToolsOf(desktop)],
+    ...manifest,
+    tools: manifest.tools.map((tool) => (tool.name === 'terminal.run' ? heldRunTool : tool)),
   };
 }
 
@@ -429,7 +473,13 @@ function refusedBefore(error: unknown) {
 /** How long one computer action may take, the desktop's own wait for a page included. */
 const COMPUTER_BUDGET_MS = 60_000;
 
-type Payload = { command: string; cwd?: string; timeout_ms?: number; run?: string };
+type Payload = {
+  command: string;
+  cwd?: string;
+  timeout_ms?: number;
+  yield_after_ms?: number;
+  run?: string;
+};
 
 function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
   const payload = action.canonical_payload as Record<string, unknown>;
@@ -448,6 +498,17 @@ function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
       timeout > EXEC_LIMITS.max_timeout_ms)
   )
     throw new Error('a timeout must be a whole number of milliseconds within the cap');
+  const yieldAfter = payload.yield_after_ms;
+  if (
+    yieldAfter !== undefined &&
+    (typeof yieldAfter !== 'number' ||
+      !Number.isInteger(yieldAfter) ||
+      yieldAfter < 1_000 ||
+      yieldAfter > EXEC_LIMITS.max_yield_ms)
+  )
+    throw new Error(
+      'a wait before the background must be a whole number of milliseconds within the cap',
+    );
   const run = payload.run;
   if (run !== undefined && (typeof run !== 'string' || !RUN_PATTERN.test(run)))
     throw new Error('a run name is 8 to 64 letters, digits, dashes or underscores');
@@ -455,6 +516,7 @@ function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
     command,
     ...(typeof cwd === 'string' ? { cwd } : {}),
     ...(typeof timeout === 'number' ? { timeout_ms: timeout } : {}),
+    ...(typeof yieldAfter === 'number' ? { yield_after_ms: yieldAfter } : {}),
     ...(typeof run === 'string' ? { run } : {}),
   };
 }
@@ -857,8 +919,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     newHosts: string[] | null = null,
   ): Promise<Record<string, JsonValue>> => {
     // The receipt is the only way the result travels back to the engine that
-    // asked, so the preview the service kept goes on it, capped as it was.
-    const shown = outputText(record.preview, record.truncated);
+    // asked, so the preview the service kept goes on it: the start and the
+    // end of the output, each cut on a character boundary.
+    const shown = outputText(record.preview, false);
     const detail: Record<string, JsonValue> = {
       language: 'shell',
       command: payload.command,
@@ -868,10 +931,14 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       exit_code: record.exitCode,
       signal: record.signal,
       timed_out: record.timedOut,
+      stopped_by: record.stoppedBy,
+      ...(record.memoryLimitBytes !== null ? { memory_limit_bytes: record.memoryLimitBytes } : {}),
       duration_ms: record.durationMs,
       output_digest: record.outputDigest,
       output_bytes: record.outputBytes,
       truncated: record.truncated,
+      elided_bytes: record.elidedBytes,
+      elided_lines: record.elidedLines,
       output_path: record.outputPath,
       stored_bytes: stored ? stored.byteLength : null,
       // The service captured and hashed these bytes itself, so it can say so.
@@ -1122,21 +1189,60 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     } catch (error) {
       return { decision: 'undecided', reason: (error as Error).message };
     }
-    const result = await runCommand({
-      provider,
-      handle: sessionHandle(session),
-      request: {
-        marker: action.id,
-        argv: ['sh', '-c', payload.command],
-        cwd: sandboxCwd(payload.cwd),
+    // A command that moved to the background is read back from its process;
+    // what that settles (an end, or a start that never reached the computer)
+    // is the answer, and the marker is not asked a second time.
+    let readBack: CommandResult | null = null;
+    const ran = options.processes ? await options.processes.byAction(action.id) : null;
+    if (options.processes && ran && session.agentId) {
+      const yielded = await runYielding({
+        provider,
+        processes: options.processes,
+        sql,
+        config: options.config,
+        connectionId: options.connectionId,
+        session,
+        ctx,
+        actionId: action.id,
+        attemptId: action.attempt_id,
+        agentId: session.agentId,
+        command: payload.command,
+        cwd: payload.cwd ?? '.',
+        cwdPath: sandboxCwd(payload.cwd),
         timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
-        // Never a first run: a verify asks what the marker says, and nothing else.
+        limitMs: payload.timeout_ms ?? null,
+        yieldAfterMs: 0,
+        env: {},
+        forget: [],
         dispatch: 'again',
-      },
-      workRoot: options.workRoot,
-      jobId: ctx.job_id,
-      signal,
-    });
+        workRoot: options.workRoot,
+        signal,
+      });
+      if (yielded.kind === 'moved')
+        return {
+          decision: 'succeeded',
+          evidence: { process_id: yielded.row.id, session_id: session.id },
+          receipt: receiptFor(action, yielded.detail, null, false),
+        };
+      if (yielded.kind === 'settled') readBack = yielded.result;
+    }
+    const result =
+      readBack ??
+      (await runCommand({
+        provider,
+        handle: sessionHandle(session),
+        request: {
+          marker: action.id,
+          argv: ['sh', '-c', payload.command],
+          cwd: sandboxCwd(payload.cwd),
+          timeoutMs: payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms,
+          // Never a first run: a verify asks what the marker says, and nothing else.
+          dispatch: 'again',
+        },
+        workRoot: options.workRoot,
+        jobId: ctx.job_id,
+        signal,
+      }));
     if (result.outcome === 'succeeded') {
       const stored = await workspaceFile(ctx.job_id, result.record.outputPath).catch(() => null);
       // Read back after the fact, the hosts come from the guard's records.
@@ -1168,7 +1274,12 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
   };
 
   return {
-    manifest: sandboxManifestFor(provider),
+    manifest: sandboxManifestFor(
+      provider,
+      provider.capabilities.keepAwake &&
+        Boolean(options.processes) &&
+        options.config.persistence !== 'ephemeral',
+    ),
     catalog: { audience: 'owner' },
 
     dispatchBudgetMs: sandboxDispatchBudgetMs,
@@ -1222,9 +1333,24 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       const forget = settled.get(session.providerSandboxId) ?? [];
       settled.delete(session.providerSandboxId);
       const dispatch = await sessions.beginCommand(session.id, action.id, action.id);
-      // A token for this command alone, ended when it settles: a process it
-      // leaves behind reaches out unattributed from then on.
+      // In the agent's own computer the command runs as a process, so it can
+      // move to the background instead of holding the turn.
+      const agentId = session.agentId;
+      const ownComputer = Boolean(
+        options.processes && agentId && options.config.persistence !== 'ephemeral',
+      );
+      const asProcess = ownComputer && canKeepProcesses(session);
+      // A token for this command alone, ended when it settles, or, once it
+      // moved to the background, when its process ends: a process it leaves
+      // behind reaches out unattributed from then on.
       const timeoutMs = payload.timeout_ms ?? EXEC_LIMITS.default_timeout_ms;
+      const lifetimeMs =
+        asProcess && provider.capabilities.keepAwake && options.processes
+          ? Math.min(
+              payload.timeout_ms ?? Number.POSITIVE_INFINITY,
+              options.processes.ttlMinutes(null) * 60_000,
+            )
+          : timeoutMs;
       const attributed =
         guarded(session) && hasCommandEgress(provider)
           ? await provider.attributeCommand(sessionHandle(session), {
@@ -1233,32 +1359,115 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
               jobId: ctx.job_id,
               attemptId: action.attempt_id,
               actionId: action.id,
-              deadlineAt: Date.now() + timeoutMs,
+              deadlineAt: Date.now() + lifetimeMs,
             })
           : null;
-      let result: CommandResult;
+      let result: CommandResult | null = null;
+      let moved: Record<string, JsonValue> | null = null;
+      /** Why a command that could have moved held the turn instead. */
+      let heldTurn: string | null = ownComputer && !asProcess ? NO_HELPER_REASON : null;
+      /** The token now lives as long as the process it moved to. */
+      let tokenHeld = false;
+      /** The same command was already running: nothing was started for this action. */
+      let readTwin = false;
       let seen: EgressHostSummary[] | null = null;
       const began = new Date();
+      const env = { ...commandEnv(timeZone), ...attributed?.env };
       try {
-        result = await runCommand({
+        if (asProcess && options.processes && agentId) {
+          const yielded = await runYielding({
+            provider,
+            processes: options.processes,
+            sql,
+            config: options.config,
+            connectionId: options.connectionId,
+            session,
+            ctx,
+            actionId: action.id,
+            attemptId: action.attempt_id,
+            agentId,
+            command: payload.command,
+            cwd: payload.cwd ?? '.',
+            cwdPath: sandboxCwd(payload.cwd),
+            timeoutMs,
+            limitMs: payload.timeout_ms ?? null,
+            // A computer that ends its processes when suspended moves one only for the person.
+            yieldAfterMs: provider.capabilities.keepAwake
+              ? (payload.yield_after_ms ?? EXEC_LIMITS.default_yield_ms)
+              : Number.POSITIVE_INFINITY,
+            env,
+            forget,
+            dispatch,
+            workRoot: options.workRoot,
+            signal,
+          });
+          if (yielded.kind === 'settled') result = yielded.result;
+          else if (yielded.kind === 'not_started') heldTurn = yielded.why;
+          else {
+            moved = yielded.detail;
+            readTwin = !yielded.started;
+            if (attributed && yielded.started) {
+              options.processes.holdEgressUntilEnd(
+                yielded.row.id,
+                () => attributed.settle(),
+                yielded.row.expiresAt,
+              );
+              tokenHeld = true;
+            }
+          }
+        }
+        if (!result && !moved)
+          result = await runCommand({
+            provider,
+            handle: sessionHandle(session),
+            request: {
+              marker: action.id,
+              argv: ['sh', '-c', payload.command],
+              cwd: sandboxCwd(payload.cwd),
+              timeoutMs,
+              dispatch,
+              env,
+              forget,
+            },
+            workRoot: options.workRoot,
+            jobId: ctx.job_id,
+            signal,
+          });
+      } finally {
+        seen = tokenHeld ? null : (attributed?.settle() ?? null);
+      }
+      if (moved) {
+        // Still running: it has no exit to record yet, and its marker stays for
+        // its end. One read back from the same command already running started
+        // nothing, and is recorded so.
+        await sessions.settleCommand(action.id, {
+          outcome: readTwin ? NOT_STARTED : 'background',
+          exitCode: null,
+          reattached: false,
+        });
+        if (forget.length)
+          settled.set(session.providerSandboxId, [
+            ...(settled.get(session.providerSandboxId) ?? []),
+            ...forget,
+          ]);
+        await sessions.renew(session.id).catch(() => {});
+        // What it has written so far comes back with this step; the rest with a later one.
+        const report = await syncOut({
           provider,
           handle: sessionHandle(session),
-          request: {
-            marker: action.id,
-            argv: ['sh', '-c', payload.command],
-            cwd: sandboxCwd(payload.cwd),
-            timeoutMs,
-            dispatch,
-            env: { ...commandEnv(timeZone), ...attributed?.env },
-            forget,
-          },
           workRoot: options.workRoot,
           jobId: ctx.job_id,
           signal,
-        });
-      } finally {
-        seen = attributed?.settle() ?? null;
+        }).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+        return withWorkspaceNote(
+          {
+            outcome: 'succeeded' as const,
+            receipt: receiptFor(action, moved, null, false),
+          },
+          workspaceNote(report),
+        );
       }
+      if (!result) throw new Error('the command was neither run nor moved');
       // Only shown, never asked: where its computer sent something for the first time.
       const sentTo = (seen ?? [])
         .filter((each) => each.bytes_up > 0 && each.host !== OTHER_HOSTS)
@@ -1280,6 +1489,9 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         egressHosts(session, seen),
         newHosts,
       );
+      // Said on the receipt: this command held the turn because it could not move.
+      if (heldTurn && outcome.outcome === 'succeeded')
+        outcome.receipt.detail.background_unavailable = heldTurn;
       // A recorded outcome no longer needs its marker; an unknown one keeps it
       // as the only evidence a later check can read. A command that never
       // started removed nothing, so what it was to remove waits for the next.

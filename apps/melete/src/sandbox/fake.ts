@@ -405,7 +405,11 @@ type Word = Part[];
 type Redirect =
   | { kind: 'file'; stream: 'out' | 'append' | 'err' | 'errAppend' | 'in'; target: Word }
   | { kind: 'errToOut' }
-  | { kind: 'outToErr' };
+  | { kind: 'outToErr' }
+  /** `3>&1`: descriptor 3 is what standard output is at that point. */
+  | { kind: 'fd3ToOut' }
+  /** `3>&-`: descriptor 3 is closed. */
+  | { kind: 'fd3Close' };
 type Command =
   | { kind: 'simple'; words: Word[]; redirects: Redirect[] }
   | { kind: 'subshell'; body: List; redirects: Redirect[] }
@@ -481,10 +485,10 @@ function tokenize(script: string): Token[] {
       endWord();
       tokens.push({ type: 'op', value: '<' });
     } else if (char === '>') {
-      // `2>` only when the 2 is a whole word of its own so far.
+      // `2>` (or `3>`) only when the digit is a whole word of its own so far.
       let descriptor = '';
-      if (buffer === '2' && parts.length === 0) {
-        descriptor = '2';
+      if ((buffer === '2' || buffer === '3') && parts.length === 0) {
+        descriptor = buffer;
         buffer = '';
         started = false;
       } else endWord();
@@ -522,6 +526,8 @@ function parse(tokens: Token[]): List {
       if (token?.type !== 'op') return found;
       const value = token.value;
       if (value === '2>&1') found.push({ kind: 'errToOut' });
+      else if (value === '3>&1') found.push({ kind: 'fd3ToOut' });
+      else if (value === '3>&-') found.push({ kind: 'fd3Close' });
       else if (value === '>&2') found.push({ kind: 'outToErr' });
       else if (['>', '>>', '2>', '2>>', '<'].includes(value)) {
         const target = tokens[position + 1];
@@ -571,7 +577,7 @@ function parse(tokens: Token[]): List {
         position += 1;
         continue;
       }
-      if (['>', '>>', '2>', '2>>', '2>&1', '>&2', '<'].includes(current.value)) {
+      if (['>', '>>', '2>', '2>>', '2>&1', '3>&1', '3>&-', '>&2', '<'].includes(current.value)) {
         found.push(...redirects());
         continue;
       }
@@ -632,6 +638,10 @@ type Io = {
   in?: () => Promise<Uint8Array>;
   /** The next chunk from a pipe, or null once the writer has ended. */
   read?: () => Promise<Uint8Array | null>;
+  /** Hand back bytes read past what was wanted, for the next reader of the same pipe. */
+  unread?: (bytes: Uint8Array) => void;
+  /** Descriptor 3, where a `3>&1` set it; `/dev/fd/3` writes there. */
+  fd3?: Sink;
 };
 
 /** A pipe between two commands: chunks as they are written, then an end. */
@@ -646,6 +656,9 @@ class FakePipe {
   close(): void {
     this.ended = true;
     this.wake();
+  }
+  unread(bytes: Uint8Array): void {
+    if (bytes.byteLength) this.chunks.unshift(bytes.slice());
   }
   async read(): Promise<Uint8Array | null> {
     for (;;) {
@@ -933,12 +946,14 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
           io.out((await (io.in ? io.in() : shell.process.readStdin())).slice(0, count));
           return 0;
         }
-        // As head does on a pipe: what it read past the count is gone.
+        // As head -c does on a pipe: it reads no further than its count, so
+        // what follows is left for the next reader.
         for (let left = count; left > 0; ) {
           const chunk = await io.read();
           if (!chunk) break;
           const part = chunk.subarray(0, left);
           io.out(part);
+          io.unread?.(chunk.subarray(part.byteLength));
           left -= part.byteLength;
         }
         return 0;
@@ -956,6 +971,43 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       } catch {
         return fail(`cannot open '${file}' for reading`, 1);
       }
+      return 0;
+    }
+    case 'trap':
+      // Nothing in the fake sends a signal a trap could change.
+      return 0;
+    case 'tee': {
+      const files = args.filter((arg) => arg !== '--' && !arg.startsWith('-'));
+      const sinks = files.map((file): Sink => {
+        if (file === '/dev/fd/3') return io.fd3 ?? (() => {});
+        const target = path(file);
+        fs.writeFile(target, EMPTY);
+        return (bytes) => fs.writeFile(target, bytes, { append: true });
+      });
+      const each = (bytes: Uint8Array) => {
+        io.out(bytes);
+        for (const sink of sinks) sink(bytes);
+      };
+      if (io.read) for (let chunk = await io.read(); chunk; chunk = await io.read()) each(chunk);
+      else each(await (io.in ? io.in() : shell.process.readStdin()));
+      return 0;
+    }
+    case 'tail': {
+      const operands = args.filter((arg) => arg !== '--');
+      if (operands[0] !== '-c' || operands[1] === undefined || operands.length > 2)
+        return fail('only -c N is supported', 2);
+      const count = Number(operands[1]);
+      // The newest `count` bytes of the input, written once it ends.
+      let kept = new Uint8Array(0);
+      const keep = (bytes: Uint8Array) => {
+        const joined = new Uint8Array(kept.byteLength + bytes.byteLength);
+        joined.set(kept);
+        joined.set(bytes, kept.byteLength);
+        kept = joined.slice(Math.max(0, joined.byteLength - count));
+      };
+      if (io.read) for (let chunk = await io.read(); chunk; chunk = await io.read()) keep(chunk);
+      else keep(await (io.in ? io.in() : shell.process.readStdin()));
+      io.out(kept);
       return 0;
     }
     case 'cat': {
@@ -1114,7 +1166,11 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
   let current = io;
   for (const redirect of command.redirects) {
     if (redirect.kind === 'errToOut') current = { ...current, err: current.out };
-    else if (redirect.kind === 'outToErr') current = { ...current, out: current.err };
+    else if (redirect.kind === 'fd3ToOut') current = { ...current, fd3: current.out };
+    else if (redirect.kind === 'fd3Close') {
+      const { fd3: _closed, ...rest } = current;
+      current = rest;
+    } else if (redirect.kind === 'outToErr') current = { ...current, out: current.err };
     else {
       const target = expand(redirect.target, shell);
       if (redirect.stream === 'in') {
@@ -1176,7 +1232,12 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
       runCommand(
         command.right,
         { ...shell, vars: new Map(shell.vars) },
-        { ...current, in: () => pipe.readAll(), read: () => pipe.read() },
+        {
+          ...current,
+          in: () => pipe.readAll(),
+          read: () => pipe.read(),
+          unread: (bytes) => pipe.unread(bytes),
+        },
       ),
     );
     const [first, second] = await Promise.allSettled([left, right]);

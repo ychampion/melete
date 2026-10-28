@@ -346,6 +346,27 @@ export const BACKGROUND_WORDS: readonly string[] = [
 ];
 
 /**
+ * How to read a command's result. One whose output did not fit shows its start
+ * and its end with a line between them, and a model that took the stored file
+ * to be the only way to see the end spent a step reading it for a line the
+ * result already showed. Shown only where `terminal.run` is offered.
+ */
+export const COMMAND_WORDS: readonly string[] = [
+  'A command result with a line saying output was left out already shows the start and the',
+  'end of that output; read the stored output only when you need the part in the middle.',
+];
+
+/**
+ * What a command that moved to the background is. Its result arrives before
+ * it ends, and a model that took that for the end ran it again or reported a
+ * result it did not have yet. Shown only where `terminal.run` is offered.
+ */
+export const MOVED_COMMAND_WORDS: readonly string[] = [
+  'A command whose result says it moved to the background is still running: tell the person,',
+  'do not run it again, and take the next step its result gives.',
+];
+
+/**
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
@@ -373,6 +394,9 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
       : []),
     ...(bundle.tools.some((tool) => tool.name === 'run.start' && tool.connection_id === null)
       ? BACKGROUND_WORDS
+      : []),
+    ...(bundle.tools.some((tool) => tool.name === 'terminal.run')
+      ? [...COMMAND_WORDS, ...MOVED_COMMAND_WORDS]
       : []),
     ...OUTSIDE_WORDS,
     ...ASKING,

@@ -213,6 +213,10 @@ export function createExecConnector(options: ExecOptions): Connector {
       captured_bytes: record.captured_bytes ?? record.output_bytes,
       total_bytes: record.total_bytes ?? null,
       capture_limited: record.capture_limited ?? null,
+      ...(record.stopped_by ? { stopped_by: record.stopped_by } : {}),
+      ...(record.memory_limit_bytes ? { memory_limit_bytes: record.memory_limit_bytes } : {}),
+      ...(record.elided_bytes !== undefined ? { elided_bytes: record.elided_bytes } : {}),
+      ...(record.elided_lines !== undefined ? { elided_lines: record.elided_lines } : {}),
     };
     // Output that did not fit is not a loose file in a hidden directory: it is
     // an artifact of this job, with a handle a later attempt can cite and a

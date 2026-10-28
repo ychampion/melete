@@ -20,12 +20,14 @@ import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
 import {
   BACKGROUND_WORDS,
   CALENDAR_DAYS,
+  COMMAND_WORDS,
   calendarStrip,
   DONE_WORDS,
   DUE_NOW_WORDS,
   HARD_LIMITS,
   instructionTokens,
   MEMORY_WORDS,
+  MOVED_COMMAND_WORDS,
   measureRenderedInput,
   OUTSIDE_WORDS,
   PLAIN_WORDS,
@@ -619,6 +621,22 @@ describe('context assembly', () => {
     expect(text).toContain(BACKGROUND_WORDS.join('\n'));
     expect(text).toContain('start it with run.start before');
     expect(text).toContain('one or two reads can settle here');
+  });
+
+  test('an agent with a terminal is told that a cut result already shows its end, and others are not', () => {
+    expect(renderInstructions(bundle)).not.toContain(COMMAND_WORDS.join('\n'));
+    const terminal = { ...RUN_START_TOOL, name: 'terminal.run', connection_id: 'conn_terminal' };
+    const text = renderInstructions({ ...bundle, tools: [terminal] });
+    expect(text).toContain(COMMAND_WORDS.join('\n'));
+    expect(text).toContain('read the stored output only when you need the part in the middle');
+  });
+
+  test('an agent with a terminal is told a command in the background is still running, and others are not', () => {
+    expect(renderInstructions(bundle)).not.toContain(MOVED_COMMAND_WORDS.join('\n'));
+    const terminal = { ...RUN_START_TOOL, name: 'terminal.run', connection_id: 'conn_terminal' };
+    const text = renderInstructions({ ...bundle, tools: [terminal] });
+    expect(text).toContain(MOVED_COMMAND_WORDS.join('\n'));
+    expect(text).toContain('do not run it');
   });
 
   test('an agent that can search memory is told to search before it says it does not know', () => {

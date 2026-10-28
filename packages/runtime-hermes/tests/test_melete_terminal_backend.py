@@ -333,8 +333,45 @@ def test_truncated_capped_and_binary_output_are_each_said():
     assert result["returncode"] == 3
     output = result["output"]
     assert "[binary output" in output and "d" * 64 in output
-    assert "the full capture is in the job workspace at .melete/exec/act_1.out" in output
-    assert "wrote 9000000 bytes; only the first 4194304 were kept" in output
+    assert "showing the start and the end of 4194304 captured bytes" in output
+    assert "the kept output is in the job workspace at .melete/exec/act_1.out" in output
+    assert "its start and its newest output were kept" in output
+
+
+def test_a_command_killed_for_memory_is_said_to_have_run_out_of_it():
+    broker = ScriptedBroker()
+    broker.receipt = receipt(
+        output="allocating", exit_code=137, stopped_by="memory_limit", memory_limit_bytes=536_870_912
+    )
+    result = environment(broker).execute("python train.py")
+    assert result["returncode"] == 137
+    assert "killed because it used all the memory of 512 MiB its computer allows" in result["output"]
+
+
+def test_a_command_that_moved_to_the_background_is_said_to_be_running_not_ended():
+    broker = ScriptedBroker()
+    broker.receipt = receipt(
+        output="suite 1 of 9",
+        exit_code=None,
+        process_id="prc_1",
+        moved_to_background={
+            "process_id": "prc_1",
+            "elapsed_ms": 30_412,
+            "output_so_far": "suite 1 of 9",
+            "output_so_far_bytes": 13,
+            "why": "still_running",
+        },
+        next_step="Wait for it with process.wait.",
+    )
+    result = environment(broker).execute("npm test")
+    # Settled early, and not a failure: no exit status is read as a signal.
+    assert result["returncode"] == 0
+    output = result["output"]
+    assert output.startswith("[the command is still running: it moved to the background after 30 s")
+    assert "as process prc_1. Do not run it again." in output
+    assert "Wait for it with process.wait." in output
+    assert output.endswith("[its output so far]\nsuite 1 of 9")
+    assert "without an exit status" not in output
 
 
 def test_a_command_with_no_exit_status_is_not_reported_as_success():

@@ -328,6 +328,9 @@ def _signal_status(name: Any) -> int:
 
 def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
     """The engine's `{"output", "returncode"}` from the receipt the broker wrote."""
+    moved = detail.get("moved_to_background")
+    if isinstance(moved, dict):
+        return _moved(detail, moved)
     output = str(detail.get("output") or "")
     notes: List[str] = []
     if not output:
@@ -352,14 +355,26 @@ def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
         )
     if detail.get("truncated"):
         stored = detail.get("output_path")
-        where = f"; the full capture is in the job workspace at {stored}" if stored else ""
+        where = f"; the kept output is in the job workspace at {stored}" if stored else ""
         notes.append(
-            f"[output truncated: showing the start of {detail.get('output_bytes')} captured bytes{where}]"
+            f"[output truncated: showing the start and the end of {detail.get('output_bytes')} captured bytes, "
+            f"with a line between them saying what was left out{where}]"
         )
     if detail.get("capture_limited"):
         notes.append(
-            f"[the command wrote {detail.get('total_bytes')} bytes; "
-            f"only the first {detail.get('captured_bytes')} were kept]"
+            f"[the command wrote more than the {detail.get('captured_bytes')} bytes kept; "
+            "its start and its newest output were kept, and the middle was dropped]"
+        )
+    if detail.get("stopped_by") == "memory_limit":
+        limit = detail.get("memory_limit_bytes")
+        size = (
+            f" of {limit // (1024 * 1024)} MiB"
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+            else ""
+        )
+        notes.append(
+            f"[the command was killed because it used all the memory{size} its computer allows; "
+            "the same command will run out again unless it uses less]"
         )
     exit_code = detail.get("exit_code")
     if detail.get("timed_out"):
@@ -373,6 +388,34 @@ def _from_detail(detail: Dict[str, Any]) -> Dict[str, Any]:
     if notes:
         output = (output + "\n" if output else "") + "\n".join(notes)
     return _result(output, returncode)
+
+
+def _moved(detail: Dict[str, Any], moved: Dict[str, Any]) -> Dict[str, Any]:
+    """A command that moved to the background: settled early, and still running.
+
+    Said first, so it is not read as a command that ended: it has no exit
+    status yet, and running it again would start a second copy.
+    """
+    process = moved.get("process_id")
+    seconds = moved.get("elapsed_ms")
+    ran = (
+        f" after {int(seconds) // 1000} s"
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
+        else ""
+    )
+    why = (
+        " because the person sent a message"
+        if moved.get("why") == "person_spoke"
+        else ""
+    )
+    head = (
+        f"[the command is still running: it moved to the background{ran}{why}, "
+        f"as process {process}. Do not run it again. "
+        f"{detail.get('next_step') or 'Wait for it with process.wait, or end the turn.'}]"
+    )
+    so_far = str(moved.get("output_so_far") or "")
+    body = f"{head}\n[its output so far]\n{so_far}" if so_far else f"{head}\n[no output so far]"
+    return _result(body, 0)
 
 
 def engine_classes(provider_base: Any = None, environment_base: Any = None) -> Any:

@@ -22,6 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import melete_plugin.execution as execution  # noqa: E402
 from melete_plugin.execution import (  # noqa: E402
     MAX_OUTPUT_BYTES,
     SECRET_ENV,
@@ -125,8 +126,8 @@ def test_output_above_the_cap_is_truncated_with_a_marker_and_stored_in_full(work
     record = outcome["record"]
     assert record["truncated"] is True
     assert record["output_path"] is not None
-    assert "output truncated" in outcome["display"]
-    assert len(outcome["display"].encode("utf-8")) < record["output_bytes"] + 512
+    assert "of output left out here" in outcome["display"]
+    assert len(outcome["display"].encode("utf-8")) < MAX_OUTPUT_BYTES + 512
     stored = (workspace / record["output_path"]).read_bytes()
     assert len(stored) == record["output_bytes"]
     import hashlib
@@ -227,3 +228,102 @@ def test_a_workspace_shared_with_no_group_keeps_the_umask(workspace):
     assert _make_in_cell()["record"]["exit_code"] == 0
     for made in ("output", "output/slides", "output/slides/deck.pptx"):
         assert not (workspace / made).stat().st_mode & 0o020, f"{made} is group-writable"
+
+
+def test_output_that_does_not_fit_shows_its_start_and_its_end_with_what_was_left_out(workspace):
+    # Bytes, not print: a line ends in \n on every platform.
+    code = (
+        "import sys\n"
+        "out = sys.stdout.buffer\n"
+        "for n in range(1, 3001):\n"
+        "    out.write(f'ok test_{n}\\n'.encode())\n"
+        "out.write(b'FAILED test_checkout_rounding: expected 10.00, got 9.99\\n')\n"
+        "out.flush()\n"
+        "raise SystemExit(1)\n"
+    )
+    outcome = run_in_cell("python", {"code": code, "timeout_ms": 30_000})
+    record = outcome["record"]
+    shown = outcome["display"]
+    assert record["exit_code"] == 1
+    assert record["stopped_by"] == "exit"
+    assert record["capture_limited"] is False
+    assert shown.startswith("ok test_1\nok test_2\n")
+    assert shown.endswith("FAILED test_checkout_rounding: expected 10.00, got 9.99\n")
+    separator = next(line for line in shown.split("\n") if line.startswith("⟦melete:"))
+    assert separator == (
+        f"⟦melete: {record['elided_bytes']} bytes ({record['elided_lines']} lines) of output left out "
+        f"here; the kept output is at {record['output_path']}⟧"
+    )
+    head, tail = shown.split(separator + "\n")
+    assert len(head.encode()) <= 4096 and len(tail.encode()) <= 12_288
+    assert len(head.encode()) + len(tail.encode()) + record["elided_bytes"] == record["output_bytes"]
+    stored = (workspace / record["output_path"]).read_bytes()
+    assert stored.decode().count("\n") == 3001
+
+
+def test_above_the_capture_cap_the_start_and_the_newest_output_are_kept(workspace, monkeypatch):
+    monkeypatch.setattr(execution, "MAX_CAPTURE_BYTES", 10_000)
+    monkeypatch.setattr(execution, "MAX_OUTPUT_BYTES", 2_000)
+    monkeypatch.setattr(execution, "PREVIEW_HEAD_BYTES", 500)
+    monkeypatch.setattr(execution, "PREVIEW_TAIL_BYTES", 1_500)
+    code = (
+        "import sys\n"
+        "for n in range(5000):\n"
+        "    sys.stdout.buffer.write(f'line {n:05d}\\n'.encode())\n"
+    )
+    outcome = run_in_cell("python", {"code": code, "timeout_ms": 30_000})
+    record = outcome["record"]
+    everything = "".join(f"line {n:05d}\n" for n in range(5000)).encode()
+    assert record["total_bytes"] == len(everything)
+    assert record["captured_bytes"] == 10_000
+    assert record["capture_limited"] is True
+    stored = (workspace / record["output_path"]).read_bytes()
+    assert stored == everything[:500] + everything[-9_500:]
+    assert outcome["display"].startswith("line 00000\n")
+    assert outcome["display"].endswith("line 04999\n")
+    assert "⟦melete: at least " in outcome["display"]
+
+
+def test_a_command_stopped_by_its_time_says_so(workspace):
+    outcome = run_in_cell(
+        "python", {"code": "import time\ntime.sleep(30)\n", "timeout_ms": 500}
+    )
+    assert outcome["record"]["stopped_by"] == "timeout"
+    assert "memory_limit_bytes" not in outcome["record"]
+
+
+def test_a_kill_for_memory_is_told_apart_from_any_other_kill(workspace, monkeypatch, tmp_path):
+    events = tmp_path / "memory.events"
+    limit = tmp_path / "memory.max"
+    events.write_text("oom 0\noom_kill 0\n", encoding="utf-8")
+    limit.write_text("268435456\n", encoding="utf-8")
+    monkeypatch.setattr(execution, "MEMORY_EVENTS", str(events))
+    monkeypatch.setattr(execution, "MEMORY_MAX", str(limit))
+    code = (
+        "import pathlib\n"
+        f"pathlib.Path({str(events)!r}).write_text('oom 1\\noom_kill 1\\n')\n"
+        "raise SystemExit(137)\n"
+    )
+    record = run_in_cell("python", {"code": code, "timeout_ms": 30_000})["record"]
+    assert record["stopped_by"] == "memory_limit"
+    assert record["memory_limit_bytes"] == 268_435_456
+    # The same exit with the count unchanged is an ordinary exit.
+    record = run_in_cell("python", {"code": "raise SystemExit(137)", "timeout_ms": 30_000})["record"]
+    assert record["stopped_by"] == "exit"
+    assert "memory_limit_bytes" not in record
+
+
+def test_a_preview_with_its_line_never_goes_past_the_cap():
+    # Every byte the same: the start, the line and the end fill the cap exactly.
+    shown, elided, _ = execution.preview_of(b"0" * 70_000, False, ".melete/exec/x.log")
+    assert len(shown.encode("utf-8")) == MAX_OUTPUT_BYTES
+    assert elided > 70_000 - MAX_OUTPUT_BYTES
+    seed = 7
+    alphabet = "ab\n€é"
+    for round_ in range(200):
+        seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+        size = seed % 30_000
+        data = "".join(alphabet[(seed + index * 7919) % len(alphabet)] for index in range(size)).encode()
+        for gap in (False, True):
+            shown, _, _ = execution.preview_of(data, gap, None if round_ % 2 else ".melete/exec/a.log")
+            assert len(shown.encode("utf-8")) <= MAX_OUTPUT_BYTES

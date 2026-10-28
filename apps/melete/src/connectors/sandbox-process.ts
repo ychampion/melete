@@ -2,8 +2,8 @@
  * Background processes in the agent's computer, as tools on the sandbox
  * connection.
  *
- * A command through `terminal.run` ends within two minutes. Work that takes
- * longer, and servers that should keep running, are started here instead:
+ * A command through `terminal.run` that runs past its wait moves here by
+ * itself. Servers, and work meant to run on from the start, are started here:
  * the process runs on in the agent's computer after the turn and the job
  * that started it, and any later job of the same agent can list it, read its
  * output, type into it and stop it. Each tool is one brokered action with a
@@ -108,7 +108,7 @@ const tool = (
 export const PROCESS_TOOLS: ToolManifest[] = [
   tool(
     'process.start',
-    "Start a command in the agent's computer in the background: a test suite, a build, a dev server, anything longer than two minutes. Never use & or nohup in a terminal command instead. It keeps running after this job until it ends, is stopped or reaches its time limit (two hours unless set). Returns its id and first output. Give port for a server on 0.0.0.0, and notify to be woken by it.",
+    "Start a command in the agent's computer in the background: a dev server, a watcher, or long work to leave running. Never use & or nohup in a terminal command instead. It keeps running after this job until it ends, is stopped or reaches its time limit (two hours unless set). Returns its id and first output. Give port for a server on 0.0.0.0, and notify to be woken by it.",
     schema(
       {
         command: { type: 'string', minLength: 1, maxLength: 20000 },

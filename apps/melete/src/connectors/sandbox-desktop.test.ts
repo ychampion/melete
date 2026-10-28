@@ -8,7 +8,12 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { type Action, SANDBOX_ADAPTER_DESKTOP, SANDBOX_ADAPTERS } from '@melete/contracts';
+import {
+  type Action,
+  connectorManifest,
+  SANDBOX_ADAPTER_DESKTOP,
+  SANDBOX_ADAPTERS,
+} from '@melete/contracts';
 import { DOCKER_DESKTOP, type DockerSandboxProvider } from '../sandbox/adapters/docker.ts';
 import { createMaritimeProvider } from '../sandbox/adapters/maritime.ts';
 import { AUTHORING_KEY, createMaritimeStandin } from '../sandbox/adapters/maritime-standin.ts';
@@ -111,6 +116,27 @@ test('each adapter says whether its computers have a desktop, as the connection 
   const plain = { capabilities: { ...FAKE_CAPABILITIES, adapter: 'e2b' } } as SandboxProvider;
   expect(desktopOf(plain)).toBeNull();
   expect(sandboxManifestFor(plain)).toBe(sandboxTerminalManifest);
+});
+
+test('a computer that ends its processes when suspended is told a command holds the turn', () => {
+  const runTool = (provider: SandboxProvider, moves?: boolean) =>
+    sandboxManifestFor(provider, moves).tools.find((tool) => tool.name === 'terminal.run');
+  const asleep = {
+    capabilities: { ...FAKE_CAPABILITIES, adapter: 'daytona', keepAwake: false },
+  } as SandboxProvider;
+  const awake = { capabilities: { ...FAKE_CAPABILITIES, adapter: 'e2b' } } as SandboxProvider;
+  expect(runTool(asleep)?.description).toContain('holds the turn until it ends');
+  expect(runTool(asleep)?.description).not.toContain('30 s (yield_after_ms) moves');
+  expect(JSON.stringify(runTool(asleep)?.input_schema)).toContain('Has no effect on this computer');
+  expect(runTool(awake)?.description).toContain('30 s (yield_after_ms) moves to the background');
+  // A computer that could keep them, in an installation that keeps none, is told the same.
+  expect(runTool(awake, false)?.description).toContain('holds the turn until it ends');
+  // Still a manifest the service accepts.
+  expect(connectorManifest.safeParse(sandboxManifestFor(asleep)).success).toBe(true);
+  // Only the terminal changes.
+  expect(sandboxManifestFor(asleep).tools.map((tool) => tool.name)).toEqual(
+    sandboxTerminalManifest.tools.map((tool) => tool.name),
+  );
 });
 
 test('a Docker computer keeps its own desktop, tools and manifest unchanged', () => {

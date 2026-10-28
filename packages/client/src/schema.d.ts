@@ -628,15 +628,20 @@ export interface paths {
                             command: string;
                             cwd: string;
                             duration_ms: number;
+                            elided_bytes?: number;
+                            elided_lines?: number;
                             exit_code: number | null;
                             /** @enum {string} */
                             language: "shell" | "python";
+                            memory_limit_bytes?: number | null;
                             output_bytes: number;
                             output_digest: string;
                             /** @default null */
                             output_path?: string | null;
                             /** @default null */
                             signal?: string | null;
+                            /** @enum {string} */
+                            stopped_by?: "exit" | "timeout" | "memory_limit" | "signal" | "person";
                             /** @default false */
                             timed_out?: boolean;
                             total_bytes?: number;
@@ -28822,6 +28827,7 @@ export interface components {
         __schema401: string;
         __schema402: string;
         __schema403: {
+            background?: boolean;
             command: string;
             exit_code: number | null;
             id: components["schemas"]["__schema366"];

@@ -96,6 +96,28 @@ test('the agent’s page, who holds it, and the commands it ran', () => {
   expect(html).not.toContain('Hand back');
 });
 
+test('a command that moved to the background says so while it runs', () => {
+  const html = render({
+    browser: null,
+    terminal: [
+      {
+        id: 'act_1',
+        command: 'npm run build',
+        output: 'compiling 1 of 40',
+        status: 'running',
+        exit_code: null,
+        started_at: AT,
+        background: true,
+      },
+    ],
+    processes: [],
+    available: { browser: false, terminal: true },
+  });
+  expect(html).toContain('Running in the background');
+  expect(html).toContain('compiling 1 of 40');
+  expect(html).not.toContain('Done');
+});
+
 test('while the person holds the browser, the page is live and can be handed back', () => {
   const html = render({
     browser: browser('you'),

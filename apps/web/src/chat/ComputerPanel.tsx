@@ -801,7 +801,9 @@ function Terminal({ commands }: { commands: ComputerCommand[] }) {
             {entry.output ? <pre className="computer-out">{entry.output}</pre> : null}
             <span className="computer-exit">
               {entry.status === 'running'
-                ? 'Running…'
+                ? entry.background
+                  ? 'Running in the background'
+                  : 'Running…'
                 : entry.status === 'unknown'
                   ? 'Unclear whether it finished'
                   : entry.status === 'failed'

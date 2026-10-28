@@ -56,8 +56,15 @@ DEFAULT_WORK_DIR = "/work"
 DEFAULT_TIMEOUT_MS = 300_000
 MAX_TIMEOUT_MS = 600_000
 MAX_OUTPUT_BYTES = 16_384
+PREVIEW_HEAD_BYTES = 4_096
+PREVIEW_TAIL_BYTES = 12_288
 MAX_CAPTURE_BYTES = 4_194_304
 OUTPUT_DIR = ".melete/exec"
+
+#: Where the cgroup counts its kills for memory, and its limit. Read before and
+#: after a command that ended on a KILL, to tell a memory kill from any other.
+MEMORY_EVENTS = "/sys/fs/cgroup/memory.events"
+MEMORY_MAX = "/sys/fs/cgroup/memory.max"
 
 #: Names whose values would let a snippet act as the attempt. The child is given
 #: an allow-list rather than a deny-list, but these are named so the reason is
@@ -205,44 +212,152 @@ def _kill_tree(process: subprocess.Popen) -> None:
 
 
 class _Capture:
-    """Drain the pipe with a bounded preview and a capped spill file."""
+    """Drain the pipe, keeping the start of the output and its newest bytes.
+
+    The first `PREVIEW_HEAD_BYTES` are kept as they come. After them only the
+    newest bytes are kept, up to `MAX_CAPTURE_BYTES` in all, so a long run
+    still shows how it ended. What is kept is stored once the pipe closes.
+    """
 
     def __init__(self, root: Path):
         self.root = root
-        self.preview = bytearray()
-        self.captured_bytes = 0
+        self.head = bytearray()
+        self.tail = bytearray()
         self.total_bytes = 0
-        self.digest = hashlib.sha256()
         self.output_path = None
         self.error = None
         self.done = threading.Event()
 
+    @property
+    def kept(self) -> bytes:
+        return bytes(self.head) + bytes(self.tail)
+
+    @property
+    def captured_bytes(self) -> int:
+        return len(self.head) + len(self.tail)
+
+    @property
+    def gap(self) -> bool:
+        """Whether bytes were dropped between the start and the newest ones."""
+        return self.total_bytes > self.captured_bytes
+
     def drain(self, pipe) -> None:
-        store = None
+        room = MAX_CAPTURE_BYTES - PREVIEW_HEAD_BYTES
         try:
             while chunk := pipe.read(65536):
                 self.total_bytes += len(chunk)
-                retained = chunk[:max(0, MAX_CAPTURE_BYTES - self.captured_bytes)]
-                if not retained:
-                    continue
-                if store is None and self.captured_bytes + len(retained) > MAX_OUTPUT_BYTES:
-                    resolve_in_workspace(self.root, OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-                    self.output_path = f"{OUTPUT_DIR}/{uuid.uuid4().hex}.log"
-                    store = resolve_in_workspace(self.root, self.output_path).open("xb")
-                    store.write(self.preview)
-                if store is not None:
-                    resolve_in_workspace(self.root, self.output_path)
-                    store.write(retained)
-                self.preview.extend(retained[:max(0, MAX_OUTPUT_BYTES - len(self.preview))])
-                self.digest.update(retained)
-                self.captured_bytes += len(retained)
+                start = max(0, PREVIEW_HEAD_BYTES - len(self.head))
+                self.head.extend(chunk[:start])
+                self.tail.extend(chunk[start:])
+                if len(self.tail) > room:
+                    del self.tail[: len(self.tail) - room]
         except BaseException as error:
             self.error = error
         finally:
-            if store is not None:
-                store.close()
             pipe.close()
             self.done.set()
+
+    def store(self) -> None:
+        """Write what was kept, when it does not fit the preview."""
+        kept = self.kept
+        if len(kept) <= MAX_OUTPUT_BYTES and not self.gap:
+            return
+        resolve_in_workspace(self.root, OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        self.output_path = f"{OUTPUT_DIR}/{uuid.uuid4().hex}.log"
+        with resolve_in_workspace(self.root, self.output_path).open("xb") as store:
+            store.write(kept)
+
+
+def _head_end(data: bytes, room: int) -> int:
+    """After the last whole line in the last quarter of the room, else a character boundary."""
+    end = min(room, len(data))
+    line = data.rfind(b"\n", 0, end)
+    if line >= 0 and line + 1 >= end - room // 4:
+        return line + 1
+    while 0 < end < len(data) and data[end] & 0xC0 == 0x80:
+        end -= 1
+    return end
+
+
+def _tail_start(data: bytes, room: int) -> int:
+    """At a line's start in the first quarter of the room, else a character boundary."""
+    start = max(0, len(data) - room)
+    line = data.find(b"\n", start, start + room // 4)
+    if line >= 0 and line + 1 < len(data):
+        return line + 1
+    while start < len(data) and data[start] & 0xC0 == 0x80:
+        start += 1
+    return start
+
+
+def elision_line(elided: int, lines: int, path: Optional[str], at_least: bool) -> str:
+    """Mirrors `execElisionLine` in packages/contracts/src/execution.ts."""
+    more = "at least " if at_least else ""
+    where = f"; the kept output is at {path}" if path else ""
+    return f"\n⟦melete: {more}{elided} bytes ({more}{lines} lines) of output left out here{where}⟧\n"
+
+
+def preview_of(kept: bytes, gap: bool, path: Optional[str]) -> Tuple[str, int, int]:
+    """The start and the end of the output, with one line saying what was left out between them.
+
+    Mirrors `previewOf` in apps/melete/src/sandbox/marker.ts: the whole preview,
+    the line included, fits `MAX_OUTPUT_BYTES`, since the line's own bytes come
+    out of the end's room.
+    """
+    if len(kept) <= MAX_OUTPUT_BYTES and not gap:
+        return kept.decode("utf-8", errors="replace"), 0, 0
+    head = _head_end(kept, PREVIEW_HEAD_BYTES)
+    own_line = head == 0 or kept[head - 1 : head] == b"\n"
+
+    def separator_for(tail: int) -> Tuple[int, int, bytes]:
+        middle = kept[head:tail]
+        elided = len(middle) + (1 if gap else 0)
+        lines = middle.count(b"\n")
+        line = elision_line(elided, lines, path, gap)
+        return elided, lines, (line[1:] if own_line else line).encode("utf-8")
+
+    # The line's digits only grow as the end shrinks, so this settles.
+    reserved = 0
+    tail = len(kept)
+    elided, lines, separator = separator_for(tail)
+    for _ in range(8):
+        tail = max(head, _tail_start(kept, max(0, PREVIEW_TAIL_BYTES - reserved)))
+        elided, lines, separator = separator_for(tail)
+        if len(separator) <= reserved:
+            break
+        reserved = len(separator)
+    # Only a cap smaller than the line itself leaves no room for it: the start alone, then.
+    if head + len(separator) + len(kept) - tail > MAX_OUTPUT_BYTES:
+        start = _head_end(kept, MAX_OUTPUT_BYTES)
+        return kept[:start].decode("utf-8", errors="replace"), len(kept) - start, 0
+    shown = (
+        kept[:head].decode("utf-8", errors="replace")
+        + separator.decode("utf-8")
+        + kept[tail:].decode("utf-8", errors="replace")
+    )
+    return shown, elided, lines
+
+
+def _oom_kills() -> Optional[int]:
+    """How often the cgroup has killed for memory, or None where it does not say."""
+    try:
+        with open(MEMORY_EVENTS, encoding="utf-8") as handle:
+            for line in handle:
+                name, _, value = line.partition(" ")
+                if name == "oom_kill":
+                    return int(value)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _memory_limit() -> Optional[int]:
+    try:
+        with open(MEMORY_MAX, encoding="utf-8") as handle:
+            value = handle.read().strip()
+    except OSError:
+        return None
+    return int(value) if value.isdigit() and int(value) > 0 else None
 
 
 def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
@@ -287,6 +402,8 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
     process = None
     capture = _Capture(root)
     reader = None
+    cancelled = False
+    kills_before = _oom_kills()
     try:
         process = subprocess.Popen(  # noqa: S603 - argv is built here, never shell-interpolated
             argv,
@@ -309,6 +426,7 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
             remaining = timeout_ms / 1000 - (time.monotonic() - started)
             if remaining <= 0 or (cancel_event is not None and cancel_event.is_set()):
                 timed_out = remaining <= 0
+                cancelled = not timed_out
                 signal_name = "SIGKILL"
                 _kill_tree(process)
                 exit_code = None
@@ -319,6 +437,7 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
             raise ExecRefused("command output pipe did not close after process-tree termination")
         if capture.error is not None:
             raise capture.error
+        capture.store()
         if exit_code is not None and exit_code < 0:
             signal_name = f"SIG{-exit_code}"
     except BaseException:
@@ -337,18 +456,25 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
             except OSError:
                 pass
 
-    digest = capture.digest.hexdigest()
-    capture_limited = capture.total_bytes > capture.captured_bytes
-    truncated = capture.total_bytes > MAX_OUTPUT_BYTES
+    kept = capture.kept
+    digest = hashlib.sha256(kept).hexdigest()
+    capture_limited = capture.gap
+    truncated = len(kept) > MAX_OUTPUT_BYTES or capture.gap
     output_path = capture.output_path
-    shown = capture.preview.decode("utf-8", errors="replace")
-    if truncated:
-        label = "captured prefix" if capture_limited else "full output"
-        loss = f", capture limit enforced; {capture.total_bytes} bytes emitted" if capture_limited else ""
-        shown += (
-            f"\n[melete: output truncated, {capture.captured_bytes} bytes captured{loss}"
-            f"{', ' + label + ' at ' + output_path if output_path else ''}]\n"
-        )
+    shown, elided_bytes, elided_lines = preview_of(kept, capture.gap, output_path)
+    memory_limit = None
+    killed = exit_code == 137 or (hasattr(signal, "SIGKILL") and exit_code == -signal.SIGKILL)
+    if timed_out:
+        stopped_by = "timeout"
+    elif cancelled:
+        stopped_by = "person"
+    elif killed and kills_before is not None and (_oom_kills() or 0) > kills_before:
+        stopped_by = "memory_limit"
+        memory_limit = _memory_limit()
+    elif exit_code is None or exit_code < 0:
+        stopped_by = "signal"
+    else:
+        stopped_by = "exit"
 
     record = {
         "language": language,
@@ -364,7 +490,12 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
         "total_bytes": capture.total_bytes,
         "capture_limited": capture_limited,
         "truncated": truncated,
+        "elided_bytes": elided_bytes,
+        "elided_lines": elided_lines,
+        "stopped_by": stopped_by,
         "output_path": output_path,
     }
+    if memory_limit is not None:
+        record["memory_limit_bytes"] = memory_limit
     return {"record": record, "display": shown}
 
