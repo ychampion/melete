@@ -157,6 +157,11 @@ export const displayNameText = z
   .min(1)
   .max(80)
   .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>@]+$/u, 'Use one line of plain text, without < > or @.')
+  // Characters that show as nothing, such as U+034F, U+FE0F or the Hangul filler, would hide in a name.
+  .refine(
+    (value) => !/[\p{Default_Ignorable_Code_Point}\u115F\u1160\u3164\uFFA0]/u.test(value),
+    'Use one line of plain text, without < > or @.',
+  )
   // Look-alikes of < > and @, by compatibility (＜ ﹫) or by shape (‹ › « » ⟨ ⟩), count as them.
   .refine(
     (value) => !LOOKALIKE_MARKS.test(value.normalize('NFKC')),

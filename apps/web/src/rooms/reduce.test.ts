@@ -274,12 +274,8 @@ test('a read that is ahead of the stream never shows a word twice', () => {
 
 test('an answered permission says who answered it, or that nobody in the room did', () => {
   const base = { approval_id: 'apr_1', decided_at: at(4) };
-  expect(decisionWords({ ...base, decision: 'approved', decided_by: BOB })).toBe(
-    'Allowed by Bob <p3vz8ndr>',
-  );
-  expect(decisionWords({ ...base, decision: 'denied', decided_by: ALICE })).toBe(
-    'Denied by Alice <k7q2mxwa>',
-  );
+  expect(decisionWords({ ...base, decision: 'approved', decided_by: BOB })).toBe('Allowed by Bob');
+  expect(decisionWords({ ...base, decision: 'denied', decided_by: ALICE })).toBe('Denied by Alice');
   expect(decisionWords({ ...base, decision: 'denied', decided_by: null })).toBe(
     'Withdrawn by Melete',
   );
