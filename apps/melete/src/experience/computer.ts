@@ -42,6 +42,8 @@ export type ComputerProcessRow = {
 export type ComputerBinding = {
   id: string;
   control: string;
+  /** The person holds it to show the agent how, under the epoch the binding records now. */
+  teaching?: boolean;
   /** A timestamp; the database driver may hand it over as a Date or as its text. */
   updated_at: Date | string;
 };
@@ -142,6 +144,7 @@ function browser(binding: ComputerBinding, rows: ActionRow[]): ComputerBrowser {
   return {
     session_id: binding.id,
     control: binding.control === 'human' ? 'you' : 'agent',
+    ...(binding.control === 'human' && binding.teaching ? { teaching: true } : {}),
     url,
     title: seen ? toolText(observation.title, 200) : null,
     screenshot:

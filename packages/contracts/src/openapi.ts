@@ -4197,6 +4197,42 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/browser/sessions/{id}/teach': {
+          post: {
+            tags: ['browser'],
+            summary: 'Take control of a browser session to show the agent how',
+            description:
+              "A takeover that also records a step log of the person's own input: pages reached, " +
+              'controls pressed by role and name, fields typed into by label with a placeholder ' +
+              'for the value, and downloads. Password, one-time-code and card fields leave no ' +
+              'step. Same permission, epoch bump and park as a takeover. The handback that ends ' +
+              'this epoch gives the steps to the conversation, marked as shown by the person.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            responses: {
+              '200': jsonResponse('Human control, recording steps', browserControlResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such browser session'),
+              '409': problem('Browser control could not change'),
+            },
+          },
+        },
+        '/browser/sessions/{id}/teach/discard': {
+          post: {
+            tags: ['browser'],
+            summary: 'Hand the browser back and throw the recorded steps away',
+            description:
+              'Ends a teaching takeover as a handback does, and no step reaches the conversation.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            responses: {
+              '200': jsonResponse('Automation requires fresh observation', browserControlResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such browser session'),
+              '409': problem('Browser control could not change'),
+            },
+          },
+        },
         '/browser/sessions/{id}/handback': {
           post: {
             tags: ['browser'],

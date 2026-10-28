@@ -576,9 +576,13 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const jobIds = await conversationJobs(spaceId, c.req.param('id') ?? '');
       const rows = await actionsOf(spaceId, jobIds);
       const bindings = deps.sql
-        ? await deps.sql<ComputerBinding[]>`select id, control, updated_at
-            from browser_session_binding
-            where space_id = ${spaceId} and job_id in ${deps.sql(jobIds)}`
+        ? await deps.sql<ComputerBinding[]>`select b.id, b.control, b.updated_at,
+              b.control = 'human' and exists (select 1 from event e where e.job_id = b.job_id
+                and e.type = 'notice' and e.payload->>'kind' = 'browser_teaching'
+                and e.payload->>'session_id' = b.id
+                and (e.payload->>'control_epoch')::bigint = b.control_epoch) as teaching
+            from browser_session_binding b
+            where b.space_id = ${spaceId} and b.job_id in ${deps.sql(jobIds)}`
         : [];
       const [sandbox] = await deps.db
         .select({ id: connection.id })
