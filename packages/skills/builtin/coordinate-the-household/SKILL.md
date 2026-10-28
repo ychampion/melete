@@ -7,8 +7,7 @@ triggers:
   - field trip
   - pick up
   - pickup
-  - who can
-  - can someone
+  - carpool
 tools:
   - board.list
   - board.add
@@ -25,7 +24,8 @@ change, a form due, a pickup.
 
 1. Each dated item goes on the board with board.add; board.list first so
 nothing goes on twice. Visibility "everyone" for shared logistics, "assignee"
-for anything personal. Titles short, nothing private. A word for one
+(naming them) for anything personal. Titles short; titles and details hold
+nothing private. A word for one
 person is board.note.
 
 2. Check those involved with room.member_freebusy and name any clash.

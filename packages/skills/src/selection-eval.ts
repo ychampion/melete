@@ -140,7 +140,7 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
     expect: ['coordinate-the-household'],
   },
   { text: 'Permission slip due Thursday for the field trip', expect: ['coordinate-the-household'] },
-  { text: 'Can someone grab Sofia at 5:30?', expect: ['coordinate-the-household'] },
+  { text: 'Can someone take carpool at 5:30?', expect: ['coordinate-the-household'] },
   // near misses: words the paperwork skills use, in requests that are not paperwork
   { text: 'Write this letter to the council', expect: ['write-a-draft'] },
   { text: 'Draft this letter to my landlord', expect: ['write-a-draft'] },
@@ -162,6 +162,9 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   { text: 'Which airplane seats have the most legroom?', expect: [] },
   { text: 'What does check-in time mean at a hotel?', expect: [] },
   { text: 'Book a table for two on Saturday', expect: [] },
+  // asking the room for help is not household coordination by itself
+  { text: 'Can someone review the deck?', expect: [] },
+  { text: 'Who can take the client call?', expect: [] },
   // a calendar question of one person is not household coordination
   { text: 'What is on my calendar on Friday?', expect: ['schedule-a-check-in'] },
 ];
