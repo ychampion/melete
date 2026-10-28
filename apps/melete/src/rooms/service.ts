@@ -19,6 +19,7 @@ import {
   roomStreamFrame,
   unavailable,
 } from '@melete/contracts';
+import { nameSkeleton } from '@melete/contracts/name-skeleton';
 import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { GUESTS_MAY_NOT_ATTACH, readsFilesAsTheyAre } from '../attachments/rooms.ts';
@@ -78,27 +79,26 @@ const roomOwnerOnly = () =>
 
 /**
  * Whether a name is another account's: its chosen name, or the part before the
- * @ of its email, ignoring case. A name is how a room, and its agent, tell
- * people apart at a glance; the handle after it is what settles it. A room's
- * own account carries the room's name and is no one's, so it never counts:
- * otherwise anyone could learn the names of rooms they are not in.
+ * @ of its email, read alike (see `nameSkeleton`: case, spacing, fullwidth
+ * forms and Cyrillic or Greek letters that pass for Latin ones aside). A name
+ * is how a room tells people apart at a glance; the handle after it is what
+ * settles it for the room's agent, and people see a short tell after a name
+ * wherever two read alike. A room's own account carries the room's name and is
+ * no one's, so it never counts: otherwise anyone could learn the names of
+ * rooms they are not in.
  */
 export async function nameTaken(db: Database, name: string, except?: string): Promise<boolean> {
-  const [taken] = await db
-    .select({ id: principal.id })
+  const wanted = nameSkeleton(name);
+  // Read alike is not something SQL can compare, so the names are folded here.
+  const rows = await db
+    .select({ displayName: principal.displayName, email: principal.email })
     .from(principal)
-    .where(
-      and(
-        except ? ne(principal.id, except) : undefined,
-        ne(principal.kind, 'room'),
-        or(
-          sql`lower(${principal.displayName}) = lower(${name})`,
-          sql`lower(split_part(${principal.email}, '@', 1)) = lower(${name})`,
-        ),
-      ),
-    )
-    .limit(1);
-  return Boolean(taken);
+    .where(and(except ? ne(principal.id, except) : undefined, ne(principal.kind, 'room')));
+  return rows.some(
+    (row) =>
+      (row.displayName !== null && nameSkeleton(row.displayName) === wanted) ||
+      nameSkeleton(row.email.split('@')[0] ?? '') === wanted,
+  );
 }
 
 export type RoomDeps = RoomWork & {
@@ -326,9 +326,9 @@ export class RoomService {
 
   /**
    * Set the name a person shows in rooms. It must read as one line, and it
-   * must not be another person's name, or the part before the @ of another
-   * person's email, ignoring case: a name is how a room, and its agent, tell
-   * people apart.
+   * must not read as another person's name, or as the part before the @ of
+   * another person's email (see `nameTaken`): a name is how a room, and its
+   * agent, tell people apart.
    */
   async rename(actor: string, name: string | null) {
     if (name !== null) {

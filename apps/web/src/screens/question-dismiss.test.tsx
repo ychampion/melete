@@ -72,9 +72,13 @@ test('the line under the queue does not say nothing needs you while something wa
   expect(emptyLine(0)).toBe('Nothing needs you right now.');
   expect(emptyLine(2)).toBe('Nothing else needs you right now.');
   // A board item waiting on the person is in the section too: the empty line waits for both.
-  expect(nothingNeedsYou(0, 0)).toBe(true);
-  expect(nothingNeedsYou(0, 1)).toBe(false);
-  expect(nothingNeedsYou(2, 0)).toBe(false);
+  const read = { loaded: true, error: null, count: 0 };
+  expect(nothingNeedsYou(0, read)).toBe(true);
+  expect(nothingNeedsYou(0, { ...read, count: 1 })).toBe(false);
+  expect(nothingNeedsYou(2, read)).toBe(false);
+  // Not while the board is still being read, nor when it could not be.
+  expect(nothingNeedsYou(0, { ...read, loaded: false })).toBe(false);
+  expect(nothingNeedsYou(0, { ...read, error: 'The service is unavailable.' })).toBe(false);
 });
 
 test('a reminder from more than a week ago reads as a date, not a weekday', () => {

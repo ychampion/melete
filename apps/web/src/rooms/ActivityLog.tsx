@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Field, Input, Select } from '../design/primitives.tsx';
-import { clockTime, monthDay } from '../experience/clock.ts';
+import { clockTime, displayZone, monthDay, nextDay, startOfDay } from '../experience/clock.ts';
 import { href, navigate } from '../router.ts';
 import { Shell } from '../shell/Shell.tsx';
 import { type AuditEntry, type AuditFilter, type RoomDetail, roomsApi } from './api.ts';
@@ -63,14 +63,13 @@ const when = (iso: string) => `${monthDay(new Date(iso))}, ${clockTime(new Date(
  * The days a person picked, as the instants the log is filtered on: from the
  * start of the first day to the end of the last, in their own time zone.
  */
-export function dayRange(from: string, to: string): Pick<AuditFilter, 'since' | 'until'> {
-  const start = (day: string) => {
-    const [year, month, date] = day.split('-').map(Number);
-    return year && month && date ? new Date(year, month - 1, date) : null;
-  };
-  const first = from ? start(from) : null;
-  const last = to ? start(to) : null;
-  if (last) last.setDate(last.getDate() + 1);
+export function dayRange(
+  from: string,
+  to: string,
+  zone: string = displayZone(),
+): Pick<AuditFilter, 'since' | 'until'> {
+  const first = from ? startOfDay(from, zone) : null;
+  const last = to ? startOfDay(nextDay(to), zone) : null;
   return {
     ...(first ? { since: first.toISOString() } : {}),
     ...(last ? { until: last.toISOString() } : {}),
@@ -216,7 +215,7 @@ export function ActivityLog({ roomId }: { roomId: string }) {
                     { value: '', label: 'Everyone' },
                     ...people.map((member) => ({
                       value: member.principal_id,
-                      label: nameText(shownName(member.display_name, names)),
+                      label: nameText(shownName(member.display_name, names, { trust: true })),
                     })),
                   ]}
                 />

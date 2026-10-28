@@ -838,11 +838,15 @@ room's members, and it is never added to a room. Its membership generation is
 the room's roster generation, bumped with every change of who is in the room,
 so a capability minted before the change is refused at the broker.
 
-Every speaker is shown, to people and to the agent, as their chosen name
-followed by the handle the room gives them in angle brackets. The handle is
-derived from the room and the person's account, both made by the service, so
-nobody chooses it or takes another's, and it is what identifies a speaker; the
-agent is told the name before it is self-chosen. A name is one line of plain
+Every speaker is shown to the agent as their chosen name followed by the
+handle the room gives them in angle brackets. The handle is derived from the
+room and the person's account, both made by the service, so nobody chooses it
+or takes another's, and it is what identifies a speaker; the agent is told the
+name before it is self-chosen. People see the name with a tell after it in
+angle brackets (the email before the @, or a code from the account) wherever it
+matters who someone is, and wherever two names in the room read alike; a name
+that reads like another account's is refused, compared after a fold of case,
+compatibility forms and Latin look-alike letters (see ROOMS). A name is one line of plain
 text without `<`, `>` or `@`, so it cannot pass for a handle or an email, and
 where a name enters the agent's input it is quoted; characters that read as
 `<`, `>` or `@` are refused as well. No label carries any part of an email;

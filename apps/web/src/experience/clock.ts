@@ -63,6 +63,35 @@ export function dayKey(date: Date, zone: string = displayZone()): string {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+/** The day after a day key, counted on the calendar rather than in hours. */
+export function nextDay(key: string): string {
+  const [year, month, day] = key.split('-').map(Number);
+  return new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, (day ?? 1) + 1))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** The instant a day ("2026-10-10") starts on the zone's clock, or null for no such day. */
+export function startOfDay(key: string, zone: string = displayZone()): Date | null {
+  const [year, month, day] = key.split('-').map(Number);
+  if (!year || !month || !day) return null;
+  const midnight = Date.UTC(year, month - 1, day);
+  // Move by the zone's offset, then once more in case the offset changes across the move.
+  let at = midnight;
+  for (let pass = 0; pass < 2; pass++) {
+    const parts = partsOf(new Date(at), zone);
+    const read = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour) % 24,
+      Number(parts.minute),
+    );
+    at = midnight - (read - at);
+  }
+  return new Date(at);
+}
+
 /** The day before a day key, counted on the calendar rather than in hours. */
 function dayBefore(key: string): string {
   const [year, month, day] = key.split('-').map(Number);

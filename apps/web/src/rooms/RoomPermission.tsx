@@ -53,7 +53,7 @@ export function RoomPermissionCard({
           {permission.eligible_approvers.map((person, index) => (
             <span key={person.principal_id}>
               {index > 0 ? ', ' : null}
-              <Who label={person.display_name} />
+              <Who label={person.display_name} id={person.principal_id} trust />
               {person.principal_id === me ? ' (you)' : null}
             </span>
           ))}

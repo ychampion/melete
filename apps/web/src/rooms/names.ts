@@ -2,22 +2,29 @@
  * How a person's name reads in a room. The service labels everyone
  * `Name <handle>`, and the handle is made from the room as well as the
  * person, so one person carries a different one in every room. On screen a
- * person goes by their name alone. Only when two people in the same room go by
- * the same name does each get something after it that stays theirs in every
- * room: the part of their email before the @ when the reader can see emails,
- * or else a short code made from their account.
+ * person goes by their name and a tell after it in angle brackets: the part of
+ * their email before the @ when the reader can see emails, or else a short
+ * code made from their account, which stays theirs in every room. A chosen
+ * name cannot hold `<`, `>` or `@`, so no name can carry a tell of its own.
+ *
+ * Where it matters who someone is (who may answer a permission, who answered
+ * it, who asked, the room's people) the tell always shows. Elsewhere a name
+ * shows alone, unless two of the people the room knows of, there now or not,
+ * have names that read alike (`nameSkeleton`); then each shows its tell.
  */
+import { nameSkeleton } from '@melete/contracts/name-skeleton';
 import { splitLabel } from './reduce.ts';
 
-/** A name as shown, and what sets it apart from someone else's of the same name. */
-export type ShownName = { name: string; tell: string | null };
+/** A person as the service names them in a room: their id and its label. */
+export type LabelledPerson = { principal_id: string; display_name: string; email?: string | null };
 
-/** The shown name of each label in one room, keyed by the service's label. */
-export type RoomNames = ReadonlyMap<string, ShownName>;
+type Entry = { name: string; code: string; clash: boolean };
 
-/** Two names are the same name whatever their case, spacing or width of letters. */
-const sameNameKey = (name: string) =>
-  name.normalize('NFKC').toLocaleLowerCase('en-US').replace(/\s+/g, ' ').trim();
+/** How each person a room knows of is shown, keyed by the service's label. */
+export type RoomNames = ReadonlyMap<string, Entry>;
+
+/** A name as shown: `tell` is drawn after it; `code` is the tell it has when one is asked for. */
+export type ShownName = { name: string; tell: string | null; code: string | null };
 
 /** No two of these letters read alike. */
 const CODE_LETTERS = 'abcdefghijkmnpqrstuvwxyz23456789';
@@ -34,40 +41,61 @@ export function accountCode(id: string): string {
   return code;
 }
 
-type Member = { principal_id: string; display_name: string; email?: string | null };
-
-/** How each member of a room is shown, from the room's member list. */
-export function roomNames(members: readonly Member[]): RoomNames {
-  const groups = new Map<string, Member[]>();
-  for (const member of members) {
-    const key = sameNameKey(splitLabel(member.display_name).name);
-    groups.set(key, [...(groups.get(key) ?? []), member]);
+/**
+ * How everyone a room knows of is shown: its members, and `others` named in
+ * what is on screen, such as the authors of a thread, who may since have left.
+ */
+export function roomNames(
+  members: readonly LabelledPerson[],
+  others: readonly LabelledPerson[] = [],
+): RoomNames {
+  const people = new Map<string, LabelledPerson>();
+  for (const person of [...members, ...others])
+    if (!people.has(person.principal_id)) people.set(person.principal_id, person);
+  const groups = new Map<string, LabelledPerson[]>();
+  for (const person of people.values()) {
+    const key = nameSkeleton(splitLabel(person.display_name).name);
+    groups.set(key, [...(groups.get(key) ?? []), person]);
   }
-  const shown = new Map<string, ShownName>();
+  const shown = new Map<string, Entry>();
   for (const group of groups.values()) {
-    const locals = group.map((member) => member.email?.split('@')[0]?.trim() || null);
-    // Emails tell them apart only when every one is known and no two start the same.
-    const byEmail =
-      locals.every(Boolean) &&
-      new Set(locals.map((local) => local?.toLocaleLowerCase('en-US'))).size === group.length;
-    group.forEach((member, index) => {
-      const { name } = splitLabel(member.display_name);
-      const tell =
-        group.length < 2
-          ? null
-          : byEmail
-            ? (locals[index] ?? null)
-            : accountCode(member.principal_id);
-      shown.set(member.display_name, { name, tell });
+    // A person's email before the @ when the reader sees it, else their account's code;
+    // two in one group whose emails start the same both fall back to the code.
+    const locals = group.map(
+      (person) => person.email?.split('@')[0]?.trim().toLocaleLowerCase('en-US') || null,
+    );
+    const unique = (local: string | null) =>
+      local !== null && locals.indexOf(local) === locals.lastIndexOf(local);
+    group.forEach((person, index) => {
+      const local = locals[index] ?? null;
+      shown.set(person.display_name, {
+        name: splitLabel(person.display_name).name,
+        code: local !== null && unique(local) ? local : accountCode(person.principal_id),
+        clash: group.length > 1,
+      });
     });
   }
   return shown;
 }
 
-/** A label as shown: from the room's names when it is one of theirs, else its name alone. */
-export function shownName(label: string, names: RoomNames | null): ShownName {
-  return names?.get(label) ?? { name: splitLabel(label).name, tell: null };
+/**
+ * A label as shown. `trust` marks a place where who it is matters: the tell
+ * always shows there. A label the room does not know of has the code of its
+ * account when its id is given, else the room's handle from the label.
+ */
+export function shownName(
+  label: string,
+  names: RoomNames | null,
+  { id, trust = false }: { id?: string; trust?: boolean } = {},
+): ShownName {
+  const entry = names?.get(label);
+  if (entry)
+    return { name: entry.name, tell: entry.clash || trust ? entry.code : null, code: entry.code };
+  const { name, handle } = splitLabel(label);
+  const code = id ? accountCode(id) : handle;
+  return { name, tell: trust ? code : null, code };
 }
 
-/** A shown name as one string: "Sam", or "Sam (sam.okafor)" beside another Sam. */
-export const nameText = ({ name, tell }: ShownName) => (tell ? `${name} (${tell})` : name);
+/** A shown name as one string: "Sam", or "Sam <sam.okafor>" with its tell. */
+export const nameText = ({ name, tell }: Pick<ShownName, 'name' | 'tell'>) =>
+  tell ? `${name} <${tell}>` : name;

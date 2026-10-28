@@ -61,15 +61,34 @@ room always keeps at least one owner. Each change of role moves that person's
 membership generation on, so work of theirs under way checks again with what
 they may now do. A guest stays a guest.
 
-In a room every person is shown as the name they chose followed by the handle
-the room gives them, as in `Alice <k7q2mx3a>`, to the people in the room and
-to its agent. The handle is what tells people apart: nobody chooses it, nobody
-can take someone else's, and it differs from room to room. No label in a room
-carries any part of an email: someone who has not chosen a name is shown as
-`Someone` with their handle. People who are not guests also see each other's email in the
-room's list of people (`GET /rooms/{id}`). Each person sets their name with
-`PATCH /me`: one line of plain text, without `<`, `>` or `@` or anything that
-reads as one, and not a name someone else already goes by.
+In a room the service labels every person with the name they chose followed by
+the handle the room gives them, as in `Alice <k7q2mx3a>`, and the room's agent
+reads them that way. The handle is what tells people apart for the agent:
+nobody chooses it, nobody can take someone else's, and it differs from room to
+room. No label in a room carries any part of an email: someone who has not
+chosen a name is labelled `Someone` with their handle. People who are not
+guests also see each other's email in the room's list of people
+(`GET /rooms/{id}`).
+
+The web app shows a person by their name and, after it in angle brackets, a
+tell that stays theirs in every room: the part of their email before the @
+when the reader can see emails, or else a four letter code made from their
+account. The tell always shows where it matters who someone is: who may answer
+a permission and who answered it, who asked, and the room's list of people.
+Elsewhere, in messages, the thread list and the board, a name shows alone
+unless two people the room knows of, there now or since left, have names that
+read alike; then each shows its tell. Hovered or read aloud, every name
+carries its tell.
+
+Each person sets their name with `PATCH /me`: one line of plain text, without
+`<`, `>` or `@` or anything that reads as one, so no name can carry a tell or a
+handle of its own. It is refused when it reads as a name someone else already
+goes by, or as the part before the @ of someone else's email. Reads as means
+the same after `nameSkeleton` (`@melete/contracts/name-skeleton`): NFKC, lower
+case, format characters dropped, spaces collapsed, and a short table of
+Cyrillic, Greek and Latin letters that look like Latin ones read as those, so
+Alice spelled with a Cyrillic or a fullwidth A is Alice. The web app uses the
+same fold to decide which names read alike.
 
 ## Guests
 

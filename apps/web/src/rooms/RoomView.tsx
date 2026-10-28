@@ -95,8 +95,15 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
   const guest = room?.my_role === 'guest';
   const myPlace = detail?.members.find((member) => member.principal_id === me?.id) ?? null;
   // Everyone in the room by name, set apart only where two share one.
-  const names = useMemo(() => roomNames(detail?.members ?? []), [detail]);
-  const nameOf = (label: string) => nameText(shownName(label, names));
+  const names = useMemo(
+    () =>
+      roomNames(
+        detail?.members ?? [],
+        (threads ?? []).map((thread) => thread.created_by),
+      ),
+    [detail, threads],
+  );
+  const nameOf = (label: string, trust = false) => nameText(shownName(label, names, { trust }));
 
   if (gone)
     return (
@@ -147,9 +154,9 @@ export function RoomView({ roomId, threadId }: { roomId: string; threadId: strin
             {here.length > 0 ? (
               <ul className="room-here" aria-label="Looking at this room now">
                 {here.slice(0, 5).map((member) => (
-                  <li key={member.principal_id} title={nameOf(member.display_name)}>
+                  <li key={member.principal_id} title={nameOf(member.display_name, true)}>
                     <PersonAvatar id={member.principal_id} label={member.display_name} size={26} />
-                    <span className="sr-only">{nameOf(member.display_name)}</span>
+                    <span className="sr-only">{nameOf(member.display_name, true)}</span>
                   </li>
                 ))}
                 {here.length > 5 ? <li className="room-here-more">+{here.length - 5}</li> : null}

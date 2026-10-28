@@ -4,7 +4,7 @@
  * and receipts. It follows the thread's live stream: people's messages land
  * as they arrive, and the agent's work is read again as it moves.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../chat/Markdown.tsx';
 import { MessageFiles } from '../chat/MessageFiles.tsx';
 import { ReceiptRow, ResultCard } from '../chat/parts.tsx';
@@ -26,7 +26,8 @@ import {
   roomsApi,
   type ThreadView,
 } from './api.ts';
-import { PersonAvatar, useNameOf, Who } from './parts.tsx';
+import { type LabelledPerson, roomNames } from './names.ts';
+import { PersonAvatar, RoomNamesContext, useNameOf, Who } from './parts.tsx';
 import { RoomComposer } from './RoomComposer.tsx';
 import { RoomPermissionCard } from './RoomPermission.tsx';
 import {
@@ -266,14 +267,24 @@ export function Thread({
 
   const role = detail.room.my_role;
   const agent = detail.room.agent_name;
+  // Everyone the thread names counts for names that read alike, people who have left included.
+  const names = useMemo(
+    () => roomNames(detail.members, view ? threadPeople(view) : []),
+    [detail.members, view],
+  );
 
-  return (
+  const page = (
     <div className="room-thread-inner">
       <div className="room-thread-head">
         <h2 className="clamp1">{view?.thread.title ?? ' '}</h2>
         {view ? (
           <span className="room-thread-by">
-            Started by <Who label={view.thread.created_by.display_name} strong={false} />
+            Started by{' '}
+            <Who
+              label={view.thread.created_by.display_name}
+              id={view.thread.created_by.principal_id}
+              strong={false}
+            />
           </span>
         ) : null}
       </div>
@@ -334,6 +345,22 @@ export function Thread({
       />
     </div>
   );
+  return <RoomNamesContext.Provider value={names}>{page}</RoomNamesContext.Provider>;
+}
+
+/** Everyone a thread names: who started it, wrote in it, asked in it and answers for it. */
+function threadPeople(view: ThreadView): LabelledPerson[] {
+  return [
+    view.thread.created_by,
+    ...view.messages.map((message) => message.author),
+    ...view.requests.flatMap((request) => [
+      request.requested_by,
+      ...(request.decisions ?? []).flatMap((decision) =>
+        decision.decided_by ? [decision.decided_by] : [],
+      ),
+      ...(request.permissions ?? []).flatMap((permission) => permission.eligible_approvers ?? []),
+    ]),
+  ];
 }
 
 function Message({
@@ -367,7 +394,7 @@ function Message({
       <PersonAvatar id={message.author.principal_id} label={message.author.display_name} />
       <div className="col room-msg-main">
         <div className="room-msg-head">
-          <Who label={message.author.display_name} />
+          <Who label={message.author.display_name} id={message.author.principal_id} />
           {message.via_agent ? <span className="room-msg-tag">via {assistantName()}</span> : null}
           {message.kind === 'handoff_result' ? (
             <span className="room-msg-tag">Shared from their own setup</span>
@@ -473,7 +500,7 @@ function Answer({
   return (
     <article
       className="room-answer"
-      aria-label={`${agent}, answering ${nameOf(request.requested_by.display_name)}`}
+      aria-label={`${agent}, answering ${nameOf(request.requested_by.display_name, { id: request.requested_by.principal_id, trust: true })}`}
     >
       <MeleteAvatar size={28} />
       <div className="col room-msg-main">
@@ -482,7 +509,13 @@ function Answer({
             {agent}
           </span>
           <span className="room-answer-for">
-            for <Who label={request.requested_by.display_name} strong={false} />
+            for{' '}
+            <Who
+              label={request.requested_by.display_name}
+              id={request.requested_by.principal_id}
+              strong={false}
+              trust
+            />
           </span>
           <Status tone={TONES[status]} quiet>
             {REQUEST_WORDS[status]}
@@ -558,7 +591,9 @@ function Waiting({
       {decisions.map((decision) => (
         <span key={decision.approval_id} className="room-decision">
           <Icon name={decision.decision === 'approved' ? 'circleCheck' : 'circleX'} size={14} />
-          {decisionWords(decision, nameOf)}
+          {decisionWords(decision, (label) =>
+            nameOf(label, { id: decision.decided_by?.principal_id, trust: true }),
+          )}
         </span>
       ))}
     </div>

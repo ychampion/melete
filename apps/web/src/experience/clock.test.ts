@@ -11,8 +11,10 @@ import {
   hourOfDay,
   isoWords,
   isYesterday,
+  nextDay,
   sameDay,
   setDisplayZone,
+  startOfDay,
 } from './clock.ts';
 import { browserTimeZone } from './timezone.ts';
 
@@ -76,4 +78,20 @@ test('a time a card carries as ISO 8601 reads on the profile’s clock, and othe
   expect(isoWords('Conference room B', now)).toBeNull();
   expect(isoWords('2026-13-45', now)).toBeNull();
   expect(isoWords('Starts 2026-10-30T17:30:00Z', now)).toBeNull();
+});
+
+test('a day starts at midnight on the profile’s clock, across a change of the clocks too', () => {
+  expect(startOfDay('2026-10-10', 'Asia/Kolkata')?.toISOString()).toBe('2026-10-09T18:30:00.000Z');
+  expect(startOfDay('2026-10-10', 'America/Los_Angeles')?.toISOString()).toBe(
+    '2026-10-10T07:00:00.000Z',
+  );
+  // The clocks go back on Nov 1 in Los Angeles: that day starts on daylight time, the next on standard.
+  expect(startOfDay('2026-11-01', 'America/Los_Angeles')?.toISOString()).toBe(
+    '2026-11-01T07:00:00.000Z',
+  );
+  expect(startOfDay('2026-11-02', 'America/Los_Angeles')?.toISOString()).toBe(
+    '2026-11-02T08:00:00.000Z',
+  );
+  expect(startOfDay('not a day')).toBeNull();
+  expect(nextDay('2026-10-31')).toBe('2026-11-01');
 });

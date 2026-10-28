@@ -141,7 +141,9 @@ export function People({
       }
     >
       <div className="col" style={{ gap: 18 }}>
-        {mine ? <YourName label={mine.display_name} onSaved={onChanged} /> : null}
+        {mine ? (
+          <YourName label={mine.display_name} id={mine.principal_id} onSaved={onChanged} />
+        ) : null}
         <ul className="people-list" aria-label="People in this room">
           {detail.members.map((member) => {
             const self = member.principal_id === me?.id;
@@ -159,7 +161,7 @@ export function People({
                 <PersonAvatar id={member.principal_id} label={member.display_name} size={32} />
                 <span className="col grow" style={{ gap: 2, minWidth: 0 }}>
                   <span className="people-label">
-                    <Who label={member.display_name} />
+                    <Who label={member.display_name} id={member.principal_id} trust />
                     {self ? <span className="people-you"> (you)</span> : null}
                   </span>
                   <span className="people-meta">{meta.join(' · ')}</span>
@@ -206,7 +208,7 @@ export function People({
 }
 
 /** The name the person goes by in rooms. */
-function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
+function YourName({ label, id, onSaved }: { label: string; id: string; onSaved: () => void }) {
   const { name } = splitLabel(label);
   // "Someone" is what a room says for a person who chose no name.
   const chosen = name === 'Someone' ? '' : name;
@@ -235,7 +237,7 @@ function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
     return (
       <div className="people-you-row">
         <span>
-          You appear as <Who label={label} />
+          You appear as <Who label={label} id={id} trust />
         </span>
         <Button
           id="room-rename"
@@ -280,7 +282,7 @@ function YourName({ label, onSaved }: { label: string; onSaved: () => void }) {
       </div>
       <span className="people-hint">
         {error ??
-          `People here see you as ${value.trim() || 'Someone'}. If someone else in a room goes by the same name, each of you shows the start of your email or a short code after it, so nobody can pass as you.`}
+          `People here see you as ${value.trim() || 'Someone'}. Where it matters who you are, such as who answered a permission, the start of your email or a short code follows your name. Nobody can take a name that reads like someone else’s.`}
       </span>
     </form>
   );

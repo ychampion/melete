@@ -20,21 +20,41 @@ export function toneOf(id: string): (typeof TONES)[number] {
 /** The names of the open room's people; outside a room, a label shows its name alone. */
 export const RoomNamesContext = createContext<RoomNames | null>(null);
 
-/** A label as one string, as the open room shows it. */
-export function useNameOf(): (label: string) => string {
+type NameOptions = { id?: string; trust?: boolean };
+
+/** A label as one string, as the open room shows it; `trust` always adds the tell. */
+export function useNameOf(): (label: string, options?: NameOptions) => string {
   const names = useContext(RoomNamesContext);
-  return (label) => nameText(shownName(label, names));
+  return (label, options) => nameText(shownName(label, names, options));
 }
 
-/** A person's name, with what tells them from another of the same name set quieter after it. */
-export function Who({ label, strong = true }: { label: string; strong?: boolean }) {
-  const { name, tell } = shownName(label, useContext(RoomNamesContext));
+/**
+ * A person's name, with their tell set quieter after it where it shows (see
+ * `names.ts`). Hovered, or read aloud, every name carries its tell.
+ */
+export function Who({
+  label,
+  id,
+  strong = true,
+  trust = false,
+}: {
+  label: string;
+  id?: string;
+  strong?: boolean;
+  /** Who it is matters here, as for who may answer a permission: the tell always shows. */
+  trust?: boolean;
+}) {
+  const { name, tell, code } = shownName(label, useContext(RoomNamesContext), { id, trust });
   return (
-    <span className="who">
+    <span className="who" title={nameText({ name, tell: code })}>
       <span className="who-name" data-strong={strong ? 'true' : undefined}>
         {name}
       </span>
-      {tell ? <span className="who-handle">{` (${tell})`}</span> : null}
+      {tell ? (
+        <span className="who-handle">{` <${tell}>`}</span>
+      ) : code ? (
+        <span className="sr-only">{` <${code}>`}</span>
+      ) : null}
     </span>
   );
 }

@@ -85,11 +85,15 @@ export function unsortedLine(count: number, reason: NeedsYou['unsorted_reason'])
 }
 
 /**
- * Whether the section has nothing to show: neither what `/needs-you` listed
- * nor the board items in the person's rooms that wait on them, which it
- * draws first.
+ * Whether the section can say nothing needs the person: what `/needs-you`
+ * listed is empty, and so are the board items in their rooms that wait on
+ * them, which it draws first, once those are read. A board that is still being
+ * read, or could not be, says nothing of the kind.
  */
-export const nothingNeedsYou = (listed: number, board: number) => listed === 0 && board === 0;
+export const nothingNeedsYou = (
+  listed: number,
+  board: { loaded: boolean; error: string | null; count: number },
+) => listed === 0 && board.loaded && board.error === null && board.count === 0;
 
 /**
  * The line for an empty list. Decisions waiting on the person sit just above
@@ -285,7 +289,7 @@ export function NeedsYouSection({
             />
           ))}
         </ul>
-      ) : nothingNeedsYou(view.items.length, board.items.length) ? (
+      ) : nothingNeedsYou(view.items.length, { ...board, count: board.items.length }) ? (
         <p className="needs-you-empty voice">{emptyLine(waiting)}</p>
       ) : null}
     </section>

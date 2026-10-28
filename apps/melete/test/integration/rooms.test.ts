@@ -1004,9 +1004,18 @@ withDb('rooms', () => {
 
   test('nobody reads as someone else: each speaker carries the handle the room gives them, and a name is one line', async () => {
     const { sql } = database();
-    // A name already in use, or someone's email name, is refused; so is anything
-    // that could pass for an address or a second line.
-    for (const taken of ['Alice', 'ALICE', 'carol']) {
+    // A name already in use, or someone's email name, is refused, and so is one
+    // that only reads like it: Cyrillic or Greek letters, fullwidth forms, a
+    // dotless i. So is anything that could pass for an address or a second line.
+    for (const taken of [
+      'Alice',
+      'ALICE',
+      'carol',
+      '\u0410lice',
+      '\u0391LICE',
+      '\uFF21lice',
+      'Al\u0131ce',
+    ]) {
       const refused = await send(world.carol.cookie, '/me', 'PATCH', { display_name: taken });
       expect([taken, refused.status]).toEqual([taken, taken === 'carol' ? 200 : 409]);
     }
@@ -1028,8 +1037,9 @@ withDb('rooms', () => {
     const opened = await startThread(world.alice, roomId, '@Melete book the venue', true);
     const request = opened.request_job_id ?? '';
     await answer(request, 'Which venue?');
-    // Look-alike names are allowed, and still cannot pass for Alice: the handle is Carol's.
-    for (const lookalike of ['\u0410lice', 'Al\u0131ce', 'Alice.']) {
+    // Names close to Alice's but not the same are allowed, and still cannot pass
+    // for Alice: the handle is Carol's.
+    for (const lookalike of ['Alice (design)', 'Alice 2', 'Alice.']) {
       await ok(send(world.carol.cookie, '/me', 'PATCH', { display_name: lookalike }));
       await post(
         world.carol,

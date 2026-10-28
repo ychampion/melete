@@ -64,9 +64,12 @@ export function metaWords(
   return [whenWords(entry, now), forWho, seen].filter(Boolean).join(' · ');
 }
 
-/** Claim takes on someone else's task or nobody's, never one that is already the reader's. */
+/**
+ * Claim takes on someone else's task or nobody's, never one that is already the
+ * reader's; until the reader is known it is not offered at all.
+ */
 export const canClaim = (entry: BoardItem, me: string | null) =>
-  entry.can.claim && !isMine(entry, me) && !(me !== null && entry.claimed_by?.principal_id === me);
+  me !== null && entry.can.claim && !isMine(entry, me) && entry.claimed_by?.principal_id !== me;
 
 /** A detail's text, with each web address in it as a link. */
 export type DetailPart = { text: string } | { href: string; label: string };
@@ -425,12 +428,16 @@ function BoardGroup({
 export function useWaitingOnYou() {
   const { capabilities } = useApp();
   const [items, setItems] = useState<BoardItem[]>([]);
+  // Null while the read is out; the read's error when it failed.
+  const [read, setRead] = useState<{ error: string | null } | null>(null);
   const on = capabilities.multiplayer;
   useEffect(() => {
     if (!on) return;
     let live = true;
     void boardApi.across({ mine: true }).then((result) => {
-      if (live && result.data) setItems(result.data.items);
+      if (!live) return;
+      if (result.data) setItems(result.data.items);
+      setRead({ error: result.data ? null : (result.error ?? result.unavailable ?? 'Try again.') });
     });
     return () => {
       live = false;
@@ -440,12 +447,24 @@ export function useWaitingOnYou() {
     setItems((held) =>
       mergeItems(held, [entry]).filter((kept) => kept.state === 'open' || kept.state === 'claimed'),
     );
-  return { items: on ? items : [], changed };
+  // With rooms switched off there is nothing to read, so nothing waits there.
+  return {
+    items: on ? items : [],
+    loaded: !on || read !== null,
+    error: on ? (read?.error ?? null) : null,
+    changed,
+  };
 }
 
-/** The items `useWaitingOnYou` read; nothing is drawn when there are none. */
+/** The items `useWaitingOnYou` read, or that they could not be read; nothing when there are none. */
 export function WaitingOnYou({ waiting }: { waiting: ReturnType<typeof useWaitingOnYou> }) {
   const me = useMeId(waiting.items.length > 0);
+  if (waiting.error)
+    return (
+      <p className="board-error board-waiting">
+        Couldn’t read what waits on you in your rooms. {waiting.error}
+      </p>
+    );
   if (waiting.items.length === 0) return null;
   return (
     <div className="board-waiting">
