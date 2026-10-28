@@ -15,6 +15,8 @@ import {
   formatValue,
   isPaused,
   lastActivity,
+  lineUnderStatus,
+  localResume,
   RECORD_LABEL,
   recordFileName,
   recordLabel,
@@ -72,6 +74,38 @@ test('every record kind has a plain label with no internal word', () => {
   expect(recordLabel({ kind: 'step_started' })).toBe('Helper started');
   expect(recordLabel({ kind: 'report' })).toBe('Update');
   expect(recordLabel({ kind: 'finding' })).toBe('Found');
+});
+
+test('work resting on the background limit says why, and when it picks up in local time', () => {
+  const now = new Date(2026, 9, 28, 14, 0);
+  const at = (date: Date) => date.toISOString();
+  const time = (date: Date) =>
+    date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const line = "Background work reached today's limit; picks up again on October 29 at 00:00 UTC";
+  const later = new Date(2026, 9, 28, 17, 0);
+  expect(localResume(line, at(later), now)).toBe(
+    `Background work reached today's limit; picks up again at ${time(later)}`,
+  );
+  const tomorrow = new Date(2026, 9, 29, 9, 30);
+  expect(localResume(`${line} · 3 tries`, at(tomorrow), now)).toBe(
+    `Background work reached today's limit; picks up again tomorrow at ${time(tomorrow)} · 3 tries`,
+  );
+  const month = new Date(2026, 10, 1, 0, 0);
+  const monthly =
+    "Background work reached this month's limit; picks up again on November 1 at 00:00 UTC";
+  expect(localResume(monthly, at(month), now)).toBe(
+    `Background work reached this month's limit; picks up again on ${month.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${time(month)}`,
+  );
+  // Without a time to pick up at, or for any other line, the words stay as given.
+  expect(localResume(line, null, now)).toBe(line);
+  expect(localResume('Picks up again later', at(later), now)).toBe('Picks up again later');
+  // Under the "Resting" pill, the reason shows instead of a bare "Picks up again later".
+  const resting = run({ status: 'waiting', status_line: line, next_shift_at: at(later) });
+  expect(statusOf(resting).word).toBe('Resting');
+  expect(isPaused(resting)).toBe(false);
+  expect(lineUnderStatus(resting, 'Resting', now)).toBe(
+    `Background work reached today's limit; picks up again at ${time(later)}`,
+  );
 });
 
 test('paused work is told apart from work that is resting', () => {

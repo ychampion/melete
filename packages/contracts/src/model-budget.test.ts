@@ -39,6 +39,7 @@ test('Nemotron uses the context served by Token Factory, with room reserved for 
     ['nvidia/nemotron-3-super-120b-a12b', 262_144],
     ['nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B', 262_144],
     ['nvidia/Nemotron-3-Ultra-550b-a55b', 1_048_576],
+    ['nvidia/Nemotron-3.5-Super-VL', 1_048_576],
   ] as const) {
     expect(hasKnownContextWindow(model)).toBe(true);
     expect(modelContextWindow(model)).toBe(window);

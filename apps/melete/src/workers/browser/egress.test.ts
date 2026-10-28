@@ -278,17 +278,129 @@ test('navigate admits checked GET/HEAD reads and refuses every mutation without 
   expect(fixture.calls.map((call) => call.method)).toEqual(['GET', 'HEAD']);
 });
 
-test('reversible input refuses GET and POST even if the page swallows the network error', async () => {
+test("a step's input lets the page's script read, holds back every write it tries, and still ends on a page it would open", async () => {
   const fixture = await setup();
-  for (const method of ['GET', 'POST']) {
+  const top = 'https://public.example/form';
+  // The script reads what it shows in answer to the input, such as the towns for a ZIP code.
+  const answered = await fixture.egress.run('reversible', async () => {
+    for (const resourceType of ['fetch', 'xhr', 'script', 'image'])
+      expect(
+        (
+          await fixture.dispatch({
+            url: `https://public.example/towns?zip=94110&as=${resourceType}`,
+            resourceType,
+            top,
+          })
+        ).aborted,
+      ).toBe(false);
+    // A write the script tries is held back unsent, whatever kind of request carries it.
+    for (const resourceType of ['fetch', 'xhr', 'ping'])
+      for (const method of ['POST', 'PUT', 'DELETE'])
+        expect(
+          (
+            await fixture.dispatch({
+              method,
+              url: 'https://public.example/cart',
+              resourceType,
+              top,
+              body: Buffer.from('item=1'),
+            })
+          ).aborted,
+        ).toBe(true);
+    return 'page claims success';
+  });
+  expect(answered).toBe('page claims success');
+  expect(fixture.calls.map((call) => call.method)).toEqual(['GET', 'GET', 'GET', 'GET']);
+  expect(fixture.egress.takeDropped()).toEqual([
+    'DELETE public.example',
+    'POST public.example',
+    'PUT public.example',
+  ]);
+  // A page the input would open, by GET or by posting a form, ends the step unsent, the
+  // page's own or a frame's; a form is sent only by an approved submit.
+  for (const spec of [
+    { from: top, url: 'https://public.example/next' },
+    { method: 'POST', from: top, url: 'https://public.example/order', body: Buffer.from('a=1') },
+    { url: 'https://public.example/inner', subframe: true, top },
+  ]) {
     await expect(
       fixture.egress.run('reversible', async () => {
-        expect((await fixture.dispatch({ method })).aborted).toBe(true);
+        expect((await fixture.dispatch(spec)).aborted).toBe(true);
         return 'page claims success';
       }),
     ).rejects.toThrow('reversible browser input');
   }
-  expect(fixture.calls).toHaveLength(0);
+  expect(fixture.calls).toHaveLength(4);
+});
+
+test("a step's reads keep every check, and a refused one is left out with the step standing", async () => {
+  const sent: Array<{ host: string; cookie?: string }> = [];
+  const fixture = await setup(
+    {
+      transport: async (url, _address, request) => {
+        sent.push({ host: url.hostname, cookie: request.headers.cookie });
+        return OK;
+      },
+    },
+    { public_compartment: false, allowed_domains: ['public.example', 'api.partner.example'] },
+  );
+  const top = 'https://public.example/form';
+  const read = (url: string) =>
+    fixture.dispatch({ url, resourceType: 'fetch', top, headers: { cookie: 'sid=signed-in' } });
+  await fixture.egress.run('reversible', async () => {
+    expect((await read('https://public.example/towns')).aborted).toBe(false);
+    expect((await read('https://api.partner.example/towns')).aborted).toBe(false);
+    expect((await read('https://elsewhere.example/towns')).aborted).toBe(true);
+    // A socket the page opens is refused and the step stands.
+    expect(await fixture.websocket()).toBe(true);
+  });
+  expect(sent).toEqual([
+    { host: 'public.example', cookie: 'sid=signed-in' },
+    { host: 'api.partner.example', cookie: undefined },
+  ]);
+});
+
+test('settling waits while the page is still asking, and a part still on its way when it is looked at is cut off', async () => {
+  let release: (() => void) | undefined;
+  const fixture = await setup({
+    transport: async (url, _address, request) => {
+      if (url.pathname === '/stream')
+        await new Promise((_resolve, reject) =>
+          request.signal.addEventListener('abort', () => reject(request.signal.reason), {
+            once: true,
+          }),
+        );
+      if (url.pathname === '/slow') await new Promise<void>((resolve) => (release = resolve));
+      return OK;
+    },
+  });
+  const top = 'https://public.example/form';
+  const started = Date.now();
+  let slow: Promise<{ aborted: boolean }> | undefined;
+  let stream: Promise<{ aborted: boolean }> | undefined;
+  await fixture.egress.run('navigate', async () => {
+    await fixture.dispatch({ url: top });
+    fixture.egress.pageLoaded();
+    slow = fixture.dispatch({ url: 'https://public.example/slow', resourceType: 'fetch', top });
+    setTimeout(() => release?.(), 300);
+    // Quiet only once the slow answer is in and nothing more is asked for.
+    await fixture.egress.settle(5_000, 200);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(450);
+    expect((await slow).aborted).toBe(false);
+    // A stream that never ends holds the settle only up to its limit.
+    stream = fixture.dispatch({
+      url: 'https://public.example/stream',
+      resourceType: 'eventsource',
+      top,
+    });
+    const waited = Date.now();
+    await fixture.egress.settle(300, 100);
+    expect(Date.now() - waited).toBeLessThan(1_000);
+  });
+  // The opening ended without waiting out the stream, which was cut off, and the page stands.
+  expect(Date.now() - started).toBeLessThan(5_000);
+  expect((await stream)?.aborted).toBe(true);
+  expect(fixture.egress.takeUnreachable()).toEqual([]);
 });
 
 test('a delayed request outside the operation window is refused and cannot inherit approval', async () => {
@@ -395,6 +507,29 @@ test('a checked read redirect preserves the original response and cookies withou
     after_commit: false,
   });
   expect(dispatches).toBe(1);
+});
+
+test("a frame's redirect never moves the page: it ends a load still under way, and is left out once the page has its document", async () => {
+  const fixture = await setup({
+    transport: async (url) =>
+      url.hostname === 'ads.example'
+        ? {
+            status: 302,
+            headers: { location: 'https://track.example/sync' },
+            body: Buffer.alloc(0),
+          }
+        : OK,
+  });
+  const top = 'https://public.example/form';
+  const frame = { url: 'https://ads.example/frame', subframe: true, top };
+  await expect(fixture.egress.run('navigate', () => fixture.dispatch(frame))).rejects.toMatchObject(
+    { code: 'subresource_redirect_unsupported' },
+  );
+  await fixture.egress.run('navigate', async () => {
+    await fixture.dispatch({ url: top });
+    fixture.egress.pageLoaded();
+    expect((await fixture.dispatch(frame)).aborted).toBe(true);
+  });
 });
 
 test('subresource redirects fail by name without relocating the main page', async () => {
@@ -517,11 +652,13 @@ test('every redirect hop and subresource is checked and bounded', async () => {
 
 test('WebSockets are closed without a connection in every operation mode and while idle', async () => {
   const fixture = await setup();
-  for (const mode of ['navigate', 'reversible', 'commit'] as const) {
+  for (const mode of ['navigate', 'commit'] as const) {
     await expect(fixture.egress.run(mode, () => fixture.websocket(), binding())).rejects.toThrow(
       'WebSockets are denied',
     );
   }
+  // A socket a page's script opens in answer to a step's input is closed, and the step stands.
+  expect(await fixture.egress.run('reversible', () => fixture.websocket())).toBe(true);
   expect(await fixture.websocket()).toBe(true);
   expect(fixture.calls).toHaveLength(0);
 });
@@ -1255,12 +1392,13 @@ test('a host that fails during a reversible step or a commit is not passed over'
       binding(),
     ),
   ).rejects.toMatchObject({ code: 'site_unreachable' });
-  await expect(
-    fixture.egress.run('reversible', () =>
-      fixture.dispatch({ url: 'https://cdn.example/a.js', resourceType: 'script' }),
-    ),
-  ).rejects.toMatchObject({ code: 'network_reversible' });
   expect(fixture.egress.takeUnreachable()).toEqual([]);
+  // What a page's script reads in answer to a step is left out when its host is down, as when
+  // the page loads, and the step stands.
+  await fixture.egress.run('reversible', () =>
+    fixture.dispatch({ url: 'https://cdn.example/a.js', resourceType: 'script' }),
+  );
+  expect(fixture.egress.takeUnreachable()).toEqual(['cdn.example']);
 });
 
 test('a resource refused for what the page asks to send still ends the load; a host that broke its answer is passed over', async () => {
@@ -1300,4 +1438,208 @@ test('a resource refused for what the page asks to send still ends the load; a h
     ),
   ).rejects.toMatchObject({ code: 'invalid_headers' });
   expect(fixture.egress.takeUnreachable()).toEqual([]);
+});
+
+test("an opened page's script sends its own XHR, fetch and beacon writes, and a form it submits still needs an approved submit", async () => {
+  const fixture = await setup();
+  const top = 'https://public.example/form';
+  await fixture.egress.run('navigate', async () => {
+    for (const resourceType of ['xhr', 'fetch', 'ping'])
+      expect(
+        (
+          await fixture.dispatch({
+            method: 'POST',
+            url: `https://public.example/api/${resourceType}`,
+            resourceType,
+            top,
+            headers: { 'content-type': 'application/json' },
+            body: Buffer.from('{"zip":"94110"}'),
+          })
+        ).aborted,
+      ).toBe(false);
+    // A frame's form posting itself as the page loads is held back, and the page loads.
+    expect(
+      (
+        await fixture.dispatch({
+          method: 'POST',
+          url: 'https://public.example/order',
+          subframe: true,
+          top,
+          body: Buffer.from('name=Frame'),
+        })
+      ).aborted,
+    ).toBe(true);
+  });
+  expect(fixture.calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
+    'POST /api/xhr',
+    'POST /api/fetch',
+    'POST /api/ping',
+  ]);
+  expect(fixture.egress.takeDropped()).toEqual(['POST public.example']);
+  // The page's own form, sent as the page's document, ends the opening unsent.
+  for (const method of ['POST', 'PUT'])
+    await expect(
+      fixture.egress.run('navigate', () =>
+        fixture.dispatch({ method, from: top, body: Buffer.from('name=Page') }),
+      ),
+    ).rejects.toMatchObject({ code: 'mutation_requires_commit' });
+  // A script's write is no submit: an approved submit still sends only its bound form, and
+  // a step's input holds back every write its page's script tries.
+  await expect(
+    fixture.egress.run(
+      'commit',
+      () => fixture.dispatch({ method: 'POST', resourceType: 'fetch', body: Buffer.from('x=1') }),
+      binding(),
+    ),
+  ).rejects.toMatchObject({ code: 'commit_payload_mismatch' });
+  await fixture.egress.run('reversible', () =>
+    fixture.dispatch({ method: 'POST', resourceType: 'fetch' }),
+  );
+  expect(fixture.egress.takeDropped()).toEqual(['POST public.example']);
+  expect(fixture.calls).toHaveLength(3);
+});
+
+test("a script's write from a signed-in page keeps every check and goes as no one: no cookies or authorization, to its own site or another", async () => {
+  const sent: Array<{ host: string; method: string; cookie?: string; authorization?: string }> = [];
+  const fixture = await setup(
+    {
+      transport: async (url, _address, request) => {
+        sent.push({
+          host: url.hostname,
+          method: request.method,
+          cookie: request.headers.cookie,
+          authorization: request.headers.authorization,
+        });
+        return { ...OK, headers: { ...OK.headers, 'set-cookie': 'sid=anonymous' } };
+      },
+    },
+    { public_compartment: false, allowed_domains: ['public.example', 'api.partner.example'] },
+  );
+  const top = 'https://public.example/form';
+  const signedIn = { cookie: 'sid=signed-in', authorization: 'Bearer person-token' };
+  const write = (url: string) =>
+    fixture.dispatch({
+      method: 'POST',
+      url,
+      resourceType: 'fetch',
+      top,
+      headers: { 'content-type': 'application/json', ...signedIn },
+      body: Buffer.from('{}'),
+    });
+  await fixture.egress.run('navigate', async () => {
+    // Opening a page changes nothing of the person's: a write its script sends as it opens,
+    // such as one a crafted address sets off, carries none of their sign-in, and what its answer
+    // would set is dropped, so it cannot sign them out either.
+    for (const url of ['https://public.example/api', 'https://api.partner.example/api']) {
+      const answered = await write(url);
+      expect(answered.aborted).toBe(false);
+      expect(answered.response?.headers?.['set-cookie']).toBeUndefined();
+    }
+    // What the page reads of its own site still carries the person's sign-in.
+    const read = await fixture.dispatch({
+      url: 'https://public.example/api/me',
+      resourceType: 'fetch',
+      top,
+      headers: signedIn,
+    });
+    expect(read.response?.headers?.['set-cookie']).toBe('sid=anonymous');
+  });
+  expect(sent).toEqual([
+    { host: 'public.example', method: 'POST', cookie: undefined, authorization: undefined },
+    { host: 'api.partner.example', method: 'POST', cookie: undefined, authorization: undefined },
+    { host: 'public.example', method: 'GET', ...signedIn },
+  ]);
+  await expect(
+    fixture.egress.run('navigate', () => write('https://elsewhere.example/api')),
+  ).rejects.toMatchObject({ code: 'domain_not_allowed' });
+  expect(sent).toHaveLength(3);
+  // A research browser holds nothing of the person's, so its page's writes go as the page sent them.
+  const research: Array<string | undefined> = [];
+  const open = await setup({
+    transport: async (_url, _address, request) => {
+      research.push(request.headers.cookie);
+      return OK;
+    },
+  });
+  await open.egress.run('navigate', () =>
+    open.dispatch({
+      method: 'POST',
+      url: 'https://public.example/api',
+      resourceType: 'fetch',
+      top,
+      headers: { 'content-type': 'application/json', cookie: 'bot_check=passed' },
+    }),
+  );
+  expect(research).toEqual(['bot_check=passed']);
+});
+
+test('once the page has its document, the opening stays open for what its script asks for, and a refusal leaves that request out', async () => {
+  const fixture = await setup(
+    {},
+    { public_compartment: false, allowed_domains: ['public.example'] },
+  );
+  const top = 'https://public.example/form';
+  const pixel = { url: 'https://tracker.example/pixel.gif', resourceType: 'image', top };
+  // Before the document has loaded, a refused resource still ends the opening.
+  await expect(fixture.egress.run('navigate', () => fixture.dispatch(pixel))).rejects.toMatchObject(
+    { code: 'domain_not_allowed' },
+  );
+  await fixture.egress.run('navigate', async () => {
+    await fixture.dispatch({ url: top });
+    fixture.egress.pageLoaded();
+    expect(
+      (
+        await fixture.dispatch({
+          url: 'https://public.example/chunk.js',
+          resourceType: 'script',
+          top,
+        })
+      ).aborted,
+    ).toBe(false);
+    expect(
+      (
+        await fixture.dispatch({
+          method: 'POST',
+          url: 'https://public.example/api/plans',
+          resourceType: 'fetch',
+          top,
+          headers: { 'content-type': 'application/json' },
+        })
+      ).aborted,
+    ).toBe(false);
+    expect((await fixture.dispatch(pixel)).aborted).toBe(true);
+    expect(await fixture.websocket()).toBe(true);
+    // A form the page submits by itself is still held back unsent, its own or a frame's.
+    expect(
+      (await fixture.dispatch({ method: 'POST', url: 'https://public.example/order', from: top }))
+        .aborted,
+    ).toBe(true);
+    expect(
+      (
+        await fixture.dispatch({
+          method: 'POST',
+          url: 'https://public.example/order',
+          subframe: true,
+          top,
+        })
+      ).aborted,
+    ).toBe(true);
+  });
+  expect(fixture.calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
+    'GET /form',
+    'GET /chunk.js',
+    'POST /api/plans',
+  ]);
+  expect(fixture.egress.takeDropped()).toEqual(['POST public.example']);
+  // Only an opening is kept open: a submit's window is untouched by it.
+  await expect(
+    fixture.egress.run(
+      'commit',
+      async () => {
+        fixture.egress.pageLoaded();
+        await fixture.dispatch({ method: 'POST', body: Buffer.from('changed=1') });
+      },
+      binding(),
+    ),
+  ).rejects.toMatchObject({ code: 'commit_payload_mismatch' });
 });
