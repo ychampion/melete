@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Loaded } from '../experience/hooks.ts';
-import type { Home } from '../experience/types.ts';
+import type { Home, Task } from '../experience/types.ts';
 import { Rail } from './Shell.tsx';
 
 const loaded = <T,>(data: T): Loaded<T> => ({
@@ -35,7 +35,7 @@ test('the upcoming rail shows recurrence words and identifies all-day occurrence
     ],
   };
   const html = renderToStaticMarkup(
-    <Rail day={{ home: loaded(home), tasks: loaded({ tasks: [] }) }} />,
+    <Rail day={{ home: loaded(home), tasks: loaded<{ tasks: Task[] }>({ tasks: [] }) }} />,
   );
   expect(html).toContain('Holiday');
   expect(html).toContain('All day');
