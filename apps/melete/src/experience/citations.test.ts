@@ -164,6 +164,16 @@ describe('citations an answer keeps', () => {
     expect(known.text.startsWith('Rates rose (from what Reuters reported).')).toBe(true);
     const memory = checkCitations('Rates rose (from Memorial Hospital’s report).', []);
     expect(memory.unbacked).toEqual(['Memorial Hospital’s report']);
+    // A hedge word that goes on to name a source is that source.
+    for (const [source, named] of [
+      ['from Experience Magazine', 'Experience Magazine'],
+      ['from Training Peaks', 'Training Peaks'],
+      ['per memory.org', 'memory.org'],
+    ] as const)
+      expect(checkCitations(`Rates rose (${source}).`, []).unbacked).toEqual([named]);
+    // Ending the phrase, it hedges.
+    for (const hedge of ['from memory', 'from my experience.', 'from what I’ve read'])
+      expect(checkCitations(`Rates rose (${hedge}).`, []).unbacked).toEqual([]);
   });
 
   test('the same answer and reads always give the same result', () => {

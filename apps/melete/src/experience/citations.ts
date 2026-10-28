@@ -215,10 +215,12 @@ const PARENTHESIS =
 /**
  * What a parenthesis says after "from", "per" or "according to" when it hedges instead of citing:
  * the answer is from what the agent already knows ("from what I know", "from memory"), which
- * names no source and stays as written.
+ * names no source and stays as written. What was read, seen or heard, and a word such as memory or
+ * experience, hedge only where the phrase ends there: "Experience Magazine" and "memory.org" name
+ * a source, and are checked as one.
  */
 const HEDGE =
-  /^\s*(?:what\s+I\s+(?:know|knew|remember|recall|understand|can\s+tell|gather|(?:have|['’]ve)\s+(?:read|seen|heard|learned))|(?:my\s+)?(?:own\s+)?(?:memory|recollection|knowledge|understanding|experience|training(?:\s+data)?)|general\s+knowledge|background\s+knowledge)\b/i;
+  /^\s*(?:what\s+I\s+(?:know|knew|remember|recall|understand|can\s+tell|gather)\b|(?:what\s+I\s+(?:have|['’]ve)\s+(?:read|seen|heard|learned)|(?:my\s+)?(?:own\s+)?(?:memory|recollection|knowledge|understanding|experience|training(?:\s+data)?)|general\s+knowledge|background\s+knowledge)(?=\s*(?:[,;:]|\.(?:\s|$)|$)))/i;
 const ATTRIBUTION =
   /\b(according to|as reported by|reported by)\s+((?:\[[^\]\n]{1,300}\]\([^)\s]{1,2000}\))|[^,.;:\n()]{1,120})/gi;
 
