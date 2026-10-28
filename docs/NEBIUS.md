@@ -20,7 +20,7 @@ to store keys entered in the app. If the operator already supplies a Nebius key,
 Settings shows **Set by the operator**; test and choose a model with that key.
 Changing the model takes effect on the next reply without a restart.
 
-The picker recommends Super, Nano and Ultra in that order. After a successful
+The picker recommends Super, Nano, Ultra and Super VL in that order. After a successful
 test, it offers the models your provider actually returned, with available
 recommendations first. **Type a model name instead** accepts an exact model ID
 for another model your account can use.
@@ -32,6 +32,7 @@ for another model your account can use.
 | NVIDIA Nemotron 3 Super | `nvidia/nemotron-3-super-120b-a12b` | 262,144 | Yes | No | The main model for everyday work, coding and multi-step tasks |
 | NVIDIA Nemotron 3 Nano | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | 262,144 | Yes | No | Quick side calls, such as reading chats into memory and quick voice replies |
 | NVIDIA Nemotron 3 Ultra | `nvidia/Nemotron-3-Ultra-550b-a55b` | 1,048,576 | Yes | No | Long research and demanding reasoning |
+| NVIDIA Nemotron 3.5 Super VL | `nvidia/Nemotron-3.5-Super-VL` | 1,048,576 | Yes | Yes | The main model when people send photos or scans |
 
 These are the public serverless recommendations. Exact IDs, tool support and
 token limits come from the
@@ -45,6 +46,12 @@ use the same Nebius connection to choose Nano, and keep **Quick side tasks** on
 **Secondary** for short calls such as reading chats into memory. **Scheduled and
 repeating jobs** stay on the primary unless you move them. For a long research
 session, switch the primary to Ultra and return to Super afterwards.
+
+When people send photos or scans, such as receipts, letters or forms, pick
+Nemotron 3.5 Super VL as the primary model. It reads the pictures itself, as
+well as text and video, and it calls tools and reasons like Super. It is priced
+like Super, at $0.30 per million input tokens, $0.06 cached and $0.90 output,
+and its weights are released under OpenMDW-1.1.
 
 Super, Nano and Ultra above read text only. Nemotron **Nano Omni needs a dedicated
 endpoint** and is not a serverless preset. To use it, deploy it with Nebius and

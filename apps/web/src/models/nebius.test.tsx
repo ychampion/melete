@@ -48,6 +48,7 @@ test('the same Settings picker offers Nebius recommendations for primary and sec
     expect(html).toContain('NVIDIA Nemotron 3 Super');
     expect(html).toContain('NVIDIA Nemotron 3 Nano');
     expect(html).toContain('NVIDIA Nemotron 3 Ultra');
+    expect(html).toContain('NVIDIA Nemotron 3.5 Super VL');
     expect(html.indexOf('NVIDIA Nemotron 3 Super')).toBeLessThan(
       html.indexOf('NVIDIA Nemotron 3 Nano'),
     );
