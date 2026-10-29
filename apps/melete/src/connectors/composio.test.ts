@@ -8,6 +8,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { createHmac } from 'node:crypto';
 import { MCP_CATALOG, mcpCatalogCovers } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { pdfWith, TINY_PNG } from '../attachments/fixtures.ts';
 import { CAP_WORDS, ComposioCapReached, type ComposioMeter } from '../signals/managed-calls.ts';
 import { mailObservation } from '../signals/observations.ts';
 import { ComposioClient, ComposioFault, type ComposioToolkit } from './composio.ts';
@@ -27,13 +28,14 @@ import {
 import { ComposioRunner } from './composio-sessions.ts';
 import { signedByComposio } from './composio-triggers.ts';
 import { ConnectorFactory } from './configured.ts';
-import type { EmailConnector } from './email.ts';
+import { EmailConnector } from './email.ts';
 import { ConnectorFaultError } from './faults.ts';
 import { startFakeComposio, type Upstream } from './fixtures/fake-composio.ts';
 import { GmailApiTransport } from './gmail.ts';
 import { GoogleCalendarConnector } from './google-calendar.ts';
 import { GoogleDriveConnector } from './google-drive.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
+import { composeMail } from './mail-transport.ts';
 import { COMPOSIO_META_TOOL, listMcpServerTools } from './mcp.ts';
 import { type SignedInAccess, SignInEnded } from './signed-in.ts';
 
@@ -297,6 +299,70 @@ const gmailRoute: Route = (url) => {
 };
 
 describe('the same recorded answers, natively and through Composio', () => {
+  test('Gmail attachment metadata and PDF text are the same through the managed read-only transport', async () => {
+    const content = Buffer.concat([
+      Buffer.from(pdfWith(['Statement total 42.'])),
+      Buffer.alloc(300_000, 32),
+    ]);
+    const raw = await composeMail('sender@example.test', {
+      to: ['me@example.test'],
+      cc: [],
+      bcc: [],
+      subject: 'Statement',
+      body: 'See the attachments.',
+      messageId: '<statement@example.test>',
+      attachments: [
+        { filename: 'picture.pdf', content: Buffer.from(TINY_PNG), contentType: 'application/pdf' },
+        { filename: 'statement.png', content, contentType: 'image/png' },
+      ],
+    });
+    const google = recorded((url) =>
+      url.pathname.endsWith('/messages/mail0001')
+        ? { body: { id: 'mail0001', raw: raw.toString('base64url') } }
+        : undefined,
+    );
+    const account = await activeAccount(google.upstream);
+    for (const [fetcher, access] of [
+      [google.fetcher, native],
+      [proxied(account, MANAGED_READS.mail), managedAccess(client, account)],
+    ] as const) {
+      const transport = new GmailApiTransport({
+        base: MANAGED_GOOGLE_BASES.gmail,
+        from: 'me@example.test',
+        access,
+        fetcher,
+      });
+      const mail = new EmailConnector({
+        kind: 'api',
+        id: 'con_test',
+        spaceId: 'spc_test',
+        from: 'me@example.test',
+        session: (work) => work(transport),
+      });
+      const read = await mail.execute(mailAction('email.read', { id: 'mail0001' }), mailContext());
+      expect(read.outcome).toBe('succeeded');
+      if (read.outcome !== 'succeeded') throw new Error(read.outcome);
+      expect(read.receipt.detail.message).toMatchObject({
+        attachments: [
+          { id: '1', media_type: 'image/png', size: TINY_PNG.length },
+          { id: '2', media_type: 'application/pdf', size: content.length },
+        ],
+      });
+      const pdf = await mail.execute(
+        mailAction('email.read_attachment', { id: 'mail0001', attachment_id: '2' }),
+        mailContext(),
+      );
+      expect(pdf.outcome).toBe('succeeded');
+      if (pdf.outcome === 'succeeded')
+        expect(pdf.receipt.detail.text).toContain('Statement total 42.');
+    }
+    expect(
+      fake.executions.filter(
+        (call) => call.account === account && call.tool === 'GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID',
+      ),
+    ).toHaveLength(2);
+  });
+
   test('Gmail history gives the same messages, observations and dedup keys', async () => {
     const google = recorded(gmailRoute);
     const id = await activeAccount(google.upstream);

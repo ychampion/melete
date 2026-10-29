@@ -9,6 +9,7 @@
  * on purpose and shows it here.
  */
 import {
+  ATTACHMENT_KIND_WORDS,
   type AttachmentKept,
   type AttachmentView,
   attachmentSize,
@@ -87,8 +88,8 @@ type Opened = { url: string; name: string; picture: boolean };
 
 /** A file kept back: what kind it is, and a way to open the original on purpose. */
 function KeptFile({ file, base }: { file: AttachmentKept; base: string }) {
-  const photo = file.kind === 'image';
-  const label = photo ? 'A photo' : 'A document';
+  const picture = file.kind === 'image';
+  const label = ATTACHMENT_KIND_WORDS[file.kind];
   const [opening, setOpening] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [opened, setOpened] = useState<Opened | null>(null);
@@ -118,7 +119,7 @@ function KeptFile({ file, base }: { file: AttachmentKept; base: string }) {
         href={opened.url}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label="Open the photo in a new tab"
+        aria-label="Open the picture in a new tab"
       >
         <img src={opened.url} alt="The original you opened" />
       </a>
@@ -134,7 +135,7 @@ function KeptFile({ file, base }: { file: AttachmentKept; base: string }) {
 
   return (
     <div className="bubble-file bubble-file-kept">
-      <Icon name={photo ? 'image' : 'fileText'} size={18} />
+      <Icon name={picture ? 'image' : 'fileText'} size={18} />
       <span className="attach-name">
         <span className="attach-title">{label}</span>
         <span className="attach-meta attach-note" role={problem ? 'alert' : undefined}>

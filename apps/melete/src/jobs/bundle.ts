@@ -64,6 +64,7 @@ import {
   job,
   knowledgeRecord,
   planMilestone,
+  principal,
   question,
   space,
   task,
@@ -79,8 +80,10 @@ import { attemptRecallQuery, recall } from '../memory/recall.ts';
 import type { EmbeddingProvider } from '../memory/views.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
+import { boardAnswersFor } from '../rooms/board.ts';
+import { sharedCalendars } from '../rooms/calendar-shares.ts';
 import { withSharedItems } from '../rooms/shares.ts';
-import { roomTranscript } from '../rooms/transcript.ts';
+import { namesOf, roomTranscript } from '../rooms/transcript.ts';
 import { runBrief } from '../runs/record.ts';
 import { closedComputerStepColumn } from '../sandbox/closed-step.ts';
 import { SUMMARIES_ONLY_INSTRUCTION, summariesOnlyIn } from '../spaces/summaries.ts';
@@ -991,6 +994,61 @@ const day = (at: Date | null) => (at ? ` (due ${at.toISOString().slice(0, 10)})`
  * objective: a routine sees their open tasks, and a conversation or step that
  * belongs to a plan sees the plan, its steps and which are done.
  */
+/**
+ * What the room's own work is told about the room beyond its thread: how to
+ * ask someone else in it, the calendars its people share with it, and the
+ * board's answers that reached this request. Work that is not the room's
+ * (a member's own, in the room's space) is told none of it.
+ */
+async function roomWork(tx: Transaction, row: JobRow, requester: string | null): Promise<string> {
+  if (!row.principalId) return '';
+  const [owner] = await tx
+    .select({ kind: principal.kind })
+    .from(principal)
+    .where(eq(principal.id, row.principalId));
+  if (owner?.kind !== 'room') return '';
+  const calendars = await sharedCalendars(tx, row.spaceId);
+  const parts: string[] = [];
+  if (requester)
+    parts.push(
+      `Everyone in the room reads your answer, and only ${JSON.stringify(requester)} can reply to it. To ask anyone else, ask them with board.ask in this turn${calendars.length ? ', after reading their shared calendar with room.member_freebusy when the question is about a time' : ''}. Do that rather than saying you will, and never end by pointing to a question you did not ask. Never write what one person's calendar shows where others in the room can read it.`,
+    );
+  if (calendars.length)
+    parts.push(
+      [
+        'Calendars people in this room share with it (read them with room.member_freebusy):',
+        ...calendars.map(
+          (shared) =>
+            `- ${shared.label}: ${shared.adds ? 'free/busy, and events can be added with room.add_to_member_calendar once they approve each one' : 'free/busy only'}`,
+        ),
+      ].join('\n'),
+    );
+  if (row.audience === 'room') {
+    const answers = await boardAnswersFor(tx, row.spaceId, row.id);
+    if (answers.length) {
+      const names = await namesOf(
+        tx,
+        row.spaceId,
+        answers.map((entry) => entry.answeredBy),
+      );
+      const adds = new Set(calendars.filter((shared) => shared.adds).map((s) => s.principalId));
+      parts.push(
+        [
+          'Answers from the board in this request:',
+          ...answers.map((entry) => {
+            const who = names.get(entry.answeredBy) ?? 'Someone';
+            const offer = adds.has(entry.answeredBy)
+              ? ' Their shared calendar takes new events: if they took on something with a time, offer to add it with room.add_to_member_calendar; only they approve the exact event.'
+              : '';
+            return `- ${who} answered your question ${JSON.stringify(entry.title)}.${offer}`;
+          }),
+        ].join('\n'),
+      );
+    }
+  }
+  return parts.join('\n\n');
+}
+
 async function situation(tx: Transaction, row: JobRow): Promise<string> {
   const parts: string[] = [];
   if (row.kind === 'routine') {
@@ -1666,6 +1724,7 @@ export async function buildAttemptSkeleton(
         room
           ? `Asked by ${JSON.stringify(room.requester)}. Only ${JSON.stringify(room.requester)} can answer this request's questions. ${room.approvers}`
           : '',
+        await roomWork(tx, row, room?.requester ?? null),
         // Read from the space's rules on every attempt, so turning it on or off applies from the next.
         (await summariesOnlyIn(tx, row.spaceId)) ? SUMMARIES_ONLY_INSTRUCTION : '',
       ]

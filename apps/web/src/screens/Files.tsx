@@ -4,7 +4,7 @@
  * a file card in chat opens, downloads, and (except a file sent in chat, which
  * goes with its chat) deletes into the trash with a moment to undo.
  */
-import { attachmentSize } from '@melete/contracts/attachments';
+import { attachmentSize, originalKind } from '@melete/contracts/attachments';
 import { useEffect, useState } from 'react';
 import { SavedFileShown } from '../chat/parts.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
@@ -83,13 +83,7 @@ export const keptBack = (file: Pick<PersonFile, 'place'>, summaries: boolean): b
 
 /** What a file is, in words, for its summary card. */
 export function kindWords(file: Pick<PersonFile, 'mime'>): string {
-  const type = file.mime.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (type === 'application/pdf') return 'A PDF document';
-  if (type.startsWith('image/')) return 'A picture';
-  if (type.startsWith('audio/')) return 'A recording';
-  if (type === 'text/csv') return 'A spreadsheet';
-  if (type.startsWith('text/') || type === 'application/json') return 'A text document';
-  return 'A file';
+  return originalKind(file.mime);
 }
 
 /**

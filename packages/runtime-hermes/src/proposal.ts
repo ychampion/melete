@@ -71,4 +71,6 @@ export function asksWithoutProposing(
 export const UNPROPOSED_CONTINUATION =
   'You asked the person for a go-ahead, but you proposed nothing, so there is nothing to approve. ' +
   'Call the tool now: the broker will ask the person before anything leaves. ' +
-  'If you cannot, say so plainly instead of asking.';
+  'If it needs someone else to agree first, ask them with the tools you have now. ' +
+  'If you cannot, say so plainly instead of asking. ' +
+  'Nobody sees this note, and what you write next is added to the same answer, so do not reply to the note itself.';

@@ -141,6 +141,10 @@ export const SELECTION_REQUESTS: readonly EvalRequest[] = [
   },
   { text: 'Permission slip due Thursday for the field trip', expect: ['coordinate-the-household'] },
   { text: 'Can someone take carpool at 5:30?', expect: ['coordinate-the-household'] },
+  { text: 'The school sent something, can you sort it out?', expect: ['coordinate-the-household'] },
+  // the word school alone is not household coordination
+  { text: 'Research the best schools near Austin', expect: ['research-with-sources'] },
+  { text: 'What time does school start in Ohio?', expect: [] },
   // near misses: words the paperwork skills use, in requests that are not paperwork
   { text: 'Write this letter to the council', expect: ['write-a-draft'] },
   { text: 'Draft this letter to my landlord', expect: ['write-a-draft'] },
