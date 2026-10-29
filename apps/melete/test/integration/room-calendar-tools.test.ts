@@ -247,7 +247,13 @@ withDb('room personal calendar tools', () => {
     const [row] = await ctx.sql`select receipt from action where id = ${day.action_id}`;
     expect(row?.receipt.detail).toMatchObject({
       room_time_zone: 'America/New_York',
-      busy: [{ start_local: '2026-11-11T05:00', end_local: '2026-11-11T06:00', status: 'busy' }],
+      busy: [
+        {
+          start_local: '2026-11-11T05:00-05:00',
+          end_local: '2026-11-11T06:00-05:00',
+          status: 'busy',
+        },
+      ],
     });
     const hours = await ctx.busy({ start: '2026-11-11T04:00', end: '2026-11-11T07:00:00' });
     expect(hours.canonical_payload).toMatchObject({
@@ -256,15 +262,65 @@ withDb('room personal calendar tools', () => {
     });
     const [read] = await ctx.sql`select receipt from action where id = ${hours.action_id}`;
     expect(read?.receipt.detail.busy).toHaveLength(1);
-    // An instant with its own offset is taken as given.
+    // An instant with its own offset is that moment, in UTC.
     const given = await ctx.busy({
       start: '2026-11-11T00:00:00-05:00',
       end: '2026-11-11T12:00:00Z',
     });
     expect(given.canonical_payload).toMatchObject({
-      start: '2026-11-11T00:00:00-05:00',
-      end: '2026-11-11T12:00:00Z',
+      start: '2026-11-11T05:00:00.000Z',
+      end: '2026-11-11T12:00:00.000Z',
     });
+  });
+
+  test('every way of writing an instant with its offset reads as that moment', async () => {
+    const ctx = await setup();
+    ctx.dav.busy();
+    const forms: [string, string][] = [
+      ['2026-11-11T04:00-05:00', '2026-11-11T07:00-05:00'],
+      ['2026-11-11T04:00:00-0500', '2026-11-11T07:00:00-0500'],
+      ['2026-11-11T09:00Z', '2026-11-11T12:00Z'],
+      ['2026-11-11T09:00:00z', '2026-11-11T12:00:00z'],
+      ['2026-11-11T04:00:00.000-05:00', '2026-11-11T12:00:00.000000Z'],
+    ];
+    for (const [start, end] of forms) {
+      const read = await ctx.busy({ start, end });
+      expect({ start, end, status: read.status }).toEqual({ start, end, status: 'succeeded' });
+      expect(read.canonical_payload).toMatchObject({
+        start: '2026-11-11T09:00:00.000Z',
+        end: '2026-11-11T12:00:00.000Z',
+      });
+    }
+    expect(
+      await rejectionOf(ctx.busy({ start: '2026-11-11T09:00+25:00', end: '2026-11-11T12:00Z' })),
+    ).toMatchObject({
+      code: 'payload_invalid',
+      message: expect.stringContaining('start must be a real date and time'),
+    });
+  });
+
+  test('the hour repeated when clocks go back reads as two times, each with its offset', async () => {
+    // New York leaves daylight time at 2 AM on November 1: 01:30 comes twice,
+    // first at UTC-4 (05:30Z), then at UTC-5 (06:30Z).
+    const ctx = await setup();
+    const at = (uid: string, from: string, to: string) =>
+      ctx.dav.records.set(`/calendar/${uid}.ics`, {
+        body: ics(uid)
+          .replace('DTSTART:20261111T100000Z', `DTSTART:${from}`)
+          .replace('DTEND:20261111T110000Z', `DTEND:${to}`),
+        etag: '"existing"',
+      });
+    at('first', '20261101T053000Z', '20261101T054500Z');
+    at('second', '20261101T063000Z', '20261101T064500Z');
+    const read = await ctx.busy({ start: '2026-11-01', end: '2026-11-01' });
+    expect(read.status).toBe('succeeded');
+    const [row] = await ctx.sql`select receipt from action where id = ${read.action_id}`;
+    expect(
+      row?.receipt.detail.busy.map((block: JsonObject) => [block.start_local, block.end_local]),
+    ).toEqual([
+      ['2026-11-01T01:30-04:00', '2026-11-01T01:45-04:00'],
+      ['2026-11-01T01:30-05:00', '2026-11-01T01:45-05:00'],
+    ]);
   });
 
   test('a window that cannot be read says what is wrong with it', async () => {

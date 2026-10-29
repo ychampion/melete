@@ -212,8 +212,9 @@ const TIMES = ['starts_at', 'ends_at', 'due_at'] as const;
 const WALL = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/;
 /** A date alone: the whole of that day in the room's zone, from its midnight. */
 const DAY = /^(\d{4}-\d{2}-\d{2})$/;
-/** An instant written with its own offset, or in UTC: taken as given. */
-const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
+/** An instant written with its own offset, or in UTC, in any of the forms it may be written. */
+const INSTANT =
+  /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2})(\.\d+)?)?(?:(Z)|([+-]\d{2}):?(\d{2}))$/i;
 /** The parts of any of those forms, and an offset's, to check against the calendar. */
 const PARTS =
   /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-](\d{2}):?(\d{2}))?)?$/i;
@@ -287,7 +288,16 @@ export function roomInstant(
     next.setUTCDate(next.getUTCDate() + 1);
     return zonedInstant(next.toISOString().slice(0, 10), '00:00', timeZone).toISOString();
   }
-  if (INSTANT.test(text) && !Number.isNaN(Date.parse(text))) return text;
+  // An instant with its own offset is the same moment, written one way: with
+  // seconds, a colon in the offset and an upper-case Z, as every reader takes it.
+  const given = INSTANT.exec(text);
+  if (given) {
+    const [, date, time, second, fraction, utc, hours, minutes] = given;
+    const at = Date.parse(
+      `${date}T${time}:${second ?? '00'}${(fraction ?? '').slice(0, 4)}${utc ? 'Z' : `${hours}:${minutes}`}`,
+    );
+    if (!Number.isNaN(at)) return new Date(at).toISOString();
+  }
   throw new BrokerFault(
     'payload_invalid',
     `${field} must be a date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,

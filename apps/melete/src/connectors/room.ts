@@ -60,6 +60,21 @@ import type { ConnectionSource } from './configured.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
+/**
+ * An instant as the room's wall time with the offset in force then, such as
+ * 2026-11-01T01:30-04:00. The hour repeated when clocks go back reads as two
+ * different times, so a block can be written back as the moment it is.
+ */
+function localWithOffset(at: string | null, zone: string): string | null {
+  const wall = wallTime(at, zone);
+  if (!at || !wall) return wall;
+  const minute = Math.floor(Date.parse(at) / 60_000) * 60_000;
+  const offset = Math.round((Date.parse(`${wall}:00Z`) - minute) / 60_000);
+  const size = Math.abs(offset);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${wall}${offset < 0 ? '-' : '+'}${pad(Math.floor(size / 60))}:${pad(size % 60)}`;
+}
+
 const TEXT_LIMIT = 8000;
 const eventSchema = calendarManifest.tools.find(
   (tool) => tool.name === 'calendar.create',
@@ -521,8 +536,8 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
         (Array.isArray(value) ? value : []).map((block) => ({
           start: block.start,
           end: block.end,
-          start_local: wallTime(block.start, zone),
-          end_local: wallTime(block.end, zone),
+          start_local: localWithOffset(block.start, zone),
+          end_local: localWithOffset(block.end, zone),
           ...(busy ? { all_day: block.all_day, status: block.status } : {}),
         }));
       return {
@@ -842,11 +857,15 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
           if (Date.parse(end) <= Date.parse(start))
             throw new BrokerFault('payload_invalid', 'The free/busy end must be after its start.');
           const window = freebusyPayload.safeParse({ start, end });
-          if (!window.success)
+          if (!window.success) {
+            const issues = window.error.issues.map((issue) => issue.message);
             throw new BrokerFault(
               'payload_invalid',
-              `Choose a free/busy window of at most ${MAX_FREEBUSY_DAYS} days.`,
+              issues.some((issue) => issue.includes(`at most ${MAX_FREEBUSY_DAYS} days`))
+                ? `Choose a free/busy window of at most ${MAX_FREEBUSY_DAYS} days.`
+                : `The free/busy window cannot be read: ${issues.join('; ')}.`,
             );
+          }
           return { ...binding, start: window.data.start, end: window.data.end };
         }
         const connector = await openCalendar(target, tx);
