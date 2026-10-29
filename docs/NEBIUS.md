@@ -62,11 +62,13 @@ as pictures** off for the three text-only recommendations.
 ## Notes for Nemotron
 
 When the chosen model's ID contains `nemotron`, from any provider, Melete adds a
-short set of notes to the end of the agent's instructions: call tools with the
-exact argument names and types, one step at a time; say an action is done only
-when its result says so; ask for a person's answer with the ask tool; keep a
-question for one person visible to that person alone; and keep the final answer
-short, with no reasoning in it. The notes are plain data in
+short set of notes to the end of the agent's instructions: give times as local
+wall time without a UTC marker, search with a keyword or two at a time, read an
+item before judging it, copy privacy placeholders exactly, follow through on an
+approval in the same turn, say an action is done only when its result says so,
+ask for a person's answer with the ask tool and keep a question for one person
+visible to that person alone, and keep the final answer short, with no
+reasoning in it. The notes are plain data in
 `packages/contracts/src/model-guidance.ts`, one entry per model family, so they
 can be edited there without touching any other code; a test keeps each entry
 under 250 tokens. The same entry can set `chat_template_kwargs`, such as

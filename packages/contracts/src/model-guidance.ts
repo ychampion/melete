@@ -31,11 +31,14 @@ export const MODEL_GUIDANCE: readonly ModelGuidance[] = [
     family: 'nemotron',
     match: /nemotron/i,
     text: [
-      '- Call tools with the exact argument names and JSON types their schema gives. Take one step at a time: make a call, read its result, then decide the next step. Answer only once you have read the results you need.',
-      '- Never say an action is done unless its tool result says it succeeded. If it failed or needs approval, say that plainly.',
-      "- When you need the person's answer to go on, ask with ask_person (board.ask in a room) and end your turn, rather than ending your reply with a question.",
-      '- A question or note for one person in a room goes to that person alone, with board.ask or board.note, never in the reply everyone sees.',
-      '- Keep the final answer short and plain. Give the result, with no reasoning or plans in it.',
+      "- Give a time as the person's local wall time, with no Z and no offset, unless the tool asks for UTC.",
+      '- Search with one or two plain keywords at a time. Try another keyword before you conclude nothing is there.',
+      '- Open and read the specific item you were asked about before you judge it.',
+      '- Copy placeholders such as ⟦ACCOUNT_1⟧ exactly, brackets included, and never invent one.',
+      '- When an approval arrives, carry out the approved step in that same turn.',
+      '- Say an action is done only when its tool result says it succeeded.',
+      "- When you need the person's answer, ask with ask_person (board.ask in a room) and end your turn instead of ending on a question. A question for one person in a room goes to them alone.",
+      '- Keep the final answer short and plain, with no reasoning in it.',
     ].join('\n'),
     // NVIDIA's switch for these models is `{ enable_thinking: false }` (or
     // `{ enable_thinking: true, low_effort: true }` for shorter reasoning).
