@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  detailsIn,
   EMPTY_ORIGINALS,
   keptLine,
   minimise,
@@ -350,5 +351,29 @@ describe('what the agent may do for a summaries-only reader', () => {
     expect(stepRefusal(['[doctor 1]'], 'Odile')).toBe(
       "Nothing was done. [doctor 1] stands for a detail of the room's mail and files that stays with Odile, who made this room, so it cannot go into this step. Say that this step needs Odile, and ask Odile to do it or to share what it needs.",
     );
+    expect(stepRefusal([], 'Odile')).toBe(
+      "Nothing was done. This step carries details of the room's mail and files that stay with Odile, who made this room, so they cannot go into it. Say that this step needs Odile, and ask Odile to do it or to share what it needs.",
+    );
+  });
+
+  test('a placeholder is a placeholder in any case and however its words are joined', () => {
+    expect(placeholdersIn({ a: '[Doctor 1]', b: '[PHONE_NUMBER 2]', c: '[id-number-3]' })).toEqual([
+      '[Doctor 1]',
+      '[PHONE_NUMBER 2]',
+      '[id-number-3]',
+    ]);
+    expect(scrub('Ask [Doctor 1] to call [Phone_Number-2].', EMPTY_ORIGINALS).text).toBe(
+      'Ask the doctor to call a phone number.',
+    );
+  });
+
+  test('a detail written out in a step is found as the scrub finds it', () => {
+    expect(
+      detailsIn(
+        { to: 'helper@else.example', body: ['Her doctor is Dr. Wendell Okafor, 555-0188.'] },
+        originals,
+      ),
+    ).toBe(2);
+    expect(detailsIn({ body: 'Her doctor’s visit is on Tuesday at 2:15 PM.' }, originals)).toBe(0);
   });
 });

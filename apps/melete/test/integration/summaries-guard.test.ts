@@ -615,6 +615,23 @@ withDb('summaries only, held in code', () => {
       },
     });
     expect(mailed.status).toBe(400);
+    // A placeholder in another case, and a detail written out, are refused the same way.
+    const shouted = await call(claims, '/actions', {
+      ...event,
+      payload: { title: 'Visit with [Doctor 1]' },
+    });
+    expect(shouted.status).toBe(400);
+    const written = await call(claims, '/tools/call', {
+      name: 'mail.send',
+      arguments: {
+        to: 'helper@else.example',
+        body: 'Her doctor is Dr. Wendell Okafor, and the pharmacy is at 555-0188.',
+      },
+    });
+    expect(written.status).toBe(400);
+    expect(((await written.json()) as { error: { message: string } }).error.message).toBe(
+      stepRefusal([], 'Odile'),
+    );
     expect(reached).toEqual([]);
 
     // The board stays in the room, where each person reads it checked; a step without

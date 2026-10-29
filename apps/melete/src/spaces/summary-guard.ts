@@ -902,13 +902,19 @@ export function settled(text: string, originals: Originals): string {
   return cut;
 }
 
+/** A placeholder in any case, its words joined by spaces, underscores or hyphens: "[Doctor_1]". */
 const PLACEHOLDER = new RegExp(
   `\\[(${Object.keys(ROLE_WORDS)
     .sort((a, b) => b.length - a.length)
-    .map(escapeRegex)
-    .join('|')}) \\d{1,5}\\]`,
-  'g',
+    .map((role) => escapeRegex(role).replace(/ /g, '[ _-]'))
+    .join('|')})[ _-]\\d{1,5}\\]`,
+  'gi',
 );
+const ROLE_OF = new Map(
+  Object.keys(ROLE_WORDS).map((role) => [role.toLowerCase(), role as DetailRole]),
+);
+const roleOf = (said: string): DetailRole =>
+  ROLE_OF.get(said.toLowerCase().replace(/[_-]/g, ' ')) ?? 'person';
 
 export type Scrubbed = { text: string; kept: number };
 
@@ -939,7 +945,7 @@ export function scrub(text: string, originals: Originals): Scrubbed {
   let at = 0;
   for (const match of out.matchAll(PLACEHOLDER)) {
     placed += out.slice(at, match.index);
-    placed += wordsFor(ROLE_WORDS[match[1] as DetailRole], placed.slice(-40));
+    placed += wordsFor(ROLE_WORDS[roleOf(match[1] ?? '')], placed.slice(-40));
     at = match.index + match[0].length;
   }
   placed += out.slice(at);
@@ -1215,7 +1221,22 @@ export function stepRefusal(carried: readonly string[], maker: string | null): s
   const one = carried.length === 1;
   const who = maker ? `${maker}, who made this room` : 'the person who made this room';
   const them = maker ?? 'them';
-  return `Nothing was done. ${carried.join(', ')} ${one ? 'stands for a detail' : 'stand for details'} of the room's mail and files that ${one ? 'stays' : 'stay'} with ${who}, so ${one ? 'it' : 'they'} cannot go into this step. Say that this step needs ${them}, and ask ${them} to do it or to share what it needs.`;
+  const what = carried.length
+    ? `${carried.join(', ')} ${one ? 'stands for a detail' : 'stand for details'} of the room's mail and files that ${one ? 'stays' : 'stay'} with ${who}, so ${one ? 'it' : 'they'} cannot go into this step.`
+    : `This step carries details of the room's mail and files that stay with ${who}, so they cannot go into it.`;
+  return `Nothing was done. ${what} Say that this step needs ${them}, and ask ${them} to do it or to share what it needs.`;
+}
+
+/** How many of the room's details a step's arguments carry as they are, found as the people-side scrub finds them. */
+export function detailsIn(value: unknown, originals: Originals): number {
+  if (typeof value === 'string') return detailSpans(value, originals).length;
+  if (Array.isArray(value))
+    return value.reduce((n: number, item) => n + detailsIn(item, originals), 0);
+  if (!value || typeof value !== 'object') return 0;
+  return Object.values(value as Record<string, unknown>).reduce(
+    (n: number, child) => n + detailsIn(child, originals),
+    0,
+  );
 }
 
 /**
@@ -1244,8 +1265,9 @@ export function withSummaryStepCheck(
       return fetcher(again());
     }
     const step = String(parsed?.kind ?? parsed?.name ?? '');
-    const carried = placeholdersIn(parsed?.payload ?? parsed?.arguments ?? null);
-    if (!carried.length || IN_ROOM.test(step)) return fetcher(again());
+    if (IN_ROOM.test(step)) return fetcher(again());
+    const args = parsed?.payload ?? parsed?.arguments ?? null;
+    const carried = placeholdersIn(args);
     let jobId: string;
     try {
       jobId = verifyCapability(
@@ -1260,8 +1282,10 @@ export function withSummaryStepCheck(
       .select({ spaceId: job.spaceId })
       .from(job)
       .where(eq(job.id, jobId));
-    if (!row || !(await minimiserFor(options.reader, jobId))) return fetcher(again());
-    const maker = await makerOf(options.reader, row.spaceId);
+    const originals = row ? await minimiserFor(options.reader, jobId) : null;
+    // A detail written out, as well as one as its placeholder, stays in the room.
+    if (!originals || (!carried.length && !detailsIn(args, originals))) return fetcher(again());
+    const maker = await makerOf(options.reader, row?.spaceId ?? '');
     const [named] = maker?.maker
       ? await options.reader
           .select({ name: principal.displayName })

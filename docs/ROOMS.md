@@ -440,9 +440,9 @@ the model writes:
   stay, so the agent can still summarise ("a doctor's appointment next Tuesday",
   "a bill of $72.10 due November 12"). The request's own instructions and tool
   definitions go as written.
-- **What the agent does.** A step that carries a placeholder out of the room,
-  such as an event, an email or a file, is refused before it runs and nothing
-  is written. The model is told the step needs the room's maker, so it says
+- **What the agent does.** A step that carries one of these details out of the
+  room, as its placeholder or written out, such as an event, an email or a file,
+  is refused before it runs and nothing is written. The model is told the step needs the room's maker, so it says
   so. Steps that stay in the room (its board, asking someone in it) go ahead,
   and each person reads them checked as below.
 - **What people read.** Before anyone but the maker reads the agent's answers,
