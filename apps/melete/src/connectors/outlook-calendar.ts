@@ -18,6 +18,12 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
+import {
+  canonicalTimeZone,
+  type LocalTime,
+  parseRecurrence,
+  recurrenceWords,
+} from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
 import {
   type CalendarOccurrences,
@@ -85,7 +91,24 @@ type GraphEvent = {
   location?: { displayName?: string };
   start?: { dateTime?: string; timeZone?: string };
   end?: { dateTime?: string; timeZone?: string };
-  recurrence?: { pattern?: { type?: string; interval?: number } } | null;
+  recurrence?: {
+    pattern?: {
+      type?: string;
+      interval?: number;
+      daysOfWeek?: string[];
+      firstDayOfWeek?: string;
+      dayOfMonth?: number;
+      month?: number;
+      index?: string;
+    };
+    range?: {
+      type?: string;
+      startDate?: string;
+      endDate?: string;
+      numberOfOccurrences?: number;
+      recurrenceTimeZone?: string;
+    };
+  } | null;
   singleValueExtendedProperties?: { id?: string; value?: string }[];
   attendees?: { emailAddress?: { address?: string } }[];
   showAs?: string;
@@ -193,13 +216,14 @@ export function graphOccurrence(event: GraphInstance): Occurrence | null {
 /** Most pages of instances one read walks through. */
 const MAX_OCCURRENCE_PAGES = 10;
 
-function eventView(event: GraphEvent): EventView {
+function eventView(event: GraphInstance): EventView {
   const time = (value: { dateTime?: string } | undefined) => {
+    if (event.isAllDay && value?.dateTime) return value.dateTime.slice(0, 10);
     const at = instant(value?.dateTime);
     return Number.isNaN(at) ? (value?.dateTime ?? '') : new Date(at).toISOString();
   };
   return {
-    uid: mark(event)?.split(' ')[0] ?? event.iCalUId ?? event.id ?? '',
+    uid: mark(event)?.split(' ')[0] ?? event.seriesMasterId ?? event.iCalUId ?? event.id ?? '',
     summary: event.subject ?? '',
     start: time(event.start),
     end: time(event.end),
@@ -211,6 +235,76 @@ function eventView(event: GraphEvent): EventView {
     etag: toolEtag(event['@odata.etag']),
   };
 }
+
+const GRAPH_DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const DAY_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+
+/** A Graph pattern in the same rule vocabulary calendars already use. */
+function graphRule(event: GraphInstance): string | null {
+  const pattern = event.recurrence?.pattern;
+  const frequencies: Record<string, string> = {
+    daily: 'DAILY',
+    weekly: 'WEEKLY',
+    absoluteMonthly: 'MONTHLY',
+    relativeMonthly: 'MONTHLY',
+    absoluteYearly: 'YEARLY',
+    relativeYearly: 'YEARLY',
+  };
+  const freq = frequencies[pattern?.type ?? ''];
+  if (!pattern || !freq) return null;
+  const fields = [`FREQ=${freq}`, `INTERVAL=${pattern.interval ?? 1}`];
+  if (freq === 'WEEKLY') {
+    const first = DAY_CODES[GRAPH_DAYS.indexOf(pattern.firstDayOfWeek ?? 'sunday')];
+    if (!first) return null;
+    fields.push(`WKST=${first}`);
+  }
+  const days = (pattern.daysOfWeek ?? []).map((day) => DAY_CODES[GRAPH_DAYS.indexOf(day)]);
+  if (days.some((day) => !day)) return null;
+  if (pattern.type?.startsWith('relative')) {
+    // Graph chooses the first matching weekday in a group, rather than one
+    // numbered instance for each weekday, so that shape has no direct RRULE.
+    if (days.length !== 1) return null;
+    const nth: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, last: -1 };
+    const index = nth[pattern.index ?? 'first'];
+    if (!index) return null;
+    fields.push(`BYDAY=${index}${days[0]}`);
+  } else if (days.length) fields.push(`BYDAY=${days.join(',')}`);
+  if (pattern.dayOfMonth) fields.push(`BYMONTHDAY=${pattern.dayOfMonth}`);
+  if (pattern.month) fields.push(`BYMONTH=${pattern.month}`);
+  const range = event.recurrence?.range;
+  if (range?.type === 'numbered') fields.push(`COUNT=${range.numberOfOccurrences}`);
+  if (range?.type === 'endDate' && range.endDate)
+    fields.push(`UNTIL=${range.endDate.replaceAll('-', '')}`);
+  return fields.join(';');
+}
+
+/** The person's wall clock, used only to say a provider's recurrence rule. */
+function localTime(at: number, zone: string): LocalTime {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+  }).formatToParts(new Date(at));
+  const part = (name: string) => Number(parts.find((p) => p.type === name)?.value ?? 0);
+  return {
+    year: part('year'),
+    month: part('month'),
+    day: part('day'),
+    hour: part('hour'),
+    minute: part('minute'),
+    second: part('second'),
+  };
+}
+
+const localDate = (at: number, zone: string): string => {
+  const { year, month, day } = localTime(at, zone);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
 
 export class OutlookCalendarConnector implements Connector {
   readonly manifest = outlookCalendarManifest;
@@ -492,26 +586,122 @@ export class OutlookCalendarConnector implements Connector {
       }
       if (action.kind === 'calendar.list') {
         const payload = listPayload.parse(action.canonical_payload);
-        const window = listWindow(payload, this.config.now?.() ?? Date.now());
-        const listed = await this.page(
-          new URLSearchParams({
-            $top: String(payload.limit),
-            $orderby: 'start/dateTime',
-            // Events that touch the window; a series keeps its pattern.
-            $filter: `end/dateTime ge ${literal(utc(window.from))} and start/dateTime lt ${literal(utc(window.to))}`,
-          }),
-          ctx,
+        const now = this.config.now?.() ?? Date.now();
+        const window = listWindow(payload, now);
+        const reference = payload.from || payload.to ? Date.parse(window.from) : now;
+        const zone = canonicalTimeZone(payload.time_zone);
+        const candidates = new Map<string, GraphInstance>();
+        let path: string | undefined = `/calendarView?${new URLSearchParams({
+          startDateTime: window.from,
+          endDateTime: window.to,
+          $top: '100',
+          $orderby: 'start/dateTime',
+          $expand: `singleValueExtendedProperties($filter=id eq ${literal(MELETE_MARK)})`,
+        })}`;
+        let more = false;
+        for (let page = 0; page < MAX_OCCURRENCE_PAGES && path; page++) {
+          const response = await this.request('GET', path, ctx);
+          if (!response.ok) {
+            await response.body?.cancel().catch(() => {});
+            throw new Error('Calendar listing unavailable');
+          }
+          const listed = (await boundedJson(response, MAX_RESPONSE_BYTES)) as {
+            value?: GraphInstance[];
+            '@odata.nextLink'?: unknown;
+          } | null;
+          for (const event of listed?.value ?? []) {
+            if (event.isCancelled || event.type === 'seriesMaster') continue;
+            const recurring = Boolean(event.seriesMasterId || event.recurrence);
+            const view = eventView(event);
+            if (
+              recurring &&
+              (event.isAllDay
+                ? view.start < localDate(reference, zone)
+                : instant(event.start?.dateTime) < reference)
+            )
+              continue;
+            const key = event.seriesMasterId ?? view.uid;
+            if (!key || !view.start) continue;
+            const previous = candidates.get(key);
+            if (!previous || view.start < eventView(previous).start) candidates.set(key, event);
+          }
+          const next = listed?.['@odata.nextLink'];
+          more = Boolean(next);
+          path =
+            typeof next === 'string' && next.startsWith(`${this.config.base}/`)
+              ? next.slice(this.config.base.length)
+              : undefined;
+          if (candidates.size >= payload.limit) break;
+        }
+        const chosen = byStart([...candidates.values()].map(eventView)).slice(0, payload.limit);
+        const instances = new Map(
+          [...candidates.values()].map((event) => [eventView(event).uid, event]),
         );
-        const live = listed.events.filter((event) => !event.isCancelled);
-        return this.success(
-          action,
-          listDetail(
-            byStart(live.map(eventView)).slice(0, payload.limit),
-            window,
-            listed.more || live.length > payload.limit,
-            false,
-          ),
-        );
+        const masters = new Map<string, GraphInstance | null>();
+        let recurrenceComplete = true;
+        for (const view of chosen) {
+          const event = instances.get(view.uid);
+          if (!event || (!event.seriesMasterId && !event.recurrence)) continue;
+          let master: GraphInstance | null = event;
+          if (event.seriesMasterId && !event.recurrence) {
+            if (!masters.has(event.seriesMasterId)) {
+              let found: GraphInstance | null = null;
+              try {
+                const response = await this.request(
+                  'GET',
+                  `/events/${encodeURIComponent(event.seriesMasterId)}`,
+                  ctx,
+                );
+                if (response.ok)
+                  found = (await boundedJson(response, MAX_RESPONSE_BYTES)) as GraphInstance;
+                else await response.body?.cancel().catch(() => {});
+              } catch {
+                ctx.signal?.throwIfAborted();
+              }
+              masters.set(event.seriesMasterId, found);
+            }
+            master = masters.get(event.seriesMasterId) ?? null;
+          }
+          const rrule = master ? graphRule(master) : null;
+          const parsed = rrule ? parseRecurrence(rrule) : null;
+          const start = instant(master?.start?.dateTime);
+          const named =
+            master?.recurrence?.range?.recurrenceTimeZone ?? master?.originalStartTimeZone;
+          let ruleZone = zone;
+          let includeTime = !event.isAllDay;
+          if (named) {
+            try {
+              ruleZone = new Intl.DateTimeFormat('en', { timeZone: named }).resolvedOptions()
+                .timeZone;
+            } catch {
+              // Graph also names Windows zones. Without their IANA rules,
+              // the weekday remains known, but a fixed UTC clock would be
+              // wrong when the series next crosses a daylight saving change.
+              includeTime = false;
+            }
+          }
+          view.recurrence_status = 'active';
+          view.recurrence = rrule;
+          view.recurrence_summary =
+            parsed?.ok && !Number.isNaN(start)
+              ? recurrenceWords(parsed.value, localTime(start, ruleZone), {
+                  zone: ruleZone,
+                  includeTime,
+                })
+              : 'On a set schedule';
+          if (master && !Number.isNaN(start)) view.series_start = eventView(master).start;
+          if (view.recurrence_summary === 'On a set schedule') recurrenceComplete = false;
+        }
+        const detail = listDetail(chosen, window, more || candidates.size > payload.limit, false);
+        return this.success(action, {
+          ...detail,
+          recurrence_complete: recurrenceComplete,
+          ...(!recurrenceComplete
+            ? {
+                note: `${typeof detail.note === 'string' ? `${detail.note} ` : ''}Some series rules could not be read. Their dates are current, but the repeating schedule is unavailable.`,
+              }
+            : {}),
+        });
       }
       if (action.kind === 'calendar.delete') {
         const payload = deletePayload.parse(action.canonical_payload);

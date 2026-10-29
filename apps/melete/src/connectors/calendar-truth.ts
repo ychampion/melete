@@ -419,6 +419,13 @@ export async function bindCalendarCheck(
   tx: Query,
   kind: string | undefined,
 ): Promise<JsonObject> {
+  if (kind === 'calendar.list')
+    return {
+      ...payload,
+      time_zone: validZone(payload.time_zone)
+        ? payload.time_zone
+        : await spaceTimeZone(tx, ctx.space_id),
+    };
   if (kind === 'calendar.freebusy') {
     const { checked: _ignored, ...rest } = payload;
     return {

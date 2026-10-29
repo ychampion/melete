@@ -385,7 +385,10 @@ describe('Outlook calendar through the calendar tools', () => {
     expect((await connector.execute(create, mailContext('act_event1'))).outcome).toBe('failed');
     expect(microsoft.events.size).toBe(1);
 
-    const listed = await connector.execute(mailAction('calendar.list', {}), mailContext());
+    const listed = await connector.execute(
+      mailAction('calendar.list', { from: '2026-09-30', to: '2026-10-01' }),
+      mailContext(),
+    );
     if (listed.outcome !== 'succeeded') throw new Error(listed.outcome);
     const [view] = listed.receipt.detail.events as Record<string, unknown>[];
     expect(view).toMatchObject({

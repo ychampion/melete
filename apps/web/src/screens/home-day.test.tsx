@@ -54,6 +54,51 @@ test('a chat’s time in the list is the profile’s day and hour', () => {
   expect(relative(iso, now, 'America/Los_Angeles')).toBe('Yesterday');
 });
 
+test('today shows a recurring occurrence with its rule after the Pacific DST change', () => {
+  const html = renderToStaticMarkup(
+    <DayGrid
+      events={[
+        {
+          id: 'weekly',
+          title: 'Planning',
+          starts_at: '2026-11-03T17:00:00.000Z',
+          ends_at: '2026-11-03T18:00:00.000Z',
+          connection_id: 'con_cal',
+          recurrence_summary: 'Every Tuesday',
+        },
+      ]}
+      now={Date.parse('2026-11-03T16:30:00Z')}
+      zone="America/Los_Angeles"
+    />,
+  );
+  expect(html).toContain('Planning');
+  expect(html).toContain('9:00 AM');
+  expect(html).toContain('Every Tuesday');
+});
+
+test('an all-day recurring occurrence stays visible on today’s grid', () => {
+  const html = renderToStaticMarkup(
+    <DayGrid
+      events={[
+        {
+          id: 'daily',
+          title: 'Holiday',
+          starts_at: '2026-11-01T07:00:00.000Z',
+          ends_at: '2026-11-02T08:00:00.000Z',
+          connection_id: 'con_cal',
+          all_day: true,
+          recurrence_summary: 'Every day',
+        },
+      ]}
+      now={Date.parse('2026-11-01T18:00:00Z')}
+      zone="America/Los_Angeles"
+    />,
+  );
+  expect(html).toContain('Holiday');
+  expect(html).toContain('All day');
+  expect(html).toContain('Every day');
+});
+
 test('the chips are starts to finish, and none decides where the trip goes', () => {
   for (const calendar of [true, false]) {
     const chips = promptChips(calendar);

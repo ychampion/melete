@@ -1283,6 +1283,8 @@ export const experienceCalendarEvent = z.strictObject({
   title: text,
   starts_at: date,
   ends_at: date,
+  all_day: z.boolean().optional(),
+  recurrence_summary: text.optional(),
   connection_id: id,
   url: url.optional(),
 });
