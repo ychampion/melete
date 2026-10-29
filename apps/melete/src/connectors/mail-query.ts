@@ -192,7 +192,7 @@ export function parseMailQuery(query: string): MailQuery {
 
 /** What each email.search query understands, said to the model in the tool description. */
 export const MAIL_QUERY_HELP =
-  'Words must all appear; put a phrase in double quotes; join alternatives with OR, as in "field trip" OR "permission slip". Other search operators are ignored. Leave the query empty for the newest messages.';
+  'Query: words that must all appear, "a phrase" in quotes, OR between alternatives; empty for the newest.';
 
 /** The query as Gmail's search box reads it. Empty when there is nothing to look for. */
 export function gmailQuery(query: MailQuery): string {
