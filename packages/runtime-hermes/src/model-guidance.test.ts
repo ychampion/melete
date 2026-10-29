@@ -90,3 +90,28 @@ describe('per-model guidance in the prompt', () => {
     );
   });
 });
+
+describe('the operator switch', () => {
+  test('off means no block', () => {
+    expect(renderModelGuidance(NEMOTRON, false)).toBe('');
+    expect(renderModelGuidance(NEMOTRON, true)).toStartWith(MODEL_GUIDANCE_HEADING);
+  });
+
+  test('MELETE_MODEL_GUIDANCE=off at start leaves the block out of a run', () => {
+    const script = [
+      `import { HermesClient } from ${JSON.stringify(new URL('./client.ts', import.meta.url).pathname)};`,
+      `const bundle = ${JSON.stringify(turn(NEMOTRON))};`,
+      "const client = new HermesClient({ baseUrl: 'http://runtime:8790/' });",
+      'console.log(JSON.parse(client.startRun(bundle).body).instructions);',
+    ].join('\n');
+    const run = (value: string) => {
+      const child = Bun.spawnSync([process.execPath, '-e', script], {
+        env: { ...process.env, MELETE_MODEL_GUIDANCE: value },
+      });
+      expect(child.exitCode).toBe(0);
+      return child.stdout.toString();
+    };
+    expect(run('off')).not.toContain(MODEL_GUIDANCE_HEADING);
+    expect(run('')).toContain(MODEL_GUIDANCE_HEADING);
+  });
+});

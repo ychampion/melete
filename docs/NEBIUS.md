@@ -73,7 +73,8 @@ reasoning in it. The notes are plain data in
 can be edited there without touching any other code; a test keeps each entry
 under 250 tokens. The same entry can set `chat_template_kwargs`, such as
 `{ "enable_thinking": false }`, to switch Nemotron's reasoning; it is unset, so
-reasoning stays at the provider's default.
+reasoning stays at the provider's default. To leave all of this out, set
+`MELETE_MODEL_GUIDANCE=off` in the service environment and restart the service.
 
 ## Configure from the environment
 

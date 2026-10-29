@@ -25,8 +25,11 @@
  *   of the conversation to carry its thinking blocks, which a history the
  *   engine kept without them does not, so turning it on would refuse turns.
  */
-import { modelGuidance } from '@melete/contracts';
+import { modelGuidance, modelGuidanceEnabled } from '@melete/contracts';
 import type { GatewayProtocol } from './types.ts';
+
+/** Whether the operator left model guidance on (`MELETE_MODEL_GUIDANCE`). */
+const MODEL_GUIDANCE_ON: boolean = modelGuidanceEnabled(process.env);
 
 export const REASONING_EFFORTS = ['off', 'none', 'low', 'medium', 'high'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
@@ -253,13 +256,15 @@ export function withEffort(
  * The request with its model family's chat template arguments added
  * (`chat_template_kwargs` in `MODEL_GUIDANCE`), such as a reasoning switch.
  * Only chat completions carry them, a family with none set gets nothing, and a
- * request that already names its own keeps them. The body is changed in place
- * and returned.
+ * request that already names its own keeps them. `MELETE_MODEL_GUIDANCE=off`,
+ * read once at start, sends none. The body is changed in place and returned.
  */
 export function withTemplateKwargs(
   body: Record<string, unknown>,
   input: { protocol: GatewayProtocol; model: string },
+  enabled: boolean = MODEL_GUIDANCE_ON,
 ): Record<string, unknown> {
+  if (!enabled) return body;
   const extra = modelGuidance(input.model)?.chat_template_kwargs;
   if (!extra || input.protocol !== 'chat/completions' || body.chat_template_kwargs !== undefined)
     return body;

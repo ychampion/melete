@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { type ModelGuidance, modelGuidance } from '@melete/contracts';
+import { type ModelGuidance, modelGuidance, modelGuidanceEnabled } from '@melete/contracts';
+import { readEnv } from '../env.ts';
 import { withTemplateKwargs } from './effort.ts';
 
 const NEMOTRON = 'nvidia/nemotron-3-super-120b-a12b';
@@ -39,5 +40,24 @@ describe('a model family’s chat template arguments', () => {
         chat_template_kwargs: { enable_thinking: true },
       });
     });
+  });
+});
+
+describe('MELETE_MODEL_GUIDANCE', () => {
+  test('off sends no template arguments even when the family sets them', () => {
+    withSwitch({ enable_thinking: false }, () => {
+      expect(
+        withTemplateKwargs({}, { protocol: 'chat/completions', model: NEMOTRON }, false),
+      ).toEqual({});
+    });
+  });
+
+  test('the setting is on, off or left out', () => {
+    expect(modelGuidanceEnabled({})).toBe(true);
+    expect(modelGuidanceEnabled({ MELETE_MODEL_GUIDANCE: 'on' })).toBe(true);
+    expect(modelGuidanceEnabled({ MELETE_MODEL_GUIDANCE: ' OFF ' })).toBe(false);
+    expect(readEnv({ MELETE_MODEL_GUIDANCE: 'off' }).ok).toBe(true);
+    expect(readEnv({ MELETE_MODEL_GUIDANCE: '' }).ok).toBe(true);
+    expect(readEnv({ MELETE_MODEL_GUIDANCE: 'maybe' }).ok).toBe(false);
   });
 });

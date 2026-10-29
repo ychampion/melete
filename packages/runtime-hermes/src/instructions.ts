@@ -32,6 +32,7 @@ import {
   DISPLAY_NAME_MAX,
   MEMORY_SEARCH_TOOL_NAME,
   modelGuidance,
+  modelGuidanceEnabled,
   type ReplyVoice,
   renderSinceLast,
   SKILL_READ_TOOL_NAME,
@@ -121,13 +122,18 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
 /** The heading the per-model notes go under, so they read as their own section. */
 export const MODEL_GUIDANCE_HEADING = '# Notes for the model you run on';
 
+/** Whether the operator left model guidance on (`MELETE_MODEL_GUIDANCE`). */
+const MODEL_GUIDANCE_ON: boolean = modelGuidanceEnabled(process.env);
+
 /**
  * The notes for the connected model's family (`MODEL_GUIDANCE` in the
  * contracts package), or nothing for a model with none. They go last in the
  * instructions, after everything said to every model, and depend only on the
  * model, so they stay in the cached prefix from one turn to the next.
+ * `MELETE_MODEL_GUIDANCE=off`, read once at start, leaves them out.
  */
-export function renderModelGuidance(model: string): string {
+export function renderModelGuidance(model: string, enabled = MODEL_GUIDANCE_ON): string {
+  if (!enabled) return '';
   const entry = modelGuidance(model);
   if (!entry) return '';
   return [

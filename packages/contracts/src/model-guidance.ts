@@ -46,6 +46,14 @@ export const MODEL_GUIDANCE: readonly ModelGuidance[] = [
   },
 ];
 
+/**
+ * Whether model guidance is on: `MELETE_MODEL_GUIDANCE=off` turns it off (the
+ * notes and any chat template arguments), and anything else leaves it on. The
+ * service reads it once, at start.
+ */
+export const modelGuidanceEnabled = (env: Record<string, string | undefined>): boolean =>
+  env.MELETE_MODEL_GUIDANCE?.trim().toLowerCase() !== 'off';
+
 /** The family a model id belongs to, or undefined for a model with no notes. */
 export function modelGuidance(model: string): ModelGuidance | undefined {
   return MODEL_GUIDANCE.find((entry) => entry.match.test(model));
