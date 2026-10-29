@@ -95,6 +95,8 @@ export type ExperienceDeps = {
   liveness?: ConnectionLiveness;
   /** Home's starter tasks for a new person; left out, the built-in list. */
   starters?: readonly StarterTask[];
+  /** Rooms are on: a room's owners wake, pause and stop the room's own runs. */
+  multiplayer?: boolean;
 };
 /**
  * Rows these routes keep for the space as a whole rather than for one job: the
@@ -134,6 +136,14 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   if (deps.attachments) service.attachments = deps.attachments;
   if (deps.workspaces) service.workspaces = deps.workspaces;
   const longWork = deps.runs;
+  /** The run a person wakes, pauses or stops: their own, or a room's own as one of its owners. */
+  const controlOf = (runs: RunService, spaceId: string, c: Context) => (id: string) =>
+    runs.requireControl(
+      spaceId,
+      id,
+      c.get('owner')?.id as string | undefined,
+      deps.multiplayer === true,
+    );
   const questions = new ExperienceQuestions(
     deps.db,
     deps.questions,
@@ -298,10 +308,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /runs/{id}/message': async (spaceId, c, input) => {
       const runs = deps.runs;
       if (!runs) return unavailable(RUNS_UNAVAILABLE);
-      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      const control = controlOf(runs, spaceId, c);
+      const row = await control(c.req.param('id') ?? '');
       // A reply that names an answer to the privacy question it waits on is that answer.
       if (await deps.questions?.answerInWords(row.id, String(input.text)))
-        return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+        return { run: await runs.view(await control(row.id)) };
       if (await runs.message(row, String(input.text)))
         // Not taken now is not lost: the run's next shift reads it.
         await deps.runner?.steer(row.id).catch((error: unknown) => {
@@ -309,28 +320,31 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
             `steer: live_delivery_failed ${error instanceof Error ? error.name : 'error'}\n`,
           );
         });
-      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+      return { run: await runs.view(await control(row.id)) };
     },
     'POST /runs/{id}/pause': async (spaceId, c) => {
       const runs = deps.runs;
       if (!runs) return unavailable(RUNS_UNAVAILABLE);
-      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      const control = controlOf(runs, spaceId, c);
+      const row = await control(c.req.param('id') ?? '');
       await runs.setPaused(row, true);
-      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+      return { run: await runs.view(await control(row.id)) };
     },
     'POST /runs/{id}/resume': async (spaceId, c) => {
       const runs = deps.runs;
       if (!runs) return unavailable(RUNS_UNAVAILABLE);
-      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      const control = controlOf(runs, spaceId, c);
+      const row = await control(c.req.param('id') ?? '');
       await runs.setPaused(row, false);
-      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+      return { run: await runs.view(await control(row.id)) };
     },
     'POST /runs/{id}/stop': async (spaceId, c) => {
       const runs = deps.runs;
       if (!runs) return unavailable(RUNS_UNAVAILABLE);
-      const row = await runs.requireRun(spaceId, c.req.param('id') ?? '');
+      const control = controlOf(runs, spaceId, c);
+      const row = await control(c.req.param('id') ?? '');
       await runs.stop(row);
-      return { run: await runs.view(await runs.requireRun(spaceId, row.id)) };
+      return { run: await runs.view(await control(row.id)) };
     },
     'PUT /runs/{id}/limit': async (spaceId, c, input) => {
       const runs = deps.runs;
