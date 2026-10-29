@@ -670,6 +670,23 @@ export class PrivacyRouter {
   }
 
   /**
+   * Whether this job's conversation must stay private: its space or agent is
+   * marked private, or it is about a sensitive topic. A job no space holds is
+   * treated as private, so what cannot be placed is never shown elsewhere.
+   */
+  async keepsPrivate(jobId: string): Promise<boolean> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId) return true;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (settings.privateSpace) return true;
+    if (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) return true;
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    return activeTopic(conversation, settings) !== null;
+  }
+
+  /**
    * Why a message said in a room is private, or null: the room is marked
    * private, or the message is about a sensitive topic. A room message may
    * reach no request at all, so it is read by its room rather than a job.

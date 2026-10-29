@@ -3,6 +3,7 @@ import {
   type ApprovalDecisionRequest,
   approvalDecisionRequest,
   type CapabilityClaims,
+  CONVERSATION_TOOL_NAMES,
   type EffectProposalResponse,
   type ExecutionSettlement,
   executionSettlement,
@@ -35,6 +36,8 @@ export interface BrokerOperations {
   intentTool?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   /** Search what memory keeps about the person, under the attempt's own rules. */
   memorySearch?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
+  /** Search and read the person's earlier conversations, under the attempt's own rules. */
+  conversationTool?(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
@@ -253,6 +256,18 @@ export function createBrokerApp(options: {
       )
         throw new BrokerFault('unknown_tool');
       return Response.json(await options.broker.memorySearch(claims, body.arguments));
+    }
+    if (CONVERSATION_TOOL_NAMES.includes(body.name)) {
+      const claims = c.get('claims');
+      const catalog = await options.broker.catalog(claims);
+      if (
+        !options.broker.conversationTool ||
+        !catalog.some((tool) => tool.name === body.name && tool.connection_id === null)
+      )
+        throw new BrokerFault('unknown_tool');
+      return Response.json(
+        await options.broker.conversationTool(claims, body.name, body.arguments),
+      );
     }
     if (body.name === 'compose') {
       const claims = c.get('claims');
