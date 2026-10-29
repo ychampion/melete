@@ -39,6 +39,9 @@ export const EARLIER_SUMMARY_CHARACTERS = 16_000;
  */
 export const STANDING_INSTRUCTIONS = { items: 40, characters: 500 } as const;
 
+/** The most of one MCP server's notes on using its tools an attempt carries, in characters. */
+export const SERVER_NOTES_MAX = 800;
+
 /** Provider-agnostic message shape. Nothing provider-specific reaches the transcript. */
 export const canonicalMessage = z.object({
   role: z.enum(['user', 'assistant', 'tool', 'system']),
@@ -455,6 +458,22 @@ export const attemptBundle = z.object({
    * line has no tool of its own). Additive: a producer that omits it names none.
    */
   connected_accounts: z.array(z.string().min(1).max(300)).max(20).optional(),
+  /**
+   * What each connected MCP server says about using its own tools (its
+   * `instructions`), by connection. They are the server's words, not the
+   * person's or Melete's, and are shown only while one of that connection's
+   * tools is in `tools`. Additive: a producer that omits it gives none.
+   */
+  server_notes: z
+    .array(
+      z.object({
+        connection_id: prefixedId(ID_PREFIXES.connection),
+        server: z.string().min(1).max(120),
+        notes: z.string().min(1).max(SERVER_NOTES_MAX),
+      }),
+    )
+    .max(20)
+    .optional(),
   /**
    * The voice the person picked for replies and drafts. Additive: a producer
    * that omits it gets the default voice.

@@ -1,4 +1,8 @@
-import type { ToolSpec } from '@melete/contracts';
+import {
+  type ResponsibilityAttemptBundle,
+  SERVER_NOTES_MAX,
+  type ToolSpec,
+} from '@melete/contracts';
 import { SANDBOX_TERMINAL_TOOL } from '@melete/runtime-hermes';
 import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
@@ -156,13 +160,55 @@ export class RuntimeCatalog {
       budget.skill_index_tokens,
     );
     const connected_accounts = await this.connectedAccounts(tx, claims, access, granted);
+    const server_notes = await this.serverNotes(tx, claims.space_id, tools);
     return {
       tools,
       skills,
       skill_index,
       ...(connected_accounts.length ? { connected_accounts } : {}),
+      ...(server_notes.length ? { server_notes } : {}),
     };
   };
+
+  /**
+   * The notes each MCP server gave on using its own tools, kept on its
+   * connection, for the servers one of whose tools this attempt is offered.
+   * A server none of whose tools are offered says nothing here.
+   */
+  private async serverNotes(
+    tx: Transaction,
+    spaceId: string,
+    tools: readonly ToolSpec[],
+  ): Promise<NonNullable<ResponsibilityAttemptBundle['server_notes']>> {
+    const offered = new Set(
+      tools.flatMap((tool) => (tool.connection_id ? [tool.connection_id] : [])),
+    );
+    if (!offered.size) return [];
+    const rows = await tx
+      .select()
+      .from(connection)
+      .where(
+        and(
+          eq(connection.spaceId, spaceId),
+          eq(connection.status, 'active'),
+          eq(connection.provider, 'mcp'),
+        ),
+      )
+      .orderBy(connection.label);
+    return rows
+      .flatMap((row) => {
+        const notes = (row.configuration as Record<string, unknown> | null)?.server_notes;
+        if (!offered.has(row.id) || typeof notes !== 'string' || !notes.trim()) return [];
+        return [
+          {
+            connection_id: row.id,
+            server: row.label.replace(/\s+/g, ' ').trim().slice(0, 120) || 'MCP server',
+            notes: notes.trim().slice(0, SERVER_NOTES_MAX),
+          },
+        ];
+      })
+      .slice(0, 20);
+  }
 
   /**
    * One line for each account the person connected that this attempt may use,

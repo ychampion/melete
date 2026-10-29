@@ -29,7 +29,7 @@ import {
   mcpToolDefinition,
   openMcpWorker,
 } from './mcp.ts';
-import { type McpCallServices, mcpConnector } from './mcp-connector.ts';
+import { keepServerNotes, type McpCallServices, mcpConnector } from './mcp-connector.ts';
 import { type McpTransport, openLineMcpTransport, type StdioChannel } from './mcp-transport.ts';
 import type { SealedSecretStore } from './secrets.ts';
 import type { Connector } from './types.ts';
@@ -462,6 +462,7 @@ export async function openStdioMcpConnector(
   const worker = await openMcpWorker(config, binding, {
     transportFactory: () => server.open(),
     pinned: options.pinned,
+    onSession: keepServerNotes(sql, binding.connectionId),
   });
   if (!options.pinned) {
     // The catalog the owner saw is the one every later start must reproduce.

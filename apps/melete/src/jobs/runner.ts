@@ -201,7 +201,10 @@ export type RunnerOptions = {
     claims: CapabilityClaims,
     bundle: ResponsibilityAttemptBundle,
   ) => Promise<
-    Pick<ResponsibilityAttemptBundle, 'tools' | 'skills' | 'skill_index' | 'connected_accounts'>
+    Pick<
+      ResponsibilityAttemptBundle,
+      'tools' | 'skills' | 'skill_index' | 'connected_accounts' | 'server_notes'
+    >
   >;
   /**
    * How long a finished attempt waits for an action it dispatched to report
