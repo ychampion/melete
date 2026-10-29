@@ -30,7 +30,7 @@ import { createApp } from '../../src/index.ts';
 import { ApprovalService } from '../../src/jobs/approvals.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
-import { JobService } from '../../src/jobs/service.ts';
+import { ANSWER_CEILING_NOTE, JobService } from '../../src/jobs/service.ts';
 import { resolveRoomCalendarShare } from '../../src/rooms/calendar-shares.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -499,6 +499,115 @@ withDb('a room approval given while the turn runs', () => {
     await sayDeclined(declined);
     expect(await state(declined.requestId)).toBe('waiting_for_input');
     expect(await claim(declined.requestId)).toBeNull();
+  }, 60_000);
+
+  test('answers wake a request past its budget three times at most, then it ends instead of waiting', async () => {
+    const { broker, runner, sql } = database();
+    const { roomId, roomConnection } = await calendarRoom('Answer ceiling');
+    let asked = await askForAdd(roomId, roomConnection);
+    await lastAttempt(asked.requestId);
+    // Each woken attempt asks Bob for one more add, and he declines each.
+    for (let attempt = 1; ; attempt++) {
+      await runner.commitOutcome(asked.claims, {
+        kind: 'waiting_for_approval',
+        action_ids: [asked.actionId],
+      });
+      if (attempt > 3) break;
+      expect(await state(asked.requestId)).toBe('waiting_for_approval');
+      await bobDeclines(roomId, asked);
+      expect(await state(asked.requestId)).toBe('queued');
+      expect(await liveWakes(asked.requestId)).toBe(1);
+      const next = await claimed(asked.requestId);
+      const proposed = await broker.propose(next.claims as CapabilityClaims, {
+        connection_id: roomConnection,
+        kind: 'room.add_to_member_calendar',
+        payload: {
+          member: bob.id,
+          event: {
+            summary: `Planning session ${attempt + 1}`,
+            start: '2027-01-10T09:00:00Z',
+            end: '2027-01-10T10:00:00Z',
+          },
+        },
+      });
+      expect(proposed.status).toBe('needs_approval');
+      asked = {
+        ...asked,
+        claims: next.claims as CapabilityClaims,
+        approvalId: proposed.approval_id ?? '',
+        actionId: proposed.action_id,
+        hash: proposed.payload_hash,
+      };
+    }
+    // The budget's one attempt and three answers' worth, then an end, not a park.
+    const [made] =
+      await sql`select count(*)::int as n from attempt where job_id = ${asked.requestId}`;
+    expect(Number(made?.n)).toBe(4);
+    expect(await state(asked.requestId)).toBe('failed');
+    expect(await liveWakes(asked.requestId)).toBe(0);
+    expect(await claim(asked.requestId)).toBeNull();
+    const [open] = await sql`select count(*)::int as n from approval p
+      join action a on a.id = p.action_id
+      where a.job_id = ${asked.requestId} and p.decision is null`;
+    expect(Number(open?.n)).toBe(0);
+    expect(await actionStatus(asked.actionId)).not.toBe('pending_approval');
+    const [ended] = await sql`select payload from event where job_id = ${asked.requestId}
+      and type = 'attempt_ended' order by seq desc limit 1`;
+    expect(ended?.payload.outcome).toEqual({
+      kind: 'budget_exhausted',
+      summary: ANSWER_CEILING_NOTE,
+    });
+    const [turn] = await sql`select t.answer from experience_turn t
+      join job j on j.current_turn_id = t.id where j.id = ${asked.requestId}`;
+    expect(String(turn?.answer)).toContain(ANSWER_CEILING_NOTE);
+  }, 60_000);
+
+  test('the next attempt is told who answered and what the step was', async () => {
+    const { broker, runner, sql } = database();
+    await sql`update principal set display_name = 'Bob' where id = ${bob.id}`;
+    const { roomId, roomConnection } = await calendarRoom('Who answered');
+    const step = 'add "Planning session" to Bob <';
+    // Declined while the turn ran.
+    const declined = await askForAdd(roomId, roomConnection);
+    await bobDeclines(roomId, declined);
+    await runner.commitOutcome(declined.claims, {
+      kind: 'completed',
+      summary: 'I asked Bob to allow the planning session on his calendar.',
+      evidence: [],
+    });
+    const told = await claimed(declined.requestId);
+    const [no] = told.bundle.inputs.approval_results;
+    expect(no).toMatchObject({ action_id: declined.actionId, decision: 'denied' });
+    expect(no?.decided_by_name).toStartWith('Bob <');
+    expect(no?.summary).toStartWith(step);
+    expect(no?.summary).toEndWith(">'s calendar at 2027-01-10T09:00:00Z");
+    await runner.commitOutcome(told.claims, {
+      kind: 'completed',
+      summary: 'Bob declined, so the planning session is not on his calendar.',
+      evidence: [],
+    });
+    // Allowed after the turn parked.
+    const allowed = await askForAdd(roomId, roomConnection);
+    await runner.commitOutcome(allowed.claims, {
+      kind: 'waiting_for_approval',
+      action_ids: [allowed.actionId],
+    });
+    await bobAllows(roomId, allowed);
+    const next = await claimed(allowed.requestId);
+    const [yes] = next.bundle.inputs.approval_results;
+    expect(yes).toMatchObject({ action_id: allowed.actionId, decision: 'approved' });
+    expect(yes?.decided_by_name).toBe(no?.decided_by_name);
+    expect(yes?.summary).toBe(no?.summary);
+    // Nothing the attempt does not already read: no address, no other ids.
+    expect(JSON.stringify([no, yes])).not.toContain('@example.test');
+    expect((await broker.resume(next.claims as CapabilityClaims, allowed.actionId)).status).toBe(
+      'succeeded',
+    );
+    await runner.commitOutcome(next.claims, {
+      kind: 'completed',
+      summary: "I added the planning session to Bob's calendar.",
+      evidence: [],
+    });
   }, 60_000);
 
   // The runtime reads the waiting actions just before the turn ends. Bob's

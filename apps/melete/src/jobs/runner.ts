@@ -117,7 +117,7 @@ import { workQuiet } from './quiet.ts';
 import { reminderHeld } from './reminder-hold.ts';
 import { RUNAWAY_NOTE, RunawayReply, runawayWatch } from './runaway.ts';
 import { connectionScopesForJob } from './scopes.ts';
-import { type JobRow, type JobService, routineRest } from './service.ts';
+import { ANSWER_CEILING_NOTE, type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 import { carrySteers, pendingSteers, steersRead } from './steer.ts';
 import { namingSteps, stepName, UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
@@ -1762,18 +1762,25 @@ export class AttemptRunner {
     // A runtime's final prose cannot withdraw the broker's unanswered revocation
     // question, even on the last budgeted attempt. Only owner input resolves it.
     // Long work decides from its record what a shift's ending stands for.
-    // A turn that parks on a permission keeps its park on its last attempt:
-    // the person's answer wakes it once more (`JobService.move`), so what they
-    // allowed is carried out and what they declined is said.
+    // A turn that parks on a permission past its budget keeps the park while
+    // answers may still wake it (`JobService.answerAttemptsLeft`), so what the
+    // person allowed is carried out and what they declined is said. Past that
+    // it ends on the budget, never left waiting on an answer it cannot use.
     const shifted =
       shifts && !brokerParked ? await shifts.shiftEnded(tx, row, attemptId, restored) : restored;
+    const spent = remaining === 0 && shifted.kind.startsWith('waiting_') && !shifts;
+    const answerable =
+      spent &&
+      shifted.kind === 'waiting_for_approval' &&
+      (await this.jobs.answerAttemptsLeft(tx, row));
+    const ceiling =
+      !reconnect && spent && !answerable && shifted.kind === 'waiting_for_approval'
+        ? ANSWER_CEILING_NOTE
+        : undefined;
     const outcome: AttemptOutcome = reconnect
       ? { kind: 'waiting_for_input', question: reconnect.text }
-      : remaining === 0 &&
-          shifted.kind.startsWith('waiting_') &&
-          shifted.kind !== 'waiting_for_approval' &&
-          !shifts
-        ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
+      : spent && !answerable
+        ? { kind: 'budget_exhausted', summary: ceiling ?? 'The job has used its attempt budget.' }
         : shifted;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
@@ -1985,8 +1992,8 @@ export class AttemptRunner {
           : {}),
         ...(turnStatus ? { turn_status: turnStatus } : {}),
         // A page following the turn live reads the sentence its saved copy ends on.
-        ...(outcome.kind === 'budget_exhausted' && (capped ?? limitNote)
-          ? { limit_note: capped ?? limitNote }
+        ...(outcome.kind === 'budget_exhausted' && (capped ?? ceiling ?? limitNote)
+          ? { limit_note: capped ?? ceiling ?? limitNote }
           : {}),
         ...(outcome.kind === 'failed' && !retrying && limitNote ? { failed_note: limitNote } : {}),
         ...(retrying && updated.nextWakeAt ? { retry_at: updated.nextWakeAt.toISOString() } : {}),
@@ -2016,8 +2023,8 @@ export class AttemptRunner {
           // ends with a plain sentence, not the name of the limit.
           ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
             ? {
-                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? limitNote ?? LIMIT_REACHED_NOTE}
-                  else ${experienceTurn.answer} || ${`\n\n${capped ?? limitNote ?? LIMIT_REACHED_NOTE}`} end`,
+                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? ceiling ?? limitNote ?? LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${capped ?? ceiling ?? limitNote ?? LIMIT_REACHED_NOTE}`} end`,
               }
             : row.kind === 'chat' && outcome.kind === 'failed' && outcome.failure
               ? {

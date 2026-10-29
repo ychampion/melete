@@ -777,18 +777,33 @@ function renderDecision(approval: AttemptBundle['inputs']['approval_results'][nu
   if (approval.note === APPROVAL_OUTDATED_NOTE)
     return `${what} was withdrawn before the person answered, because the request changed. It was not carried out, and nobody refused it. If it is still needed, propose it again with the current details and the person will be asked again; do not say an approval is still pending.`;
   const note = approval.note ? ` The person said: ${approval.note}` : '';
+  // Who answered and on what, when Melete knows: a person's name, never a rule's.
+  const who = approval.decided_by_name;
+  const step = approval.summary ? `: ${approval.summary}` : '';
+  const said = (verb: string) =>
+    who
+      ? `${who} ${verb}${step}. `
+      : step
+        ? `${verb[0]?.toUpperCase()}${verb.slice(1)}${step}. `
+        : '';
   if (approval.decision === 'denied')
-    return `${what} was denied. It was not carried out and it will not be.${note}`;
-  if (approval.status === undefined) return `${what} was approved.${note}`;
+    return [
+      `${said('declined')}${what} was denied. It was not carried out and it will not be.${note}`,
+      who ? `Say plainly that ${who} declined it and what was not done.` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  const approvedBy = said('approved');
+  if (approval.status === undefined) return `${approvedBy}${what} was approved.${note}`;
   if (approval.status !== 'approved')
-    return `${what} was approved; it is now ${approval.status}.${note}`;
+    return `${approvedBy}${what} was approved; it is now ${approval.status}.${note}`;
   const serialized = JSON.stringify(approval.payload ?? {});
   const payload =
     serialized.length > DECISION_PAYLOAD_CHARACTERS
       ? `${serialized.slice(0, DECISION_PAYLOAD_CHARACTERS)} [payload abbreviated; the stored bytes are sent whole]`
       : serialized;
   return [
-    `${what} was approved and has not been carried out.${note}`,
+    `${approvedBy}${what} was approved and has not been carried out.${note}`,
     `Call resume_action with action_id "${approval.action_id}" to carry out exactly what was approved: ${payload}`,
     'Do not propose the tool again with retyped arguments; different bytes are a different action and need a new approval.',
   ].join('\n');
