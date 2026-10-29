@@ -1,4 +1,5 @@
 import type { BrokerErrorCode } from '@melete/contracts';
+import type { ErrorObject } from 'ajv';
 import type { ZodError } from 'zod';
 
 export class BrokerFault extends Error {
@@ -23,6 +24,26 @@ export function inputProblem(error: ZodError): string {
     const field = issue.path.join('.') || 'input';
     const missing = issue.code === 'invalid_type' && /received undefined$/.test(issue.message);
     return `${field}: ${missing ? 'missing' : issue.message}`;
+  });
+  return named.length ? `The arguments were not accepted. ${named.join('; ')}` : 'Invalid input.';
+}
+
+/**
+ * What a tool's input schema refused, in the same words as `inputProblem`:
+ * the field and what it needs, from the schema, never the value sent.
+ */
+export function schemaProblem(errors: readonly ErrorObject[] | null | undefined): string {
+  const named = (errors ?? []).slice(0, NAMED_ISSUES).map((issue) => {
+    const at = issue.instancePath.split('/').filter(Boolean).join('.');
+    const params = issue.params as Record<string, unknown>;
+    if (issue.keyword === 'required')
+      return `${[at, String(params.missingProperty)].filter(Boolean).join('.')}: missing`;
+    if (issue.keyword === 'additionalProperties')
+      return `${[at, String(params.additionalProperty)].filter(Boolean).join('.')}: not a field this tool takes`;
+    const field = at || 'input';
+    if (issue.keyword === 'enum' && Array.isArray(params.allowedValues))
+      return `${field}: must be one of ${params.allowedValues.map(String).join(', ')}`;
+    return `${field}: ${issue.message ?? 'not accepted'}`;
   });
   return named.length ? `The arguments were not accepted. ${named.join('; ')}` : 'Invalid input.';
 }

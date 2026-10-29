@@ -173,6 +173,33 @@ export const boardManifest: ConnectorManifest = {
   ],
 };
 
+/**
+ * The tool to call instead of a board call its schema refused, for the
+ * mix-ups models make: a note or a question asked of board.add, a time on a
+ * note, choices on a note, or a state board.update cannot set. One sentence,
+ * from the schema's own words, never the values sent.
+ */
+export function boardCallInstead(kind: string, payload: JsonObject): string | null {
+  const has = (field: string) => payload[field] !== undefined;
+  if (kind === 'board.add' && payload.kind === 'note')
+    return 'board.add takes kind event or task, so leave a note for one person with board.note and its assignee and title instead.';
+  if (kind === 'board.add' && (payload.kind === 'question' || payload.kind === 'ask'))
+    return 'board.add takes kind event or task, so ask one person a question with board.ask and its assignee and title instead.';
+  if (kind === 'board.note' && TIMES.some(has))
+    return 'A note has no time, so put anything with a date or time on the board with board.add as an event or a task instead.';
+  if (kind === 'board.note' && has('choices'))
+    return 'A note has no choices, so ask with choices using board.ask instead.';
+  if (kind === 'board.note' && has('visibility'))
+    return 'A note is always for its person and the owners, so call board.note with only assignee, title and detail.';
+  if (kind === 'board.ask' && (has('starts_at') || has('ends_at')))
+    return 'A question has only a due_at, so put an event with a start or end on the board with board.add instead.';
+  if (kind === 'board.update' && (payload.state === 'answered' || payload.state === 'claimed'))
+    return 'board.update sets state to open or done only; a question closes when its person answers it, and a person claims an item themselves.';
+  if (kind === 'board.update' && has('kind'))
+    return "An item's kind cannot change, so mark it done with board.update and put the new one up with board.add, board.ask or board.note.";
+  return null;
+}
+
 type JobFacts = {
   space_id: string;
   requested_by_principal_id: string | null;
@@ -708,6 +735,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
 
   return {
     manifest: boardManifest,
+    explainInvalid: boardCallInstead,
     async prepare(payload, ctx, tx, kind) {
       return prepare(payload, ctx, tx, kind);
     },
