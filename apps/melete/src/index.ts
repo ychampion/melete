@@ -61,6 +61,13 @@ import { configuredVoiceCompanion, type VoiceCompanion } from './api/voice-compa
 import { mountApps } from './apps/routes.ts';
 import { mountAppViews } from './apps/serve.ts';
 import { attachmentSettingsFromEnv } from './attachments/limits.ts';
+import { gatewayAttachments } from './attachments/model.ts';
+import {
+  configuredPictureReader,
+  type PictureReader,
+  PictureReadings,
+  readSentPictures,
+} from './attachments/reading.ts';
 import { roomAttachments } from './attachments/rooms.ts';
 import { mountAttachments } from './attachments/routes.ts';
 import { AttachmentService } from './attachments/store.ts';
@@ -1189,6 +1196,7 @@ export async function bootstrap(
   let triage: TriageService | undefined;
   let triageClassifier: TriageClassifier | null = null;
   let historySummariser: HistorySummariser | undefined;
+  let pictureReader: PictureReader | undefined;
   let pushDispatcher: PushDispatcher | undefined;
   let smsReplies: ReturnType<typeof startSmsReplies> | undefined;
   let signIn: ProviderSignIn | undefined;
@@ -1265,6 +1273,7 @@ export async function bootstrap(
       () => memoryGateway?.close(),
       () => triageClassifier?.close(),
       () => historySummariser?.close(),
+      () => pictureReader?.close(),
       () => searchGateway?.close(),
       () => voiceCompanion?.close(),
       () => ackWriter?.close(),
@@ -1826,6 +1835,32 @@ export async function bootstrap(
           spending,
           ...(options.fakeProvider ? { fake: options.fakeProvider } : {}),
         });
+      // A picture sent in chat is read once, after its message is accepted,
+      // so a model that sees no pictures can still answer about it. The turn
+      // the message starts waits a few seconds for it.
+      let readings: PictureReadings | undefined;
+      if (handle && blobs && submissions) {
+        const sql = handle.sql;
+        const reader = await configuredPictureReader(env, privacy, {
+          files: gatewayAttachments(sql, blobs.store, async () => false).files,
+          settings: modelSettings,
+          signIn,
+          spending,
+          ...(options.fakeProvider ? { fake: options.fakeProvider } : {}),
+        });
+        pictureReader = reader;
+        const log = (line: string) => process.stderr.write(`picture reading: ${line}\n`);
+        const underway = new PictureReadings();
+        readings = underway;
+        submissions.onFilesSent = (jobId, ids, words) => {
+          underway.track(
+            jobId,
+            readSentPictures({ sql, reader, jobId, ids, words, log }).catch((error: unknown) =>
+              log(`${jobId}: ${error instanceof Error ? error.message : String(error)}`),
+            ),
+          );
+        };
+      }
       const summarisingRuntime = historySummariser
         ? withHistorySummary(contextualRuntime, {
             jobs,
@@ -1875,6 +1910,10 @@ export async function bootstrap(
             }
           : {}),
         loadCatalog: catalog?.forAttempt,
+        // A turn a message with pictures starts is shown their reading when it is quick.
+        ...(readings
+          ? { readings: (jobId: string) => (readings as PictureReadings).settled(jobId) }
+          : {}),
         ...(ackWriter
           ? { acknowledge: { afterMs: env.MELETE_ACK_AFTER_MS, writer: ackWriter.writer } }
           : {}),
