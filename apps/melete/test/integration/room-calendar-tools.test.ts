@@ -209,7 +209,14 @@ withDb('room personal calendar tools', () => {
         },
       ],
     });
-    expect(Object.keys(detail.busy[0]).sort()).toEqual(['all_day', 'end', 'start', 'status']);
+    expect(Object.keys(detail.busy[0]).sort()).toEqual([
+      'all_day',
+      'end',
+      'end_local',
+      'start',
+      'start_local',
+      'status',
+    ]);
     const output = JSON.stringify(detail);
     for (const field of [
       'title',
@@ -224,6 +231,61 @@ withDb('room personal calendar tools', () => {
     ])
       expect(output).not.toContain(field);
     expect(detail.free).toHaveLength(2);
+  });
+
+  test("a window is read in the room's zone, as the board reads times, and blocks say their local times", async () => {
+    // The room chose no zone, so it reads time in its requester's: New York,
+    // on standard time (UTC-5) by November 11.
+    const ctx = await setup();
+    ctx.dav.busy();
+    const day = await ctx.busy({ start: '2026-11-11', end: '2026-11-11' });
+    expect(day.status).toBe('succeeded');
+    expect(day.canonical_payload).toMatchObject({
+      start: '2026-11-11T05:00:00.000Z',
+      end: '2026-11-12T05:00:00.000Z',
+    });
+    const [row] = await ctx.sql`select receipt from action where id = ${day.action_id}`;
+    expect(row?.receipt.detail).toMatchObject({
+      room_time_zone: 'America/New_York',
+      busy: [{ start_local: '2026-11-11T05:00', end_local: '2026-11-11T06:00', status: 'busy' }],
+    });
+    const hours = await ctx.busy({ start: '2026-11-11T04:00', end: '2026-11-11T07:00:00' });
+    expect(hours.canonical_payload).toMatchObject({
+      start: '2026-11-11T09:00:00.000Z',
+      end: '2026-11-11T12:00:00.000Z',
+    });
+    const [read] = await ctx.sql`select receipt from action where id = ${hours.action_id}`;
+    expect(read?.receipt.detail.busy).toHaveLength(1);
+    // An instant with its own offset is taken as given.
+    const given = await ctx.busy({
+      start: '2026-11-11T00:00:00-05:00',
+      end: '2026-11-11T12:00:00Z',
+    });
+    expect(given.canonical_payload).toMatchObject({
+      start: '2026-11-11T00:00:00-05:00',
+      end: '2026-11-11T12:00:00Z',
+    });
+  });
+
+  test('a window that cannot be read says what is wrong with it', async () => {
+    const ctx = await setup();
+    expect(
+      await rejectionOf(ctx.busy({ start: '2026-11-11T08:00', end: '2026-11-11T07:00' })),
+    ).toMatchObject({
+      code: 'payload_invalid',
+      message: 'The free/busy end must be after its start.',
+    });
+    expect(await rejectionOf(ctx.busy({ start: '2026-11-01', end: '2027-01-15' }))).toMatchObject({
+      code: 'payload_invalid',
+      message: 'Choose a free/busy window of at most 62 days.',
+    });
+    expect(await rejectionOf(ctx.busy({ start: 'Monday', end: '2026-11-11' }))).toMatchObject({
+      code: 'payload_invalid',
+      message: expect.stringContaining(
+        "start must be a real date and time in the room's time zone",
+      ),
+    });
+    expect(ctx.opened()).toBe(0);
   });
 
   test('an unshared calendar is unreachable even if a connection id is supplied', async () => {
