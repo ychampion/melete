@@ -1,4 +1,7 @@
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import config from '../vite.config.ts';
 
@@ -78,6 +81,39 @@ test.each([...nodeEnvs])(
     await expect(
       withNodeEnv(nodeEnv, () =>
         buildSource("import type { Stats } from 'node:fs'; console.log('loaded');"),
+      ),
+    ).resolves.toBeDefined();
+  },
+);
+
+// A package may map one of its files, or a Node module it uses, to false in its `browser`
+// field. Vite then loads an empty module on purpose, and the build must go through.
+const browserFalse = mkdtempSync(
+  join(fileURLToPath(new URL('../node_modules', import.meta.url)), 'browser-false-'),
+);
+afterAll(() => rmSync(browserFalse, { recursive: true, force: true }));
+writeFileSync(
+  join(browserFalse, 'package.json'),
+  JSON.stringify({
+    name: basename(browserFalse),
+    version: '1.0.0',
+    type: 'module',
+    main: 'index.js',
+    browser: { './server.js': false, fs: false },
+  }),
+);
+writeFileSync(
+  join(browserFalse, 'index.js'),
+  "import fs from 'fs';\nimport server from './server.js';\nexport const value = [fs, server];\n",
+);
+writeFileSync(join(browserFalse, 'server.js'), 'export default 1;\n');
+
+test.each([...nodeEnvs])(
+  "with NODE_ENV %s, a browser build allows a package's browser field to map a module to false",
+  async (nodeEnv) => {
+    await expect(
+      withNodeEnv(nodeEnv, () =>
+        buildSource(`import { value } from '${basename(browserFalse)}'; console.log(value);`),
       ),
     ).resolves.toBeDefined();
   },

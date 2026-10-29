@@ -1,9 +1,10 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
-// Vite swaps a Node module in a browser build for this stub. The stub is in the module graph
-// whatever NODE_ENV is; the warning that names the module is logged only in production.
-const browserExternal = '__vite-browser-external';
+// Outside production, Vite swaps a Node module in a browser build for a stub named after it,
+// and logs nothing. In production it logs a warning that names the module. A bare stub with no
+// name is a package's `browser` field mapping a file to false, which is an empty module by design.
+const browserExternal = '__vite-browser-external:';
 
 function rejectBrowserExternalization(): Plugin {
   const externalized = new Set<string>();
@@ -23,7 +24,7 @@ function rejectBrowserExternalization(): Plugin {
           if (!id.startsWith(browserExternal)) continue;
           const info = this.getModuleInfo(id);
           const importers = [...(info?.importers ?? []), ...(info?.dynamicImporters ?? [])];
-          const name = id.slice(browserExternal.length + 1) || 'a Node module';
+          const name = id.slice(browserExternal.length);
           externalized.add(
             `Module "${name}" has been externalized for browser compatibility, imported by ${importers.map((path) => `"${path}"`).join(', ')}.`,
           );
