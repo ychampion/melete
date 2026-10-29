@@ -3,16 +3,17 @@
  *
  * Each file is one fenced block after the person's words: a line naming it,
  * then its text between an opening and a closing marker. The closing marker
- * carries a digest of the file's own text, so nothing inside the file can end
- * the block early and speak as the prompt. A picture's block holds a sentence
- * instead of text, followed by Melete's reading of the picture once it has one
+ * carries a keyed digest of the file's own text, so nothing inside the file can
+ * end the block early and speak as the prompt, and nothing outside the service
+ * can write a block of its own. A picture's block holds a sentence instead of
+ * text, followed by Melete's reading of the picture once it has one
  * (`reading.ts`); where the model reads pictures, the gateway puts the picture
  * itself in the block's place (`gateway/attachments.ts`).
  *
  * What is inside a block is the file's content, untrusted data, and the prompt
  * says so beside it.
  */
-import { createHash } from 'node:crypto';
+import { createHmac, hkdfSync, randomBytes } from 'node:crypto';
 import { ATTACHMENT_LIMITS, type AttachmentKind, attachmentSize } from '@melete/contracts';
 
 /** What a sent message recorded about one file. */
@@ -88,9 +89,29 @@ export function blockIntact(block: string, id: string, tag: string): boolean {
   return false;
 }
 
-/** The digest that closes a block: the file and the exact text inside it. */
+const PROCESS_TAG_KEY = randomBytes(32);
+let installTagKey: { master: string; key: Buffer } | null = null;
+
+/**
+ * The key block digests are made with. It is derived from this install's master
+ * key, so a block in an earlier transcript still checks after a restart; an
+ * install without one uses a key of this process's own. A web page, a file or
+ * any other tool output cannot compute a digest, so it cannot pass for a block.
+ */
+function tagKey(): Buffer {
+  const master = process.env.MELETE_MASTER_KEY;
+  if (!master) return PROCESS_TAG_KEY;
+  if (installTagKey?.master !== master)
+    installTagKey = {
+      master,
+      key: Buffer.from(hkdfSync('sha256', master, 'melete', 'attachment block tag v1', 32)),
+    };
+  return installTagKey.key;
+}
+
+/** The keyed digest that closes a block: the file and the exact text inside it. */
 export function blockTag(id: string, body: string): string {
-  return createHash('sha256').update(`${id}\n${body}`).digest('hex').slice(0, 16);
+  return createHmac('sha256', tagKey()).update(`${id}\n${body}`).digest('hex').slice(0, 16);
 }
 
 /** One file's block: the marker lines and what goes between them. */

@@ -1,7 +1,10 @@
 import { isIP } from 'node:net';
+import { ATTACHMENT_LIMITS } from '@melete/contracts';
 import { ImapFlow } from 'imapflow';
 import { type AddressObject, type EmailAddress, type ParsedMail, simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
+import { isText, looksLike } from '../attachments/extract.ts';
+import { cleanName, sniffImage } from '../attachments/store.ts';
 import { notPublic, type Reach, type Resolve, reachAddresses } from './public-fetch.ts';
 
 export type EmailConnection = {
@@ -37,6 +40,8 @@ export type MailMessage = {
   subject: string;
   text: string;
   html: string;
+  /** Decoded MIME parts. Only their metadata may enter a message receipt. */
+  attachments?: InboxAttachment[];
   /** The Date header as an ISO instant, when the message carried a usable one. */
   date?: string | null;
   /** Every To and Cc address as the parser read them, lowercased. */
@@ -65,6 +70,40 @@ export type MailMessage = {
   sender_verified?: boolean;
 };
 
+export type InboxAttachment = {
+  /** A part's one-based position in this message, never a path or a URL. */
+  id: string;
+  name: string;
+  media_type: string;
+  size: number;
+  /** Service-only bytes. Never serialize these into a tool result. */
+  content?: Buffer;
+};
+
+/** Searches keep metadata only, so a result set never holds all its files in memory. */
+export function withoutMailAttachmentBytes(message: MailMessage): MailMessage {
+  return {
+    ...message,
+    ...(message.attachments
+      ? {
+          attachments: message.attachments.map(({ content: _content, ...metadata }) => metadata),
+        }
+      : {}),
+  };
+}
+
+/** MIME headers and file extensions are sender-controlled, so only bytes decide. */
+export function mailMediaType(bytes: Uint8Array): string {
+  return (
+    sniffImage(bytes) ??
+    (looksLike('pdf', bytes)
+      ? 'application/pdf'
+      : isText(bytes)
+        ? 'text/plain'
+        : 'application/octet-stream')
+  );
+}
+
 /**
  * A parsed message in the shape the connector hands out. `from` is mailparser's
  * rendering of the header, for people; `from_addresses` is its parsed address
@@ -92,6 +131,17 @@ export function toMailMessage(key: number | string, parsed: ParsedMail): MailMes
     subject: parsed.subject ?? '',
     text: parsed.text ?? '',
     html: typeof parsed.html === 'string' ? parsed.html : '',
+    ...(parsed.attachments.length
+      ? {
+          attachments: parsed.attachments.map((part, index) => ({
+            id: String(index + 1),
+            name: cleanName(part.filename ?? `attachment ${index + 1}`),
+            media_type: mailMediaType(part.content),
+            size: part.content.length,
+            content: part.content,
+          })),
+        }
+      : {}),
     // A message nobody can date cannot be placed in a time window, so an
     // unparseable Date header is absent rather than guessed at.
     date:
@@ -286,7 +336,70 @@ export interface MailTransport {
   }>;
 }
 
-const MAX_MESSAGE_BYTES = 256 * 1024;
+/**
+ * Decoded body limit, including all text used for inbox hygiene. A search reads
+ * each message whole, so it reads only messages within this many raw bytes.
+ */
+export const MAX_MESSAGE_BYTES = 256 * 1024;
+/** Bounded MIME read for one opened message: one upload's worth of files plus base64 wrapping and body. */
+export const MAX_MAIL_MESSAGE_BYTES =
+  Math.ceil(ATTACHMENT_LIMITS.file_bytes * 1.4) + MAX_MESSAGE_BYTES;
+/** Delimiter lines a message may carry: its files, plus body parts, containers and closings. */
+export const MAX_MIME_PARTS = ATTACHMENT_LIMITS.per_message_ceiling + 16;
+
+const DELIMITER_LINE = /^--([^\r\n]+)\r?$/gm;
+const BOUNDARY_PARAM = /boundary\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;"\r\n]+))/gi;
+
+/**
+ * An upper bound on a message's MIME parts, read from its raw bytes without
+ * decoding them. Every part opens with a delimiter line naming a boundary the
+ * message declares, so those lines are counted. A boundary declared in RFC 2231
+ * pieces is not read here; then every line shaped like a delimiter counts.
+ * Counting stops once it passes `cap`.
+ */
+export function mimePartCount(source: Buffer, cap = MAX_MIME_PARTS): number {
+  const raw = source.toString('latin1');
+  // Header lines are unfolded before their parameters are read, as the parser does.
+  const unfolded = raw.replace(/\r?\n[ \t]+/g, ' ');
+  const pieces = /boundary\s*\*/i.test(unfolded);
+  const boundaries = new Set<string>();
+  for (const match of unfolded.matchAll(BOUNDARY_PARAM)) {
+    const value =
+      match[1] !== undefined ? match[1].replace(/\\(.)/g, '$1') : (match[2] ?? '').trim();
+    if (value) boundaries.add(value);
+  }
+  if (!pieces && !boundaries.size) return 1;
+  let count = 0;
+  for (const match of raw.matchAll(DELIMITER_LINE)) {
+    const line = match[1] as string;
+    if (
+      pieces ||
+      boundaries.has(line) ||
+      (line.endsWith('--') && boundaries.has(line.slice(0, -2)))
+    ) {
+      count += 1;
+      if (count > cap) return count;
+    }
+  }
+  return count;
+}
+
+/** Read an entire bounded MIME message, never a prefix that could hide sign-in material. */
+export async function parseMailMessage(
+  key: number | string,
+  source: Buffer,
+): Promise<MailMessage | null> {
+  if (source.length > MAX_MAIL_MESSAGE_BYTES) return null;
+  // Too many parts is refused from the raw bytes, before the parser decodes any of them.
+  if (mimePartCount(source) > MAX_MIME_PARTS) return null;
+  const parsed = await simpleParser(source, { skipImageLinks: true });
+  if (!parsed.headerLines?.length) return null;
+  if (parsed.attachments.length > ATTACHMENT_LIMITS.per_message_ceiling) return null;
+  const message = toMailMessage(key, parsed);
+  if (Buffer.byteLength(message.text) + Buffer.byteLength(message.html) > MAX_MESSAGE_BYTES)
+    return null;
+  return message;
+}
 const loopback = (host: string) => ['127.0.0.1', '::1', 'localhost'].includes(host);
 
 /**
@@ -416,16 +529,17 @@ export class ImapSmtpTransport implements MailTransport {
     }
   }
 
-  private async message(client: ImapFlow, uid: number): Promise<MailMessage | null> {
+  private async message(client: ImapFlow, uid: number, limit: number): Promise<MailMessage | null> {
     const metadata = await client.fetchOne(uid, { size: true }, { uid: true });
     // A truncated message cannot be filtered safely. Omit it rather than expose
     // a harmless prefix while an authentication link sits beyond the limit.
     if (!metadata) return null;
-    if (!metadata.size || metadata.size > MAX_MESSAGE_BYTES) return null;
-    const item = await client.fetchOne(uid, { source: true }, { uid: true });
+    if (!metadata.size || metadata.size > limit) return null;
+    const item = await client.fetchOne(uid, { source: { maxLength: limit + 1 } }, { uid: true });
     if (!item) return null;
-    if (!item.source || item.source.length > MAX_MESSAGE_BYTES) return null;
-    return toMailMessage(uid, await simpleParser(item.source, { skipImageLinks: true }));
+    if (!item.source || item.source.length > limit || item.source.length !== metadata.size)
+      return null;
+    return parseMailMessage(uid, item.source);
   }
 
   async changes(cursor: string | null, options: { limit: number; now?: number }) {
@@ -460,8 +574,9 @@ export class ImapSmtpTransport implements MailTransport {
       const uids = await client.search(query ? { text: query } : { all: true }, { uid: true });
       const messages: MailMessage[] = [];
       for (const uid of (uids || []).slice(-limit).reverse()) {
-        const message = await this.message(client, uid);
-        if (message) messages.push(message);
+        // A search reads only messages within the body bound; a larger one is opened by email.read.
+        const message = await this.message(client, uid, MAX_MESSAGE_BYTES);
+        if (message) messages.push(withoutMailAttachmentBytes(message));
       }
       return messages;
     });
@@ -484,7 +599,9 @@ export class ImapSmtpTransport implements MailTransport {
 
   async read(uid: number | string): Promise<MailMessage | null> {
     if (typeof uid !== 'number') return null;
-    return this.imap(this.config.inbox ?? 'INBOX', (client) => this.message(client, uid));
+    return this.imap(this.config.inbox ?? 'INBOX', (client) =>
+      this.message(client, uid, MAX_MAIL_MESSAGE_BYTES),
+    );
   }
 
   async send(

@@ -104,7 +104,7 @@ describe('email connector', () => {
     if (result.outcome === 'succeeded')
       expect(result.receipt.detail.messages).toEqual(
         [{ ...message(1, 'Dinner on Friday'), html: undefined }].map(
-          ({ html: _html, ...value }) => value,
+          ({ html: _html, attachments: _attachments, ...value }) => value,
         ),
       );
     for (const uid of [2, 3, 4, 5]) {
