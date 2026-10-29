@@ -14,6 +14,10 @@
  * - a room's memory shows each detail's label, never its words (`rooms/memory.ts`);
  * - a step's receipt, as `/actions` and the snapshot routes return it, names
  *   what was read (a path, a subject) and marks the rest as kept back;
+ * - in a room, the cards, receipts and live stream of its requests name what a
+ *   step touched by its kind ("An email", "An event"), never an original's
+ *   subject, address or words, for everyone but the room's maker
+ *   (`rooms/projection.ts`);
  * - the agent's instructions say to answer with summaries and action cards and
  *   not to quote (`jobs/bundle.ts`);
  * - turning it on or off is noted too, so the person being helped can see in

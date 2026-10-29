@@ -50,6 +50,16 @@ export const ATTACHMENT_KINDS = ['image', 'pdf', 'docx', 'xlsx', 'csv', 'text'] 
 export const attachmentKind = z.enum(ATTACHMENT_KINDS);
 export type AttachmentKind = z.infer<typeof attachmentKind>;
 
+/** A kept-back file's kind, shared by its tile and the activity note for opening it. */
+export const ATTACHMENT_KIND_WORDS: Record<AttachmentKind, string> = {
+  image: 'A picture',
+  pdf: 'A PDF document',
+  docx: 'A Word document',
+  xlsx: 'A spreadsheet',
+  csv: 'A spreadsheet',
+  text: 'A text document',
+};
+
 /** The media types each kind is stored as, the first being the one a file is given. */
 const MEDIA_TYPES: Record<AttachmentKind, readonly string[]> = {
   image: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
@@ -120,6 +130,20 @@ export function attachmentKindFor(
   for (const kind of ATTACHMENT_KINDS) if (MEDIA_TYPES[kind].includes(type)) return { kind, type };
   const extension = /\.([A-Za-z0-9]{1,10})$/.exec(name)?.[1]?.toLowerCase() ?? '';
   return EXTENSIONS[extension] ?? null;
+}
+
+/**
+ * What an opened original is noted as in a summaries-only space: its kind,
+ * never its name, since a name can say what the file holds.
+ */
+export function originalKind(mime: string): string {
+  const type = mime.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (type.startsWith('image/')) return ATTACHMENT_KIND_WORDS.image;
+  if (type.startsWith('audio/')) return 'A recording';
+  const kind = attachmentKindFor('', type)?.kind;
+  if (kind) return ATTACHMENT_KIND_WORDS[kind];
+  if (type.startsWith('text/') || type === 'application/json') return ATTACHMENT_KIND_WORDS.text;
+  return 'A file';
 }
 
 /** A sentence naming what Melete reads, for a file it refused. */

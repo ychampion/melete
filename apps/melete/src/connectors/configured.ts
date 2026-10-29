@@ -8,6 +8,8 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { type AttachmentSettings, attachmentSettingsFromEnv } from '../attachments/limits.ts';
+import { mailImageReader } from '../attachments/mail.ts';
 import { jobPaidMeter } from '../broker/paid-meter.ts';
 import type { Query } from '../broker/records.ts';
 import { createDeviceConnector } from '../devices/connector.ts';
@@ -295,6 +297,8 @@ export type ConnectorOptions = {
   searchPrivacy?: SearchPrivacy;
   /** The files people sent in chat, which the agent may save into its workspace. */
   attachments?: SentFiles;
+  /** The same file and storage limits used by uploads, applied to mail reads too. */
+  attachmentSettings?: AttachmentSettings;
   /** Plaintext mail and CalDAV to a loopback protocol fixture. Never set from a request. */
   insecureLocalFixtures?: boolean;
   /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
@@ -459,6 +463,18 @@ export class ConnectorFactory {
     this.overrides = new Map((options.connections ?? []).map((entry) => [entry.id, entry]));
     if (this.overrides.size !== (options.connections ?? []).length)
       throw new Error('Duplicate configured connection id');
+  }
+
+  private email(
+    config: ConstructorParameters<typeof EmailConnector>[0],
+    secrets?: SecretAccess,
+  ): EmailConnector {
+    return new EmailConnector(config, secrets, undefined, {
+      fileBytes: this.options.attachmentSettings?.fileBytes,
+      image: this.options.blobs
+        ? mailImageReader(this.options.sql, this.options.blobs, this.options.attachmentSettings)
+        : undefined,
+    });
   }
 
   /**
@@ -838,7 +854,7 @@ export class ConnectorFactory {
         access,
       });
       return ownerOnly(
-        new EmailConnector({
+        this.email({
           kind: 'api',
           id: row.id,
           spaceId: row.spaceId,
@@ -876,7 +892,7 @@ export class ConnectorFactory {
         access,
       });
       return ownerOnly(
-        new EmailConnector({
+        this.email({
           kind: 'api',
           id: row.id,
           spaceId: row.spaceId,
@@ -886,13 +902,13 @@ export class ConnectorFactory {
       );
     }
     if (row.provider === 'imap' && setting?.kind === 'email' && row.secretRef)
-      return new EmailConnector(
+      return this.email(
         { ...setting, spaceId: row.spaceId, secretRef: row.secretRef },
         this.currentCredential(row),
       );
     if (row.provider === 'imap' && stored?.kind === 'mail' && row.secretRef)
       return ownerOnly(
-        new EmailConnector(
+        this.email(
           {
             ...stored.mail,
             id: row.id,
@@ -1026,7 +1042,7 @@ export class ConnectorFactory {
         access,
         fetcher: config.fetcher,
       });
-      return new EmailConnector({
+      return this.email({
         kind: 'api',
         id: row.id,
         spaceId: row.spaceId,
@@ -1282,6 +1298,7 @@ export function connectorOptionsFromEnv(
     ...(extra.spending ? { spending: extra.spending } : {}),
     ...(extra.searchPrivacy ? { searchPrivacy: extra.searchPrivacy } : {}),
     attachments: extra.attachments,
+    attachmentSettings: attachmentSettingsFromEnv(env),
     cellIsolated: builtinEnvironment(env).cellIsolated,
     multiplayer: multiplayerEnabled(env),
     features: installationFeatures(env),

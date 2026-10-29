@@ -8,7 +8,7 @@ const resting = {
   best: undefined,
   helpersWorking: 0,
   waitingOnSteps: false,
-  nextWakeAt: new Date('2026-10-29T00:00:00.000Z'),
+  nextWakeAt: new Date(Date.now() + 86_400_000),
   question: null,
   standing: null,
   check: null,

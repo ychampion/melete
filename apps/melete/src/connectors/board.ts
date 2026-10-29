@@ -30,13 +30,24 @@ import { BrokerFault } from '../broker/errors.ts';
 import type { Query } from '../broker/records.ts';
 import { schema, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
+import { localDay, localTime, zonedInstant } from '../memory/zoned.ts';
 import { addItem, pushToAssignee, readItems, touchItem } from '../rooms/board.ts';
 import { roomBoardItem } from '../rooms/board-schema.ts';
 import { roomPrincipalOf } from '../rooms/release.ts';
 import { roomHandle } from '../rooms/transcript.ts';
+import { validZone } from './calendar-truth.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
-const when = { type: ['string', 'null'], format: 'date-time' };
+const when = {
+  type: ['string', 'null'],
+  description:
+    "A local date and time in the room's time zone with no offset, as board.list shows them, such as 2026-11-06T09:00, or a date alone for the whole day.",
+};
+/** What the agent is told when an item it asked to show everyone was kept with its person. */
+const KEPT_NOTE =
+  ' It is kept with its person and the owners, not everyone, because this request read a shared calendar.';
+/** Set by the service when it kept an item with its person; never the agent's to set. */
+const keptWithPerson = { type: 'boolean', description: 'Filled in by Melete.' };
 const who = {
   type: 'string',
   minLength: 1,
@@ -101,28 +112,34 @@ export const boardManifest: ConnectorManifest = {
           due_at: when,
           assignee: { ...who, type: ['string', 'null'] },
           visibility,
+          kept_with_person: keptWithPerson,
         },
       },
     ),
-    write('board.update', 'Change an item on the board, or mark it done or open again.', {
-      type: 'object',
-      additionalProperties: false,
-      required: ['item_id'],
-      properties: {
-        item_id: { type: 'string', minLength: 1, maxLength: 64 },
-        title,
-        detail,
-        starts_at: when,
-        ends_at: when,
-        due_at: when,
-        assignee: { ...who, type: ['string', 'null'] },
-        visibility,
-        state: { type: 'string', enum: ['open', 'done'] },
+    write(
+      'board.update',
+      "Change an item on the board, or mark it done or open again. When someone takes on an event with a time and the room's calendars say theirs allows adding events, offer to add it there with room.add_to_member_calendar; only they approve the exact event.",
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['item_id'],
+        properties: {
+          item_id: { type: 'string', minLength: 1, maxLength: 64 },
+          title,
+          detail,
+          starts_at: when,
+          ends_at: when,
+          due_at: when,
+          assignee: { ...who, type: ['string', 'null'] },
+          visibility,
+          state: { type: 'string', enum: ['open', 'done'] },
+          kept_with_person: keptWithPerson,
+        },
       },
-    }),
+    ),
     write(
       'board.ask',
-      'Ask one person in the room a question on the board. Only they see it (with the owners) unless you say otherwise; their answer comes back to this room as their own message to you.',
+      "Ask one person in the room a question on the board, in this turn rather than saying you will. Leave visibility out so it stays with them and the owners, and never put anyone's calendar, free time or busy time in its title or detail. Their answer comes back as their own message to you; if they take on something with a time and their calendar takes new events, offer room.add_to_member_calendar.",
       {
         type: 'object',
         additionalProperties: false,
@@ -137,7 +154,13 @@ export const boardManifest: ConnectorManifest = {
             items: { type: 'string', minLength: 1, maxLength: BOARD_CHOICE_MAX },
           },
           due_at: when,
-          visibility,
+          visibility: {
+            ...visibility,
+            default: 'assignee',
+            description:
+              'Leave this out. A question for one person is for them and the owners (assignee). Use everyone only for a question the whole room is meant to read, such as a vote, and then keep it free of anything about one person. After a shared calendar was read in this request, every question stays with its person.',
+          },
+          kept_with_person: keptWithPerson,
         },
       },
     ),
@@ -155,6 +178,103 @@ type JobFacts = {
   requested_by_principal_id: string | null;
   room_thread_id: string | null;
 };
+
+/** The fields of an item that hold a time. */
+const TIMES = ['starts_at', 'ends_at', 'due_at'] as const;
+/** A date and time with no offset: a wall time, read in the room's own zone. */
+const WALL = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/;
+/** A date alone: the whole of that day in the room's zone, from its midnight. */
+const DAY = /^(\d{4}-\d{2}-\d{2})$/;
+/** An instant written with its own offset, or in UTC: taken as given. */
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
+/** The parts of any of those forms, and an offset's, to check against the calendar. */
+const PARTS =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-](\d{2}):?(\d{2}))?)?$/i;
+
+/**
+ * Whether a time names a real day and time of day. A date's own parser rolls
+ * November 31 into December and 25:00 into the next day; this refuses them.
+ */
+function realTime(text: string): boolean {
+  const parts = PARTS.exec(text);
+  if (!parts) return false;
+  const [year, month, day, hour, minute, second] = parts
+    .slice(1, 7)
+    .map((part) => Number(part ?? 0));
+  const at = new Date(Date.UTC(year ?? 0, (month ?? 1) - 1, day ?? 0, hour, minute, second));
+  return (
+    year !== undefined &&
+    year >= 1000 &&
+    at.getUTCFullYear() === year &&
+    at.getUTCMonth() === (month ?? 0) - 1 &&
+    at.getUTCDate() === day &&
+    at.getUTCHours() === hour &&
+    at.getUTCMinutes() === minute &&
+    at.getUTCSeconds() === second &&
+    Number(parts[7] ?? 0) <= 14 &&
+    Number(parts[8] ?? 0) <= 59
+  );
+}
+
+/**
+ * Times the agent writes as wall times in the room's zone, made instants. A
+ * time read on the board and given again on another day keeps its time of day
+ * across a change of clocks, which an instant moved by whole days does not.
+ * Only these forms are taken: anything else would be read in the server's own
+ * zone, or as midnight UTC, and land on the wrong hour or day.
+ */
+function inRoomTime(payload: JsonObject, timeZone: string): JsonObject {
+  const next: JsonObject = { ...payload };
+  for (const field of TIMES) {
+    const value = payload[field];
+    if (value === undefined || value === null) continue;
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!realTime(text))
+      throw new BrokerFault(
+        'payload_invalid',
+        `${field} must be a real date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,
+      );
+    const wall = WALL.exec(text);
+    const day = DAY.exec(text);
+    if (wall?.[1] && wall[2]) next[field] = zonedInstant(wall[1], wall[2], timeZone).toISOString();
+    else if (day?.[1]) next[field] = zonedInstant(day[1], '00:00', timeZone).toISOString();
+    else if (INSTANT.test(text) && !Number.isNaN(Date.parse(text))) next[field] = text;
+    else
+      throw new BrokerFault(
+        'payload_invalid',
+        `${field} must be a date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,
+      );
+  }
+  return next;
+}
+
+/**
+ * The zone the room reads time in. A room that set none takes the zone of the
+ * person whose request this is, from their own space, then its maker's; UTC
+ * only when nobody chose one. A profile still on its first default counts as
+ * no choice.
+ */
+async function roomZone(tx: Query, spaceId: string, requester: string | null): Promise<string> {
+  const [row] = await tx`
+    with chosen as (
+      select p.space_id, p.time_zone from experience_profile p
+      where p.time_zone_confirmed_at is not null or p.time_zone <> 'UTC'),
+    personal as (
+      select coalesce(s.owner_principal_id, (select id from owner limit 1)) as principal_id,
+             c.time_zone
+      from space s join chosen c on c.space_id = s.id where s.kind = 'personal')
+    select coalesce(
+      (select time_zone from chosen where space_id = ${spaceId}),
+      (select time_zone from personal where principal_id = ${requester} limit 1),
+      (select p.time_zone from personal p join space r on r.id = ${spaceId}
+        where p.principal_id = coalesce(r.owner_principal_id, (select id from owner limit 1))
+        limit 1)) as zone`;
+  return validZone(row?.zone) ? row.zone : 'UTC';
+}
+
+/** An instant as the wall time it is in the room's zone, as the agent reads the board. */
+const wallTime = (at: string | null, timeZone: string) =>
+  at ? `${localDay(new Date(at), timeZone)}T${localTime(new Date(at), timeZone)}` : null;
 
 const toDate = (value: unknown, field: string): Date | null | undefined => {
   if (value === undefined) return undefined;
@@ -235,12 +355,16 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
   };
 
   /** The payload with its people resolved, as the approval and the action carry it. */
-  async function prepare(payload: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
+  async function prepare(given: JsonObject, ctx: ConnectorContext, tx: Query, kind?: string) {
     if (kind === 'board.list') {
       await facts(tx, ctx);
-      return payload;
+      return given;
     }
     const job = await mayChange(tx, ctx);
+    const payload = inRoomTime(
+      given,
+      await roomZone(tx, ctx.space_id, job.requested_by_principal_id),
+    );
     checkDates(payload);
     // Work with nobody behind it is the room's own, and goes as an owner's would.
     const owner =
@@ -249,6 +373,20 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     if (payload.visibility === 'owners' && !owner)
       throw new BrokerFault('scope_denied', 'Only an owner keeps an item for the owners.');
     const next: JsonObject = { ...payload };
+    delete next.kept_with_person;
+    /**
+     * A request that read someone's shared calendar keeps what it puts up for
+     * one person with them and the owners: what it says may rest on what that
+     * calendar shows. The receipt tells the agent it did.
+     */
+    const keepWithPerson = async () => {
+      const [read] = await tx`select 1 from action
+        where job_id = ${ctx.job_id} and kind = 'room.member_freebusy'
+          and status = 'succeeded' limit 1`;
+      if (!read) return;
+      next.visibility = 'assignee';
+      next.kept_with_person = true;
+    };
     if ('title' in payload) next.title = titleOf(payload.title);
     if ('assignee' in payload) {
       const id = await resolveAssignee(tx, ctx.space_id, payload.assignee);
@@ -259,6 +397,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       // A note is always for its person alone; it carries no visibility of its own.
       if (kind === 'board.ask') {
         next.visibility = (payload.visibility as BoardVisibility | undefined) ?? 'assignee';
+        if (next.visibility === 'everyone') await keepWithPerson();
         // The person asked must be able to see the question to answer it.
         if (
           next.visibility === 'owners' &&
@@ -276,6 +415,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     }
     if (kind === 'board.add') {
       next.visibility = (payload.visibility as BoardVisibility | undefined) ?? 'everyone';
+      if (next.visibility === 'everyone' && next.assignee) await keepWithPerson();
       if (next.visibility === 'assignee' && !next.assignee)
         throw new BrokerFault(
           'payload_invalid',
@@ -283,11 +423,17 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
         );
     }
     if (kind === 'board.update') {
-      const [row] = await tx`select id, kind from room_board_item
+      const [row] = await tx`select id, kind, visibility, assignee_principal_id
+        from room_board_item
         where id = ${String(payload.item_id)} and space_id = ${ctx.space_id}`;
       if (!row) throw new BrokerFault('payload_invalid', 'That item is not on this board.');
       if (row.kind === 'question' && payload.state === 'done')
         throw new BrokerFault('payload_invalid', 'Only an answer closes a question.');
+      const assigneeNow = 'assignee' in next ? next.assignee : row.assignee_principal_id;
+      // What the item will show once changed: a retitle or a new assignee
+      // leaves an item for everyone, so it is kept with its person too.
+      const visibleTo = 'visibility' in next ? next.visibility : row.visibility;
+      if (visibleTo === 'everyone' && assigneeNow) await keepWithPerson();
     }
     return next;
   }
@@ -318,14 +464,14 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
   const readerOf = async (tx: Pick<Transaction, 'select'>, job: JobFacts) =>
     job.requested_by_principal_id ?? (await roomPrincipalOf(tx, job.space_id)).id;
 
-  const compact = (item: BoardItem): JsonValue => ({
+  const compact = (item: BoardItem, timeZone: string): JsonValue => ({
     id: item.id,
     kind: item.kind,
     title: item.title,
     detail: item.detail,
-    starts_at: item.starts_at,
-    ends_at: item.ends_at,
-    due_at: item.due_at,
+    starts_at: wallTime(item.starts_at, timeZone),
+    ends_at: wallTime(item.ends_at, timeZone),
+    due_at: wallTime(item.due_at, timeZone),
     assignee: item.assignee?.display_name ?? null,
     visibility: item.visibility,
     state: item.state,
@@ -340,6 +486,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     // A read takes no part in the event order, so it holds none of its lock.
     return db.transaction(async (tx) => {
       const job = await facts(options.sql, ctx);
+      const timeZone = await roomZone(options.sql, ctx.space_id, job.requested_by_principal_id);
       const reader = await readerOf(tx, job);
       const state = action.canonical_payload.state as BoardItem['state'] | undefined;
       const items = await readItems(tx, reader, {
@@ -358,7 +505,8 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
         receipt: receiptFor(
           action,
           {
-            items: items.map(compact),
+            time_zone: timeZone,
+            items: items.map((item) => compact(item, timeZone)),
             people: people.map((row) => ({
               code: roomHandle(ctx.space_id, String(row.principal_id)),
               name: row.display_name ? String(row.display_name) : null,
@@ -434,10 +582,11 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
           action,
           {
             item_id: made.id,
-            note:
+            note: `${
               kind === 'question'
                 ? 'They see it on the board. Their answer comes to this room as their own message to you.'
-                : 'It is on the board.',
+                : 'It is on the board.'
+            }${payload.kept_with_person ? KEPT_NOTE : ''}`,
           },
           made.id,
         ),
@@ -544,7 +693,15 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       }
       return {
         outcome: 'succeeded' as const,
-        receipt: receiptFor(action, { item_id: itemId, state: changed.state }, itemId),
+        receipt: receiptFor(
+          action,
+          {
+            item_id: itemId,
+            state: changed.state,
+            ...(payload.kept_with_person ? { note: KEPT_NOTE.trim() } : {}),
+          },
+          itemId,
+        ),
       };
     });
   }

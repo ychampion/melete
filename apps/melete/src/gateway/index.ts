@@ -34,6 +34,7 @@ import { countImages, isInlineImage, withoutImages, withoutMarks } from './image
 import { trackModelCall } from './inflight.ts';
 import { withLongTurnNote } from './long-turn.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
+import { NebiusResponseError, NemotronReply } from './nebius.ts';
 import { PriceTable } from './prices.ts';
 import { classifyProviderFailure, providerFailureError } from './provider-failure.ts';
 import {
@@ -864,13 +865,26 @@ export function createModelGateway(options: GatewayOptions): Server {
       // provider's placeholders are all the provider ever saw.
       const rehydrator = prepared?.rehydrator ?? null;
       const renamed = toolNames && streaming ? new ToolNameStream(toolNames) : null;
+      const nemotron =
+        protocol === 'chat/completions' &&
+        settlement.provider === 'nebius' &&
+        /nemotron/i.test(settlement.modelRequested) &&
+        !settlement.servedLocally
+          ? new NemotronReply()
+          : null;
       const buffered: string[] = [];
-      if (streaming) {
-        response.writeHead(result.status, {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-store',
-        });
-      }
+      const streamStatus = result.status;
+      const streamHeaders = () => {
+        if (!response.headersSent)
+          response.writeHead(streamStatus, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-store',
+          });
+      };
+      // Token Factory can report an error inside an HTTP 200 stream, so its
+      // success headers wait for the first event that passes. Other providers
+      // get them at once.
+      if (streaming && !nemotron) streamHeaders();
       const reader = result.body.getReader();
       try {
         for (;;) {
@@ -881,9 +895,13 @@ export function createModelGateway(options: GatewayOptions): Server {
           settlement.modelActual = collector.modelActual;
           const output = redactor.feed(value);
           if (streaming) {
-            const rehydrated = rehydrator && output ? rehydrator.push(output) : output;
+            const normalized = nemotron ? nemotron.push(output) : output;
+            const rehydrated = rehydrator && normalized ? rehydrator.push(normalized) : normalized;
             const visible = renamed && rehydrated ? renamed.push(rehydrated) : rehydrated;
-            if (visible) await writeChunk(response, visible, abort.signal);
+            if (visible) {
+              streamHeaders();
+              await writeChunk(response, visible, abort.signal);
+            }
           } else buffered.push(output);
         }
         collector.finish();
@@ -891,9 +909,14 @@ export function createModelGateway(options: GatewayOptions): Server {
         await reader.cancel().catch(() => {});
       }
       const rest = redactor.feed(new Uint8Array(), true);
+      const normalizedTail = streaming && nemotron ? nemotron.push(rest) + nemotron.end() : rest;
       const rehydratedTail =
-        streaming && rehydrator ? rehydrator.push(rest) + rehydrator.end() : rest;
+        streaming && rehydrator
+          ? rehydrator.push(normalizedTail) + rehydrator.end()
+          : normalizedTail;
       const tail = renamed ? renamed.push(rehydratedTail) + renamed.end() : rehydratedTail;
+      const whole = streaming ? '' : buffered.join('') + tail;
+      const normalizedReply = !streaming && nemotron ? nemotron.json(whole) : whole;
       settlement.modelActual = collector.modelActual;
       // Cached input in full-price-equivalent tokens, from the price table the
       // spending caps use; nothing is discounted on the person's own model.
@@ -922,14 +945,15 @@ export function createModelGateway(options: GatewayOptions): Server {
       await settle(principal, reservation, settlement);
       settled = true;
       if (!collector.completed) throw new GatewayError(502, 'incomplete_provider_response');
-      if (streaming) response.end(tail);
-      else {
+      if (streaming) {
+        streamHeaders();
+        response.end(tail);
+      } else {
         response.writeHead(result.status, {
           'content-type': 'application/json',
           'cache-control': 'no-store',
         });
-        const whole = buffered.join('') + tail;
-        const reply = rehydrator ? rehydrator.json(whole) : whole;
+        const reply = rehydrator ? rehydrator.json(normalizedReply) : normalizedReply;
         response.end(toolNames ? toolNameDecoder(toolNames)(reply) : reply);
       }
     } catch (error) {
@@ -937,6 +961,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       // outlives the response on Bun's HTTP server (see drainRequest).
       await drainRequest(request, maxRequestBytes);
       if (reservation && settlement && !settled) {
+        if (error instanceof NebiusResponseError) settlement.failure = error.failure;
         settlement.latencyMs = Math.round(performance.now() - started);
         // A call stopped part way is charged what it streamed, estimated,
         // rather than its whole output allowance.
