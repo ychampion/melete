@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
-import { dirname, join, posix } from 'node:path';
+import { dirname, join } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -15,8 +15,7 @@ const rejected = '\0rejected-browser-external:';
 const isNodeBuiltin = (id: string) =>
   id.startsWith('node:') || id.startsWith('bun:') || builtinModules.includes(id);
 
-// Whether the package holding the importer maps this module to false in its `browser` field,
-// with the field's keys matched the way Vite matches them.
+// Whether the package holding the importer maps this module to false in its `browser` field.
 function packageMapsToFalse(id: string, importer: string | undefined) {
   if (!importer || importer.startsWith('\0')) return false;
   let dir = dirname(importer.replace(/[?#].*$/, ''));
@@ -33,16 +32,10 @@ function packageMapsToFalse(id: string, importer: string | undefined) {
         return false;
       }
       if (typeof browser !== 'object' || browser === null) return false;
-      const wanted = posix.normalize(id);
-      return Object.entries(browser).some(([key, value]) => {
-        const normalized = posix.normalize(key);
-        return (
-          value === false &&
-          (normalized === wanted ||
-            normalized === `${wanted}.js` ||
-            normalized === `${wanted}/index.js`)
-        );
-      });
+      // A relative key such as "./fs.js" maps the package's own file, never the Node module.
+      return Object.entries(browser).some(
+        ([key, value]) => value === false && (key === id || key === `${id}.js`),
+      );
     }
     const parent = dirname(dir);
     if (parent === dir) return false;
