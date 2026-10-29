@@ -147,7 +147,7 @@ import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { actionKinds, type DontMatch, dontRulesFor, matchDontRule } from './dont-rules.ts';
-import { BrokerFault, inputProblem } from './errors.ts';
+import { BrokerFault, inputProblem, schemaProblem } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import { humanPayload, typedInConversation } from './human-payload.ts';
 import { type MoneyMove, moneyMove } from './money.ts';
@@ -1041,7 +1041,11 @@ export class BrokerService implements BrokerOperations {
    * An in-cell connector must declare that record schema so neither proposal
    * form nor settlement can admit an unchecked shape.
    */
-  private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
+  private validatePayload(
+    tool: ConnectorTool,
+    payload: Action['canonical_payload'],
+    connector?: Connector,
+  ) {
     if (tool.execution === 'in_cell' && !tool.record_schema)
       throw new BrokerFault('payload_invalid', 'An in-cell tool must declare a record schema');
     const intent = tool.execution === 'in_cell' ? executionIntent.safeParse(payload) : null;
@@ -1051,7 +1055,7 @@ export class BrokerService implements BrokerOperations {
     }
     const schema = tool.execution === 'in_cell' ? tool.record_schema : tool.input_schema;
     if (!schema) throw new BrokerFault('payload_invalid');
-    this.compiled(schema)(payload);
+    this.compiled(schema)(payload, () => connector?.explainInvalid?.(tool.name, payload) ?? null);
   }
 
   /**
@@ -1074,8 +1078,11 @@ export class BrokerService implements BrokerOperations {
     }
     if ('$async' in validate && validate.$async)
       throw new BrokerFault('schema_invalid', 'Asynchronous tool schemas are unsupported');
-    return (payload: unknown) => {
-      if (validate(payload) !== true) throw new BrokerFault('payload_invalid');
+    // A refusal says what was wrong, so the model can correct the call
+    // rather than guess at another one.
+    return (payload: unknown, explain?: () => string | null) => {
+      if (validate(payload) !== true)
+        throw new BrokerFault('payload_invalid', explain?.() ?? schemaProblem(validate.errors));
     };
   }
 
@@ -2405,7 +2412,7 @@ export class BrokerService implements BrokerOperations {
             };
         }
         let canonical = canonicalizePayload(request.payload);
-        this.validatePayload(tool, canonical.canonical);
+        this.validatePayload(tool, canonical.canonical, connector);
         const proposing: ConnectorContext = {
           job_id: job.id,
           space_id: job.space_id,
