@@ -98,7 +98,7 @@ export function timeline(view: ThreadView): ThreadEntry[] {
 
 /** The part of a request's stream event the thread folds in by itself. */
 type StreamItem =
-  | { type: 'text_delta'; text: string }
+  | { type: 'text_delta'; text: string; restart?: true }
   | { type: 'status'; status: Turn['status'] }
   | { type: 'card'; card: RoomRequest['cards'][number] }
   | { type: 'receipt'; receipt: RoomRequest['receipts'][number] }
@@ -166,7 +166,10 @@ export function recordDelta(streams: Streams, view: ThreadView | null, frame: Ro
     event.turn_id ??
     view?.requests.find((request) => request.job_id === frame.request_job_id)?.turns.at(-1)?.id;
   if (!turnId) return;
-  streams.set(turnId, (streams.get(turnId) ?? '') + event.item.text);
+  // A restart is the turn's answer so far, in place of what streamed before:
+  // a room that shows only what needs its people sends each answer this way.
+  const restart = 'restart' in event.item && event.item.restart === true;
+  streams.set(turnId, (restart ? '' : (streams.get(turnId) ?? '')) + event.item.text);
 }
 
 /** A turn's answer: the service's copy once it rests, else the further along of the two. */

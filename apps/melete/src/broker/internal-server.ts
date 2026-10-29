@@ -18,6 +18,7 @@ import { EngineSkillService } from '../learning/engine-skills.ts';
 import { learningRuntimeFetch } from '../learning/runtime-route.ts';
 import { withPlaceholderResolution } from '../privacy/broker.ts';
 import type { PrivacyRouter } from '../privacy/index.ts';
+import { summariesMinimiser } from '../spaces/summary-guard.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
 import { createBrokerApp } from './http.ts';
@@ -161,6 +162,9 @@ export function createInternalServer(options: {
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
     privacy: options.privacy,
+    // A request whose answer goes to someone who may see only summaries of a
+    // room's originals reads their details as placeholders (summary-guard.ts).
+    minimise: summariesMinimiser(db),
     spending: options.spending,
     reasoningEffort: options.reasoningEffort,
     // The install's capability key, so a conversation's cache key is the same
