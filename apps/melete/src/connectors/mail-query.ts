@@ -13,6 +13,10 @@
  * search (`is:unread`, `after:2026/01/01`) is dropped. A query never matches
  * nothing just because of how it was written. A query left with no terms
  * lists the newest mail, as an empty one does.
+ *
+ * One search runs a bounded number of alternatives. Those past the bound are
+ * never dropped silently: the search result names them, so they can be
+ * searched next.
  */
 
 /** Alternatives, each a list of terms that must all appear. Empty: no condition. */
@@ -20,6 +24,9 @@ export type MailQuery = string[][];
 
 /** Most alternatives one search runs; a mailbox without OR runs each one. */
 export const MAX_ALTERNATIVES = 8;
+/** Most alternatives past that bound that a search names back, so they can be searched next. */
+export const MAX_LEFT_OUT = 16;
+const LISTED = MAX_ALTERNATIVES + MAX_LEFT_OUT;
 /** Most terms one alternative needs to match. */
 const MAX_TERMS = 8;
 const MAX_DEPTH = 8;
@@ -114,32 +121,53 @@ function word(raw: string): Token[] {
   return text ? [{ kind: 'term', text }] : [];
 }
 
+/**
+ * Alternatives in reading order, as many as are kept for searching or for
+ * naming back, and whether the query had more than that.
+ */
+type Reading = { list: MailQuery; cut: boolean };
+
+const unit = (): Reading => ({ list: [[]], cut: false });
+
+const bounded = (list: MailQuery, cut: boolean): Reading =>
+  list.length > LISTED ? { list: list.slice(0, LISTED), cut: true } : { list, cut };
+
 /** Every pairing of one alternative from each side: AND, in alternatives. */
-function both(left: MailQuery, right: MailQuery): MailQuery {
+function both(left: Reading, right: Reading): Reading {
   const out: MailQuery = [];
-  for (const a of left)
-    for (const b of right) if (out.length < MAX_ALTERNATIVES) out.push([...a, ...b]);
-  return out;
+  for (const a of left.list)
+    for (const b of right.list) {
+      if (out.length === LISTED) return { list: out, cut: true };
+      out.push([...a, ...b]);
+    }
+  return { list: out, cut: left.cut || right.cut };
 }
 
-/** Read a query into alternatives of terms. */
-export function parseMailQuery(query: string): MailQuery {
-  const list = tokens(query);
+/**
+ * A query as the alternatives one search runs, and those past the bound
+ * that it does not. `more` says the query had still others, too many to name.
+ */
+export type MailQueryReading = { alternatives: MailQuery; leftOut: MailQuery; more: boolean };
+
+/** Read a query into alternatives of terms, saying what a search leaves out. */
+export function readMailQuery(query: string): MailQueryReading {
+  const items = tokens(query);
   let at = 0;
   // expression := conjunction (OR conjunction)*
-  const expression = (depth: number): MailQuery => {
-    const out: MailQuery = [];
+  const expression = (depth: number): Reading => {
+    let out: Reading = { list: [], cut: false };
     for (;;) {
-      out.push(...conjunction(depth));
-      if (list[at]?.kind !== 'or') return out.slice(0, MAX_ALTERNATIVES);
+      const part = conjunction(depth);
+      out = bounded([...out.list, ...part.list], out.cut || part.cut);
+      if (items[at]?.kind !== 'or') return out;
       at++;
     }
   };
   // conjunction := factor*, up to an OR, a closing parenthesis or the end
-  const conjunction = (depth: number): MailQuery => {
-    let out: MailQuery = [[]];
+  const conjunction = (depth: number): Reading => {
+    let out = unit();
     for (;;) {
-      const next = list[at];
+      const next = items[at];
       if (!next || next.kind === 'or') return out;
       if (next.kind === 'close') {
         if (depth > 0) return out;
@@ -150,28 +178,29 @@ export function parseMailQuery(query: string): MailQuery {
     }
   };
   // factor := (drop | keep) factor | "(" expression ")" | term
-  const factor = (depth: number): MailQuery => {
-    const next = list[at++];
-    if (!next) return [[]];
+  const factor = (depth: number): Reading => {
+    const next = items[at++];
+    if (!next) return unit();
     if (next.kind === 'drop' || next.kind === 'keep') {
-      const following = list[at];
-      if (!following || following.kind === 'or' || following.kind === 'close') return [[]];
+      const following = items[at];
+      if (!following || following.kind === 'or' || following.kind === 'close') return unit();
       const inner = factor(depth);
-      return next.kind === 'drop' ? [[]] : inner;
+      return next.kind === 'drop' ? unit() : inner;
     }
     if (next.kind === 'open') {
       // Nesting this deep says nothing a search needs; the parenthesis is set aside.
-      if (depth >= MAX_DEPTH) return [[]];
+      if (depth >= MAX_DEPTH) return unit();
       const inner = expression(depth + 1);
-      if (list[at]?.kind === 'close') at++;
-      return inner.length ? inner : [[]];
+      if (items[at]?.kind === 'close') at++;
+      return inner.list.length ? inner : unit();
     }
-    if (next.kind === 'term') return [[next.text]];
-    return [[]];
+    if (next.kind === 'term') return { list: [[next.text]], cut: false };
+    return unit();
   };
+  const whole = expression(0);
   const seen = new Set<string>();
   const out: MailQuery = [];
-  for (const alternative of expression(0)) {
+  for (const alternative of whole.list) {
     const terms: string[] = [];
     const lower = new Set<string>();
     for (const term of alternative) {
@@ -187,7 +216,21 @@ export function parseMailQuery(query: string): MailQuery {
     seen.add(key);
     out.push(terms);
   }
-  return out;
+  return {
+    alternatives: out.slice(0, MAX_ALTERNATIVES),
+    leftOut: out.slice(MAX_ALTERNATIVES),
+    more: whole.cut,
+  };
+}
+
+/** The alternatives one search runs. */
+export function parseMailQuery(query: string): MailQuery {
+  return readMailQuery(query).alternatives;
+}
+
+/** An alternative written back as a query the model can search with next. */
+export function mailQueryText(terms: string[]): string {
+  return terms.map((term) => (/\s/.test(term) ? `"${term}"` : term)).join(' ');
 }
 
 /** What each email.search query understands, said to the model in the tool description. */
