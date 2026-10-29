@@ -212,8 +212,9 @@ const TIMES = ['starts_at', 'ends_at', 'due_at'] as const;
 const WALL = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/;
 /** A date alone: the whole of that day in the room's zone, from its midnight. */
 const DAY = /^(\d{4}-\d{2}-\d{2})$/;
-/** An instant written with its own offset, or in UTC: taken as given. */
-const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
+/** An instant written with its own offset, or in UTC, in any of the forms it may be written. */
+const INSTANT =
+  /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2})(\.\d+)?)?(?:(Z)|([+-]\d{2}):?(\d{2}))$/i;
 /** The parts of any of those forms, and an offset's, to check against the calendar. */
 const PARTS =
   /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-](\d{2}):?(\d{2}))?)?$/i;
@@ -255,24 +256,52 @@ function inRoomTime(payload: JsonObject, timeZone: string): JsonObject {
   for (const field of TIMES) {
     const value = payload[field];
     if (value === undefined || value === null) continue;
-    const text = typeof value === 'string' ? value.trim() : '';
-    if (!realTime(text))
-      throw new BrokerFault(
-        'payload_invalid',
-        `${field} must be a real date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,
-      );
-    const wall = WALL.exec(text);
-    const day = DAY.exec(text);
-    if (wall?.[1] && wall[2]) next[field] = zonedInstant(wall[1], wall[2], timeZone).toISOString();
-    else if (day?.[1]) next[field] = zonedInstant(day[1], '00:00', timeZone).toISOString();
-    else if (INSTANT.test(text) && !Number.isNaN(Date.parse(text))) next[field] = text;
-    else
-      throw new BrokerFault(
-        'payload_invalid',
-        `${field} must be a date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,
-      );
+    next[field] = roomInstant(field, value, timeZone);
   }
   return next;
+}
+
+/**
+ * One time the agent wrote in a room, made an instant: a wall time or a date
+ * (from its midnight) in the room's zone, or an instant with its own offset.
+ * `endOfDay` reads a date alone as the end of that day instead, for the end
+ * of a window. Anything else is refused, naming the field.
+ */
+export function roomInstant(
+  field: string,
+  value: unknown,
+  timeZone: string,
+  endOfDay = false,
+): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!realTime(text))
+    throw new BrokerFault(
+      'payload_invalid',
+      `${field} must be a real date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,
+    );
+  const wall = WALL.exec(text);
+  const day = DAY.exec(text);
+  if (wall?.[1] && wall[2]) return zonedInstant(wall[1], wall[2], timeZone).toISOString();
+  if (day?.[1]) {
+    if (!endOfDay) return zonedInstant(day[1], '00:00', timeZone).toISOString();
+    const next = new Date(`${day[1]}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    return zonedInstant(next.toISOString().slice(0, 10), '00:00', timeZone).toISOString();
+  }
+  // An instant with its own offset is the same moment, written one way: with
+  // seconds, a colon in the offset and an upper-case Z, as every reader takes it.
+  const given = INSTANT.exec(text);
+  if (given) {
+    const [, date, time, second, fraction, utc, hours, minutes] = given;
+    const at = Date.parse(
+      `${date}T${time}:${second ?? '00'}${(fraction ?? '').slice(0, 4)}${utc ? 'Z' : `${hours}:${minutes}`}`,
+    );
+    if (!Number.isNaN(at)) return new Date(at).toISOString();
+  }
+  throw new BrokerFault(
+    'payload_invalid',
+    `${field} must be a date and time in the room's time zone, such as 2026-11-06T09:00, a date such as 2026-11-06, or a time with its offset.`,
+  );
 }
 
 /**
@@ -281,7 +310,11 @@ function inRoomTime(payload: JsonObject, timeZone: string): JsonObject {
  * only when nobody chose one. A profile still on its first default counts as
  * no choice.
  */
-async function roomZone(tx: Query, spaceId: string, requester: string | null): Promise<string> {
+export async function roomZone(
+  tx: Query,
+  spaceId: string,
+  requester: string | null,
+): Promise<string> {
   const [row] = await tx`
     with chosen as (
       select p.space_id, p.time_zone from experience_profile p
@@ -300,7 +333,7 @@ async function roomZone(tx: Query, spaceId: string, requester: string | null): P
 }
 
 /** An instant as the wall time it is in the room's zone, as the agent reads the board. */
-const wallTime = (at: string | null, timeZone: string) =>
+export const wallTime = (at: string | null, timeZone: string) =>
   at ? `${localDay(new Date(at), timeZone)}T${localTime(new Date(at), timeZone)}` : null;
 
 const toDate = (value: unknown, field: string): Date | null | undefined => {

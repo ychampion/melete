@@ -48,11 +48,32 @@ import {
 import { roomHandoff, roomMessage, roomThread } from '../rooms/schema.ts';
 import { membersNamed, namesOf } from '../rooms/transcript.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
+import { roomInstant, roomZone, wallTime } from './board.ts';
 import { calendarManifest, createPayload, freebusyDetail, freebusyPayload } from './calendar.ts';
-import { calendarSource, checkCalendarAhead, spaceTimeZone } from './calendar-truth.ts';
+import {
+  calendarSource,
+  checkCalendarAhead,
+  MAX_FREEBUSY_DAYS,
+  spaceTimeZone,
+} from './calendar-truth.ts';
 import type { ConnectionSource } from './configured.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
+
+/**
+ * An instant as the room's wall time with the offset in force then, such as
+ * 2026-11-01T01:30-04:00. The hour repeated when clocks go back reads as two
+ * different times, so a block can be written back as the moment it is.
+ */
+function localWithOffset(at: string | null, zone: string): string | null {
+  const wall = wallTime(at, zone);
+  if (!at || !wall) return wall;
+  const minute = Math.floor(Date.parse(at) / 60_000) * 60_000;
+  const offset = Math.round((Date.parse(`${wall}:00Z`) - minute) / 60_000);
+  const size = Math.abs(offset);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${wall}${offset < 0 ? '-' : '+'}${pad(Math.floor(size / 60))}:${pad(size % 60)}`;
+}
 
 const TEXT_LIMIT = 8000;
 const eventSchema = calendarManifest.tools.find(
@@ -72,15 +93,23 @@ export const roomManifest: ConnectorManifest = {
     {
       name: 'room.member_freebusy',
       description:
-        "Read a current room member's explicitly shared calendar as free/busy only. Name the member by their room handle, full room label, unique display name or principal id, and give a start/end window of at most 62 days. Event titles, locations and attendees stay private. Compare members' busy blocks to find a time that works for everyone.",
+        "Read a current room member's explicitly shared calendar as free/busy only. Name the member by their room handle, full room label, unique display name or principal id, and give a start/end window of at most 62 days. Blocks give start_local and end_local in the room's time zone. Event titles, locations and attendees stay private. Compare members' busy blocks to find a time that works for everyone.",
       input_schema: {
         type: 'object',
         additionalProperties: false,
         required: ['member', 'start', 'end'],
         properties: {
           member: { type: 'string', minLength: 1 },
-          start: { type: 'string' },
-          end: { type: 'string' },
+          start: {
+            type: 'string',
+            description:
+              "A local date and time in the room's time zone with no offset, such as 2026-11-06T09:00, a date alone from its midnight, or a time with its offset.",
+          },
+          end: {
+            type: 'string',
+            description:
+              'Like start; a date alone runs to the end of that day, so 2026-11-06 for both reads that whole day.',
+          },
           calendar_connection_id: { type: 'string', description: 'Filled in by Melete.' },
           share_created_at: { type: 'string', description: 'Filled in by Melete.' },
           membership_generation: { type: 'integer', description: 'Filled in by Melete.' },
@@ -489,10 +518,16 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
       }
       // Revoke or leave while the provider was reading: discard that result.
       await calendarTarget(options.sql, ctx, action.canonical_payload, false, true);
+      // Each block also reads as the board does, in the room's own zone, so a
+      // UTC hour is never taken for a local one.
+      const job = await facts(options.sql, ctx.job_id);
+      const zone = await roomZone(options.sql, ctx.space_id, job.requested_by_principal_id);
       const blocks = (value: unknown, busy: boolean): JsonObject[] =>
         (Array.isArray(value) ? value : []).map((block) => ({
           start: block.start,
           end: block.end,
+          start_local: localWithOffset(block.start, zone),
+          end_local: localWithOffset(block.end, zone),
           ...(busy ? { all_day: block.all_day, status: block.status } : {}),
         }));
       return {
@@ -503,6 +538,7 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
             member: target.share.principalId,
             window: detail.window ?? null,
             time_zone: detail.time_zone ?? null,
+            room_time_zone: zone,
             complete: detail.complete ?? false,
             busy: blocks(detail.busy, true),
             free: blocks(detail.free, false),
@@ -802,12 +838,24 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
           membership_generation: target.share.membershipGeneration,
         };
         if (!write) {
-          const window = freebusyPayload.safeParse({ start: payload.start, end: payload.end });
-          if (!window.success)
+          // The window is read the way the board reads times: wall times and
+          // dates in the room's zone, so a day asked for is that day there.
+          const job = await facts(tx, ctx.job_id);
+          const zone = await roomZone(tx, ctx.space_id, job.requested_by_principal_id);
+          const start = roomInstant('start', payload.start, zone);
+          const end = roomInstant('end', payload.end, zone, true);
+          if (Date.parse(end) <= Date.parse(start))
+            throw new BrokerFault('payload_invalid', 'The free/busy end must be after its start.');
+          const window = freebusyPayload.safeParse({ start, end });
+          if (!window.success) {
+            const issues = window.error.issues.map((issue) => issue.message);
             throw new BrokerFault(
               'payload_invalid',
-              'Choose a valid free/busy window of at most 62 days.',
+              issues.some((issue) => issue.includes(`at most ${MAX_FREEBUSY_DAYS} days`))
+                ? `Choose a free/busy window of at most ${MAX_FREEBUSY_DAYS} days.`
+                : `The free/busy window cannot be read: ${issues.join('; ')}.`,
             );
+          }
           return { ...binding, start: window.data.start, end: window.data.end };
         }
         const connector = await openCalendar(target, tx);
