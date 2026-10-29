@@ -46,6 +46,7 @@ import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { sessionLive } from '../apps/serve.ts';
+import { ByteRedactor } from '../egress/redact.ts';
 import { terminalText } from '../experience/computer.ts';
 import { framedRequest, viewHeaders } from '../viewer/headers.ts';
 import { sessionTag, VIEW_TTL_SECONDS, ViewTokens } from '../viewer/tokens.ts';
@@ -56,7 +57,9 @@ import {
   type ProcessRow,
   rowOf,
   type SandboxProcesses,
+  type SealedValues,
 } from './processes.ts';
+import { redactBytes, redactStream, sealedComputer } from './secret-redaction.ts';
 import type { PreviewAddress, SandboxHandle, SandboxProvider } from './types.ts';
 
 /** One process a person may watch, and the computer it runs in, if that is running. */
@@ -315,8 +318,12 @@ export async function forwardPreview(input: {
   headers: Headers;
   fetch?: typeof fetch;
   signal?: AbortSignal;
+  /** The space's sealed values: none of them leaves in the answer's headers or body. */
+  redact?: readonly string[];
 }): Promise<Response> {
   const { address, rest } = input;
+  const values = input.redact ?? [];
+  const sealed = (text: string) => (values.length ? new ByteRedactor(values).text(text) : text);
   const host = address.host.includes(':') ? `[${address.host}]` : address.host;
   const origin = `http://${host}:${address.port}`;
   // Only the path and query are set, on a fixed origin: nothing in the
@@ -328,6 +335,8 @@ export async function forwardPreview(input: {
     return plain(400, 'This address cannot be previewed.');
   const headers = new Headers();
   for (const name of FORWARDED) {
+    // A part of the answer could cut a value in two, so with values to keep out the whole is asked for.
+    if (values.length && (name === 'range' || name === 'if-range')) continue;
     const value = input.headers.get(name);
     if (value !== null) headers.set(name, value);
   }
@@ -355,7 +364,7 @@ export async function forwardPreview(input: {
   const answered = viewHeaders(type);
   for (const name of RETURNED) {
     const value = upstream.headers.get(name);
-    if (value !== null) answered.set(name, value);
+    if (value !== null) answered.set(name, sealed(value));
   }
   const status = upstream.status;
   if (status >= 300 && status < 400 && upstream.headers.has('location')) {
@@ -364,7 +373,7 @@ export async function forwardPreview(input: {
       await upstream.body?.cancel();
       return plain(502, 'The previewed page tried to send you to another site.');
     }
-    answered.set('location', location);
+    answered.set('location', sealed(location));
   }
   const length = Number(upstream.headers.get('content-length') ?? Number.NaN);
   if (Number.isFinite(length) && length > PREVIEW_LIMITS.response_max_bytes) {
@@ -384,27 +393,45 @@ export async function forwardPreview(input: {
   ) {
     const read = await readUpTo(upstream.body, PREVIEW_LIMITS.rewrite_max_bytes);
     if (read.bytes) {
-      const text = keepInside(new TextDecoder().decode(read.bytes), rootFrom(rest));
+      const text = keepInside(
+        new TextDecoder().decode(redactBytes(read.bytes, values)),
+        rootFrom(rest),
+      );
       return new Response(text, { status, headers: answered });
     }
-    return new Response(capped(read.rest, PREVIEW_LIMITS.response_max_bytes), {
+    return new Response(
+      capped(redactStream(read.rest, values), PREVIEW_LIMITS.response_max_bytes),
+      {
+        status,
+        headers: answered,
+      },
+    );
+  }
+  return new Response(
+    capped(redactStream(upstream.body, values), PREVIEW_LIMITS.response_max_bytes),
+    {
       status,
       headers: answered,
-    });
-  }
-  return new Response(capped(upstream.body, PREVIEW_LIMITS.response_max_bytes), {
-    status,
-    headers: answered,
-  });
+    },
+  );
 }
 
 export type SandboxPreviewsOptions = {
   masterKey?: string;
   now?: () => number;
   /** How the service reaches a computer's processes; the helper unless a test says otherwise. */
-  computerFor?: (provider: SandboxProvider, handle: SandboxHandle) => ProcessComputer;
+  computerFor?: (
+    provider: SandboxProvider,
+    handle: SandboxHandle,
+    spaceId: string,
+  ) => ProcessComputer;
   /** Stops processes and closes their records. Without it, stopping is refused. */
   processes?: SandboxProcesses;
+  /**
+   * The space's sealed secrets, kept out of every page, header and line of
+   * output a preview shows; the processes' own when left out.
+   */
+  secrets?: SealedValues;
   fetch?: typeof fetch;
 };
 
@@ -413,6 +440,7 @@ const COMPUTER_MS = 15_000;
 export class SandboxPreviews {
   readonly tokens: ViewTokens;
   private readonly computerFor: NonNullable<SandboxPreviewsOptions['computerFor']>;
+  private readonly sealed: SealedValues | undefined;
   private readonly now: () => number;
 
   constructor(
@@ -421,10 +449,16 @@ export class SandboxPreviews {
   ) {
     this.now = options.now ?? Date.now;
     this.tokens = new ViewTokens(previewKey(options.masterKey), this.now);
-    this.computerFor =
+    const computerFor =
       options.computerFor ??
-      ((provider, handle) =>
-        options.processes?.computer(provider, handle) ?? helperComputer(provider, handle));
+      ((provider, handle, spaceId) =>
+        options.processes?.computer(provider, handle, spaceId) ?? helperComputer(provider, handle));
+    const secrets = options.secrets;
+    this.sealed = secrets ?? options.processes;
+    this.computerFor = secrets
+      ? (provider, handle, spaceId) =>
+          sealedComputer(computerFor(provider, handle, spaceId), () => secrets.valuesOf(spaceId))
+      : computerFor;
   }
 
   /** The process, running with a port, in a computer the service can reach now. */
@@ -466,10 +500,11 @@ export class SandboxPreviews {
     const { watched, port, computer } = await this.live(processId, principalId);
     let ports: number[] = [];
     try {
-      const status = await this.computerFor(computer.provider, computer.handle).status(
-        [processId],
-        AbortSignal.timeout(COMPUTER_MS),
-      );
+      const status = await this.computerFor(
+        computer.provider,
+        computer.handle,
+        watched.row.spaceId,
+      ).status([processId], AbortSignal.timeout(COMPUTER_MS));
       ports = status.processes.find((facts) => facts.id === processId)?.ports ?? [];
     } catch {
       throw refused('The computer did not answer, so the preview was not opened. Try again.');
@@ -520,6 +555,7 @@ export class SandboxPreviews {
       throw ended('The process or its computer changed.');
     return forwardPreview({
       address: live.address,
+      redact: (await this.sealed?.valuesOf(live.watched.row.spaceId)) ?? [],
       method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
       rest: below.slice(slash),
       search: url.search,
@@ -537,7 +573,7 @@ export class SandboxPreviews {
     let text: string | null = null;
     if (computer)
       try {
-        const answer = await this.computerFor(computer.provider, computer.handle).read(
+        const answer = await this.computerFor(computer.provider, computer.handle, row.spaceId).read(
           processId,
           -1,
           PREVIEW_LIMITS.output_bytes,
@@ -565,7 +601,7 @@ export class SandboxPreviews {
       return processStopped.parse({ process_id: processId, state: row.state });
     const after = await processes.end(
       row,
-      computer ? this.computerFor(computer.provider, computer.handle) : null,
+      computer ? this.computerFor(computer.provider, computer.handle, row.spaceId) : null,
       'stopped',
       'the person stopped it from the computer view',
       AbortSignal.timeout(PROCESS_LIMITS.stop_grace_ms + COMPUTER_MS),

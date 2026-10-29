@@ -17,11 +17,13 @@ import {
   questionAnswerRequest,
   questionSpec,
   type SubmissionReceipt,
+  sealedSecretAnswer,
   TERMINAL_STATES,
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
+import type { SpaceSecrets } from '../connectors/space-secrets.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
@@ -32,6 +34,7 @@ import {
   job,
   owner,
   question,
+  space,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -94,6 +97,23 @@ const chosenMarker = (questionId: string, option: OfferedChoice) => ({
   offered_by: 'agent',
 });
 
+/**
+ * What the conversation keeps of a secret the person gave: its name and that
+ * it was given, never the value. The marker beside it tells memory, the
+ * reviewer and the summary that these are not the person's words.
+ */
+export const sealedNotice = (name: string): string => `[provided a secret: ${name}]`;
+const sealedMarker = (questionId: string, name: string) => ({ question_id: questionId, name });
+
+/** The same notice as the agent reads it when its attempt resumes. */
+export function sealedForAgent(text: string, sealed: unknown): string {
+  const name =
+    typeof sealed === 'object' && sealed !== null ? (sealed as { name?: unknown }).name : undefined;
+  return typeof name === 'string' && text === sealedNotice(name)
+    ? `${name} is saved. Read it as $${name} in a terminal command, and list it in "secrets" on process.start; its value is never shown to you.`
+    : text;
+}
+
 /** The submission ID an answer is admitted under, so a resent answer wakes the job once. */
 export const answerKey = (questionId: string): string => `q:${questionId}`;
 
@@ -118,6 +138,7 @@ export function questionView(row: QuestionRow, jobTitle: string | null): OwnerQu
     text: [row.text, ...explanation].join('\n\n').slice(0, 4000),
     ...(row.options.length ? { options: row.options } : {}),
     ...(row.why ? { why: row.why } : {}),
+    ...(row.secret ? { secret: row.secret } : {}),
     because: handles.length > 0 ? handles : [`question:${row.id}`],
     if_ignored: row.ifIgnored,
     blocks_external_effect: row.blocksExternalEffect,
@@ -319,6 +340,7 @@ export async function persistQuestions(
       deadlineAt: asked.deadline_at ? new Date(asked.deadline_at) : null,
       options: asked.options ?? [],
       why: asked.why ?? null,
+      secret: asked.secret ?? null,
       // A deferred question keeps the moment it was first raised, so waiting counts.
       createdAt: new Date(asked.created_at),
     });
@@ -383,6 +405,10 @@ export class QuestionService {
   private readonly answers = new Map<string, string>();
   /** The option an answer in flight picked, by its submission ID. */
   private readonly offered = new Map<string, OfferedChoice>();
+  /** The secret an answer in flight gave, by its submission ID: its name alone. */
+  private readonly sealed = new Map<string, string>();
+  /** Where a secret the person gives is sealed; left out, such a question cannot be answered. */
+  secrets?: SpaceSecrets;
   /**
    * What answering a turn's unsettled-step question can do, where the broker
    * runs in this process. Left out, its answers are passed on as the person's words.
@@ -424,12 +450,15 @@ export class QuestionService {
       answered ? 'answered' : 'superseded_by_input',
     );
     const option = answered ? this.offered.get(receipt.submission_id) : undefined;
-    if (option)
+    const name = answered ? this.sealed.get(receipt.submission_id) : undefined;
+    const marker = {
+      ...(option ? { chosen: chosenMarker(open.id, option) } : {}),
+      ...(name ? { sealed: sealedMarker(open.id, name) } : {}),
+    };
+    if (option || name)
       await tx
         .update(event)
-        .set({
-          payload: sql`${event.payload} || ${JSON.stringify({ chosen: chosenMarker(open.id, option) })}::jsonb`,
-        })
+        .set({ payload: sql`${event.payload} || ${JSON.stringify(marker)}::jsonb` })
         .where(eq(event.dedupKey, `${row.id}:input:${row.stateVersion}`));
   }
 
@@ -793,6 +822,7 @@ export class QuestionService {
     option: OfferedChoice | undefined,
     speaker: string | null | undefined,
   ) {
+    const name = this.sealed.get(answerKey(questionId));
     await appendEvent(tx, {
       jobId: row.id,
       type: 'notice',
@@ -801,6 +831,7 @@ export class QuestionService {
         text,
         principal_id: speaker ?? row.principalId ?? null,
         ...(option ? { chosen: chosenMarker(questionId, option) } : {}),
+        ...(name ? { sealed: sealedMarker(questionId, name) } : {}),
       },
       dedupKey: `${questionId}:answer`,
     });
@@ -884,6 +915,105 @@ export class QuestionService {
   async answer(id: string, input: unknown, offered?: OfferedChoice): Promise<AnswerResult> {
     const value = questionAnswerRequest.parse(input);
     const first = await this.read(id);
+    // A secret never travels as words: only the sealed field answers it.
+    if (first.row.secret)
+      throw new ServiceError(
+        'secret_question',
+        'This question asks for a secret. Enter it in the sealed field so it is never written into the conversation.',
+        409,
+      );
+    return this.deliver(first, value, offered);
+  }
+
+  /**
+   * Answers a question that asked for a secret. The value is sealed in the
+   * space under the question's name, and the conversation gets only the
+   * notice that it was given, which wakes the job as any answer does. The
+   * value is in no message, event, question row or response.
+   */
+  async answerSecret(id: string, input: unknown): Promise<AnswerResult> {
+    const parsed = sealedSecretAnswer.safeParse(input);
+    // Said without the request: what failed to parse may be the secret itself.
+    if (!parsed.success)
+      throw new ServiceError(
+        'invalid_request',
+        'Send the secret as a value of 1 to 4096 characters.',
+        400,
+      );
+    const first = await this.read(id);
+    const asked = first.row.secret;
+    if (!asked)
+      throw new ServiceError('not_a_secret', 'This question did not ask for a secret.', 409);
+    const key = answerKey(id);
+    if (first.row.state === 'answered' && first.row.answerSubmissionId === key)
+      return { question: first.view, job: null, receipt: null, status: 200 };
+    if (first.row.state !== 'open' || !first.row.jobId)
+      throw new ServiceError('question_closed', 'This question is no longer open.', 409);
+    const holder = await this.jobs.get(first.row.jobId);
+    if (isTerminal(holder.state as JobState))
+      throw new ServiceError(
+        'question_closed',
+        'This responsibility has finished, so its question is no longer open.',
+        409,
+      );
+    if (['running', 'queued'].includes(holder.state))
+      throw new ServiceError(
+        'turn_in_progress',
+        'This is being worked on now. Answer once this step is over.',
+        409,
+      );
+    // However the question was raised, a secret is kept only where one person
+    // owns the space: in a shared one, all its jobs and members would hold it.
+    const [where] = await this.jobs.db
+      .select({ kind: space.kind })
+      .from(space)
+      .where(eq(space.id, holder.spaceId));
+    if (where?.kind !== 'personal')
+      throw new ServiceError(
+        'secret_not_kept_here',
+        'A secret can be given only in your own space, never in a room or a shared space.',
+        409,
+      );
+    if (!this.secrets)
+      throw new ServiceError(
+        'service_unavailable',
+        'Secrets cannot be kept on this installation.',
+        503,
+      );
+    try {
+      await this.secrets.save(
+        {
+          spaceId: holder.spaceId,
+          name: asked.name,
+          purpose: asked.purpose,
+          host: asked.host ?? null,
+          principalId: requestPrincipal() ?? holder.principalId ?? null,
+        },
+        parsed.data.value,
+      );
+    } catch {
+      // Never the error itself: what failed below may have held the value.
+      throw new ServiceError(
+        'secret_not_saved',
+        'The secret could not be kept. Check that this installation has its key set, then try again.',
+        503,
+      );
+    }
+    this.sealed.set(key, asked.name);
+    try {
+      return await this.deliver(first, { text: sealedNotice(asked.name) });
+    } finally {
+      this.sealed.delete(key);
+    }
+  }
+
+  /** An answer's words, delivered by whichever path the question's job is waiting on. */
+  private async deliver(
+    first: { row: QuestionRow; view: OwnerQuestion },
+    value: ReturnType<typeof questionAnswerRequest.parse>,
+    offered?: OfferedChoice,
+  ): Promise<AnswerResult> {
+    const id = first.row.id;
     if (first.row.source === 'memory') return this.settle(first, value);
     if (await this.isPrivacyQuestion(first.row)) return this.decidePrivacy(first, value.text);
     if (offered && isUnsettledQuestion(first.row.options)) {

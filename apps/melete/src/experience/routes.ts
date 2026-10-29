@@ -120,6 +120,8 @@ const SPACE_OWNER_SURFACES = new Set([
   'PUT /experience/connections/{id}/watching',
   'GET /rules',
   'DELETE /rules/{id}',
+  'GET /secrets',
+  'DELETE /secrets/{name}',
   'GET /web/settings',
   'PUT /web/settings',
   'GET /approval-settings',
@@ -423,6 +425,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       questions.answer(spaceId, c.req.param('id') ?? '', input),
     'POST /quick-answers/{id}/dismiss': (spaceId, c) =>
       questions.dismiss(spaceId, c.req.param('id') ?? ''),
+    'POST /quick-answers/{id}/secret': (spaceId, c, input) =>
+      questions.answerSecret(spaceId, c.req.param('id') ?? '', input),
+    'GET /secrets': (spaceId) => questions.secrets(spaceId),
+    'DELETE /secrets/{name}': (spaceId, c) =>
+      questions.forgetSecret(spaceId, c.req.param('name') ?? ''),
     'POST /memory/items': (spaceId, c, input) => {
       // Another assistant saving through the MCP endpoint is recorded as that assistant.
       const assistant = mcpActorOf(c.env);

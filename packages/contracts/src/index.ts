@@ -76,6 +76,7 @@ export * from './rooms.ts';
 export * from './runs.ts';
 export * from './runtime.ts';
 export * from './sandbox-computer.ts';
+export * from './sealed-secrets.ts';
 export * from './sign-ins.ts';
 export * from './signals.ts';
 export * from './situations.ts';

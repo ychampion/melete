@@ -122,11 +122,15 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
       (each) => each.connectionId === String(row.connection_id) && LIVE_STATES.includes(each.state),
     );
     if (!live.length) return;
-    const computer = processes.computer(provider, {
-      providerSandboxId: String(row.provider_sandbox_id),
-      imageDigest: (row.image_digest as string | null) ?? null,
-      region: (row.region as string | null) ?? null,
-    });
+    const computer = processes.computer(
+      provider,
+      {
+        providerSandboxId: String(row.provider_sandbox_id),
+        imageDigest: (row.image_digest as string | null) ?? null,
+        region: (row.region as string | null) ?? null,
+      },
+      String(row.space_id),
+    );
     for (const each of live)
       await processes.end(each, computer, 'stopped', END_REASONS.suspended, signal);
   };

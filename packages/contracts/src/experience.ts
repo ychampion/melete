@@ -38,6 +38,12 @@ import {
   runRecordResponse,
   runResponse,
 } from './runs.ts';
+import {
+  sealedSecretAnswer,
+  sealedSecretDeleted,
+  sealedSecretList,
+  sealedSecretName,
+} from './sealed-secrets.ts';
 import { startersResponse } from './starters.ts';
 
 const id = z.string().min(1).max(240);
@@ -184,6 +190,13 @@ export const experienceQuestion = z.strictObject({
    * false.
    */
   needs_answer: z.boolean().optional(),
+  /**
+   * Set when the answer is a secret: the card shows a password field, and the
+   * value goes to `POST /quick-answers/{id}/secret`, never into a message.
+   */
+  secret: z
+    .strictObject({ name: sealedSecretName, purpose: text, host: z.string().nullable() })
+    .optional(),
   /** When it was asked; the queue is oldest first. */
   created_at: date,
 });
@@ -1668,6 +1681,14 @@ export const experienceOperations = {
    * about something that may already have gone out.
    */
   'POST /quick-answers/{id}/dismiss': { response: experienceOk },
+  /**
+   * Answers a question that asked for a secret. The value is sealed in the
+   * space under the name the question gave and is never written as a message.
+   */
+  'POST /quick-answers/{id}/secret': { request: sealedSecretAnswer, response: experienceOk },
+  /** The space's sealed secrets by name and purpose; no route returns a value. */
+  'GET /secrets': { response: sealedSecretList },
+  'DELETE /secrets/{name}': { response: sealedSecretDeleted },
   'GET /agents': { response: agentList },
   'POST /agents': { request: agentInput, response: agentResponse },
   'GET /agents/templates': { response: agentTemplateList },

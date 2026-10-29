@@ -1064,6 +1064,13 @@
       "version": "7",
       "when": 1789232400131,
       "tag": "0151_earlier_chat_search",
+        "breakpoints": true
+      },
+      {
+      "idx": 152,
+      "version": "7",
+      "when": 1789232400132,
+      "tag": "0152_sealed_secrets",
       "breakpoints": true
     }
   ]

@@ -109,6 +109,7 @@ import {
   pickedForAgent,
   questionView,
   readDeferred,
+  sealedForAgent,
 } from './questions.ts';
 import { reminderHeld } from './reminder-hold.ts';
 import type { JobRow } from './service.ts';
@@ -537,10 +538,14 @@ export function assembleHistory(
 /** The person's words, then the files they sent with them, fenced as untrusted data. */
 const userContent = (
   text: string,
-  payload: { chosen?: unknown; attachments?: unknown },
+  payload: { chosen?: unknown; sealed?: unknown; attachments?: unknown },
   fileTexts: ReadonlyMap<string, string | null>,
 ): string =>
-  withFiles(pickedForAgent(text, payload.chosen), messageFiles(payload.attachments), fileTexts);
+  withFiles(
+    sealedForAgent(pickedForAgent(text, payload.chosen), payload.sealed),
+    messageFiles(payload.attachments),
+    fileTexts,
+  );
 
 /** What a tool result's message carries, from its stored payload. */
 const resultContent = (payload: unknown): { tool_call_id: string; content: string } => {

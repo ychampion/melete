@@ -358,7 +358,7 @@ function TurnView({
   /** Show the agent's computer, from the picture of it in the turn. */
   onOpenComputer?: () => void;
   /** An offered answer by its id, or `{ text }` for one in the person's words. */
-  onAnswer: (questionId: string, answer: string | { text: string }) => void;
+  onAnswer: (questionId: string, answer: string | { text: string } | { secret: string }) => void;
   onOwn: (text: string) => void;
   /** Effects from the broker's ledger that never confirmed; drawn on the newest turn only. */
   unknown?: LedgerAction[];
@@ -441,6 +441,7 @@ function TurnView({
             busy={busy(block.question.id)}
             active={latest && open?.id === block.question.id}
             onAnswer={(optionId) => onAnswer(block.question.id, optionId)}
+            onSecret={(value) => onAnswer(block.question.id, { secret: value })}
             // A question that takes free text is answered in it; one that does
             // not is answered by words that name one of its answers, and takes
             // any other words as the next message instead.
@@ -1159,14 +1160,19 @@ export function ChatScreen({ id }: { id: string | null }) {
     });
 
   const answer = useCallback(
-    (questionId: string, answer: string | { text: string }) =>
+    (questionId: string, answer: string | { text: string } | { secret: string }) =>
       void flight.run(questionId, async () => {
         const result = await adapter.answer(questionId, answer);
         if (result.data === null)
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer' });
         else
           setTranscript((previous) =>
-            markQuestion(previous, questionId, typeof answer === 'string' ? answer : answer.text),
+            markQuestion(
+              previous,
+              questionId,
+              // A secret is marked as saved; its value is never kept in the page.
+              typeof answer === 'string' ? answer : 'text' in answer ? answer.text : 'Saved',
+            ),
           );
       }),
     [flight, setTranscript],

@@ -33,6 +33,7 @@
  */
 import { createHash } from 'node:crypto';
 import { EXEC_LIMITS, execEnvRefusal } from '@melete/contracts';
+import { redactBytes, redactCutBytes } from './secret-redaction.ts';
 import {
   type ExecOutcome,
   type FileEntry,
@@ -270,6 +271,8 @@ export type CommandRequest = {
   dispatch: 'first' | 'again';
   /** Set on this command only; names outside `EXEC_ENV_NAMES` are refused before it is sent. */
   env?: Readonly<Record<string, string>>;
+  /** The sealed secrets of the space this command was given: their names are admitted in `env`. */
+  sealed?: readonly string[];
   /** Earlier actions whose outcomes are recorded: their markers are removed first. */
   forget?: readonly string[];
 };
@@ -308,6 +311,12 @@ export type RunOptions = {
   jobId: string;
   signal: AbortSignal;
   limits?: { maxOutputBytes?: number; maxCaptureBytes?: number; probeTimeoutMs?: number };
+  /**
+   * Secret values kept out of what is captured. Each becomes `[redacted]`
+   * before the output is hashed, previewed or stored, so the digest, the
+   * preview and the stored file all describe the same redacted bytes.
+   */
+  redact?: readonly string[];
 };
 
 const settings = (options: RunOptions) => ({
@@ -327,10 +336,16 @@ async function capture(
   const { maxOutputBytes, maxCaptureBytes } = settings(options);
   const out = regular(entries, 'out');
   const listed = out?.size ?? 0;
-  const captured =
+  const read =
     listed > 0
       ? await options.provider.getFile(options.handle, `${directory}/out`, maxCaptureBytes, signal)
       : EMPTY;
+  // Output cut off at the capture limit loses the start of a value it cut in two.
+  const captured = !options.redact?.length
+    ? read
+    : listed > read.byteLength
+      ? redactCutBytes(read, options.redact)
+      : redactBytes(read, options.redact);
   const outputDigest = digest(captured);
   const truncated = captured.byteLength > maxOutputBytes;
   let outputPath: string | null = null;
@@ -424,7 +439,7 @@ export async function runCommand(options: RunOptions): Promise<CommandResult> {
   if (request.dispatch === 'again')
     return fromMarker(options, 'this action was dispatched before', 'unknown');
   const env = request.env ?? {};
-  const refused = execEnvRefusal(env);
+  const refused = execEnvRefusal(env, request.sealed);
   if (refused) return { outcome: 'failed', retryable: false, reason: refused };
   let outcome: ExecOutcome;
   try {

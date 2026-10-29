@@ -179,7 +179,7 @@ completed`, `a finished send, a closing offer or a plain question completes in
 one run`).
 
 The agent asks the person something with `ask_person(question, choices?,
-why?)`, a broker tool served beside `job.wait`. The broker records the question
+why?, secret?)`, a broker tool served beside `job.wait`. The broker records the question
 against the attempt (one per attempt, none while the job already has an open
 question, none beside a wait) and tells the model to end its turn. When the
 attempt settles, the service turns a completion into `waiting_for_input` and
@@ -189,6 +189,31 @@ message and fires a run of its own. A job that ends, and a conversation that is
 stopped, withdraws its open question. The instructions say to ask only on real
 ambiguity or a choice that is the person's to make, and never to ask permission
 this way: approvals stay in the broker.
+
+With `secret: {name, purpose, host?}` the question asks for an API key, a
+password or a one-time code. The card shows a password field, and the value
+goes to its own route (`POST /questions/{id}/secret`, or
+`POST /quick-answers/{id}/secret`), never into a message: it is sealed in the
+space's `secret` store under the name (`space_secret` holds the name, purpose
+and host), the conversation records only `[provided a secret: NAME]` with a
+`sealed` marker that keeps it out of memory, and the resumed attempt reads that
+NAME is saved. A `terminal.run` or `process.start` that names it in `secrets`
+(or, from the agent's terminal, refers to it as `$NAME`, sent as
+`secret_refs`) gets it as an environment variable for that command alone. Every
+value the space keeps for commands is redacted from captured output, previews,
+stored output and receipts, from a background process's output, last line
+and wake lines, and from the pages, headers and output a process preview
+shows, and the receipt lists `secrets_used` by name. A file a command writes
+into `/work` is copied back as written, without redaction. Output printed
+before a secret was deleted or replaced is redacted only for the values kept
+now, so it can still show the old value. Cursors a process read or wait
+reports after a `[redacted]` mark are approximate, since the mark is not as
+long as the value. A
+name the space has not sealed is refused before the command runs. Settings list
+and delete secrets by name (`GET /secrets`, `DELETE /secrets/{name}`); no route
+returns a value. A secret saved with `host` is never put in a command's
+environment; adding it at the egress relay for that host is not built yet, so a
+command that names one is refused.
 
 The attempt input renders the job's constraints as one short line each and
 writes no default down: a declared deliverable says what done means, a domain

@@ -1121,6 +1121,7 @@ export function Questionnaire({
   placeholder = 'Type your own',
   onAnswer,
   onOwn,
+  onSecret,
 }: {
   question: Question;
   answered: string | null;
@@ -1134,8 +1135,11 @@ export function Questionnaire({
   active: boolean;
   onAnswer: (optionId: string) => void;
   onOwn: (text: string) => void;
+  /** A question that asks for a secret: the value from its password field, sent apart from any message. */
+  onSecret?: (value: string) => void;
 }) {
   const [own, setOwn] = useState('');
+  const [secret, setSecret] = useState('');
   const options = question.options.slice(0, 4);
   // The number keys answer only while this card has focus.
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -1165,7 +1169,7 @@ export function Questionnaire({
         </span>
         {!answered ? (
           <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-            Press 1–{options.length + (ownRow ? 1 : 0)}
+            {question.secret ? 'Kept sealed' : `Press 1–${options.length + (ownRow ? 1 : 0)}`}
           </span>
         ) : answered === 'withdrawn' ? (
           <Status tone="kind">Withdrawn</Status>
@@ -1215,7 +1219,33 @@ export function Questionnaire({
           </button>
         );
       })}
-      {!answered && ownRow ? (
+      {question.secret && !answered && onSecret ? (
+        <form
+          className="question-own"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!secret || busy) return;
+            onSecret(secret);
+            setSecret('');
+          }}
+        >
+          <Icon name="lock" size={14} />
+          <input
+            id={`own-${question.id}`}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={secret}
+            onChange={(event) => setSecret(event.target.value)}
+            placeholder={`${question.secret.name}: ${question.secret.purpose}`}
+            aria-label={`Secret ${question.secret.name}, kept sealed and never shown in the chat`}
+          />
+          <button type="submit" className="btn btn-sm btn-primary" disabled={!secret || busy}>
+            Save
+          </button>
+        </form>
+      ) : null}
+      {!answered && ownRow && !question.secret ? (
         <form
           className="question-own"
           onSubmit={(event) => {

@@ -274,6 +274,35 @@ export const secret = pgTable('secret', {
 });
 
 /**
+ * A secret a person gave the agent for its work in one space, by name: an API
+ * key, a site password, a one-time code. The value is a sealed `secret`
+ * (`secret_ref`); this row holds only what a list shows. A command that names
+ * it gets it for that command alone, and with `host` set only the egress relay
+ * may send it, to that host.
+ */
+export const spaceSecret = pgTable(
+  'space_secret',
+  {
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    /** Environment-variable style: `API_KEY`. */
+    name: text('name').notNull(),
+    purpose: text('purpose').notNull(),
+    host: text('host'),
+    secretRef: text('secret_ref').notNull(),
+    /** Who typed it in. */
+    principalId: text('principal_id'),
+    createdAt: created(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.spaceId, t.name] }),
+    check('space_secret_name', sql`${t.name} ~ '^[A-Z][A-Z0-9_]{0,63}$'`),
+  ],
+);
+
+/**
  * A model provider the owner signed in to, one row per provider for the whole
  * installation. The tokens are one sealed box bound to the provider name and
  * the row's generation. The generation moves on every rotation, so a refresh
@@ -1246,6 +1275,8 @@ export const question = pgTable(
     options: jsonb('options').$type<Array<{ id: string; label: string }>>().notNull().default([]),
     answerSubmissionId: text('answer_submission_id'),
     answeredAt: timestamp('answered_at', { withTimezone: true }),
+    /** Set when the answer is a secret: its name, what it is for and the one host it is for. */
+    secret: jsonb('secret').$type<{ name: string; purpose: string; host?: string }>(),
     createdAt: created(),
   },
   (t) => [
@@ -1666,6 +1697,7 @@ export const schema = {
   spaceMembership,
   space,
   secret,
+  spaceSecret,
   savedSignIn,
   savedSignInUse,
   connection,

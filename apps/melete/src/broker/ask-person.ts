@@ -6,12 +6,20 @@
  * settles the service puts it in the person's queue and the job waits for
  * input. The answer comes back as the person's next message. Approvals never
  * travel this way; a tool that needs one is proposed and the broker asks.
+ *
+ * A question can ask for a secret instead: an API key, a password, a one-time
+ * code. The person types it into a sealed field, it is kept sealed in their
+ * space under the name the agent gave, and the agent only ever hears that it
+ * is saved. A later command names it to use it.
  */
 import {
   type CapabilityClaims,
   canonicalizePayload,
   type QuestionSpec,
   questionSpec,
+  SEALED_SECRET_NAME_PATTERN,
+  sealedSecretNameRefusal,
+  sealedSecretRequest,
   type ToolSpec,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
@@ -50,6 +58,27 @@ export const ASK_PERSON_TOOL: ToolSpec = {
         maxLength: 300,
         description: 'One short sentence on why the answer matters.',
       },
+      secret: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name', 'purpose'],
+        description:
+          'Ask for an API key, a password or a one-time code this way, never in plain words. The person types it into a sealed field; you never see it. Once it is saved, read it as $NAME in a terminal command, and list its name in `secrets` on process.start.',
+        properties: {
+          name: {
+            type: 'string',
+            pattern: SEALED_SECRET_NAME_PATTERN.source,
+            description: 'An environment variable name for it, such as WEATHER_API_KEY.',
+          },
+          purpose: { type: 'string', minLength: 1, maxLength: 200 },
+          host: {
+            type: 'string',
+            maxLength: 253,
+            description:
+              'Only for a value that must only ever be sent to this one host; it is then never put in a command.',
+          },
+        },
+      },
     },
     required: ['question'],
     additionalProperties: false,
@@ -60,6 +89,7 @@ const askInput = z.strictObject({
   question: z.string().trim().min(1).max(500),
   choices: z.array(z.string().trim().min(1).max(120)).max(MAX_CHOICES).optional(),
   why: z.string().trim().max(300).optional(),
+  secret: sealedSecretRequest.optional(),
 });
 
 /** The same question with its choices in one place; a resent call matches it. */
@@ -73,20 +103,41 @@ function specOf(input: z.infer<typeof askInput>, attemptId: string): QuestionSpe
       ? { options: labels.map((label, index) => ({ id: `choice_${index + 1}`, label })) }
       : {}),
     ...(input.why ? { why: input.why } : {}),
+    ...(input.secret ? { secret: input.secret } : {}),
   });
 }
 
 export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, input: unknown) {
   const parsed = askInput.safeParse(input);
-  if (!parsed.success)
+  if (!parsed.success) {
+    const name = (input as { secret?: { name?: unknown } } | null)?.secret?.name;
     throw new BrokerFault(
       'payload_invalid',
-      'ask_person needs a question, up to four choices of at most 120 characters, and an optional short why.',
+      typeof name === 'string' && sealedSecretNameRefusal(name)
+        ? `ask_person's secret: ${sealedSecretNameRefusal(name)}.`
+        : 'ask_person needs a question, up to four choices of at most 120 characters, an optional short why, and for a secret a name such as API_KEY with what it is for.',
+    );
+  }
+  if (parsed.data.secret && parsed.data.choices?.length)
+    throw new BrokerFault(
+      'payload_invalid',
+      'A question that asks for a secret takes no choices: the person types it into a sealed field.',
     );
   const spec = specOf(parsed.data, claims.attempt_id);
   return sql.begin(async (tx) => {
     const job = await lockJob(tx, claims.job_id);
     await checkAttempt(tx, job, claims);
+    // A secret is kept for the whole space it is given in, so a room's or any
+    // other shared space's jobs would all hold it, and its other members could
+    // replace it. It is asked for only where the person is the space's one owner.
+    if (spec.secret) {
+      const [where] = await tx`select kind from space where id = ${job.space_id}`;
+      if (where?.kind !== 'personal')
+        throw new BrokerFault(
+          'payload_invalid',
+          'A secret can be asked for only in the person’s own space, never in a room or a shared space, where everyone there could use it. Ask them to give it in a chat in their own space and do this work from there; work here cannot use it.',
+        );
+    }
     const [open] =
       await tx`SELECT text FROM question WHERE job_id=${job.id} AND state='open' LIMIT 1`;
     if (open)
@@ -123,8 +174,9 @@ export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, 
       status: 'waiting_for_input',
       question: spec.text,
       ...(spec.options ? { choices: spec.options.map((option) => option.label) } : {}),
-      instruction:
-        job.audience === 'room'
+      instruction: spec.secret
+        ? `The question is on the person’s screen with a sealed field. End this turn now. You will hear when ${spec.secret.name} is saved; you never see its value.`
+        : job.audience === 'room'
           ? 'The question is on the room’s board for the person who asked, where only they and the owners read it. Say in one short line that you asked them there, without repeating it, then end this turn; their answer comes back as their next message.'
           : 'The question is on the person’s screen. End this turn now and do not answer it yourself; their answer comes back as their next message.',
     };

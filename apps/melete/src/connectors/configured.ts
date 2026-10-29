@@ -105,6 +105,7 @@ import { SignInVault } from './sign-in-vault.ts';
 import { type AccountClient, SignInEnded, signedInAccess } from './signed-in.ts';
 import { createSkillsConnector } from './skills.ts';
 import { SmsConnector } from './sms.ts';
+import { SpaceSecrets } from './space-secrets.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createTranscriptionConnector } from './transcribe.ts';
 import { createCapabilityConnector } from './tts.ts';
@@ -460,6 +461,8 @@ export class ConnectorFactory {
       new PostgresSecretRepository(options.sql),
       () => options.masterKey,
     );
+    // What a background process prints is read with the space's sealed secrets kept out.
+    options.sandbox?.processes?.useSecrets(new SpaceSecrets(options.sql, this.secrets));
     this.overrides = new Map((options.connections ?? []).map((entry) => [entry.id, entry]));
     if (this.overrides.size !== (options.connections ?? []).length)
       throw new Error('Duplicate configured connection id');
@@ -701,6 +704,7 @@ export class ConnectorFactory {
         maxConcurrent: sandbox.maxConcurrent,
         maxPerConnection: sandbox.maxPerConnection,
         ...(sandbox.processes ? { processes: sandbox.processes } : {}),
+        secrets: new SpaceSecrets(options.sql, this.secrets),
         close: opened.close,
       });
       // A sandbox runs whatever it is asked to, so it is never offered to a public compartment.
