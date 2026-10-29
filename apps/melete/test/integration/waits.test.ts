@@ -774,6 +774,9 @@ withDb('durable waits, triggers and approval inputs', () => {
           kind: 'test.send',
           status: decision,
           payload: { to: 'reader@example.test', subject: 'Result', body: proposal.actionId },
+          // The owner has no chosen name, so the room label's placeholder and handle.
+          decided_by_name: expect.stringMatching(/^Someone <[^>]+>$/),
+          summary: 'the test.send step "Result"',
         },
       ]);
       expect(
