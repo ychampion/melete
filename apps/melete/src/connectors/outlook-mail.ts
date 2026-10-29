@@ -5,7 +5,6 @@
  * composed exactly as it is for SMTP and handed to Graph as MIME. Messages are
  * addressed by Graph's own id.
  */
-import { simpleParser } from 'mailparser';
 import { sourceError } from '../signals/types.ts';
 import { graphSearches, parseMailQuery } from './mail-query.ts';
 import {
@@ -13,12 +12,15 @@ import {
   headerBlock,
   headerMessage,
   MAX_HEADER_BYTES,
+  MAX_MAIL_MESSAGE_BYTES,
+  MAX_MESSAGE_BYTES,
   type MailFolder,
   type MailMessage,
   type MailTransport,
   type OutgoingMail,
+  parseMailMessage,
   RESYNC_DAYS,
-  toMailMessage,
+  withoutMailAttachmentBytes,
 } from './mail-transport.ts';
 import {
   bearerRequest,
@@ -28,7 +30,6 @@ import {
   type SignedInAccess,
 } from './signed-in.ts';
 
-const MAX_MESSAGE_BYTES = 256 * 1024;
 const MAX_LIST_RESPONSE_BYTES = 256 * 1024;
 /** Graph ids are URL-safe base64; anything else is refused before a request. */
 export const GRAPH_MESSAGE_ID = /^[A-Za-z0-9=_-]{1,512}$/;
@@ -85,7 +86,7 @@ export class OutlookMailTransport implements MailTransport {
     return Array.isArray(answer?.value) ? (answer.value as Record<string, unknown>[]) : [];
   }
 
-  private async message(id: string): Promise<MailMessage | null> {
+  private async message(id: string, limit: number): Promise<MailMessage | null> {
     if (!GRAPH_MESSAGE_ID.test(id)) return null;
     const response = await this.request(`/messages/${encodeURIComponent(id)}/$value`);
     if (response.status === 404) {
@@ -98,13 +99,13 @@ export class OutlookMailTransport implements MailTransport {
     }
     let source: Buffer;
     try {
-      source = await boundedBytes(response, MAX_MESSAGE_BYTES);
+      source = await boundedBytes(response, limit);
     } catch (error) {
       // A message too large to filter safely is left out, as it is over IMAP.
       if (error instanceof ResponseTooLarge) return null;
       throw error;
     }
-    return toMailMessage(id, await simpleParser(source, { skipImageLinks: true }));
+    return parseMailMessage(id, source);
   }
 
   async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {
@@ -131,14 +132,15 @@ export class OutlookMailTransport implements MailTransport {
       .map(([id]) => id);
     const messages: MailMessage[] = [];
     for (const id of newest) {
-      const message = await this.message(id);
-      if (message) messages.push(message);
+      // A search reads only messages within the body bound; a larger one is opened by email.read.
+      const message = await this.message(id, MAX_MESSAGE_BYTES);
+      if (message) messages.push(withoutMailAttachmentBytes(message));
     }
     return messages;
   }
 
   async read(key: number | string): Promise<MailMessage | null> {
-    return typeof key === 'string' ? this.message(key) : null;
+    return typeof key === 'string' ? this.message(key, MAX_MAIL_MESSAGE_BYTES) : null;
   }
 
   /**

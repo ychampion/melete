@@ -1092,10 +1092,23 @@ const ENGINE_NOTICES: { starts: string[]; say: string }[] = [
       'The model started repeating itself, so its reply was stopped before it ran on. ' +
       `Send your message again, or ${MODELS_HINT}.`,
   },
+  {
+    // After its retries the engine quotes the model's reasoning as the reply.
+    // Reasoning is kept out of answers, so only the notice is said.
+    starts: ['⚠️ The model produced only internal reasoning and no final answer'],
+    say:
+      "The model finished thinking but didn't write an answer. " +
+      `Send your message again, or ${MODELS_HINT}.`,
+  },
 ];
+
+/** The engine's whole reply when a model returned nothing at all, even after retries. */
+const ENGINE_EMPTY = '(empty)';
 
 /** An answer as the person should read it, with the engine's limit notices put in Melete's terms. */
 export function plainEngineNotice(output: string): string {
+  if (output === ENGINE_EMPTY)
+    return `The model didn't write an answer. Send your message again, or ${MODELS_HINT}.`;
   const notice = ENGINE_NOTICES.find((entry) =>
     entry.starts.some((start) => output.startsWith(start)),
   );
