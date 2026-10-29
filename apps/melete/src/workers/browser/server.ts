@@ -17,6 +17,8 @@ const leaseRequest = z.strictObject({
 });
 const jobRequest = z.strictObject({ job_id: z.string().min(1).max(100) });
 const sessionRequest = z.strictObject({ session_id: z.string().min(1) });
+const takeoverRequest = sessionRequest.extend({ teach: z.boolean().optional() });
+const handbackRequest = sessionRequest.extend({ discard: z.boolean().optional() });
 const forgetRequest = z.strictObject({ domain: z.string().min(1).max(255) });
 
 /** This listener is only a broker transport; the owner's authenticated routes live in the service. */
@@ -53,14 +55,18 @@ export async function startBrowserServer(options: {
       if (path === '/holder') return Response.json({ holder: await options.sessions.holder() });
       if (path === '/end')
         return Response.json(await options.sessions.end(jobRequest.parse(body).job_id));
-      if (path === '/takeover')
+      if (path === '/takeover') {
+        const input = takeoverRequest.parse(body);
         return Response.json(
-          await options.sessions.takeover(sessionRequest.parse(body).session_id),
+          await options.sessions.takeover(input.session_id, { teach: input.teach === true }),
         );
-      if (path === '/handback')
+      }
+      if (path === '/handback') {
+        const input = handbackRequest.parse(body);
         return Response.json(
-          await options.sessions.handback(sessionRequest.parse(body).session_id),
+          await options.sessions.handback(input.session_id, { discard: input.discard === true }),
         );
+      }
       if (path === '/profile/forget')
         return Response.json(await options.sessions.forgetSite(forgetRequest.parse(body).domain));
       if (path === '/release') {

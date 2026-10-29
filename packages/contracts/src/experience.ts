@@ -1481,6 +1481,8 @@ export type ComputerCommand = z.infer<typeof computerCommand>;
 export const computerBrowser = z.strictObject({
   session_id: id,
   control: z.enum(['agent', 'you']),
+  /** The person holds it and is showing the agent how: their steps are being recorded. */
+  teaching: z.boolean().optional(),
   /** Scheme, host and path only. */
   url: z.string().max(2048).nullable(),
   title: z.string().max(200).nullable(),

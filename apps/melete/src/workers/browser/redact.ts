@@ -120,6 +120,33 @@ export function handbackLabel(label: string): string {
     .replace(WORD, (word) => (mixedToken(word) ? REDACTED : word));
 }
 
+/** An email address, wherever it sits in a name. */
+export const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+/** Six digits or more, spaced or hyphenated as an account, phone or identity number is. */
+const SPACED_NUMBER = /(?<![\w.,])\d(?:[ -]?\d){5,}(?!\w|[.,]\d)/g;
+/** A date or a span of years, which a person picks by name: `2026-10-01`, `2025-2026`. */
+const PICKED_DATE = /^(?:19|20)\d{2}(?:-(?:19|20)\d{2}|-\d{2}-\d{2})$/;
+/** The digits a site leaves of a number it masks: `****4821`, `•••• 4821`, `ending in 4821`. */
+const MASKED_NUMBER = /(?:[*•·xX#]{2,} ?|\b(?:ending|ends)(?: in| with)?:? ?)\d{2,}/gi;
+
+/**
+ * A control's name or a page title in steps a person showed (`teach.ts`). The same filter as
+ * `handbackLabel` but for short digit runs, which there name a year or a day the person picked
+ * ("October 2026") far more often than a code. Six digits or more still go however they are
+ * spaced, as do email addresses and what is left of a masked number.
+ */
+export function teachingLabel(label: string): string {
+  return patterns(label.replace(EMAIL, REDACTED))
+    .replace(
+      LETTER_CODE,
+      (_, lead: string, rest: string) =>
+        `${lead}${REDACTED}${rest.replace(/[A-Z]{5,}/g, REDACTED)}`,
+    )
+    .replace(WORD, (word) => (mixedToken(word) ? REDACTED : word))
+    .replace(MASKED_NUMBER, REDACTED)
+    .replace(SPACED_NUMBER, (run) => (PICKED_DATE.test(run) ? run : REDACTED));
+}
+
 /**
  * Where a handed-back page is, as the agent may see it: scheme, host and a path whose segments
  * went through the same filter as a control's name, with no query, fragment or credentials. A

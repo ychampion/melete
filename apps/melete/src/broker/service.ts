@@ -1150,9 +1150,11 @@ export class BrokerService implements BrokerOperations {
     const handsOff = tool.name === 'room.handoff' && provider === 'room';
     // A room's board stays inside the room, and its people can change anything on it back.
     const keepsBoard = tool.name.startsWith('board.') && provider === 'board';
-    // The connector itself says the person decides this one, whatever the settings.
-    const connectorAsks =
-      this.options.connectors.get(action.connection_id)?.asksFirst?.(action) === true;
+    // The connector itself says the person decides this one, whatever the settings, and for
+    // some actions that no grant answers for them either.
+    const connector = this.options.connectors.get(action.connection_id);
+    const personOnly = connector?.asksEveryTime?.(action) === true;
+    const connectorAsks = personOnly || connector?.asksFirst?.(action) === true;
     // Kept in the person's own space, where they can delete it: the tool's
     // own question about reaching outside does not apply to this one. A room's
     // space is everyone's in it, so a new file there goes by the room's rule.
@@ -1238,6 +1240,7 @@ export class BrokerService implements BrokerOperations {
       !money &&
       !dont &&
       !roomWork &&
+      !personOnly &&
       warnings.length > 0 &&
       this.options.resolveScopedGrant
         ? await this.options.resolveScopedGrant(tx, input)
@@ -1248,6 +1251,7 @@ export class BrokerService implements BrokerOperations {
         !money &&
         !dont &&
         !roomWork &&
+        !personOnly &&
         warnings.length === 0 &&
         this.options.resolveStandingGrant !== undefined &&
         (await this.options.resolveStandingGrant(tx, input)));
@@ -2393,6 +2397,7 @@ export class BrokerService implements BrokerOperations {
           constraints: jobConstraints.parse(job.constraints),
           ahead,
           granted,
+          attempt_id: claims.attempt_id,
         };
         if (connector.prepare) {
           canonical = canonicalizePayload(

@@ -7,6 +7,10 @@ export const browserControlResponse = z
     control_epoch: z.number().int().nonnegative(),
     control: z.enum(['automation', 'human']),
     fresh_observation_required: z.literal(true),
+    /** Set when this takeover also records the person's steps, to teach the agent by showing. */
+    teaching: z.boolean().optional(),
+    /** At a handback that ended a teaching takeover: how many steps reached the conversation. */
+    shown_steps: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'BrowserControlResponse' });
 

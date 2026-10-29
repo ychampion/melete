@@ -295,6 +295,13 @@
 .computer-foot[data-control="you"] .computer-dot {
   background: var(--primary);
 }
+/* Showing the agent how: the person's steps are being recorded until Done or Discard. */
+.computer-foot[data-teaching="yes"] {
+  flex-wrap: wrap;
+}
+.computer-foot[data-teaching="yes"] .computer-dot {
+  background: var(--danger);
+}
 
 /* The desktop's own control bar sits inside its window, under the live view. */
 .computer-window .computer-foot {

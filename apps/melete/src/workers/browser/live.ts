@@ -23,6 +23,7 @@ import {
   type BrowserSession,
   type BrowserSessions,
 } from './sessions.ts';
+import { cdpTeachProbe, TeachRecorder } from './teach.ts';
 
 /** What the live channel needs from the controller that owns the lease. */
 export type LiveHost = {
@@ -72,6 +73,8 @@ type Channel = {
   release: () => void;
   timer?: ReturnType<typeof setTimeout>;
   waiters: Set<() => void>;
+  /** Present when the person chose to teach with this takeover: their steps, nothing else. */
+  teach?: TeachRecorder;
 };
 
 const BUTTON_NAMES = ['left', 'middle', 'right'] as const;
@@ -195,6 +198,11 @@ export class BrowserLive {
       release,
       waiters: new Set(),
     };
+    const log = sessions.teaching(sessionId, epoch);
+    if (log)
+      channel.teach = new TeachRecorder(log, () =>
+        channel.screen ? cdpTeachProbe(channel.screen.cdp, channel.screen.page) : undefined,
+      );
     this.channel = channel;
     void guard
       .run(
@@ -207,6 +215,7 @@ export class BrowserLive {
           budget: takeover.network,
           redirectHops: this.limits.redirect_hops,
           notice: (code, host) => this.notice(channel, code, host),
+          downloaded: (file, type) => channel.teach?.downloaded(file, type),
         },
       )
       .catch(() => this.end(channel, 'closed'));
@@ -270,8 +279,20 @@ export class BrowserLive {
         if (channel.ended || !screen) throw new BrowserFault('live_closed');
         if (liveAction(event)) channel.scope.acted();
         try {
-          await this.host.sessions.dispatchHumanInput(channel.sessionId, channel.epoch, () =>
-            this.dispatch(channel, screen.cdp, event),
+          // Inside the epoch check: a step is taken only from input the person may still give.
+          await this.host.sessions.dispatchHumanInput(
+            channel.sessionId,
+            channel.epoch,
+            async () => {
+              if (channel.teach) {
+                await channel.teach.before(event);
+                // The look at the page takes a moment, in which the person may have handed back:
+                // their input is fenced again so it never lands in automation's epoch.
+                this.host.sessions.checkHumanControl(channel.sessionId, channel.epoch);
+                if (channel.ended) throw new BrowserFault('live_closed');
+              }
+              await this.dispatch(channel, screen.cdp, event);
+            },
           );
         } catch (error) {
           if (error instanceof BrowserFault) await this.end(channel, endCode(error));
@@ -448,6 +469,7 @@ export class BrowserLive {
       .then((title) => {
         if (channel.ended || channel.screen?.page !== page) return;
         const host = hostOf(url);
+        channel.teach?.navigated(url, title);
         this.push(channel, {
           type: 'where',
           url,
