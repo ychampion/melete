@@ -6,7 +6,7 @@
  * model reads none, the ask says so plainly instead of leaving the model to
  * guess. The room's request is offered Melete's built-in skills.
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -289,7 +289,14 @@ withDb('photos in a room', () => {
     expect(
       (await send(bob.cookie, `/rooms/${roomId}/attachments/${photo.id}`, 'DELETE')).status,
     ).toBe(409);
-    expect((await startThread(bob, roomId, 'Again', [photo.id])).status).toBe(409);
+    const repeated = await startThread(bob, roomId, 'Again', [photo.id]);
+    expect(repeated.status).toBe(409);
+    expect(await repeated.json()).toMatchObject({
+      error: {
+        code: 'attachment_sent',
+        message: 'This file is already posted. Remove it from this message or attach a new copy.',
+      },
+    });
     // Someone removed stops reading it at once.
     await ok(send(alice.cookie, `/rooms/${roomId}/members/${bob.id}`, 'DELETE'));
     expect((await content(bob, roomId, photo.id)).status).toBe(404);
@@ -779,6 +786,32 @@ withDb('photos in a room', () => {
     const [noted] = await sql`select count(*)::int as n from activity_record
       where space_id = ${roomId} and kind = 'space.original_opened'`;
     expect(noted?.n).toBe(0);
+  }, 60_000);
+
+  test('different people and files in the same five-minute block each keep their own activity note', async () => {
+    const roomId = await makeRoom([bob, carol]);
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: true }));
+    const first = await upload(bob, roomId);
+    const second = await upload(bob, roomId);
+    await ok(startThread(bob, roomId, 'The two files', [first.id, second.id]), 201);
+    const at = Date.now();
+    const now = spyOn(Date, 'now').mockReturnValue(at);
+    try {
+      const original = (person: Person, id: string) =>
+        send(person.cookie, `/rooms/${roomId}/attachments/${id}/original`, 'POST');
+      expect((await original(carol, first.id)).status).toBe(200);
+      expect((await original(carol, first.id)).status).toBe(200);
+      expect((await original(alice, first.id)).status).toBe(200);
+      expect((await original(carol, second.id)).status).toBe(200);
+      const rows = await database().sql`select principal_id, destination from activity_record
+        where space_id = ${roomId} and kind = 'space.original_opened'`;
+      expect(rows).toHaveLength(3);
+      expect(rows.filter((row) => row.principal_id === carol.id)).toHaveLength(2);
+      expect(rows.filter((row) => row.principal_id === alice.id)).toHaveLength(1);
+      expect(rows.every((row) => row.destination === 'A picture')).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
   }, 60_000);
 
   test('in a room that shows only what needs you, a guest opens an original until their time is up, and opening again is one note', async () => {

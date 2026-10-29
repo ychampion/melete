@@ -2499,6 +2499,49 @@ export class RunService {
     return row;
   }
 
+  /**
+   * A run the person may wake, pause or stop: one of their own in this space,
+   * or, where rooms are on, the room's own work in the room they are in. A
+   * room's run belongs to the room, so only its owners control it, as only
+   * they stop any of its requests; anyone else in the room is told so, and
+   * someone outside it finds nothing. `rooms` is the multiplayer switch.
+   */
+  async requireControl(
+    spaceId: string,
+    id: string,
+    actor: string | undefined,
+    rooms: boolean,
+  ): Promise<JobRow> {
+    const [own] = await this.db
+      .select()
+      .from(job)
+      .where(and(eq(job.id, id), eq(job.spaceId, spaceId), eq(job.kind, 'run'), ownJob()));
+    if (own) return own;
+    if (!rooms || !actor) throw missing();
+    // The room's own principal holds it, in the room's space, as its agent.
+    const [row] = await this.db
+      .select()
+      .from(job)
+      .where(
+        and(
+          eq(job.id, id),
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'run'),
+          sql`exists (select 1 from space s
+            join space_membership m on m.space_id = s.id and m.principal_id = ${job.principalId}
+              and m.role = 'agent' and m.revoked_at is null
+            join principal p on p.id = m.principal_id and p.kind = 'room'
+            where s.id = ${job.spaceId} and s.kind = 'shared' and s.removed_at is null)`,
+        ),
+      );
+    if (!row) throw missing();
+    const access = await spaceAuthority(this.db, spaceId, actor).catch(() => null);
+    if (!access || access.role === 'agent') throw missing();
+    if (access.role !== 'owner')
+      throw new ServiceError('scope_denied', 'Only an owner of this room can do that.', 403);
+    return row;
+  }
+
   async view(row: JobRow): Promise<RunView> {
     const [view] = await this.views([row]);
     if (!view) throw missing();
