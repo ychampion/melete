@@ -310,6 +310,116 @@ describe('placeholders split anywhere come back whole', () => {
   });
 });
 
+describe('placeholders a model wrote without their brackets', () => {
+  // ACCOUNT_1, EMAIL_1 and NAME_1 are this vault's; PHONE_1 and ACCOUNT_9 belong to no one here.
+  const bare = (placeholder: string) => placeholder.slice(1, -1);
+  const text = `Paying ${bare(ACCOUNT)} now; ACCOUNT_10, XACCOUNT_1, ACCOUNT_1x, account_1, PHONE_1 and ACCOUNT_9 stay (${bare(NAME)}). Mail ${bare(EMAIL)}`;
+  const wanted = `Paying 000123456789 now; ACCOUNT_10, XACCOUNT_1, ACCOUNT_1x, account_1, PHONE_1 and ACCOUNT_9 stay (Ann "Nan" O'Neil \\ Jr). Mail sam.rivera@example.org`;
+  const args = JSON.stringify({ to: bare(ACCOUNT), memo: `for ${bare(NAME)}`, ref: 'ACCOUNT_10' });
+
+  for (const protocol of ['chat/completions', 'responses', 'messages'] as const)
+    test(`${protocol}: exact tokens of this conversation come back, cut anywhere`, () => {
+      for (let seed = 1; seed <= 300; seed++) {
+        const next = random(seed);
+        const source = stream(protocol, text, args, next);
+        const rehydrator = new Rehydrator(vault, protocol);
+        let output = '';
+        for (const chunk of pieces(source, next)) output += rehydrator.push(chunk);
+        output += rehydrator.end();
+        const result = read(protocol, output);
+        expect([seed, result.text]).toEqual([seed, wanted]);
+        expect([seed, JSON.parse(result.args)]).toEqual([
+          seed,
+          { to: '000123456789', memo: 'for Ann "Nan" O\'Neil \\ Jr', ref: 'ACCOUNT_10' },
+        ]);
+      }
+    });
+
+  test('random text cut at random reads the same as the whole text at once', () => {
+    const next = random(99);
+    const parts = [
+      bare(ACCOUNT),
+      'ACCOUNT_10',
+      bare(EMAIL),
+      'XACCOUNT_1',
+      'ACC',
+      'ACCOUNT_',
+      'account_1',
+      ACCOUNT,
+      '⟦ACC',
+      'PHONE_1',
+      ' ',
+      '.',
+      'x',
+      'A',
+      '_',
+      '1',
+      'é',
+      '\n',
+      `${bare(EMAIL)}_2`,
+    ];
+    for (let round = 0; round < 1000; round++) {
+      const whole = Array.from({ length: 1 + next(25) }, () => parts[next(parts.length)]).join('');
+      const wanted = new Rehydrator(vault, 'chat/completions').replace(whole, false);
+      const source = pieces(whole, next)
+        .map((piece) => frame({ choices: [{ index: 0, delta: { content: piece } }] }))
+        .join('');
+      const rehydrator = new Rehydrator(vault, 'chat/completions');
+      let output = '';
+      for (const chunk of pieces(source, next)) output += rehydrator.push(chunk);
+      output += rehydrator.end();
+      expect([whole, read('chat/completions', output).text]).toEqual([whole, wanted]);
+    }
+  });
+
+  test('long runs of capitals are read in linear time', () => {
+    const rehydrator = new Rehydrator(vault, 'chat/completions');
+    const started = performance.now();
+    for (const text of ['A'.repeat(200_000), 'A_'.repeat(100_000), `⟦${'A'.repeat(100_000)}`]) {
+      rehydrator.json(JSON.stringify({ content: text }));
+      rehydrator.push(frame({ choices: [{ index: 0, delta: { content: text } }] }));
+    }
+    rehydrator.end();
+    expect(performance.now() - started).toBeLessThan(3000);
+  });
+
+  test('a token another conversation issued is left as written', () => {
+    const other = new Vault();
+    other.assign('phone', '(415) 555-0132');
+    const rehydrator = new Rehydrator(other, 'chat/completions');
+    const source = frame({
+      choices: [{ index: 0, delta: { content: 'Use ACCOUNT_1, or PHONE_1.' } }],
+    });
+    const output = rehydrator.push(source) + rehydrator.end();
+    expect(read('chat/completions', output).text).toBe('Use ACCOUNT_1, or (415) 555-0132.');
+    const empty = new Rehydrator(new Vault(), 'chat/completions');
+    expect(empty.push(source) + empty.end()).toBe(source);
+  });
+
+  test('a non-streamed reply is restored as a whole, on word boundaries only', () => {
+    const rehydrator = new Rehydrator(vault, 'chat/completions');
+    const body = JSON.stringify({
+      choices: [
+        {
+          message: {
+            content: `account ${bare(ACCOUNT)}, not ACCOUNT_10 or ${bare(ACCOUNT)}_2`,
+            tool_calls: [
+              { function: { name: 'pay', arguments: JSON.stringify({ who: bare(NAME) }) } },
+            ],
+          },
+        },
+      ],
+    });
+    const parsed = JSON.parse(rehydrator.json(body));
+    expect(parsed.choices[0].message.content).toBe(
+      `account 000123456789, not ACCOUNT_10 or ${bare(ACCOUNT)}_2`,
+    );
+    expect(JSON.parse(parsed.choices[0].message.tool_calls[0].function.arguments)).toEqual({
+      who: 'Ann "Nan" O\'Neil \\ Jr',
+    });
+  });
+});
+
 describe('partialStart', () => {
   test('finds the earliest possible start of a placeholder still arriving', () => {
     expect(partialStart('abc ⟦ACC', false)).toBe(4);

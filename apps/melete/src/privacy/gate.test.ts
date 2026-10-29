@@ -342,6 +342,39 @@ describe('the broker resolves placeholders a payload still carries', () => {
     });
   });
 
+  test('"pay ACCOUNT_1" without its brackets is resolved too, and only that exact token', async () => {
+    const { broker, seen } = await setup();
+    const response = await broker(
+      new Request('http://broker.internal/actions', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'payments.send',
+          payload: { to_account: 'ACCOUNT_1', memo: 'ACCOUNT_10, ACCOUNT_7 and ACCOUNT_1.' },
+        }),
+      }),
+    );
+    expect(response.status).toBe(201);
+    expect(JSON.parse(seen[0]?.body ?? '{}').payload).toEqual({
+      to_account: '000123456789',
+      memo: 'ACCOUNT_10, ACCOUNT_7 and 000123456789.',
+    });
+  });
+
+  test('a bare token this conversation never made is ordinary text, passed on as written', async () => {
+    const { broker, seen } = await setup();
+    const body = JSON.stringify({ kind: 'notes.add', payload: { text: 'ACCOUNT_7 and PHONE_1' } });
+    const response = await broker(
+      new Request('http://broker.internal/actions', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body,
+      }),
+    );
+    expect(response.status).toBe(201);
+    expect(seen).toEqual([{ path: '/actions', body }]);
+  });
+
   test('a placeholder this conversation never made is refused, not sent', async () => {
     const { broker, seen } = await setup();
     const response = await broker(
