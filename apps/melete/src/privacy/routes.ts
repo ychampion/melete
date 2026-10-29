@@ -92,6 +92,7 @@ export async function settingsView(
     sealed_vault: router.store.sealing,
     screenshots_own_computer: settings.screenshotsOwn,
     screenshots_paired_devices: settings.screenshotsDevices,
+    record_seen: settings.recordSeen,
   };
 }
 
@@ -115,6 +116,7 @@ export async function updateSettings(
   if (input.private_space !== undefined) plain.private_space = input.private_space;
   if (input.private_agent_ids) plain.private_agent_ids = [...new Set(input.private_agent_ids)];
   if (input.local_detection !== undefined) plain.local_detection = input.local_detection;
+  if (input.record_seen !== undefined) plain.record_seen = input.record_seen;
   if (input.screenshots_own_computer !== undefined)
     plain.screenshots_own_computer = input.screenshots_own_computer;
   if (input.screenshots_paired_devices !== undefined)

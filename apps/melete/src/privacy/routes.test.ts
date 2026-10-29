@@ -71,3 +71,24 @@ describe("clearing a conversation's sensitivity", () => {
     expect((await store.conversation(CHAT)).sensitive).toBe('health');
   });
 });
+
+describe('keeping what the model saw', () => {
+  test('the owner can read and change the recording setting without resetting other choices', async () => {
+    const { app } = await as(OWNER, 'owner');
+    expect(await (await app.request('/privacy/settings')).json()).toMatchObject({
+      record_seen: true,
+    });
+    const update = (body: unknown) =>
+      app.request('/privacy/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const off = await update({ record_seen: false, screenshots_own_computer: false });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toMatchObject({ record_seen: false });
+    const on = await update({ record_seen: true });
+    expect(on.status).toBe(200);
+    expect(await on.json()).toMatchObject({ record_seen: true, screenshots_own_computer: false });
+  });
+});

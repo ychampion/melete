@@ -103,8 +103,14 @@ function Text({ part, side }: { part: Part; side: Side }) {
   );
 }
 
+/** The pieces that still have their text. One past the history limit has none, as if never kept. */
+function keptParts(seen: PrivacySeen): Part[] {
+  return seen.parts.filter((part) => part.segments.length > 0);
+}
+
 function Body({ seen, side }: { seen: PrivacySeen; side: Side }) {
-  if (!seen.parts.length)
+  const parts = keptParts(seen);
+  if (!parts.length)
     return (
       <p className="saw-note">
         {seen.route === 'local' || seen.route === 'on_device'
@@ -118,7 +124,7 @@ function Body({ seen, side }: { seen: PrivacySeen; side: Side }) {
         <div className="saw-head">You see</div>
         <div className="saw-head">The model saw</div>
       </div>
-      {seen.parts.map((part, index) => (
+      {parts.map((part, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: parts are fixed for the life of the sheet
         <section key={index} className="saw-part" aria-label={sourceLabel(part)}>
           <div className="saw-source" title={part.tool ?? undefined}>
@@ -164,7 +170,7 @@ export function ModelSaw({
   }, [conversationId, turnId]);
 
   const swapped = seen ? swappedSummary(seen.categories) : '';
-  const hasParts = !!seen?.parts.length;
+  const hasParts = !!seen && keptParts(seen).length > 0;
 
   return (
     <Dialog
