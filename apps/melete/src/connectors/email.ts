@@ -10,6 +10,7 @@ import type {
 import { z } from 'zod';
 import { type MailInstance, passwordResetMail, signInMail } from '../experience/account-mail.ts';
 import type { SignalSource } from '../signals/types.ts';
+import { MAIL_QUERY_HELP } from './mail-query.ts';
 import {
   credentialRefused,
   type EmailConnection,
@@ -82,8 +83,7 @@ export const emailManifest: ConnectorManifest = {
   tools: [
     {
       name: 'email.search',
-      description:
-        'Search inbox messages, or sent ones with folder "sent"; authentication messages are filtered best-effort.',
+      description: `Search inbox messages, or sent ones with folder "sent"; authentication messages are filtered best-effort. ${MAIL_QUERY_HELP}`,
       input_schema: {
         type: 'object',
         additionalProperties: false,

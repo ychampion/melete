@@ -2,6 +2,7 @@ import { isIP } from 'node:net';
 import { ImapFlow } from 'imapflow';
 import { type AddressObject, type EmailAddress, type ParsedMail, simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
+import { imapQuery, parseMailQuery } from './mail-query.ts';
 import { notPublic, type Reach, type Resolve, reachAddresses } from './public-fetch.ts';
 
 export type EmailConnection = {
@@ -260,7 +261,10 @@ export async function imapChanges(
 }
 
 export interface MailTransport {
-  /** Newest first. The inbox unless `folder` says otherwise. */
+  /**
+   * Newest first. The inbox unless `folder` says otherwise. The query is read
+   * by `parseMailQuery`: words, quoted phrases and OR.
+   */
   search(query: string, limit: number, folder?: MailFolder): Promise<MailMessage[]>;
   /** By UID for IMAP, by id for a mailbox that addresses messages that way. */
   read(key: number | string): Promise<MailMessage | null>;
@@ -457,7 +461,7 @@ export class ImapSmtpTransport implements MailTransport {
   async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {
     const mailbox = folder === 'sent' ? await this.sentFolder() : (this.config.inbox ?? 'INBOX');
     return this.imap(mailbox, async (client) => {
-      const uids = await client.search(query ? { text: query } : { all: true }, { uid: true });
+      const uids = await client.search(imapQuery(parseMailQuery(query)), { uid: true });
       const messages: MailMessage[] = [];
       for (const uid of (uids || []).slice(-limit).reverse()) {
         const message = await this.message(client, uid);

@@ -6,6 +6,7 @@
  */
 import { simpleParser } from 'mailparser';
 import { retryAfterOf } from '../signals/types.ts';
+import { gmailQuery, parseMailQuery } from './mail-query.ts';
 import {
   composeMail,
   headerBlock,
@@ -104,7 +105,8 @@ export class GmailApiTransport implements MailTransport {
       maxResults: String(limit),
       labelIds: folder === 'sent' ? 'SENT' : 'INBOX',
     });
-    if (query) params.set('q', query);
+    const q = gmailQuery(parseMailQuery(query));
+    if (q) params.set('q', q);
     const messages: MailMessage[] = [];
     for (const id of await this.ids(params)) {
       const message = await this.message(id);

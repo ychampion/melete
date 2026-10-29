@@ -8,18 +8,73 @@ import { UNREACHABLE } from './public-fetch.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { ResolvedAddress } from './web.ts';
 
+/**
+ * The UIDs an IMAP SEARCH matches, for the keys these tests send: TEXT (a
+ * substring of the whole message, in any case), OR, ALL and parenthesised
+ * lists, with every key in a list required. Anything else is refused, as a
+ * server refuses a search it cannot read.
+ */
+function matching(criteria: string, messages: string[]): number[] {
+  const list = criteria.match(/"(?:\\.|[^"\\])*"|\(|\)|[^\s()]+/g) ?? [];
+  return messages.flatMap((source, index) => {
+    const text = source.toLowerCase();
+    let at = 0;
+    const value = () => {
+      const raw = list[at++] ?? '';
+      return raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : raw;
+    };
+    const key = (): boolean => {
+      const token = list[at++] ?? '';
+      if (token === '(') {
+        let all = true;
+        while (at < list.length && list[at] !== ')') all = key() && all;
+        at++;
+        return all;
+      }
+      switch (token.toUpperCase()) {
+        case 'ALL':
+          return true;
+        case 'OR': {
+          const left = key();
+          const right = key();
+          return left || right;
+        }
+        case 'TEXT':
+          return text.includes(value().toLowerCase());
+        case 'HEADER': {
+          const name = value().toLowerCase();
+          const wanted = value().toLowerCase();
+          const head = text.split('\r\n\r\n')[0] ?? '';
+          return head
+            .split('\r\n')
+            .some((line) => line.startsWith(`${name}:`) && line.includes(wanted));
+        }
+        default:
+          throw new Error(`unsupported search key ${token}`);
+      }
+    };
+    let all = true;
+    while (at < list.length) all = key() && all;
+    return all ? [index + 1] : [];
+  });
+}
+
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
-async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: string } = {}) {
+async function mailServers(
+  options: { smtpRefusesLogin?: boolean; sentName?: string; more?: string[] } = {},
+) {
   const sentName = options.sentName ?? 'Sent';
   const sockets = new Set<Socket>();
   const sent: string[] = [];
   const auth: string[] = [];
+  const searches: string[] = [];
   let dropAck = false;
   let connections = 0;
   const inbox = [
     'From: friend@example.test\r\nTo: owner@example.test\r\nMessage-ID: <normal@example.test>\r\nSubject: Dinner\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSee you Friday.',
     'From: account@example.test\r\nTo: owner@example.test\r\nMessage-ID: <sensitive@example.test>\r\nSubject: Account information\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
       Buffer.from('Your one-time passcode is 123456.').toString('base64'),
+    ...(options.more ?? []),
   ];
   const imap = createServer((socket) => {
     connections += 1;
@@ -29,11 +84,33 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
     socket.write('* OK Local IMAP test double\r\n');
     let buffer = '';
     let mailbox = 'INBOX';
+    // A command can carry a string as a literal: its size, then the bytes once the server says go on.
+    let pending = '';
+    let asked = false;
     socket.on('data', (data) => {
       buffer += data.toString();
-      while (buffer.includes('\r\n')) {
+      for (;;) {
         const at = buffer.indexOf('\r\n');
-        const line = buffer.slice(0, at);
+        if (at < 0) break;
+        const head = buffer.slice(0, at);
+        const literal = /\{(\d+)(\+?)\}$/.exec(head);
+        if (literal) {
+          const size = Number(literal[1]);
+          if (buffer.length < at + 2 + size) {
+            if (!literal[2] && !asked) socket.write('+ go on\r\n');
+            asked = true;
+            break;
+          }
+          asked = false;
+          const value = buffer
+            .slice(at + 2, at + 2 + size)
+            .replace(/["\\]/g, (char) => `\\${char}`);
+          pending += `${head.slice(0, literal.index)}"${value}"`;
+          buffer = buffer.slice(at + 2 + size);
+          continue;
+        }
+        const line = pending + head;
+        pending = '';
         buffer = buffer.slice(at + 2);
         const tag = line.split(' ')[0] ?? '';
         const command = line.slice(tag.length + 1);
@@ -59,9 +136,15 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
           );
         } else if (upper.startsWith('UID SEARCH')) {
           const messages = mailbox === 'Sent' ? sent : inbox;
-          socket.write(
-            `* SEARCH${messages.length ? ` ${messages.map((_, index) => index + 1).join(' ')}` : ''}\r\n`,
-          );
+          searches.push(command);
+          let found: number[];
+          try {
+            found = matching(command.slice('UID SEARCH'.length), messages);
+          } catch {
+            socket.write(`${tag} BAD search not understood\r\n`);
+            continue;
+          }
+          socket.write(`* SEARCH${found.length ? ` ${found.join(' ')}` : ''}\r\n`);
         } else if (upper.startsWith('UID FETCH')) {
           const uid = Number(command.split(' ')[2]);
           const source = (mailbox === 'Sent' ? sent : inbox)[uid - 1];
@@ -153,6 +236,7 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
     connections: () => connections,
     auth,
     sent,
+    searches,
     dropAck: () => {
       dropAck = true;
     },
@@ -211,6 +295,41 @@ describe('IMAP and SMTP wire adapters', () => {
       await destination.close();
     }
   }, 20_000);
+
+  test('a search with OR and quoted phrases finds each alternative, in one IMAP OR', async () => {
+    const letter = (subject: string, body: string) =>
+      `From: school@example.test\r\nTo: owner@example.test\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`;
+    const servers = await mailServers({
+      more: [
+        letter('Field trip on Friday', 'The class field trip leaves at nine.'),
+        letter('Forms', 'Please sign the permission slip by Wednesday.'),
+        letter('Piano', 'Lessons move to Thursday.'),
+      ],
+    });
+    try {
+      const transport = new ImapSmtpTransport(servers.config, 'test-app-password');
+      const subjects = async (query: string) =>
+        (await transport.search(query, 10)).map((message) => message.subject);
+      // Newest first, as every search is.
+      expect(await subjects('"field trip" OR "permission slip"')).toEqual([
+        'Forms',
+        'Field trip on Friday',
+      ]);
+      expect(servers.searches.at(-1)).toBe(
+        'UID SEARCH OR TEXT "field trip" TEXT "permission slip"',
+      );
+      // Words need not sit together; each must appear.
+      expect(await subjects('class Friday')).toEqual(['Field trip on Friday']);
+      expect(await subjects('(trip OR slip) Wednesday')).toEqual(['Forms']);
+      expect(await subjects('field trip or piano')).toEqual(['Piano', 'Field trip on Friday']);
+      // Operators IMAP has no words for fall back to the plain terms around them.
+      expect(await subjects('subject:"field trip" OR is:unread')).toEqual(['Field trip on Friday']);
+      expect(await subjects('NOT piano')).toEqual(await subjects(''));
+      expect(await subjects('"school picnic" OR "bake sale"')).toEqual([]);
+    } finally {
+      await servers.close();
+    }
+  });
 
   test('a test reaches both halves: sending must work as well as reading', async () => {
     const working = await mailServers();

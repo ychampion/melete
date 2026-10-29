@@ -7,6 +7,7 @@
  */
 import { simpleParser } from 'mailparser';
 import { sourceError } from '../signals/types.ts';
+import { graphSearches, parseMailQuery } from './mail-query.ts';
 import {
   composeMail,
   headerBlock,
@@ -107,15 +108,30 @@ export class OutlookMailTransport implements MailTransport {
   }
 
   async search(query: string, limit: number, folder: MailFolder = 'inbox'): Promise<MailMessage[]> {
-    const params = new URLSearchParams({ $top: String(limit), $select: 'id' });
-    // Graph orders a search by relevance and refuses $orderby with it.
-    if (query) params.set('$search', `"${query.replaceAll('"', '')}"`);
-    else params.set('$orderby', 'receivedDateTime desc');
+    const path = `/mailFolders/${folder === 'sent' ? 'sentitems' : 'inbox'}/messages`;
+    const listing = (search: string | null) => {
+      const params = new URLSearchParams({ $top: String(limit), $select: 'id,receivedDateTime' });
+      // Graph refuses $orderby beside $search.
+      if (search) params.set('$search', search);
+      else params.set('$orderby', 'receivedDateTime desc');
+      return this.list(`${path}?${params}`);
+    };
+    const searches = graphSearches(parseMailQuery(query));
+    // Each alternative is its own search; a message two of them find is read once.
+    const found = new Map<string, number>();
+    for (const search of searches.length ? searches : [null])
+      for (const entry of await listing(search)) {
+        if (typeof entry.id !== 'string' || found.has(entry.id)) continue;
+        const received = Date.parse(String(entry.receivedDateTime ?? ''));
+        found.set(entry.id, Number.isNaN(received) ? 0 : received);
+      }
+    const newest = [...found]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([id]) => id);
     const messages: MailMessage[] = [];
-    const path = folder === 'sent' ? 'sentitems' : 'inbox';
-    for (const entry of await this.list(`/mailFolders/${path}/messages?${params}`)) {
-      if (typeof entry.id !== 'string') continue;
-      const message = await this.message(entry.id);
+    for (const id of newest) {
+      const message = await this.message(id);
       if (message) messages.push(message);
     }
     return messages;
