@@ -117,7 +117,7 @@ import { workQuiet } from './quiet.ts';
 import { reminderHeld } from './reminder-hold.ts';
 import { RUNAWAY_NOTE, RunawayReply, runawayWatch } from './runaway.ts';
 import { connectionScopesForJob } from './scopes.ts';
-import { type JobRow, type JobService, routineRest } from './service.ts';
+import { ANSWER_CEILING_NOTE, type JobRow, type JobService, routineRest } from './service.ts';
 import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 import { carrySteers, pendingSteers, steersRead } from './steer.ts';
 import { namingSteps, stepName, UNCONFIRMED_NOTE, unsettledQuestion } from './unsettled.ts';
@@ -1546,14 +1546,16 @@ export class AttemptRunner {
   }
 
   /**
-   * The actions of this job a person allowed after this attempt read its
-   * inputs, at the job's revision, that are still only allowed: nothing has
-   * carried them out. The decision came after the attempt started, so the
-   * attempt was never told of it; the next one is, from the same events.
+   * The actions of this job a person answered after this attempt read its
+   * inputs, at the job's revision: allowed and not carried out yet, or
+   * declined. The decision came after the attempt started, so the attempt
+   * was never told of it; the next one is, from the same events, and says
+   * what happened. Only a person's own answer counts: a permission withdrawn
+   * because the work was stopped, ended or went out of date wakes nothing.
    * Only an action whose one approval is for its own bytes, as an approval
    * wait requires (`ApprovalService.registerWait`).
    */
-  private async allowedWhileRunning(
+  private async answeredWhileRunning(
     tx: Transaction,
     row: JobRow,
     attemptId: string,
@@ -1561,8 +1563,10 @@ export class AttemptRunner {
     const rows = await tx.execute<{ id: string }>(sql`select distinct a.id from ${action} a
       join ${approval} p on p.action_id = a.id
       join ${attempt} t on t.id = ${attemptId} and t.job_id = a.job_id
-      where a.job_id = ${row.id} and a.status = 'approved'
-        and p.decision = 'approved' and p.job_revision = ${row.revision}
+      where a.job_id = ${row.id}
+        and p.decision in ('approved', 'denied') and a.status = p.decision
+        and p.job_revision = ${row.revision}
+        and exists (select 1 from principal who where who.id = p.decided_by)
         and p.payload_hash = a.payload_hash
         and not exists (select 1 from ${approval} other
           where other.action_id = a.id and other.id <> p.id)
@@ -1653,24 +1657,25 @@ export class AttemptRunner {
     const capped = endsOnLimit(given)
       ? (limits[await usageClassOf(tx, attemptId)]?.message ?? null)
       : null;
-    // A permission the person gave while this attempt ran, for an action
-    // nothing has carried out yet. The runtime looks for waiting actions as
-    // the turn ends, and one allowed before that look no longer waits, so the
-    // turn would end as if nothing were asked, and the broker wakes only work
-    // parked on an approval. The turn parks on it here instead, already
-    // answered, so the work goes on at once and its next attempt is told.
-    const allowed =
+    // A permission the person answered while this attempt ran: allowed, for
+    // an action nothing has carried out yet, or declined. The runtime looks
+    // for waiting actions as the turn ends, and one answered before that look
+    // no longer waits, so the turn would end as if nothing were asked, and the
+    // broker wakes only work parked on an approval. The turn parks on it here
+    // instead, already answered, so the work goes on at once and its next
+    // attempt is told: it carries out what was allowed, or says what was not.
+    const answered =
       !capped &&
       row.state === 'running' &&
       (given.kind === 'completed' || given.kind === 'waiting_for_input')
-        ? await this.allowedWhileRunning(tx, row, attemptId)
+        ? await this.answeredWhileRunning(tx, row, attemptId)
         : [];
     // The saved answer reads as the person saw it stream: the same plain-text
     // pass, last, after the answer's links and notes are settled.
     const original: AttemptOutcome = capped
       ? { kind: 'budget_exhausted', summary: capped }
-      : allowed.length
-        ? { kind: 'waiting_for_approval', action_ids: allowed as [string, ...string[]] }
+      : answered.length
+        ? { kind: 'waiting_for_approval', action_ids: answered as [string, ...string[]] }
         : humanOutcome(
             await this.citedOnlyWhatWasRead(
               tx,
@@ -1757,12 +1762,25 @@ export class AttemptRunner {
     // A runtime's final prose cannot withdraw the broker's unanswered revocation
     // question, even on the last budgeted attempt. Only owner input resolves it.
     // Long work decides from its record what a shift's ending stands for.
+    // A turn that parks on a permission past its budget keeps the park while
+    // answers may still wake it (`JobService.answerAttemptsLeft`), so what the
+    // person allowed is carried out and what they declined is said. Past that
+    // it ends on the budget, never left waiting on an answer it cannot use.
     const shifted =
       shifts && !brokerParked ? await shifts.shiftEnded(tx, row, attemptId, restored) : restored;
+    const spent = remaining === 0 && shifted.kind.startsWith('waiting_') && !shifts;
+    const answerable =
+      spent &&
+      shifted.kind === 'waiting_for_approval' &&
+      (await this.jobs.answerAttemptsLeft(tx, row));
+    const ceiling =
+      !reconnect && spent && !answerable && shifted.kind === 'waiting_for_approval'
+        ? ANSWER_CEILING_NOTE
+        : undefined;
     const outcome: AttemptOutcome = reconnect
       ? { kind: 'waiting_for_input', question: reconnect.text }
-      : remaining === 0 && shifted.kind.startsWith('waiting_') && !shifts
-        ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
+      : spent && !answerable
+        ? { kind: 'budget_exhausted', summary: ceiling ?? 'The job has used its attempt budget.' }
         : shifted;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
@@ -1974,8 +1992,8 @@ export class AttemptRunner {
           : {}),
         ...(turnStatus ? { turn_status: turnStatus } : {}),
         // A page following the turn live reads the sentence its saved copy ends on.
-        ...(outcome.kind === 'budget_exhausted' && (capped ?? limitNote)
-          ? { limit_note: capped ?? limitNote }
+        ...(outcome.kind === 'budget_exhausted' && (capped ?? ceiling ?? limitNote)
+          ? { limit_note: capped ?? ceiling ?? limitNote }
           : {}),
         ...(outcome.kind === 'failed' && !retrying && limitNote ? { failed_note: limitNote } : {}),
         ...(retrying && updated.nextWakeAt ? { retry_at: updated.nextWakeAt.toISOString() } : {}),
@@ -2005,8 +2023,8 @@ export class AttemptRunner {
           // ends with a plain sentence, not the name of the limit.
           ...(row.kind === 'chat' && outcome.kind === 'budget_exhausted'
             ? {
-                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? limitNote ?? LIMIT_REACHED_NOTE}
-                  else ${experienceTurn.answer} || ${`\n\n${capped ?? limitNote ?? LIMIT_REACHED_NOTE}`} end`,
+                answer: sql`case when ${experienceTurn.answer} = '' then ${capped ?? ceiling ?? limitNote ?? LIMIT_REACHED_NOTE}
+                  else ${experienceTurn.answer} || ${`\n\n${capped ?? ceiling ?? limitNote ?? LIMIT_REACHED_NOTE}`} end`,
               }
             : row.kind === 'chat' && outcome.kind === 'failed' && outcome.failure
               ? {

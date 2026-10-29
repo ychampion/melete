@@ -430,6 +430,38 @@ describe('context assembly', () => {
     expect(renderInput(resumed).length).toBeLessThan(4000);
   });
 
+  test('a decision names who answered and the step, when Melete knows them', () => {
+    const told = structuredClone(bundle);
+    told.inputs.approval_results = [
+      {
+        action_id: `act_${SUFFIX}`,
+        decision: 'denied',
+        note: null,
+        kind: 'calendar.create',
+        status: 'denied',
+        decided_by_name: 'Dana <dana-4f2a>',
+        summary: 'add to the calendar "Dentist" at 2026-11-02T09:00:00Z',
+      },
+    ];
+    const no = renderInput(told);
+    expect(no).toContain(
+      'Dana <dana-4f2a> declined: add to the calendar "Dentist" at 2026-11-02T09:00:00Z.',
+    );
+    expect(no).toContain('Say plainly that Dana <dana-4f2a> declined it and what was not done.');
+    const [decision] = told.inputs.approval_results;
+    if (!decision) throw new Error('fixture decision absent');
+    decision.decision = 'approved';
+    decision.status = 'approved';
+    expect(renderInput(told)).toContain(
+      'Dana <dana-4f2a> approved: add to the calendar "Dentist" at 2026-11-02T09:00:00Z.',
+    );
+    // A rule's answer names nobody.
+    delete decision.decided_by_name;
+    const ruled = renderInput(told);
+    expect(ruled).toContain('Approved: add to the calendar "Dentist"');
+    expect(ruled).not.toContain('Dana');
+  });
+
   test('a question withdrawn because the request changed is not read as a refusal', () => {
     const withdrawn = structuredClone(bundle);
     withdrawn.inputs.approval_results = [

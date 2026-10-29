@@ -418,6 +418,10 @@ export const attemptBundle = z.object({
         kind: z.string().min(1).optional(),
         status: z.string().min(1).optional(),
         payload: jsonObject.optional(),
+        /** The person who answered, as the conversation names them. */
+        decided_by_name: z.string().min(1).max(200).optional(),
+        /** The step in a few words, made from the payload above and nothing else. */
+        summary: z.string().min(1).max(300).optional(),
       }),
     ),
     trigger_events: z.array(jsonObject),
