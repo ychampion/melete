@@ -12,6 +12,7 @@ import { connection, principal, space, spaceMembership } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { roomCalendarShare } from './schema.ts';
+import { personLabel } from './transcript.ts';
 
 type Reader = Pick<Transaction, 'select'>;
 type Share = typeof roomCalendarShare.$inferSelect;
@@ -43,8 +44,44 @@ const shareView = (row: Share) => ({
 
 /** All authority is current, including the member's personal connection ownership. */
 async function resolve(reader: Reader, roomId: string, memberId: string, write: boolean) {
-  const [row] = await reader
-    .select({ share: roomCalendarShare, connection })
+  const [row] = await currentShares(reader, roomId, memberId);
+  if (
+    !row ||
+    !isCalendar(row.connection) ||
+    (write && (row.share.mode !== 'freebusy_add' || !calendarCanAdd(row.connection)))
+  )
+    throw unavailable();
+  return row;
+}
+
+/**
+ * The calendars people in a room share with it now, each named as the room
+ * names its person, and whether it takes new events. The room's own work is
+ * told these, so it knows which calendars it can read and add to. The same
+ * rule as every read and addition decides which shares still hold.
+ */
+export async function sharedCalendars(
+  reader: Reader,
+  roomId: string,
+): Promise<{ principalId: string; label: string; adds: boolean }[]> {
+  const rows = await currentShares(reader, roomId);
+  return rows
+    .filter((row) => isCalendar(row.connection))
+    .map((row) => ({
+      principalId: row.share.principalId,
+      label: personLabel(
+        { id: row.share.principalId, displayName: row.displayName, email: '' },
+        roomId,
+      ),
+      adds: row.share.mode === 'freebusy_add' && calendarCanAdd(row.connection),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** A room's shares that hold now, with their connections: one member's, or everyone's. */
+function currentShares(reader: Reader, roomId: string, memberId?: string) {
+  return reader
+    .select({ share: roomCalendarShare, connection, displayName: principal.displayName })
     .from(roomCalendarShare)
     .innerJoin(
       spaceMembership,
@@ -60,7 +97,7 @@ async function resolve(reader: Reader, roomId: string, memberId: string, write: 
     .where(
       and(
         eq(roomCalendarShare.spaceId, roomId),
-        eq(roomCalendarShare.principalId, memberId),
+        memberId ? eq(roomCalendarShare.principalId, memberId) : undefined,
         isNull(roomCalendarShare.revokedAt),
         isNull(spaceMembership.revokedAt),
         inArray(spaceMembership.role, ['owner', 'member']),
@@ -69,7 +106,7 @@ async function resolve(reader: Reader, roomId: string, memberId: string, write: 
         isNull(principal.disabledAt),
         eq(space.kind, 'personal'),
         isNull(space.removedAt),
-        sql`coalesce(${space.ownerPrincipalId}, (select id from owner limit 1)) = ${memberId}`,
+        sql`coalesce(${space.ownerPrincipalId}, (select id from owner limit 1)) = ${roomCalendarShare.principalId}`,
         eq(connection.status, 'active'),
         eq(connection.setupState, 'connected'),
         isNull(connection.keyChange),
@@ -77,13 +114,6 @@ async function resolve(reader: Reader, roomId: string, memberId: string, write: 
         and room.kind = 'shared' and room.removed_at is null)`,
       ),
     );
-  if (
-    !row ||
-    !isCalendar(row.connection) ||
-    (write && (row.share.mode !== 'freebusy_add' || !calendarCanAdd(row.connection)))
-  )
-    throw unavailable();
-  return row;
 }
 
 /** The raw-SQL broker uses exactly the same boundary as the settings service. */
