@@ -667,9 +667,29 @@ export function calendarStrip(at: string, timeZone: string, days: number): strin
 }
 
 /**
+ * The UTC offset a zone keeps at a moment, as "UTC-08:00", or null for a zone
+ * the runtime does not know. Taken for that moment, so it follows daylight
+ * saving: Los Angeles is UTC-08:00 in November and UTC-07:00 in July.
+ */
+export function utcOffset(at: string, timeZone: string): string | null {
+  try {
+    const name = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' })
+      .formatToParts(new Date(at))
+      .find((part) => part.type === 'timeZoneName')?.value;
+    if (!name) return null;
+    // UTC itself is written "GMT", with no offset.
+    return name === 'GMT' ? 'UTC+00:00' : name.replace(/^GMT/, 'UTC');
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The person's own date, time and weekday, and where they probably are. A
  * reminder once gave the weather for the city a stale profile zone was named
- * for, and the model had no clock of its own to say "this evening" by.
+ * for, and the model had no clock of its own to say "this evening" by. The
+ * zone's UTC offset at that moment is given with it, so a time the model writes
+ * for a tool carries the person's offset rather than a `Z`.
  */
 export function renderNow(now: AttemptBundle['local_now']): string[] {
   if (!now) return [];
@@ -691,7 +711,7 @@ export function renderNow(now: AttemptBundle['local_now']): string[] {
     '',
     '## Now',
     '',
-    `It is ${said} for the person (${now.time_zone}).`,
+    `It is ${said} for the person (${[now.time_zone, utcOffset(now.at, now.time_zone)].filter(Boolean).join(', ')}).`,
     `The next two weeks: ${calendarStrip(now.at, now.time_zone, CALENDAR_DAYS).join(', ')}.`,
     'Take dates and weekdays from these lines; do not work them out or run a clock command for them.',
   ];

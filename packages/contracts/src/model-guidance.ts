@@ -32,7 +32,7 @@ export const MODEL_GUIDANCE: readonly ModelGuidance[] = [
     match: /nemotron/i,
     text: [
       '- Act when the request is clear and no one else has to decide. Ask only when a specific person must choose or approve: use ask_person (board.ask in a room) and end your turn, never a question in prose. A question for one person in a room goes to them alone.',
-      "- In tool arguments, give times with the person's UTC offset for that date, from the local time you were given (it shifts with daylight saving). Use Z only for real UTC times. In replies, use local time.",
+      "- In tool arguments, give times with the person's UTC offset for that date: the one shown with their local time under Now, which shifts with daylight saving. Use Z only for real UTC times. In replies, use local time.",
       '- Search one or two plain keywords at a time; try another before concluding nothing is there.',
       '- Read the item you were asked about before you judge it.',
       '- Copy any privacy placeholder exactly as it appears, brackets included; never invent one.',
