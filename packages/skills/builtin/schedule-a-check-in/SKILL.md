@@ -31,4 +31,5 @@ list: what, when and where, in time order. Never book over something; name
 the clash and offer the nearest free time.
 
 Propose a new, moved or removed entry with the calendar tool: its approval
-card asks for the OK, so do not ask first. Confirm it only from the receipt.
+card asks for the OK, so ask only what is unclear. Confirm it only from
+the receipt.

@@ -292,7 +292,7 @@ test('schedule-a-check-in proposes a calendar change for its approval card inste
   const body = (skill?.body ?? '').replace(/\s+/g, ' ');
   expect(body).not.toContain('wait for approval');
   expect(body).toContain(
-    'with the calendar tool: its approval card asks for the OK, so do not ask first',
+    'with the calendar tool: its approval card asks for the OK, so ask only what is unclear',
   );
   expect(body).toContain('Confirm it only from the receipt');
 });
