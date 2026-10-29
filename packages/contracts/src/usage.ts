@@ -192,6 +192,74 @@ export const healthDetailResponse = z
   .strict();
 
 /**
+ * Where a drain stands on the instance that answered: `off`, it takes work as
+ * usual; `draining`, it starts nothing new and waits for what runs; `drained`,
+ * nothing runs and no action is on its way; `timed_out`, its limit passed with
+ * work still running, which it leaves running.
+ */
+export const drainState = z
+  .enum(['off', 'draining', 'drained', 'timed_out'])
+  .meta({ id: 'DrainState' });
+export type DrainState = z.infer<typeof drainState>;
+
+export const drainRequest = z
+  .object({
+    limit_minutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(24 * 60)
+      .optional()
+      .meta({ description: 'How long running work may take to finish; 10 when left out' }),
+  })
+  .strict();
+
+export const drainStatusResponse = z
+  .object({
+    state: drainState,
+    started_at: timestamp.nullable(),
+    deadline: timestamp.nullable(),
+    running_attempts: z.array(z.string()).meta({ description: 'Attempts this instance runs' }),
+    starting_jobs: z
+      .array(z.string())
+      .meta({ description: 'Jobs whose attempt this instance is starting now' }),
+    dispatching_actions: z
+      .array(z.string())
+      .meta({ description: 'Actions sent to their service that have not come back' }),
+  })
+  .strict()
+  .meta({ id: 'DrainStatus' });
+export type DrainStatusResponse = z.infer<typeof drainStatusResponse>;
+
+const busyCount = z
+  .object({
+    count: z.number().int().nonnegative(),
+    ids: z.array(z.string()).meta({ description: 'The first 50' }),
+  })
+  .strict()
+  .meta({ id: 'BusyCount' });
+
+export const busyReportResponse = z
+  .object({
+    running_attempts: busyCount,
+    actions_dispatching: busyCount,
+    live_processes: busyCount.meta({
+      description:
+        'Background processes in the agents’ computers. They run in the computer, so a service restart leaves them running.',
+    }),
+    runs_mid_shift: busyCount.meta({ description: 'Long runs with a shift under way' }),
+    last_activity_at: timestamp
+      .nullable()
+      .meta({ description: 'When anyone last used the app or reached their assistant' }),
+    time_zone: z.string().meta({ description: 'The owner’s time zone, which `--at` is read in' }),
+    drain: drainState,
+    time: timestamp,
+  })
+  .strict()
+  .meta({ id: 'BusyReport' });
+export type BusyReportResponse = z.infer<typeof busyReportResponse>;
+
+/**
  * What one finished, waiting or failed piece of work came to: `done`, it
  * answered; `needs_you`, it is waiting on the person; `failed`, it stopped
  * without finishing; `working`, it is still going.

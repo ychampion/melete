@@ -3,11 +3,20 @@
 # "Using prebuilt images"). Nothing is built on this machine. Prefer
 # `bun run melete deploy`, which also backs the database up before migrations.
 #
-#   deploy/scripts/update.sh [compose options...]
+#   deploy/scripts/update.sh [--when-quiet [--at HH:MM] [--max-wait MIN]] [compose options...]
 #
-# Any arguments are passed to every `docker compose` call, for example
+# Any other arguments are passed to every `docker compose` call, for example
 # `--profile sandbox` when the agents' computer image is in use, or the same
 # `-f` overlay files the installation was started with.
+#
+# --when-quiet waits, with `bun run melete quiet`, until --at in the owner's
+# time zone before the checkout moves. Once the images are pulled, it waits
+# until nothing runs and nobody has been active for a few minutes (for at most
+# --max-wait minutes, default 120), and drains the service so nothing new
+# starts. New work is never held while the images download. Finding no quiet
+# moment, it exits 1 with the checkout and images updated but nothing running
+# stopped or restarted. The drain ends with the restart below, or, if the
+# update stops before it, when this script exits.
 #
 # The order is the safe one:
 #   1. refuse when the disk holding Docker's data is short of space;
@@ -24,7 +33,29 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
-compose=(docker compose -f deploy/docker-compose.yml "$@")
+when_quiet=0
+# --at goes to the wait for the time, --max-wait to the wait for quiet.
+at_args=()
+wait_args=()
+compose_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --when-quiet) when_quiet=1 ;;
+    --at | --max-wait)
+      [ "$#" -ge 2 ] || { printf 'update: %s needs a value\n' "$1" >&2; exit 2; }
+      if [ "$1" = --at ]; then at_args=("$1" "$2"); else wait_args=("$1" "$2"); fi
+      shift
+      ;;
+    *) compose_args+=("$1") ;;
+  esac
+  shift
+done
+if [ "$when_quiet" = 0 ] && [ "$((${#at_args[@]} + ${#wait_args[@]}))" -gt 0 ]; then
+  printf 'update: --at and --max-wait go with --when-quiet\n' >&2
+  exit 2
+fi
+
+compose=(docker compose -f deploy/docker-compose.yml ${compose_args[@]+"${compose_args[@]}"})
 min_free_gb="${MELETE_UPDATE_MIN_FREE_GB:-4}"
 
 say() { printf '==> %s\n' "$*"; }
@@ -71,6 +102,14 @@ if [ "$free_mb" -lt "$((min_free_gb * 1024))" ]; then
 fi
 say "${free_mb} MB free in $docker_root"
 
+# With --when-quiet: check the service can say what is running, and wait for
+# --at. Nothing is drained yet, so the downloads below hold up no new work.
+if [ "$when_quiet" = 1 ]; then
+  command -v bun >/dev/null || fail '--when-quiet needs bun on PATH, for bun run melete quiet'
+  bun run melete quiet ${at_args[@]+"${at_args[@]}"} --time-only ||
+    fail 'the service could not be asked what is running (see above); nothing was changed'
+fi
+
 # 2. The checkout. --ff-only refuses a diverged or locally edited tree rather
 # than merging into it.
 say 'Updating the checkout'
@@ -89,6 +128,17 @@ printf '%s\n' "$images" | sort -u | sed 's/^/      /'
 # 3. Every image first. A failed pull leaves the running stack exactly as it was.
 say 'Pulling'
 "${compose[@]}" pull || fail 'a pull failed; the running containers were not touched'
+
+# With --when-quiet, the images are here: wait for a quiet moment, then drain.
+# Nothing is stopped; if none comes in time, nothing running has changed.
+if [ "$when_quiet" = 1 ]; then
+  say 'Waiting for a quiet moment'
+  # From here, a drain may be on. A restart ends it; this ends it if the
+  # update stops before one.
+  trap 'bun run melete quiet --cancel >/dev/null 2>&1 || true' EXIT
+  bun run melete quiet ${wait_args[@]+"${wait_args[@]}"} ||
+    fail 'no quiet moment came in time (see above); the checkout and images are updated, but nothing running was stopped or restarted'
+fi
 
 # Spaces given a computer before the switch to published images name
 # melete-sandbox:local in their connection. While that image is on this engine,

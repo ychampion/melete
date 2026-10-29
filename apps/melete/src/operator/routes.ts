@@ -25,6 +25,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
 import type { OperatorConsole } from './console.ts';
+import { DRAIN_PATH } from './drain.ts';
 
 const OWNER_ONLY =
   'Only the owner of this installation can manage people here. Ask them if something needs changing.';
@@ -32,6 +33,8 @@ const OWNER_ONLY =
 export function mountOperatorConsole(app: Hono, operator: OperatorConsole): void {
   /** The owner, from a browser session, or a refusal before anything is read. */
   app.use('/operator/*', async (c, next) => {
+    // The drain answers the operator's token, not a session (drain.ts).
+    if (c.req.path === DRAIN_PATH) return next();
     const actor = c.get('owner') as { id?: string; email?: string } | undefined;
     // An assistant's grant acts for its person but holds no browser session:
     // it can do much in their name, but not run the installation.

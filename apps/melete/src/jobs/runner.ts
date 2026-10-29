@@ -573,6 +573,13 @@ export class AttemptRunner {
   private readonly eventWrites = new EventWrites((operation) => this.jobs.transaction(operation));
   private workerStarted = false;
   private stopping = false;
+  /** Set by a drain (`operator/drain.ts`): no new attempt is claimed here until it is cleared. */
+  private draining = false;
+  /**
+   * Jobs whose wake is being claimed now, before their attempt is active, with
+   * how many claims each has under way: two wakes for one job can overlap.
+   */
+  private readonly claiming = new Map<string, number>();
   scheduler: FairScheduler;
   private readonly wakes = new Set<Promise<void>>();
   /** Wakes waiting in the scheduler for their person's own limit, by job, epoch and version. */
@@ -2554,8 +2561,20 @@ export class AttemptRunner {
   }
 
   private async runWake(wake: AttemptWake): Promise<void> {
-    if (this.stopping) return;
-    const claim = await this.claim(wake);
+    // A draining instance claims nothing. The job keeps its due wake, which the
+    // recovery scan sends again until this instance, or the next, takes it.
+    if (this.stopping || this.draining) return;
+    // Counted from before the claim until the attempt is active, with no await
+    // between, so a drain never reads as drained while one is starting.
+    this.claiming.set(wake.job_id, (this.claiming.get(wake.job_id) ?? 0) + 1);
+    let claim: ClaimedAttempt | null;
+    try {
+      claim = await this.claim(wake);
+    } finally {
+      const left = (this.claiming.get(wake.job_id) ?? 1) - 1;
+      if (left > 0) this.claiming.set(wake.job_id, left);
+      else this.claiming.delete(wake.job_id);
+    }
     if (!claim) return;
     const { bundle, claims } = claim;
     if (this.stopping) {
@@ -3139,6 +3158,25 @@ export class AttemptRunner {
         dedupKey: `${wake.job_id}:${wake.expected_epoch}:${wake.expected_version}:waiting_for_slot`,
       });
     });
+  }
+
+  /**
+   * Holds new work for a drain, or lets it go again. Letting go sends the
+   * recovery scan at once, so what came due while held starts now rather than
+   * at the scan's next minute.
+   */
+  async hold(on: boolean): Promise<void> {
+    const was = this.draining;
+    this.draining = on;
+    if (was && !on && this.workerStarted) await this.jobs.boss.send(QUEUES.recoveryScan, {});
+  }
+
+  /** What this instance runs now: its attempts, and the jobs whose attempt it is starting. */
+  inFlight(): { attempts: string[]; starting: string[] } {
+    return {
+      attempts: [...new Set([...this.active.keys(), ...this.running.keys()])],
+      starting: [...this.claiming.keys()],
+    };
   }
 
   async stop(): Promise<void> {

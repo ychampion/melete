@@ -367,7 +367,14 @@ import {
   summariesOnlySetting,
 } from './spaces.ts';
 import { needsYouItemResponse, needsYouList } from './triage.ts';
-import { healthDetailResponse, myUsageResponse, usageResponse } from './usage.ts';
+import {
+  busyReportResponse,
+  drainRequest,
+  drainStatusResponse,
+  healthDetailResponse,
+  myUsageResponse,
+  usageResponse,
+} from './usage.ts';
 import {
   callSession,
   voiceAside,
@@ -2842,6 +2849,68 @@ export function buildOpenApiDocument() {
               '401': problem('The operator token is missing or wrong'),
               '404': problem('MELETE_OPERATOR_TOKEN is not set'),
               '503': jsonResponse('At least one check failed', healthDetailResponse),
+            },
+          },
+        },
+
+        '/health/busy': {
+          get: {
+            tags: ['health'],
+            summary: 'What is running now, for choosing a quiet moment to update',
+            description:
+              'Counts and ids of running attempts, actions on their way to a service, live ' +
+              'background processes in the agents’ computers and long runs with a shift under ' +
+              'way, with when anyone was last active (to within a few minutes) and the owner’s ' +
+              'time zone. Takes MELETE_OPERATOR_TOKEN as a bearer token; without that setting ' +
+              'the route answers 404.',
+            security: [{ operator: [] }],
+            responses: {
+              '200': jsonResponse('What is running', busyReportResponse),
+              '401': problem('The operator token is missing or wrong'),
+              '404': problem('MELETE_OPERATOR_TOKEN is not set'),
+            },
+          },
+        },
+        '/operator/drain': {
+          get: {
+            tags: ['health'],
+            summary: 'Where this instance’s drain stands',
+            description:
+              '`drained` only once this instance runs no attempt, is starting none, and no action ' +
+              'is on its way to a service. Takes MELETE_OPERATOR_TOKEN as a bearer token.',
+            security: [{ operator: [] }],
+            responses: {
+              '200': jsonResponse('The drain', drainStatusResponse),
+              '401': problem('The operator token is missing or wrong'),
+              '404': problem('MELETE_OPERATOR_TOKEN is not set'),
+            },
+          },
+          post: {
+            tags: ['health'],
+            summary: 'Start nothing new on this instance, so it can be updated',
+            description:
+              'Messages still arrive and queue; timers, waits and watches keep their work, which ' +
+              'starts once the drain is cancelled or the service restarts. Running attempts may ' +
+              'finish within `limit_minutes`; past it the drain reports `timed_out` and stops ' +
+              'nothing. The drain is this instance’s alone and ends when it restarts. Takes ' +
+              'MELETE_OPERATOR_TOKEN as a bearer token.',
+            security: [{ operator: [] }],
+            requestBody: json(drainRequest),
+            responses: {
+              '200': jsonResponse('The drain', drainStatusResponse),
+              '400': problem('The limit is not a whole number of minutes from 1 to 1440'),
+              '401': problem('The operator token is missing or wrong'),
+              '404': problem('MELETE_OPERATOR_TOKEN is not set'),
+            },
+          },
+          delete: {
+            tags: ['health'],
+            summary: 'Cancel the drain, so held work starts',
+            security: [{ operator: [] }],
+            responses: {
+              '200': jsonResponse('The drain, now off', drainStatusResponse),
+              '401': problem('The operator token is missing or wrong'),
+              '404': problem('MELETE_OPERATOR_TOKEN is not set'),
             },
           },
         },
