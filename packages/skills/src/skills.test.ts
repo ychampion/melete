@@ -284,3 +284,15 @@ test('schedule-a-check-in sends every-other-week schedules to a calendar rule, w
   expect(body).toMatch(/every\s+other week[\s\S]*repeat\.rrule[\s\S]*repeat\.starts/);
   expect(body).toContain('FREQ=WEEKLY;INTERVAL=2;BYDAY=FR');
 });
+
+test('schedule-a-check-in proposes a calendar change for its approval card instead of asking first', () => {
+  const skill = loadBuiltInSkills().skills.find(
+    (s) => s.frontmatter.name === 'schedule-a-check-in',
+  );
+  const body = (skill?.body ?? '').replace(/\s+/g, ' ');
+  expect(body).not.toContain('wait for approval');
+  expect(body).toContain(
+    'with the calendar tool: its approval card asks for the OK, so do not ask first',
+  );
+  expect(body).toContain('Confirm it only from the receipt');
+});
