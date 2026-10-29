@@ -1,16 +1,25 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import config from '../vite.config.ts';
 
-const nodeEnv = process.env.NODE_ENV;
-beforeAll(() => {
-  // Bun sets NODE_ENV=test; Vite reports production externalizations only in production.
-  process.env.NODE_ENV = 'production';
-});
-afterAll(() => {
-  if (nodeEnv === undefined) delete process.env.NODE_ENV;
+// Vite reads NODE_ENV when a build starts and logs externalized modules only in production,
+// so each case names the NODE_ENV it builds under instead of inheriting the process's.
+const nodeEnvs = ['production', 'development', 'test', 'unset'] as const;
+
+async function withNodeEnv<T>(nodeEnv: (typeof nodeEnvs)[number], run: () => Promise<T>) {
+  const prior = process.env.NODE_ENV;
+  if (nodeEnv === 'unset') delete process.env.NODE_ENV;
   else process.env.NODE_ENV = nodeEnv;
-});
+  try {
+    return await run();
+  } finally {
+    if (prior === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prior;
+  }
+}
 
 test('a production build ships no source maps', () => {
   expect((config as { build?: { sourcemap?: unknown } }).build?.sourcemap).toBe(false);
@@ -46,17 +55,66 @@ function buildSource(source: string) {
   });
 }
 
-test.each([
-  "import crypto from 'node:crypto'; console.log(crypto);",
-  "import fs from 'fs'; console.log(fs);",
-  "import 'node:crypto'; console.log('loaded');",
-  "import('node:crypto').then(console.log);",
-])('a browser build fails on an externalized module: %s', async (source) => {
-  await expect(buildSource(source)).rejects.toThrow('externalized for browser compatibility');
-});
+const externalizing = [
+  ["import crypto from 'node:crypto'; console.log(crypto);", 'node:crypto'],
+  ["import fs from 'fs'; console.log(fs);", 'fs'],
+  ["import 'node:crypto'; console.log('loaded');", 'node:crypto'],
+  ["import('node:crypto').then(console.log);", 'node:crypto'],
+] as const;
 
-test('a browser build allows browser code and type-only Node imports', async () => {
-  await expect(
-    buildSource("import type { Stats } from 'node:fs'; console.log('loaded');"),
-  ).resolves.toBeDefined();
-});
+test.each(
+  nodeEnvs.flatMap((nodeEnv) =>
+    externalizing.map(([source, name]) => [nodeEnv, source, name] as const),
+  ),
+)(
+  'with NODE_ENV %s, a browser build fails on an externalized module: %s',
+  async (nodeEnv, source, name) => {
+    const built = withNodeEnv(nodeEnv, () => buildSource(source));
+    await expect(built).rejects.toThrow('externalized for browser compatibility');
+    await expect(built).rejects.toThrow(`"${name}"`);
+  },
+);
+
+test.each([...nodeEnvs])(
+  'with NODE_ENV %s, a browser build allows browser code and type-only Node imports',
+  async (nodeEnv) => {
+    await expect(
+      withNodeEnv(nodeEnv, () =>
+        buildSource("import type { Stats } from 'node:fs'; console.log('loaded');"),
+      ),
+    ).resolves.toBeDefined();
+  },
+);
+
+// A package may map one of its files, or a Node module it uses, to false in its `browser`
+// field. Vite then loads an empty module on purpose, and the build must go through.
+const browserFalse = mkdtempSync(
+  join(fileURLToPath(new URL('../node_modules', import.meta.url)), 'browser-false-'),
+);
+afterAll(() => rmSync(browserFalse, { recursive: true, force: true }));
+writeFileSync(
+  join(browserFalse, 'package.json'),
+  JSON.stringify({
+    name: basename(browserFalse),
+    version: '1.0.0',
+    type: 'module',
+    main: 'index.js',
+    browser: { './server.js': false, fs: false },
+  }),
+);
+writeFileSync(
+  join(browserFalse, 'index.js'),
+  "import fs from 'fs';\nimport server from './server.js';\nexport const value = [fs, server];\n",
+);
+writeFileSync(join(browserFalse, 'server.js'), 'export default 1;\n');
+
+test.each([...nodeEnvs])(
+  "with NODE_ENV %s, a browser build allows a package's browser field to map a module to false",
+  async (nodeEnv) => {
+    await expect(
+      withNodeEnv(nodeEnv, () =>
+        buildSource(`import { value } from '${basename(browserFalse)}'; console.log(value);`),
+      ),
+    ).resolves.toBeDefined();
+  },
+);
