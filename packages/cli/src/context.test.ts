@@ -1,3 +1,4 @@
+import { heapSize } from 'bun:jsc';
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -284,13 +285,16 @@ process.stderr.write(${JSON.stringify(observed)});`,
 
   test('a long stream holds only the bytes on their way, never the whole stream', async () => {
     // A restore streams a dump of many gigabytes; what has gone into the sink is let go.
+    // The heap is read as it stands after a full collection. Bun's memoryUsage().heapUsed
+    // is the size after the last young-generation collection instead, and can count
+    // tens of megabytes that the full collection just before it has already freed.
     const size = 192 * 1024 * 1024;
     Bun.gc(true);
-    const before = process.memoryUsage().heapUsed;
+    const before = heapSize();
     let peak = 0;
     const sample = setInterval(() => {
       Bun.gc(true);
-      peak = Math.max(peak, process.memoryUsage().heapUsed - before);
+      peak = Math.max(peak, heapSize() - before);
     }, 50);
     try {
       const result = await stream({ command: ['head', '-c', String(size), '/dev/zero'] }, [
