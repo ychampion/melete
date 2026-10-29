@@ -266,7 +266,7 @@ describe('context assembly', () => {
     };
     const input = renderInput(grounded);
     expect(input).toContain(
-      '## Now\n\nIt is Saturday, October 10, 2026 at 2:05 PM for the person (America/Los_Angeles).',
+      '## Now\n\nIt is Saturday, October 10, 2026 at 2:05 PM for the person (America/Los_Angeles, UTC-07:00).',
     );
     expect(input).toContain('probably in or near Los Angeles');
     expect(input.indexOf('## Now')).toBeLessThan(input.indexOf('## From the person'));

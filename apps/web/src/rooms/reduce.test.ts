@@ -272,6 +272,20 @@ test('a read that is ahead of the stream never shows a word twice', () => {
   expect(rested.requests[0]?.turns[0]?.answer).toBe('Final words.');
 });
 
+test('an answer sent again whole replaces what streamed before, rather than adding to it', () => {
+  const streams: Streams = new Map([['t1', 'Here']]);
+  let v = withStreams(working(), streams);
+  for (const item of [
+    { type: 'text_delta', text: 'The doctor wrote. Her ', restart: true },
+    { type: 'text_delta', text: 'The doctor wrote. Her medicine is due.', restart: true },
+  ]) {
+    const frame = event(item);
+    recordDelta(streams, v, frame);
+    v = applyFrame(v, frame, streams);
+  }
+  expect(v.requests[0]?.turns[0]?.answer).toBe('The doctor wrote. Her medicine is due.');
+});
+
 test('an answered permission says who answered it, or that nobody in the room did', () => {
   const base = { approval_id: 'apr_1', decided_at: at(4) };
   expect(decisionWords({ ...base, decision: 'approved', decided_by: BOB })).toBe('Allowed by Bob');

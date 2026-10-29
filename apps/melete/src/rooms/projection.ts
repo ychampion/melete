@@ -39,11 +39,12 @@ import {
 import { conversationView } from '../experience/service.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { ENDED_STATES } from '../jobs/withdraw.ts';
+import { keptLine, type Originals, scrub, scrubDeep, settled } from '../spaces/summary-guard.ts';
 import type { roomMessage, roomThread } from './schema.ts';
 import { namesOf } from './transcript.ts';
 
 /** Turn statuses whose answer may still grow. */
-const STILL_WRITING = new Set(['queued', 'working', 'streaming', 'stalled']);
+export const STILL_WRITING = new Set(['queued', 'working', 'streaming', 'stalled']);
 
 const author = (names: ReadonlyMap<string, string>, id: string) => ({
   principal_id: id,
@@ -98,6 +99,11 @@ export async function requestView(
   permissionCard?: (approvalId: string) => Promise<PermissionCard>,
   /** The viewer reads the room's steps kept back (see `keptBackCard`). */
   keptBack = false,
+  /**
+   * The details of the room's originals this viewer may not read: what the
+   * agent wrote is checked for them before it is shown (spaces/summary-guard.ts).
+   */
+  guard: Originals | null = null,
 ): Promise<RoomRequest> {
   const turns = await db
     .select()
@@ -159,44 +165,69 @@ export async function requestView(
         : null,
     decided_at: (question.decidedAt ?? question.requestedAt).toISOString(),
   }));
+  // What was still in the agent's words for this viewer, counted for the receipt.
+  const kept = { answer: 0, rest: 0 };
+  const checked = <T>(value: T): T => {
+    if (!guard) return value;
+    const counter = { kept: 0 };
+    const out = scrubDeep(value, guard, counter);
+    kept.rest += counter.kept;
+    return out;
+  };
   const receipts = effects.flatMap(({ action: effect, connection: source }) => {
     const receipt = projectReceipt(effect, source);
     if (!receipt) return [];
-    return [keptBack ? keptBackReceipt(receipt, effect) : receipt];
+    return [checked(keptBack ? keptBackReceipt(receipt, effect) : receipt)];
   });
+  const answerOf = (turn: (typeof turns)[number]) => {
+    const writing = STILL_WRITING.has(turn.status);
+    const text = (writing ? answerStream(turn.answer) : answerText(turn.answer)).trimStart();
+    if (!guard) return text;
+    // Words still being written could be the start of a name or a number: they wait for the rest.
+    const result = scrub(writing ? settled(text, guard) : text, guard);
+    kept.answer += result.kept;
+    return result.text;
+  };
+  const cards = [
+    // A file a files action saved opens only for that job's own principal,
+    // so a room's people see its card without the buttons.
+    ...effects.flatMap(({ action: effect, connection: source }) =>
+      projectCards(effect, source).map((card) => {
+        const shown =
+          card.primary_action?.handle === effect.id
+            ? { ...card, primary_action: null, secondary_actions: [] }
+            : card;
+        return checked(keptBack ? keptBackCard(shown, effect.kind) : shown);
+      }),
+    ),
+    ...files.filter(meantForPerson).map((file) => checked(projectArtifact(file))),
+  ];
+  const shownTurns = turns.map((turn) =>
+    conversationTurn.parse({
+      id: turn.id,
+      conversation_id: turn.jobId,
+      agent_id: turn.agentId,
+      text: turn.text,
+      answer: answerOf(turn),
+      status: turn.status,
+      delivery: turn.status === 'queued' ? 'sending' : null,
+      created_at: turn.createdAt.toISOString(),
+    }),
+  );
+  // Said where the person can see it: how many details were kept out for them.
+  if (kept.answer + kept.rest > 0)
+    receipts.push({
+      id: `${row.id}:kept`,
+      what: keptLine(kept.answer + kept.rest, kept.rest ? 'request' : 'answer'),
+      where: KEPT_WHERE,
+      when: (current?.createdAt ?? row.createdAt).toISOString(),
+    });
   return roomRequest.parse({
     job_id: row.id,
     requested_by: author(names, row.requestedByPrincipalId ?? ''),
     status: conversationView(row, current).status,
-    turns: turns.map((turn) =>
-      conversationTurn.parse({
-        id: turn.id,
-        conversation_id: turn.jobId,
-        agent_id: turn.agentId,
-        text: turn.text,
-        answer: (STILL_WRITING.has(turn.status)
-          ? answerStream(turn.answer)
-          : answerText(turn.answer)
-        ).trimStart(),
-        status: turn.status,
-        delivery: turn.status === 'queued' ? 'sending' : null,
-        created_at: turn.createdAt.toISOString(),
-      }),
-    ),
-    cards: [
-      // A file a files action saved opens only for that job's own principal,
-      // so a room's people see its card without the buttons.
-      ...effects.flatMap(({ action: effect, connection: source }) =>
-        projectCards(effect, source).map((card) => {
-          const shown =
-            card.primary_action?.handle === effect.id
-              ? { ...card, primary_action: null, secondary_actions: [] }
-              : card;
-          return keptBack ? keptBackCard(shown, effect.kind) : shown;
-        }),
-      ),
-      ...files.filter(meantForPerson).map(projectArtifact),
-    ],
+    turns: shownTurns,
+    cards,
     receipts,
     permissions,
     decisions,
@@ -211,6 +242,9 @@ export async function requestView(
  * What the agent made itself (an event it added, a file it wrote) keeps its
  * own title, and so does its answer.
  */
+
+/** Where the receipt of details kept out of what the agent wrote says it happened. */
+export const KEPT_WHERE = 'Show me only what needs me';
 
 /** What a step's card calls the original it touched, by the step's kind. */
 const KEPT_BACK_TITLES: Record<string, string> = {
@@ -328,6 +362,23 @@ export function actionIdsOf(item: ExperienceEvent['item']): string[] {
  * answer is what it wrote for the room.
  */
 export function keptBackItem(
+  item: ExperienceEvent['item'],
+  rows: ReadonlyMap<string, ActionRow>,
+  /** The details of the room's originals this viewer may not read; see `requestView`. */
+  guard: Originals | null = null,
+): ExperienceEvent['item'] | null {
+  const shown = keptBackStep(item, rows);
+  // What the agent wrote is checked here. A person's own words, the
+  // permissions they answer (bound to what they show) and the answer's text
+  // (read whole by the stream, `rooms/service.ts`) are not.
+  if (!guard || !shown || UNCHECKED.has(shown.type)) return shown;
+  return scrubDeep(shown, guard);
+}
+
+/** Stream items that carry no words of the agent's to check here. */
+const UNCHECKED = new Set(['text_delta', 'steer', 'permission', 'decision', 'status', 'compacted']);
+
+function keptBackStep(
   item: ExperienceEvent['item'],
   rows: ReadonlyMap<string, ActionRow>,
 ): ExperienceEvent['item'] | null {

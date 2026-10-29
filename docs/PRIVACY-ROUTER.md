@@ -40,6 +40,13 @@ compile), and every request says whose data it carries:
 Anything new that calls a model through Melete (a voice or phone integration,
 a reviewer) has to name its scope the same way.
 
+In a room set to show only what needs its people, an agent's request for
+anyone but the room's maker is minimised before the router sees it: the
+details of the room's mail, events and files become placeholders such as
+`[doctor 1]`, which, unlike the router's own, are never put back
+([Rooms: who sees what](ROOMS.md#who-sees-what)). The code is in
+[`apps/melete/src/spaces/summary-guard.ts`](../apps/melete/src/spaces/summary-guard.ts).
+
 Only structural fields are left as they are: the model name, roles, types, ids,
 tool names, signatures and encrypted reasoning. Tool arguments and tool results
 that are JSON are read as JSON and redacted field by field. Text shaped like a

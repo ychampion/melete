@@ -31,13 +31,13 @@ export const MODEL_GUIDANCE: readonly ModelGuidance[] = [
     family: 'nemotron',
     match: /nemotron/i,
     text: [
-      "- In tool arguments, give a time with the person's own UTC offset (such as -07:00); use Z only for a time that really is UTC. In replies, say times in the person's local time.",
-      '- Search with one or two plain keywords at a time. Try another keyword before you conclude nothing is there.',
-      '- Open and read the specific item you were asked about before you judge it.',
-      '- Copy any privacy placeholder exactly as it appears, brackets included, and never invent one.',
+      '- Act when the request is clear and no one else has to decide. Ask only when a specific person must choose or approve: use ask_person (board.ask in a room) and end your turn, never a question in prose. A question for one person in a room goes to them alone.',
+      "- In tool arguments, give times with the person's UTC offset for that date: today's is under Now, and a date with another shows its own. Use Z only for real UTC times. In replies, use local time.",
+      '- Search one or two plain keywords at a time; try another before concluding nothing is there.',
+      '- Read the item you were asked about before you judge it.',
+      '- Copy any privacy placeholder exactly as it appears, brackets included; never invent one.',
       '- When an approval arrives, carry out the approved step in that same turn.',
       '- Say an action is done only when its tool result says it succeeded.',
-      "- When you need the person's answer, ask with ask_person (board.ask in a room) and end your turn instead of ending on a question. A question for one person in a room goes to them alone.",
       '- Keep the final answer short and plain, with no reasoning in it.',
     ].join('\n'),
     // NVIDIA's switch for these models is `{ enable_thinking: false }` (or
