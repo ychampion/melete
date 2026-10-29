@@ -1051,6 +1051,13 @@
       "when": 1789232400129,
       "tag": "0149_privacy_seen",
       "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1789232400130,
+      "tag": "0150_mail_read_attachment_scope",
+      "breakpoints": true
     }
   ]
 }

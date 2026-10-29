@@ -15,12 +15,17 @@
 import { randomBytes } from 'node:crypto';
 import {
   BOARD_ANSWER_MAX,
+  BOARD_CHOICE_MAX,
+  BOARD_CHOICES_MAX,
+  BOARD_DETAIL_MAX,
+  BOARD_TITLE_MAX,
   type BoardItem,
   type BoardItemKind,
   type BoardItemState,
   type BoardStreamFrame,
   type BoardVisibility,
   boardItem,
+  TERMINAL_STATES,
 } from '@melete/contracts';
 import { and, asc, eq, gt, inArray, isNull, or, type SQL, sql } from 'drizzle-orm';
 import { type AnyPgColumn, alias } from 'drizzle-orm/pg-core';
@@ -31,6 +36,7 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { roomBoardItem } from './board-schema.ts';
+import { roomMessage } from './schema.ts';
 import type { RoomService } from './service.ts';
 import { namesOf } from './transcript.ts';
 
@@ -41,6 +47,10 @@ type ItemRow = typeof roomBoardItem.$inferSelect;
 export const BOARD_PAGE = 500;
 /** The most frames one stream page carries. */
 export const BOARD_FRAME_PAGE = 100;
+/** The submission an answer is posted under, before the item's id. */
+const ANSWER_SUBMISSION = 'board-answer-';
+/** Added to it when the thread the question was asked in is gone. */
+const ANSWER_IN_NEW_THREAD = '-thread';
 
 const viewerPlace = alias(spaceMembership, 'board_viewer');
 const assigneePlace = alias(spaceMembership, 'board_assignee');
@@ -493,10 +503,15 @@ export class BoardService {
       throw new ServiceError('scope_denied', 'Only the person it asks can answer it.', 403);
     if (seen.state === 'answered' && seen.answer !== answer)
       throw new ServiceError('already_answered', 'You already answered this.', 409);
-    // A question meant for one person keeps its words off the room's thread.
-    const about = seen.visibility === 'everyone' ? `"${seen.title}"` : 'your question on the board';
-    const message = `@Melete ${answer}\n\n(My answer to ${about}.)`;
-    const submission = `board-answer-${seen.id}`;
+    // A question its request let go of takes no answer: nothing is posted and
+    // no request starts.
+    if (seen.state !== 'open' && seen.state !== 'answered')
+      throw new ServiceError('question_closed', 'This question is closed.', 409);
+    // A question is always put to one person, so its words stay off the
+    // room's thread whoever else may read it on the board. The agent reads
+    // the question itself with the answer (`boardAnswersFor`).
+    const message = `@Melete ${answer}\n\n(My answer to your question on the board.)`;
+    const submission = `${ANSWER_SUBMISSION}${seen.id}`;
     const rooms = this.deps.rooms;
     const posted = await (seen.thread_id
       ? rooms
@@ -522,11 +537,8 @@ export class BoardService {
         rooms.post(
           spaceId,
           actor,
-          { text: message, submission_id: `${submission}-thread` },
-          {
-            title: seen.visibility === 'everyone' ? seen.title : 'An answer from the board',
-            askAgent: true,
-          },
+          { text: message, submission_id: `${submission}${ANSWER_IN_NEW_THREAD}` },
+          { title: 'An answer from the board', askAgent: true },
         ),
     );
     const item = await serviceTransaction(this.deps.db, async (tx) => {
@@ -559,6 +571,146 @@ export class BoardService {
   }
 }
 
+/**
+ * A question a room request's agent asked with ask_person. A room has no
+ * question card, so it goes on the board for the person whose request it is:
+ * only they and the owners read it, it is on their "Waiting on you", and their
+ * answer reaches the request as their own message in its thread. Nothing is
+ * added for someone who cannot be assigned, or twice for the same question.
+ */
+export async function askOnBoard(
+  tx: Transaction,
+  job: {
+    spaceId: string;
+    principalId: string | null;
+    requestedByPrincipalId: string | null;
+    roomThreadId: string | null;
+  },
+  question: { text: string; options?: { label: string }[] | undefined },
+): Promise<ItemRow | null> {
+  const asker = job.requestedByPrincipalId;
+  if (!asker || !job.principalId || !(await assignable(tx, job.spaceId, asker))) return null;
+  const text = question.text.trim();
+  const title = text.length > BOARD_TITLE_MAX ? `${text.slice(0, BOARD_TITLE_MAX - 3)}...` : text;
+  const [open] = await tx
+    .select({ id: roomBoardItem.id })
+    .from(roomBoardItem)
+    .where(
+      and(
+        eq(roomBoardItem.spaceId, job.spaceId),
+        eq(roomBoardItem.kind, 'question'),
+        eq(roomBoardItem.state, 'open'),
+        eq(roomBoardItem.assigneePrincipalId, asker),
+        eq(roomBoardItem.title, title),
+      ),
+    )
+    .limit(1);
+  if (open) return null;
+  const choices = [
+    ...new Set((question.options ?? []).map((option) => option.label.slice(0, BOARD_CHOICE_MAX))),
+  ].slice(0, BOARD_CHOICES_MAX);
+  const made = await addItem(tx, {
+    spaceId: job.spaceId,
+    kind: 'question',
+    title,
+    detail: title === text ? null : text.slice(0, BOARD_DETAIL_MAX),
+    assignee: asker,
+    visibility: 'assignee',
+    choices: choices.length ? choices : null,
+    sourceThreadId: job.roomThreadId,
+    createdBy: job.principalId,
+  });
+  const [named] = await tx
+    .select({ name: space.name })
+    .from(space)
+    .where(eq(space.id, job.spaceId));
+  await pushToAssignee(tx, made, named?.name ?? 'a room');
+  return made;
+}
+
+/**
+ * The open questions the room's agent put to one person with ask_person in a
+ * thread. A question asked with board.ask has its action, and stays until it
+ * is answered: other people may still be asked to answer it.
+ */
+function askedOf(spaceId: string, threadId: string, person: string, roomPrincipal: string) {
+  return and(
+    eq(roomBoardItem.spaceId, spaceId),
+    eq(roomBoardItem.kind, 'question'),
+    eq(roomBoardItem.state, 'open'),
+    isNull(roomBoardItem.actionId),
+    eq(roomBoardItem.sourceThreadId, threadId),
+    eq(roomBoardItem.assigneePrincipalId, person),
+    eq(roomBoardItem.createdBy, roomPrincipal),
+  );
+}
+
+/**
+ * The person a question asks replied in its thread instead of on the board:
+ * the reply is their answer, so the question leaves their "Waiting on you".
+ */
+export async function answerAskedInThread(
+  tx: Transaction,
+  reply: {
+    spaceId: string;
+    threadId: string;
+    author: string;
+    roomPrincipal: string;
+    text: string;
+    messageId: string;
+  },
+) {
+  const answered = await tx
+    .update(roomBoardItem)
+    .set({
+      state: 'answered',
+      answer: reply.text.trim().slice(0, BOARD_ANSWER_MAX) || null,
+      answeredAt: new Date(),
+      answerMessageId: reply.messageId,
+    })
+    .where(askedOf(reply.spaceId, reply.threadId, reply.author, reply.roomPrincipal))
+    .returning();
+  for (const row of answered) await touchItem(tx, row);
+}
+
+/**
+ * The transition hook: a room request that ends, stopped or finished, closes
+ * the questions it put on the board for its person, so none waits on them for
+ * a request that will never read the answer. A request waiting for an answer
+ * has not ended.
+ */
+export function closeAskedOnEnd() {
+  return async (
+    tx: Transaction,
+    _before: unknown,
+    after: {
+      audience: string;
+      state: string;
+      spaceId: string;
+      principalId: string | null;
+      roomThreadId: string | null;
+      requestedByPrincipalId: string | null;
+    },
+  ) => {
+    if (after.audience !== 'room' || !(TERMINAL_STATES as readonly string[]).includes(after.state))
+      return;
+    if (!after.roomThreadId || !after.requestedByPrincipalId || !after.principalId) return;
+    const closed = await tx
+      .update(roomBoardItem)
+      .set({ state: 'done' })
+      .where(
+        askedOf(after.spaceId, after.roomThreadId, after.requestedByPrincipalId, after.principalId),
+      )
+      .returning();
+    for (const row of closed) await touchItem(tx, row);
+  };
+}
+
+/** Whether a submission is the board's own posting of an answer. */
+export function isBoardAnswer(submissionId: string) {
+  return submissionId.startsWith(ANSWER_SUBMISSION);
+}
+
 /** Items assigned to someone, unanswered, whose push goes to them alone. */
 export async function pushToAssignee(
   tx: Transaction,
@@ -581,4 +733,51 @@ export async function pushToAssignee(
           and (m.expires_at is null or m.expires_at > now())))
       and coalesce((select p.decisions from push_setting p where p.principal_id = ${row.assigneePrincipalId}), true)
     on conflict (dedup_key) do nothing`);
+}
+
+/**
+ * The board's questions whose answers reached one of the room's requests: the
+ * question, who answered it, and the answer. An answer posted to the thread
+ * does not repeat its question, so the request's agent reads it here. Each is
+ * found by the message it was posted as: the key `RoomService.post` keeps for
+ * the answer's own submission, made from the room, its author and the item,
+ * so it is there as soon as that message is.
+ */
+export async function boardAnswersFor(
+  reader: Pick<Transaction, 'select'>,
+  spaceId: string,
+  jobId: string,
+): Promise<{ title: string; answeredBy: string; answer: string | null }[]> {
+  const key = (suffix: string) =>
+    sql`encode(sha256(convert_to(${roomMessage.spaceId} || ':' || ${roomMessage.authorPrincipalId}
+      || ':' || ${ANSWER_SUBMISSION} || ${roomBoardItem.id} || ${suffix}, 'UTF8')), 'hex')`;
+  const rows = await reader
+    .select({
+      title: roomBoardItem.title,
+      answer: roomBoardItem.answer,
+      answeredBy: roomMessage.authorPrincipalId,
+    })
+    .from(roomMessage)
+    .innerJoin(
+      roomBoardItem,
+      and(
+        eq(roomBoardItem.spaceId, roomMessage.spaceId),
+        eq(roomBoardItem.kind, 'question'),
+        // Only the person a question asks answers it, whatever a message names.
+        eq(roomBoardItem.assigneePrincipalId, roomMessage.authorPrincipalId),
+        or(
+          eq(roomMessage.submissionId, key('')),
+          eq(roomMessage.submissionId, key(ANSWER_IN_NEW_THREAD)),
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(roomMessage.spaceId, spaceId),
+        eq(roomMessage.requestJobId, jobId),
+        isNull(roomMessage.redactedAt),
+      ),
+    )
+    .orderBy(asc(roomMessage.createdAt), asc(roomMessage.id));
+  return rows;
 }

@@ -25,6 +25,7 @@ import type { Env } from '../env.ts';
 import type { EventChanges } from '../experience/events.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import type { MemoryRouteOptions } from '../memory/routes.ts';
+import { closeAskedOnEnd } from './board.ts';
 import { mountBoard } from './board-routes.ts';
 import { HandoffService } from './handoffs.ts';
 import { InviteService, mountInvites } from './invites.ts';
@@ -72,6 +73,8 @@ export function mountRooms(
   // when it changes state, when an attempt the broker parked ends, and on
   // startup for anything a stopped process left waiting.
   if (Array.isArray(deps.jobs.afterMove)) deps.jobs.afterMove.push(releaseOnTransition(deps));
+  // A request that ends lets go of the questions it asked its person.
+  if (Array.isArray(deps.jobs.afterMove)) deps.jobs.afterMove.push(closeAskedOnEnd());
   const runner = deps.runner;
   if (runner && Array.isArray(runner.onFinished)) {
     runner.onFinished.push(async (tx, row, outcome) => {
