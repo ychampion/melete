@@ -46,7 +46,7 @@ import {
   sha256,
 } from '../rooms/handoffs.ts';
 import { roomHandoff, roomMessage, roomThread } from '../rooms/schema.ts';
-import { namesOf, personLabel, roomHandle } from '../rooms/transcript.ts';
+import { membersNamed, namesOf } from '../rooms/transcript.ts';
 import { LocalWorkspaceFs } from '../runtime/workspace-fs.ts';
 import { calendarManifest, createPayload, freebusyDetail, freebusyPayload } from './calendar.ts';
 import { calendarSource, checkCalendarAhead, spaceTimeZone } from './calendar-truth.ts';
@@ -421,17 +421,7 @@ export function createRoomConnector(options: RoomConnectorOptions): Connector {
         where m.space_id = ${ctx.space_id} and m.revoked_at is null
           and m.role in ('owner', 'member') and p.kind = 'person' and p.disabled_at is null
           and (m.expires_at is null or m.expires_at > now())`;
-      const given = memberId.trim().toLowerCase();
-      const matches = members.filter((member) => {
-        const handle = roomHandle(ctx.space_id, member.id);
-        const label = personLabel(
-          { id: member.id, displayName: member.display_name, email: '' },
-          ctx.space_id,
-        );
-        return [member.id, handle, `<${handle}>`, label, member.display_name?.trim()].some(
-          (value) => value?.toLowerCase() === given,
-        );
-      });
+      const matches = membersNamed(members, ctx.space_id, memberId);
       if (matches.length !== 1 || !matches[0])
         throw new BrokerFault(
           'scope_denied',
