@@ -77,7 +77,10 @@ export async function invalidateDependencies(
   // turn, a question or a reconciliation) is left alone: its next turn reads
   // fresh memory, and replanning it would repeat a turn that finished, side
   // effects included.
-  // A routine resting on its own schedule is over in the same way.
+  // A routine resting on its own schedule is over in the same way, and so is
+  // standing work resting between shifts on the trigger it stands on (its
+  // newest, as `runs/standing.ts` reads it): it wakes on that trigger, not on
+  // every change to what the space remembers.
   // A job that has never run an attempt was handed no memory, and an owner
   // command is never claimed by a runtime; waking either would start work
   // nobody asked for, or strand the command in a queue nothing reads.
@@ -86,6 +89,9 @@ export async function invalidateDependencies(
     and j.kind <> 'command' and not (j.kind = 'routine' and j.state = 'waiting_for_event_or_time'
       and exists (select 1 from trigger t where t.job_id = j.id and t.kind = 'schedule'
         and t.id = j.wait->>'trigger_id'))
+    and not (j.kind = 'run' and j.state = 'waiting_for_event_or_time'
+      and coalesce(j.wait->>'trigger_id' = (select t.id from trigger t where t.job_id = j.id
+        order by t.created_at desc limit 1), false))
     and exists (select 1 from attempt a where a.job_id = j.id) and (
     ${all} or j.id = any(${knownJobs}) or (not exists (select 1 from memory_contexts c where c.job_id = j.id)
       and not exists (select 1 from memory_prepared p where p.job_id = j.id))) for update`;
