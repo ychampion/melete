@@ -10,6 +10,7 @@
  *   admin, and nobody changes the setup owner.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +34,7 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import type { SecretAccess } from '../../src/connectors/secrets.ts';
 import { loadEnv } from '../../src/env.ts';
 import { removeJobs } from '../../src/experience/removal.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { PolicyService } from '../../src/jobs/policy.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -40,6 +42,7 @@ import { FileRestrictionJournal } from '../../src/memory/restore.ts';
 import { principalContext, spaceStanding } from '../../src/principals/authority.ts';
 import { PrincipalService } from '../../src/principals/service.ts';
 import { selectedSpace } from '../../src/principals/session-space.ts';
+import { RunService } from '../../src/runs/service.ts';
 import { mountSms } from '../../src/sms/routes.ts';
 import { SpaceRemovalService } from '../../src/spaces/removal.ts';
 import { LocalBlobStore } from '../../src/storage/local.ts';
@@ -464,6 +467,88 @@ withDb('room owners', () => {
     expect(
       await sql`select 1 from connection where space_id = ${roomId} and provider = 'twilio'`,
     ).toHaveLength(0);
+  });
+
+  test("only a room's owners wake, pause and stop the room's own work", async () => {
+    const { alice, person, sql, jobs } = world();
+    const ivy = await person('ivy@example.test');
+    const jon = await person('jon@example.test');
+    const kai = await person('kai@example.test');
+    const roomId = await makeRoom(alice, 'Garden');
+    await ok(add(alice, roomId, ivy, 'owner'), 201);
+    await ok(add(alice, roomId, jon), 201);
+    // Work the room's own requests started: it is the room's, not any one person's.
+    const [agent] = await sql<{ principal_id: string }[]>`select principal_id
+      from space_membership where space_id = ${roomId} and role = 'agent'`;
+    const runId = newId('job');
+    await sql`insert into job (id, space_id, title, principal_id, objective, state, kind, wait)
+      values (${runId}, ${roomId}, 'Water the plants', ${agent?.principal_id ?? null},
+        'Remind the room to water the plants', 'waiting_for_event_or_time', 'run',
+        ${JSON.stringify({ kind: 'event', trigger_id: newId('trg'), deadline_at: null })}::jsonb)`;
+    await sql`insert into run_state (job_id, space_id, goal)
+      values (${runId}, ${roomId}, 'Water the plants')`;
+    const control = (who: Person, step: string, body?: unknown) =>
+      world().app.request(`/runs/${runId}/${step}`, {
+        method: 'POST',
+        headers: {
+          cookie: who.cookie,
+          'x-melete-space': roomId,
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+    const state = async () => {
+      const [row] = await sql<{ paused: boolean; state: string }[]>`select paused, state
+        from job where id = ${runId}`;
+      return row;
+    };
+    /** The person's session works in the room, as one opened there does. */
+    const inRoom = async (who: Person) => {
+      const token = who.cookie.split('=')[1] ?? '';
+      await sql`update session set space_id = ${roomId},
+          membership_generation = ${(await generationOf(roomId, who.id)).generation}
+        where token_hash = ${createHash('sha256').update(token).digest('hex')}`;
+    };
+    for (const who of [alice, ivy, jon]) await inRoom(who);
+
+    // A member of the room is told only its owners can; nothing changes.
+    for (const step of ['pause', 'resume', 'stop'])
+      await refused(control(jon, step), 403, 'scope_denied');
+    await refused(control(jon, 'message', { text: 'Go now' }), 403, 'scope_denied');
+    // Someone outside the room reaches nothing of it.
+    expect((await control(kai, 'pause')).status).not.toBe(200);
+    expect(await state()).toEqual({ paused: false, state: 'waiting_for_event_or_time' });
+
+    // An owner the maker added pauses and resumes it; the maker does too.
+    await ok(control(ivy, 'pause'));
+    expect((await state())?.paused).toBe(true);
+    await ok(control(alice, 'resume'));
+    expect((await state())?.paused).toBe(false);
+    // Turned into a member, they control it no longer.
+    await ok(setRole(alice, roomId, ivy.id, 'member'));
+    await inRoom(ivy);
+    await refused(control(ivy, 'pause'), 403, 'scope_denied');
+
+    // With rooms switched off, nobody reaches the room's work this way, an owner included.
+    const off = principalContext.run(alice.id, () =>
+      new RunService(jobs).requireControl(roomId, runId, alice.id, false),
+    );
+    expect(
+      await off.then(
+        () => 'reached',
+        (error: ServiceError) => error.code,
+      ),
+    ).toBe('not_found');
+
+    // In the middle of a shift, an owner's words reach it at its next step.
+    await sql`update job set state = 'running' where id = ${runId}`;
+    await ok(control(alice, 'message', { text: 'Water them now' }));
+    const said = await sql<{ by: string }[]>`select payload->>'principal_id' as by from event
+      where job_id = ${runId} and payload->>'text' = 'Water them now'`;
+    expect(said.map((row) => row.by)).toEqual([alice.id]);
+    // The maker stops it for good.
+    await ok(control(alice, 'stop'));
+    expect((await state())?.state).toBe('cancelled');
   });
 
   test('adding an owner again without a role leaves them an owner', async () => {

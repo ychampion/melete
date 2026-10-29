@@ -158,6 +158,18 @@ is under way waits its turn, and starts as soon as that request answers or
 stops to wait for something. The person who asked, or a room owner, can stop a
 request (`POST /rooms/{id}/requests/{request}/stop`).
 
+Longer work a room request starts belongs to the room, not to the person who
+asked. A room owner, signed in to the room, wakes it with words for its next
+shift, pauses it, resumes it or stops it with the usual run routes
+(`POST /runs/{id}/message`, `/pause`, `/resume` and `/stop`). A member or a
+guest is refused, and someone outside the room finds nothing.
+
+A request that ends on a question in words shows as answered, since its asker
+answers by replying in the thread. A request shows as waiting on someone only
+for what the thread shows them to decide: a permission, or a step whose outcome
+is not yet known. To ask anyone other than the asker, the agent puts the
+question on the board for them (see The board).
+
 A thread's page (`GET /rooms/{id}/threads/{thread}`) shows every message with
 its author, and each request with its answer, cards and receipts. Its live
 stream (`GET /rooms/{id}/threads/{thread}/events` with
@@ -298,7 +310,8 @@ or attendees. The `freebusy` mode permits only this read. With `freebusy_add`,
 `room.add_to_member_calendar` can add an event after that member approves the
 exact event. Other members and owners cannot approve for them, whatever the
 room's approval rules say. Read-only calendar feeds cannot allow additions.
-Sharing gives the room no other access to the connection.
+Sharing gives the room no other access to the connection. The room's own work
+is told which members share a calendar now and which of those take new events.
 
 `GET /rooms/{id}/calendar-shares` shows only the signed-in member's share and
 their own calendar choices. `DELETE /rooms/{id}/calendar-shares` revokes that
@@ -408,6 +421,12 @@ read by the people in the room. Everyone in the room can watch the room's
 computer (`GET /rooms/{id}/requests/{request}/computers` finds it), and only the
 room's owners take it over.
 
+The person who made a room can set it to show only what needs its people
+(`PUT /spaces/{id}/summaries-only`). Then the cards, receipts and live stream of
+its requests name what each step touched by its kind ("An email", "An event"),
+never an original's subject, address or words, for everyone but that person.
+The agent's own answers, and what it made itself, read as before.
+
 When the people in a room change, work under way in it starts again with the
 new roster, and permissions its requests were waiting on are withdrawn. The
 requests someone asked end when they leave, since only they could answer them
@@ -440,8 +459,10 @@ stands, and a second gets 409), mark it done (`.../done`) and answer a question
 put to them (`.../answer`). Guests read the board and change nothing on it.
 Only the person a question asks can answer it. The answer is posted in the
 room as that person's own message to the agent, in the thread the question was
-asked in, so the agent goes on as a new request of theirs. When the question
-was for one person, the message does not repeat its words in the thread.
+asked in, so the agent goes on as a new request of theirs. A question is always
+put to one person, so the message does not repeat its words in the thread; the
+agent reads the question with the answer, and when the person's shared calendar
+takes new events, it is told it can offer to add what they took on.
 
 The room's agent has five tools for the board: `board.list`, `board.add`,
 `board.update`, `board.ask` and `board.note`. They change only the room's own
@@ -451,6 +472,18 @@ request from a guest reads the board and changes nothing. It assigns items only
 to people in the room who are not guests. A note is always for its person
 alone. A question or a note sends a push to that person only, paced like any
 other push and held in their quiet hours.
+
+A question is for its person and the owners (`assignee`) unless the agent
+asks for everyone, and once a request has read someone's shared calendar,
+every question it asks stays with its person. A room has no question card of
+its own, so when the agent asks the person whose request it is with
+`ask_person`, the question goes on the board for them, under the same rule,
+and their answer comes back in the request's thread.
+
+Times on the board are read and written as wall times in the room's time zone
+(`2026-11-06T09:00`, with `time_zone` alongside in `board.list`), so an item
+moved to another day keeps its time of day when the clocks change in between.
+A time written with its own offset is taken as given.
 
 When someone leaves the room, items assigned to them read as unassigned and a
 claim of theirs reads as open again. Titles are written by the agent, so `board.add` tells it

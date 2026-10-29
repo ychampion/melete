@@ -124,7 +124,9 @@ export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, 
       question: spec.text,
       ...(spec.options ? { choices: spec.options.map((option) => option.label) } : {}),
       instruction:
-        'The question is on the person’s screen. End this turn now and do not answer it yourself; their answer comes back as their next message.',
+        job.audience === 'room'
+          ? 'The question is on the room’s board for the person who asked, where only they and the owners read it. Say in one short line that you asked them there, without repeating it, then end this turn; their answer comes back as their next message.'
+          : 'The question is on the person’s screen. End this turn now and do not answer it yourself; their answer comes back as their next message.',
     };
   });
 }

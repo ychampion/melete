@@ -111,6 +111,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
       expect(view.connection.scopes).toEqual([
         'email.search',
         'email.read',
+        'email.read_attachment',
         'email.draft',
         'email.discard',
         'email.send',
@@ -147,6 +148,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
   expect(requestBody(mail, narrowed).scopes).toEqual([
     'email.search',
     'email.read',
+    'email.read_attachment',
     'email.draft',
     'email.discard',
   ]);
