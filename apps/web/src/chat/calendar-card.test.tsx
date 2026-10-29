@@ -24,7 +24,9 @@ test('a recurring result card renders its next date and plain recurrence summary
     />,
   );
   expect(html).toContain('Next');
-  expect(html).toContain('2026-11-03T17:00:00.000Z');
+  // Cards show the next date the way people read it, not the raw timestamp.
+  expect(html).toContain('Nov 3');
+  expect(html).not.toContain('2026-11-03T17:00:00.000Z');
   expect(html).toContain('Every Tuesday');
   expect(html).not.toContain('Starts');
 });
