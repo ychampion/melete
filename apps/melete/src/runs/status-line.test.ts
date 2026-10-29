@@ -8,7 +8,8 @@ const resting = {
   best: undefined,
   helpersWorking: 0,
   waitingOnSteps: false,
-  nextWakeAt: new Date('2026-10-29T00:00:00.000Z'),
+  // An hour from now, so it reads as resting on whatever day the test runs.
+  nextWakeAt: new Date(Date.now() + 3_600_000),
   question: null,
   standing: null,
   check: null,
