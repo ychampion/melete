@@ -27,6 +27,7 @@ import {
   toolLoop,
   turnEffort,
   withEffort,
+  withTemplateKwargs,
 } from './effort.ts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { skillsSent } from './given-skills.ts';
@@ -554,9 +555,17 @@ export function createModelGateway(options: GatewayOptions): Server {
               ? 'max_output_tokens'
               : 'max_tokens'
         ] = requested;
-        const reasoningOf = () => JSON.stringify([callBody.reasoning, callBody.reasoning_effort]);
+        const reasoningOf = () =>
+          JSON.stringify([
+            callBody.reasoning,
+            callBody.reasoning_effort,
+            callBody.chat_template_kwargs,
+          ]);
         const before = reasoningOf();
-        if (!candidate.plain && !effortRefused(callProvider.name, callModel))
+        if (!candidate.plain && !effortRefused(callProvider.name, callModel)) {
+          // The model family's own template switch (none is set by default),
+          // refused and retried plain like the effort.
+          withTemplateKwargs(callBody, { protocol, model: callModel });
           withEffort(callBody, {
             protocol,
             provider: callProvider.name,
@@ -568,6 +577,7 @@ export function createModelGateway(options: GatewayOptions): Server {
               ...(principal.privacy?.kind === 'job' ? toolLoop(callBody, protocol) : {}),
             }),
           });
+        }
         const effortAdded = reasoningOf() !== before;
         const route: GatewaySettlement['route'] = !rerouted
           ? undefined

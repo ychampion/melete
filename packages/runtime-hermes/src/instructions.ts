@@ -31,6 +31,7 @@ import {
   DEFAULT_REPLY_VOICE,
   DISPLAY_NAME_MAX,
   MEMORY_SEARCH_TOOL_NAME,
+  modelGuidance,
   type ReplyVoice,
   renderSinceLast,
   SKILL_READ_TOOL_NAME,
@@ -112,7 +113,30 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
   parts.push(renderVoice(bundle.voice ?? DEFAULT_REPLY_VOICE));
   parts.push(...renderStanding(bundle.earlier));
   parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
+  const notes = renderModelGuidance(bundle.model.model);
+  if (notes) parts.push(notes);
   return parts.join('\n\n');
+}
+
+/** The heading the per-model notes go under, so they read as their own section. */
+export const MODEL_GUIDANCE_HEADING = '# Notes for the model you run on';
+
+/**
+ * The notes for the connected model's family (`MODEL_GUIDANCE` in the
+ * contracts package), or nothing for a model with none. They go last in the
+ * instructions, after everything said to every model, and depend only on the
+ * model, so they stay in the cached prefix from one turn to the next.
+ */
+export function renderModelGuidance(model: string): string {
+  const entry = modelGuidance(model);
+  if (!entry) return '';
+  return [
+    MODEL_GUIDANCE_HEADING,
+    '',
+    'These add to the instructions above and never replace them.',
+    '',
+    entry.text,
+  ].join('\n');
 }
 
 /** How each voice sounds, in one line. */
