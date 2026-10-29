@@ -393,7 +393,8 @@ withDb('a reminder the agent set', () => {
     const input = renderInput(first.bundle);
     expect(input).toContain('## Now');
     expect(input).toMatch(/It is (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), /);
-    expect(input).toContain('(America/Los_Angeles)');
+    // With the zone's offset at that moment, standard or daylight time.
+    expect(input).toMatch(/\(America\/Los_Angeles, UTC-0[78]:00\)/);
     expect(input).toContain('probably in or near Los Angeles');
     expect(input).toContain('Mention the difference once');
     // Before the new message, after the conversation: the volatile part.

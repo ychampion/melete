@@ -635,12 +635,33 @@ export function renderInput(bundle: AttemptBundle): string {
 /** How many days the calendar strip in the volatile input shows, today first. */
 export const CALENDAR_DAYS = 14;
 
+/** "UTC-08:00" as minutes east of UTC, or null. */
+const offsetMinutes = (offset: string | null): number | null => {
+  const match = offset?.match(/^UTC([+-])(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  return (match[1] === '-' ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3]));
+};
+
+/**
+ * The zone's UTC offset at noon on a calendar date there: after any clock
+ * change made in the early morning, so it is the offset most of that day keeps.
+ */
+function offsetOnDate(year: number, month: number, day: number, timeZone: string): string | null {
+  const noon = Date.UTC(year, month - 1, day, 12);
+  const guess = offsetMinutes(utcOffset(new Date(noon).toISOString(), timeZone));
+  if (guess === null) return null;
+  return utcOffset(new Date(noon - guess * 60_000).toISOString(), timeZone);
+}
+
 /**
  * Each of `days` calendar days from the person's today, as "Sat 14 Nov 2026".
  * Counted on the calendar, not in hours, so a clock change never skips or
- * repeats a day.
+ * repeats a day. A date whose UTC offset differs from the one at `at` shows
+ * its own, as "Mon 2 Nov 2026 (UTC-08:00)", so a time given for it after a
+ * clock change carries the right offset.
  */
 export function calendarStrip(at: string, timeZone: string, days: number): string[] {
+  const current = utcOffset(at, timeZone);
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
@@ -662,14 +683,43 @@ export function calendarStrip(at: string, timeZone: string, days: number): strin
     );
     const named = (type: string) => of.find((p) => p.type === type)?.value ?? '';
     const day = `${named('weekday')} ${named('day')} ${named('month')} ${named('year')}`;
-    return offset === 0 ? `${day} (today)` : day;
+    const own = offsetOnDate(part('year'), part('month'), part('day') + offset, timeZone);
+    const notes = [
+      ...(offset === 0 ? ['today'] : []),
+      ...(own && current && own !== current ? [own] : []),
+    ];
+    return notes.length ? `${day} (${notes.join(', ')})` : day;
   });
+}
+
+/** Said after the dates when one of them shows its own UTC offset. */
+export const CLOCK_CHANGE_NOTE =
+  'A date shown with a UTC offset keeps that one, not today’s, because the clocks change: use it for times on that date.';
+
+/**
+ * The UTC offset a zone keeps at a moment, as "UTC-08:00", or null for a zone
+ * the runtime does not know. Taken for that moment, so it follows daylight
+ * saving: Los Angeles is UTC-08:00 in November and UTC-07:00 in July.
+ */
+export function utcOffset(at: string, timeZone: string): string | null {
+  try {
+    const name = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' })
+      .formatToParts(new Date(at))
+      .find((part) => part.type === 'timeZoneName')?.value;
+    if (!name) return null;
+    // UTC itself is written "GMT", with no offset.
+    return name === 'GMT' ? 'UTC+00:00' : name.replace(/^GMT/, 'UTC');
+  } catch {
+    return null;
+  }
 }
 
 /**
  * The person's own date, time and weekday, and where they probably are. A
  * reminder once gave the weather for the city a stale profile zone was named
- * for, and the model had no clock of its own to say "this evening" by.
+ * for, and the model had no clock of its own to say "this evening" by. The
+ * zone's UTC offset at that moment is given with it, so a time the model writes
+ * for a tool carries the person's offset rather than a `Z`.
  */
 export function renderNow(now: AttemptBundle['local_now']): string[] {
   if (!now) return [];
@@ -687,12 +737,14 @@ export function renderNow(now: AttemptBundle['local_now']): string[] {
   } catch {
     return [];
   }
+  const strip = calendarStrip(now.at, now.time_zone, CALENDAR_DAYS);
   const lines = [
     '',
     '## Now',
     '',
-    `It is ${said} for the person (${now.time_zone}).`,
-    `The next two weeks: ${calendarStrip(now.at, now.time_zone, CALENDAR_DAYS).join(', ')}.`,
+    `It is ${said} for the person (${[now.time_zone, utcOffset(now.at, now.time_zone)].filter(Boolean).join(', ')}).`,
+    `The next two weeks: ${strip.join(', ')}.`,
+    ...(strip.some((day) => /UTC[+-]/.test(day)) ? [CLOCK_CHANGE_NOTE] : []),
     'Take dates and weekdays from these lines; do not work them out or run a clock command for them.',
   ];
   if (now.city)
