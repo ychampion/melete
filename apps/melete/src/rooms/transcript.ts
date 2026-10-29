@@ -61,6 +61,30 @@ export function personLabel(
   return `${row.displayName?.trim() || UNNAMED} <${roomHandle(spaceId, row.id)}>`;
 }
 
+/**
+ * The members a name the agent gave can mean, as every room tool reads one:
+ * their id, their handle with or without its angle brackets, their whole
+ * label as the room shows it, or the name they chose, ignoring case. More than
+ * one means the name alone does not tell them apart.
+ */
+export function membersNamed<T extends { id: string; display_name: string | null }>(
+  members: readonly T[],
+  spaceId: string,
+  given: string,
+): T[] {
+  const name = given.trim().toLowerCase();
+  return members.filter((member) => {
+    const handle = roomHandle(spaceId, member.id);
+    const label = personLabel(
+      { id: member.id, displayName: member.display_name, email: '' },
+      spaceId,
+    );
+    return [member.id, handle, `<${handle}>`, label, member.display_name?.trim()].some(
+      (value) => value?.toLowerCase() === name,
+    );
+  });
+}
+
 /** The label of each of a set of principals in one room; see `personLabel`. */
 export async function namesOf(
   tx: Pick<Transaction, 'select'>,

@@ -34,7 +34,7 @@ import { localDay, localTime, zonedInstant } from '../memory/zoned.ts';
 import { addItem, pushToAssignee, readItems, touchItem } from '../rooms/board.ts';
 import { roomBoardItem } from '../rooms/board-schema.ts';
 import { roomPrincipalOf } from '../rooms/release.ts';
-import { roomHandle } from '../rooms/transcript.ts';
+import { membersNamed, roomHandle } from '../rooms/transcript.ts';
 import { validZone } from './calendar-truth.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
@@ -53,7 +53,7 @@ const who = {
   minLength: 1,
   maxLength: 80,
   description:
-    'The person: the code in angle brackets after their name in this room, or their id. Never a guest.',
+    'The person: their name as this room shows it with the code in angle brackets, the code alone, or their id. Never a guest.',
 };
 const title = { type: 'string', minLength: 1, maxLength: BOARD_TITLE_MAX };
 const detail = { type: ['string', 'null'], maxLength: BOARD_DETAIL_MAX };
@@ -346,24 +346,31 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     return job;
   };
 
-  /** Who an item may be assigned to: an owner or member of the room now, named by id or code. */
+  /**
+   * Who an item may be assigned to: an owner or member of the room now, named
+   * the way the room's calendar tools take a member, including the label
+   * board.list shows them by.
+   */
   const resolveAssignee = async (tx: Query, spaceId: string, named: unknown) => {
     if (named === undefined || named === null) return named as null | undefined;
-    const text = String(named).trim();
-    const people = await tx`select m.principal_id from space_membership m
+    const people = await tx<{ id: string; display_name: string | null }[]>`
+      select p.id, p.display_name from space_membership m
       join principal p on p.id = m.principal_id
       where m.space_id = ${spaceId} and m.revoked_at is null
         and (m.expires_at is null or m.expires_at > now())
         and m.role in ('owner', 'member') and p.kind = 'person' and p.disabled_at is null`;
-    const code = text.replace(/^<|>$/g, '');
-    for (const person of people) {
-      const id = String(person.principal_id);
-      if (id === text || roomHandle(spaceId, id) === code) return id;
-    }
-    throw new BrokerFault(
-      'payload_invalid',
-      'Assign only someone who is in this room now and is not a guest.',
-    );
+    const matches = membersNamed(people, spaceId, String(named));
+    if (matches.length > 1)
+      throw new BrokerFault(
+        'payload_invalid',
+        'More than one person in this room has that name: assign them by the code in angle brackets after it.',
+      );
+    if (!matches[0])
+      throw new BrokerFault(
+        'payload_invalid',
+        'Assign only someone who is in this room now and is not a guest.',
+      );
+    return matches[0].id;
   };
 
   const titleOf = (value: unknown) => {
