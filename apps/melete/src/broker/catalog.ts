@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   type CapabilityClaims,
   CONTEXT_LIMITS,
+  CONVERSATION_TOOL_NAMES,
   type ConnectionHealth,
   INTENT_CAPTURE_TOOL,
   INTENT_TOOL_NAMES,
@@ -250,6 +251,25 @@ const OWN_TERMINAL_TOOL = 'terminal.run';
 const granted = (item: CatalogItem) => (item.entry.source === 'mcp' ? 0 : 1);
 
 /**
+ * Words that point back to another conversation: "last week", "yesterday",
+ * "you found", "we talked about", "earlier", "the one you sent". Read off the
+ * job's own words, so the same message always offers the same tools.
+ */
+const POINTS_BACK = new RegExp(
+  [
+    String.raw`\blast (?:week|month|time|night|year|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b`,
+    String.raw`\b(?:yesterday|the other day|earlier|previously|a while back|remember when)\b`,
+    String.raw`\b(?:days?|weeks?|months?) ago\b`,
+    String.raw`\byou (?:found|sent|said|told me|wrote|drafted|suggested|recommended|gave me|showed me|mentioned|looked up|picked)\b`,
+    String.raw`\bwe (?:talked|discussed|spoke|wrote|drafted|said|went over|looked at|found|chatted)\b`,
+    String.raw`\b(?:the|that) (?:one|draft|list|link|email|message) you\b`,
+    String.raw`\b(?:another|other|last|earlier|previous) (?:chat|conversation)\b`,
+  ].join('|'),
+  'i',
+);
+export const pointsBack = (text: string): boolean => POINTS_BACK.test(text);
+
+/**
  * How firmly a tool holds a place in the core list, ahead of relevance. The
  * agent's own terminal always has one: ranked by the job's words it can lose
  * to a paired computer's tools ("my computer"), and without it the engine is
@@ -269,7 +289,9 @@ function pinOf(tool: ToolSpec, context: CoreSelectionContext): number {
     (context.conversational === true && tool.name === REACT_TOOL_NAME) ||
     (context.readable === true && tool.name === SKILL_READ_TOOL.name) ||
     // Answering a person, the agent searches memory before it says it doesn't know.
-    (context.conversational === true && tool.name === MEMORY_SEARCH_TOOL_NAME)
+    (context.conversational === true && tool.name === MEMORY_SEARCH_TOOL_NAME) ||
+    // A message that points back to another chat is answered from that chat.
+    (CONVERSATION_TOOL_NAMES.includes(tool.name) && pointsBack(context.text ?? ''))
   )
     return 1;
   return 0;
@@ -336,10 +358,14 @@ export function selectCore(
         compare(a.item.entry.name, b.item.entry.name),
     );
   // A connector verb is always a candidate; an MCP tool only when the job's own
-  // words point at it; capabilities and skills stay behind discovery.
+  // words point at it; capabilities and skills stay behind discovery unless
+  // the turn pins them.
   const eligible = scored.filter(
-    ({ item, score }) =>
-      item.core || item.entry.source === 'connector' || (item.entry.source === 'mcp' && score > 0),
+    ({ item, score, pinned }) =>
+      item.core ||
+      pinned > 0 ||
+      item.entry.source === 'connector' ||
+      (item.entry.source === 'mcp' && score > 0),
   );
   const chosen = new Set<CatalogItem>();
   // Asking the person is always on offer and rides beside the budget like the
@@ -706,6 +732,15 @@ export class ToolCatalog {
         (!access.readsMemory || job.constraints.public_compartment === true)
       )
         continue;
+      // The person's earlier conversations follow the same rule, and are never
+      // offered to a room's work.
+      if (
+        CONVERSATION_TOOL_NAMES.includes(tool.name) &&
+        (!access.readsMemory ||
+          job.constraints.public_compartment === true ||
+          (await roomWork(tx, job.id)))
+      )
+        continue;
       // Offered only while the owner's approval is waiting to be carried out.
       if (tool.name === RESUME_ACTION_TOOL.name && !resumable) continue;
       // Offered only while a chase's scope still covers a follow-up.
@@ -742,7 +777,9 @@ export class ToolCatalog {
         original: tool.name,
         tool,
         entry: manifestEntry(tool, [], 'capability', 'ok'),
-        core: true,
+        // Earlier conversations join the first catalog only when the message
+        // points back to one (`pointsBack`); otherwise they wait behind discovery.
+        core: !CONVERSATION_TOOL_NAMES.includes(tool.name),
         uses: 0,
       });
     }

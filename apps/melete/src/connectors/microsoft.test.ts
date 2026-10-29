@@ -277,6 +277,34 @@ describe('Outlook mail through the email tools', () => {
     expect((searched.receipt.detail.messages as unknown[]).length).toBe(1);
   });
 
+  test('a search with OR runs each alternative and joins the results once each, within the limit', async () => {
+    const { microsoft, connector } = await outlookMail();
+    microsoft.deliver(RAW('Field trip on Friday', 'The class field trip leaves at nine.', 'trip'));
+    microsoft.deliver(RAW('Forms', 'Please sign the permission slip by Wednesday.', 'slip'));
+    microsoft.deliver(RAW('Both', 'The field trip needs a permission slip.', 'both'));
+    microsoft.deliver(RAW('Piano', 'Lessons move to Thursday.', 'piano'));
+    const subjects = async (query: string, limit = 10) => {
+      const found = await connector.execute(
+        mailAction('email.search', { query, limit }),
+        mailContext(),
+      );
+      if (found.outcome !== 'succeeded') throw new Error(found.outcome);
+      return (found.receipt.detail.messages as { subject: string }[]).map((m) => m.subject);
+    };
+    const asked = microsoft.searches.length;
+    // Newest first across both searches.
+    expect(await subjects('"field trip" OR "permission slip"')).toEqual([
+      'Both',
+      'Forms',
+      'Field trip on Friday',
+    ]);
+    expect(microsoft.searches.slice(asked)).toEqual(['"field trip"', '"permission slip"']);
+    expect(await subjects('"field trip" OR "permission slip"', 2)).toHaveLength(2);
+    // Operators not every mailbox has fall back to the plain terms around them.
+    expect(await subjects('subject:piano OR is:unread')).toEqual(['Piano']);
+    expect(microsoft.searches.at(-1)).toBe('"piano"');
+  });
+
   test('a send is found in Sent Items afterwards, even when Graph gives it a Message-ID of its own', async () => {
     for (const rewriteMessageId of [false, true]) {
       const { microsoft, connector } = await outlookMail({ rewriteMessageId });
@@ -357,7 +385,10 @@ describe('Outlook calendar through the calendar tools', () => {
     expect((await connector.execute(create, mailContext('act_event1'))).outcome).toBe('failed');
     expect(microsoft.events.size).toBe(1);
 
-    const listed = await connector.execute(mailAction('calendar.list', {}), mailContext());
+    const listed = await connector.execute(
+      mailAction('calendar.list', { from: '2026-09-30', to: '2026-10-01' }),
+      mailContext(),
+    );
     if (listed.outcome !== 'succeeded') throw new Error(listed.outcome);
     const [view] = listed.receipt.detail.events as Record<string, unknown>[];
     expect(view).toMatchObject({

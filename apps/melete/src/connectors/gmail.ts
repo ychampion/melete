@@ -5,6 +5,7 @@
  * hygiene. Messages are addressed by Gmail's own id instead of an IMAP UID.
  */
 import { retryAfterOf } from '../signals/types.ts';
+import { gmailQuery, parseMailQuery } from './mail-query.ts';
 import {
   composeMail,
   headerBlock,
@@ -107,7 +108,8 @@ export class GmailApiTransport implements MailTransport {
       maxResults: String(limit),
       labelIds: folder === 'sent' ? 'SENT' : 'INBOX',
     });
-    if (query) params.set('q', query);
+    const q = gmailQuery(parseMailQuery(query));
+    if (q) params.set('q', q);
     const messages: MailMessage[] = [];
     for (const id of await this.ids(params)) {
       // A search reads only messages within the body bound; a larger one is opened by email.read.

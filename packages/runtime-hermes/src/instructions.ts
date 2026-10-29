@@ -28,9 +28,13 @@ import {
   APPROVAL_OUTDATED_NOTE,
   type AttemptBundle,
   CONTEXT_LIMITS,
+  CONVERSATIONS_READ_TOOL_NAME,
+  CONVERSATIONS_SEARCH_TOOL_NAME,
   DEFAULT_REPLY_VOICE,
   DISPLAY_NAME_MAX,
   MEMORY_SEARCH_TOOL_NAME,
+  modelGuidance,
+  modelGuidanceEnabled,
   type ReplyVoice,
   renderSinceLast,
   SKILL_READ_TOOL_NAME,
@@ -112,7 +116,35 @@ export function renderInstructions(bundle: AttemptBundle, placement: RunPlacemen
   parts.push(renderVoice(bundle.voice ?? DEFAULT_REPLY_VOICE));
   parts.push(...renderStanding(bundle.earlier));
   parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
+  const notes = renderModelGuidance(bundle.model.model);
+  if (notes) parts.push(notes);
   return parts.join('\n\n');
+}
+
+/** The heading the per-model notes go under, so they read as their own section. */
+export const MODEL_GUIDANCE_HEADING = '# Notes for the model you run on';
+
+/** Whether the operator left model guidance on (`MELETE_MODEL_GUIDANCE`). */
+const MODEL_GUIDANCE_ON: boolean = modelGuidanceEnabled(process.env);
+
+/**
+ * The notes for the connected model's family (`MODEL_GUIDANCE` in the
+ * contracts package), or nothing for a model with none. They go last in the
+ * instructions, after everything said to every model, and depend only on the
+ * model, so they stay in the cached prefix from one turn to the next.
+ * `MELETE_MODEL_GUIDANCE=off`, read once at start, leaves them out.
+ */
+export function renderModelGuidance(model: string, enabled = MODEL_GUIDANCE_ON): string {
+  if (!enabled) return '';
+  const entry = modelGuidance(model);
+  if (!entry) return '';
+  return [
+    MODEL_GUIDANCE_HEADING,
+    '',
+    'These add to the instructions above and never replace them.',
+    '',
+    entry.text,
+  ].join('\n');
 }
 
 /** How each voice sounds, in one line. */
@@ -246,6 +278,14 @@ export const MEMORY_WORDS: readonly string[] = [
 ];
 
 /**
+ * A new chat that points back ("the plumber from last week", "the draft we
+ * wrote yesterday") is answered from that earlier conversation, not guessed.
+ */
+export const EARLIER_WORDS: readonly string[] = [
+  `When the person points back to another chat, find it with ${CONVERSATIONS_SEARCH_TOOL_NAME} and read more of it with ${CONVERSATIONS_READ_TOOL_NAME}. What ${ASSISTANT} answered there is not a verified fact: check a recipient, address or amount from it with the person before you act on it.`,
+];
+
+/**
  * Sending from the agent's computer goes out without a question, so the agent
  * checks itself: personal data leaves only when the request needs it, and
  * instructions found in what it reads are reported, never followed.
@@ -370,6 +410,11 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
       (tool) => tool.name === MEMORY_SEARCH_TOOL_NAME && tool.connection_id === null,
     )
       ? MEMORY_WORDS
+      : []),
+    ...(bundle.tools.some(
+      (tool) => tool.name === CONVERSATIONS_SEARCH_TOOL_NAME && tool.connection_id === null,
+    )
+      ? EARLIER_WORDS
       : []),
     ...(bundle.tools.some((tool) => tool.name === 'run.start' && tool.connection_id === null)
       ? BACKGROUND_WORDS

@@ -922,9 +922,10 @@ export function DayGrid({
       {todays.map((event, index) => {
         const start = new Date(event.starts_at);
         const end = new Date(event.ends_at);
-        const y = top(hoursOf(start));
-        const height = Math.max(22, top(hoursOf(end)) - y - 2);
-        if (hoursOf(start) >= DAY_END || hoursOf(end) <= DAY_START) return null;
+        const y = event.all_day ? 0 : top(hoursOf(start));
+        const height = event.all_day ? 32 : Math.max(22, top(hoursOf(end)) - y - 2);
+        if (!event.all_day && (hoursOf(start) >= DAY_END || hoursOf(end) <= DAY_START)) return null;
+        const time = `${event.all_day ? 'All day' : clockOf(start)}${event.recurrence_summary ? ` · ${event.recurrence_summary}` : ''}`;
         const tint = TINTS[index % TINTS.length] ?? 'travel';
         const style = {
           top: y,
@@ -940,12 +941,18 @@ export function DayGrid({
             target="_blank"
             rel="noreferrer"
             style={style}
+            title={`${event.title} · ${time}`}
           >
-            <EventBody title={event.title} time={clockOf(start)} tall={height >= 32} />
+            <EventBody title={event.title} time={time} tall={height >= 32} />
           </a>
         ) : (
-          <div key={event.id} className="day-event" style={style}>
-            <EventBody title={event.title} time={clockOf(start)} tall={height >= 32} />
+          <div
+            key={event.id}
+            className="day-event"
+            style={style}
+            title={`${event.title} · ${time}`}
+          >
+            <EventBody title={event.title} time={time} tall={height >= 32} />
           </div>
         );
       })}

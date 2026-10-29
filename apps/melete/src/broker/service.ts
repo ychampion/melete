@@ -5,6 +5,8 @@ import {
   type ApprovalDecisionRequest,
   BROKER_TIMEOUT_MS,
   type CapabilityClaims,
+  CONVERSATION_TOOL_NAMES,
+  CONVERSATION_TOOLS,
   type ConnectorFault,
   type ConnectorTool,
   canonicalizePayload,
@@ -307,6 +309,11 @@ export type BrokerOptions = {
    * the attempt's own memory rules. Left out, the tool is not offered.
    */
   memorySearch?: (claims: CapabilityClaims, input: unknown) => Promise<unknown>;
+  /**
+   * `conversations.search` and `conversations.read`: the person's earlier
+   * conversations, found and read by their words. Left out, they are not offered.
+   */
+  conversations?: (claims: CapabilityClaims, name: string, input: unknown) => Promise<unknown>;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   /**
@@ -628,6 +635,7 @@ export class BrokerService implements BrokerOperations {
         ...(options.runs ? RUN_TOOLS : []),
         ...(options.intents ? [INTENT_CAPTURE_TOOL] : []),
         ...(options.memorySearch ? [MEMORY_SEARCH_TOOL] : []),
+        ...(options.conversations ? CONVERSATION_TOOLS : []),
       ],
       ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
       taskLevels: (tx, jobId) => this.taskLevels(tx, jobId),
@@ -871,6 +879,18 @@ export class BrokerService implements BrokerOperations {
     if (!this.options.memorySearch) throw new BrokerFault('unknown_tool');
     try {
       return await this.options.memorySearch(claims, input);
+    } catch (error) {
+      if (error instanceof ZodError) throw new BrokerFault('payload_invalid', inputProblem(error));
+      throw error;
+    }
+  }
+
+  /** `conversations.*`. The search decides what the attempt may read; bad arguments come back as a fault. */
+  async conversationTool(claims: CapabilityClaims, name: string, input: unknown): Promise<unknown> {
+    if (!this.options.conversations || !CONVERSATION_TOOL_NAMES.includes(name))
+      throw new BrokerFault('unknown_tool');
+    try {
+      return await this.options.conversations(claims, name, input);
     } catch (error) {
       if (error instanceof ZodError) throw new BrokerFault('payload_invalid', inputProblem(error));
       throw error;

@@ -14,6 +14,7 @@ import { fileBlock, unmarked } from '../attachments/render.ts';
 import { type MailInstance, passwordResetMail, signInMail } from '../experience/account-mail.ts';
 import { MAIL_PICTURE_NOT_SHOWN } from '../gateway/attachments.ts';
 import type { SignalSource } from '../signals/types.ts';
+import { MAIL_QUERY_HELP, MAX_ALTERNATIVES, mailQueryText, readMailQuery } from './mail-query.ts';
 import {
   credentialRefused,
   type EmailConnection,
@@ -90,8 +91,7 @@ export const emailManifest: ConnectorManifest = {
   tools: [
     {
       name: 'email.search',
-      description:
-        'Search inbox messages, or sent ones with folder "sent"; authentication messages are filtered best-effort.',
+      description: `Search inbox messages, or sent ones with folder "sent"; authentication messages are filtered best-effort. ${MAIL_QUERY_HELP}`,
       input_schema: {
         type: 'object',
         additionalProperties: false,
@@ -505,9 +505,21 @@ export class EmailConnector implements Connector {
         const messages = await this.use((transport) =>
           transport.search(payload.query, payload.limit, payload.folder),
         );
-        return this.success(action, {
+        const detail: JsonObject = {
           messages: messages.filter((message) => !sensitiveInboxMessage(message)).map(messageView),
-        });
+        };
+        const reading = readMailQuery(payload.query);
+        if (reading.leftOut.length || reading.more)
+          detail.not_searched = {
+            alternatives: reading.leftOut.map(mailQueryText),
+            more: reading.more,
+            note: `One search covers at most ${MAX_ALTERNATIVES} OR alternatives. These were not searched; search for them next.${
+              reading.more
+                ? ' The query had still more combinations than are listed; split it into smaller searches.'
+                : ''
+            }`,
+          };
+        return this.success(action, detail);
       }
       if (action.kind === 'email.read' || action.kind === 'email.read_attachment') {
         const attachment = action.kind === 'email.read_attachment';

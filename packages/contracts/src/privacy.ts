@@ -129,6 +129,8 @@ export const privacySettings = z.strictObject({
    * conversation. A computer's own setting, when it has one, wins.
    */
   screenshots_paired_devices: z.boolean(),
+  /** Keep a bounded history of redacted text for "what the model saw". On by default. */
+  record_seen: z.boolean(),
 });
 export type PrivacySettings = z.infer<typeof privacySettings>;
 
@@ -149,6 +151,7 @@ export const privacySettingsUpdate = z.strictObject({
   local_detection: z.boolean().optional(),
   screenshots_own_computer: z.boolean().optional(),
   screenshots_paired_devices: z.boolean().optional(),
+  record_seen: z.boolean().optional(),
   /** Confirm (true) or withdraw (false) that the configured model's address is a model the owner runs. */
   model_on_device: z.boolean().optional(),
   add_known_values: z

@@ -118,6 +118,29 @@ describe('email connector', () => {
     ).toBe('succeeded');
   });
 
+  test('a search with more OR alternatives than it runs says which it left out', async () => {
+    const connector = new EmailConnector(config, secret, () => new MailDouble());
+    const nine = await connector.execute(
+      mailAction('email.search', {
+        query: '(invoice OR receipt OR bill) (march OR april OR may)',
+      }),
+      mailContext(),
+    );
+    expect(nine.outcome).toBe('succeeded');
+    if (nine.outcome === 'succeeded')
+      expect(nine.receipt.detail.not_searched).toEqual({
+        alternatives: ['bill may'],
+        more: false,
+        note: 'One search covers at most 8 OR alternatives. These were not searched; search for them next.',
+      });
+    const plain = await connector.execute(
+      mailAction('email.search', { query: 'invoice OR receipt' }),
+      mailContext(),
+    );
+    if (plain.outcome === 'succeeded')
+      expect(plain.receipt.detail).not.toHaveProperty('not_searched');
+  });
+
   test('search reads the Sent folder when asked, and the inbox otherwise', async () => {
     const fake = new MailDouble();
     const connector = new EmailConnector(config, secret, () => fake);

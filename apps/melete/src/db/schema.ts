@@ -553,6 +553,11 @@ export const job = pgTable(
     index('job_room_thread_idx').on(t.roomThreadId),
     // A person's chats, which the starter tasks scan for whether they have begun.
     index('job_chat_principal_idx').on(t.principalId).where(sql`${t.kind} = 'chat'`),
+    // A chat found by the words of its title when the agent searches earlier
+    // conversations (`experience/earlier.ts`).
+    index('job_chat_title_search_idx')
+      .using('gin', sql`to_tsvector('simple', ${t.title})`)
+      .where(sql`${t.kind} = 'chat'`),
     check('job_audience', sql`${t.audience} in ('principal', 'room')`),
   ],
 );
@@ -1314,8 +1319,17 @@ export const experienceTurn = pgTable(
      */
     seenAt: timestamp('seen_at', { withTimezone: true }),
   },
-  // A chat's turns, newest first, a page at a time.
-  (t) => [index('experience_turn_job_created_idx').on(t.jobId, t.createdAt, t.id)],
+  (t) => [
+    // A chat's turns, newest first, a page at a time.
+    index('experience_turn_job_created_idx').on(t.jobId, t.createdAt, t.id),
+    // Earlier conversations searched by the words of a turn and its answer
+    // (`experience/earlier.ts`). An index on the expression, not a stored
+    // column: a chat's page reads whole turns, and would carry the vector too.
+    index('experience_turn_search_idx').using(
+      'gin',
+      sql`to_tsvector('simple', ${t.text} || ' ' || ${t.answer})`,
+    ),
+  ],
 );
 
 export const experienceProfile = pgTable('experience_profile', {

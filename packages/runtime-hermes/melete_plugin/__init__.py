@@ -250,7 +250,7 @@ def build_handler(
             # ask_person records a question for the person; the broker decides
             # whether it may be asked and the service makes the job wait on it.
             if connection_id is None and (
-                name.startswith(("skills.", "run.", "intent.", "memory."))
+                name.startswith(("skills.", "run.", "intent.", "memory.", "conversations."))
                 or name in ("compose", "chase.follow_up", "ask_person")
             ):
                 # A measured try runs its commands in the sandbox before it answers.

@@ -1056,15 +1056,28 @@ export function projectCards(
           ? object(payload.event)
           : payload;
     const facts: Array<{ label: string; value: string }> = [];
-    if (source.kind === 'event')
+    if (source.kind === 'event') {
+      const status = event.recurrence_status;
       for (const [field, label] of [
         ['start', 'Starts'],
         ['end', 'Ends'],
         ['location', 'Place'],
       ] as const) {
+        if (field !== 'location' && (status === 'ended' || status === 'unknown')) continue;
         const value = plainText(event[field], '');
-        if (value) facts.push({ label, value });
+        if (value)
+          facts.push({ label: field === 'start' && status === 'active' ? 'Next' : label, value });
       }
+      if (status === 'ended' || status === 'unknown')
+        facts.push({
+          label: 'Status',
+          value: status === 'ended' ? 'Series ended' : 'Next occurrence unavailable',
+        });
+      // A series whose rule could not be read says only "Repeats", which
+      // its status line already covers.
+      const repeats = plainText(event.recurrence_summary, '');
+      if (repeats && repeats !== 'Repeats') facts.push({ label: 'Repeats', value: repeats });
+    }
     if (source.kind === 'draft') facts.push({ label: 'To', value: recipientText(payload) });
     // A file a files action saved or moved opens from that action's own route.
     const saved = source.kind === 'file' ? savedFile(row.kind, row.receipt) : null;

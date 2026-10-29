@@ -94,6 +94,38 @@ describe('detectors find what they are for', () => {
     ['I live at 742 Evergreen Terrace.', 'address', '742 Evergreen Terrace'],
     ['Meet at 12 Main St. at noon', 'address', '12 Main St.'],
     ['Post to PO Box 1234', 'address', 'PO Box 1234'],
+    // Street names of more than one word, and street words that come first.
+    [
+      'Send it to 381 Alameda de las Flores, Villa Nueva, CA 90000.',
+      'address',
+      '381 Alameda de las Flores, Villa Nueva, CA 90000',
+    ],
+    ['I live at 381 Alameda de las Flores.', 'address', '381 Alameda de las Flores'],
+    [
+      '381 Alameda de las Flores, Apt 4, Villa Nueva, CA 90000',
+      'address',
+      '381 Alameda de las Flores, Apt 4, Villa Nueva, CA 90000',
+    ],
+    ['Drop it at 77 Camino del Sol Poniente today', 'address', '77 Camino del Sol Poniente'],
+    ['The office is at 45 Calle de la Luna Azul.', 'address', '45 Calle de la Luna Azul'],
+    ['We moved to 300 Avenida Sol Brillante last May', 'address', '300 Avenida Sol Brillante'],
+    ['Mail it to 12 Paseo de los Pinos', 'address', '12 Paseo de los Pinos'],
+    ['They live at 9 Via del Mar Chico', 'address', '9 Via del Mar Chico'],
+    [
+      'Ship to 9 Via Serena, Puerto Claro, CA 90002',
+      'address',
+      '9 Via Serena, Puerto Claro, CA 90002',
+    ],
+    [
+      'Her address is 1150 Las Gallinas Altas, Sun Valley, NV 89000',
+      'address',
+      '1150 Las Gallinas Altas, Sun Valley, NV 89000',
+    ],
+    [
+      'Write to 58 Broadview, Lakeport, OR 97000-1234 soon',
+      'address',
+      '58 Broadview, Lakeport, OR 97000-1234',
+    ],
     ['postcode SW1A 1AA', 'address', 'SW1A 1AA'],
     ['call me on +44 20 7946 0958', 'phone', '+44 20 7946 0958'],
     ['cell (415) 555-0132', 'phone', '(415) 555-0132'],
@@ -169,6 +201,15 @@ describe('false-positive guards', () => {
     'Room 101 on floor 3.',
     'max_tokens: 4096 and prompt_tokens=1200',
     'The savings account balance is 123456 dollars.',
+    // Street words that are also ordinary words or place names.
+    'Over 600 Alameda County families signed up.',
+    'We booked 2 Via Rail tickets to Montreal.',
+    'I sent 3 via email and 2 Via the portal.',
+    'She walked 12 camino stages and 3 Calle walks.',
+    'In 2019 Maria moved to Dallas, TX 75201 for work.',
+    'Gate 4 Avenida, then left.',
+    'Chapter 7, Section 2, CA 94000 rules',
+    'Rated 5 Stars, Best Value, XX 12345',
   ];
   for (const text of clean)
     test(text, () => {

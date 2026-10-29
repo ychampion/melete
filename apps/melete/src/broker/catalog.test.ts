@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import type { ToolSpec } from '@melete/contracts';
+import { CONVERSATION_TOOLS, type ToolSpec } from '@melete/contracts';
 import type { Connector } from '../connectors/types.ts';
 import {
   CATALOG_INDEX_TOKENS,
@@ -7,6 +7,7 @@ import {
   MAX_DISPATCH_BUDGET_MS,
   META_TOOLS,
   manifestEntry,
+  pointsBack,
   readableSkills,
   type SourcedSkill,
   schemaFingerprint,
@@ -269,6 +270,36 @@ test('the memory search is pinned when the turn answers a person', () => {
     'load_tool',
     'memory.search',
   ]);
+});
+
+test('earlier conversations join the first catalog when the message points back, and only then', () => {
+  const files = Array.from({ length: 12 }, (_, i) =>
+    item(`files.t${String(i).padStart(2, '0')}`, { core: true }),
+  );
+  const earlier = CONVERSATION_TOOLS.map((tool) => ({
+    tool,
+    entry: manifestEntry(tool, [], 'capability', 'ok'),
+    core: false,
+    uses: 0,
+  }));
+  const budget = toolTokens([...META_TOOLS, ...CONVERSATION_TOOLS]);
+  const offered = (text: string) => names(selectCore([...files, ...earlier], budget, { text }, 0));
+  for (const text of [
+    "What was the plumber's number from last week?",
+    'Which of the three vacuums you found on Tuesday was cheapest?',
+    'Send the draft we talked about yesterday',
+    'the one you sent earlier',
+  ])
+    expect([text, offered(text)]).toEqual([
+      text,
+      ['search_tools', 'load_tool', 'conversations.read', 'conversations.search'],
+    ]);
+  for (const text of ['What is the weather in Lisbon tomorrow?', 'Book a table for Friday'])
+    expect([text, offered(text).filter((name) => name.startsWith('conversations.'))]).toEqual([
+      text,
+      [],
+    ]);
+  expect(pointsBack('Remind me before the week is out')).toBe(false);
 });
 
 test('a skill is readable only within scope, and a space skill only by its audience', () => {

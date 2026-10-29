@@ -444,6 +444,7 @@ const dayLabel = (iso: string, today: Date): string => {
 };
 const timeLabel = (iso: string) => clockTime(new Date(iso));
 const durationLabel = (event: CalendarEvent) => {
+  if (event.all_day) return 'All day';
   const minutes = Math.round((Date.parse(event.ends_at) - Date.parse(event.starts_at)) / 60_000);
   if (minutes < 60) return `${minutes} minutes`;
   const hours = Number.isInteger(minutes / 60) ? minutes / 60 : (minutes / 60).toFixed(1);
@@ -589,7 +590,7 @@ export function Rail({
                     <div className="col" style={{ width: 60, flexShrink: 0, gap: 2 }}>
                       {showDay ? <span className="overline">{day}</span> : null}
                       <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--secondary)' }}>
-                        {timeLabel(event.starts_at)}
+                        {event.all_day ? 'All day' : timeLabel(event.starts_at)}
                       </span>
                     </div>
                     <div
@@ -622,6 +623,7 @@ export function Rail({
                       )}
                       <span style={{ fontSize: 12, color: 'var(--muted)' }}>
                         {durationLabel(event)}
+                        {event.recurrence_summary ? ` · ${event.recurrence_summary}` : ''}
                       </span>
                     </div>
                   </div>
