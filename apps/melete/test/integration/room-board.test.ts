@@ -438,6 +438,40 @@ withDb('room board', () => {
     ).toBe('refused');
   }, 60_000);
 
+  test('a person named as the board lists them, or by the name they chose, is assigned', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Errand rota');
+    const { claims } = await request(world.alice, roomId);
+    const handle = roomHandle(roomId, world.bob.id);
+    for (const named of [`Bob <${handle}>`, 'bob', `<${handle}>`]) {
+      const asked = await tool(claims, roomId, 'board.ask', { assignee: named, title: 'Can you?' });
+      expect(asked.status).toBe('succeeded');
+      const [row] =
+        await sql`select assignee_principal_id from room_board_item where id = ${asked.item}`;
+      expect(row?.assignee_principal_id).toBe(world.bob.id);
+    }
+    // Erin is not in this room, whatever she is called.
+    expect(
+      (await tool(claims, roomId, 'board.ask', { assignee: 'Erin', title: 'Can you?' })).status,
+    ).toBe('refused');
+    // Two people with one name are told apart only by their code.
+    await sql`update principal set display_name = 'Bob' where id = ${world.carol.id}`;
+    try {
+      const same = await tool(claims, roomId, 'board.ask', { assignee: 'Bob', title: 'Can you?' });
+      expect(same.refused).toContain('assign them by the code in angle brackets');
+      expect(
+        (
+          await tool(claims, roomId, 'board.ask', {
+            assignee: `Bob <${handle}>`,
+            title: 'Can you?',
+          })
+        ).status,
+      ).toBe('succeeded');
+    } finally {
+      await sql`update principal set display_name = 'Carol' where id = ${world.carol.id}`;
+    }
+  }, 60_000);
+
   test('a claim race has one winner, and the claim reaches another open stream', async () => {
     const roomId = await makeRoom('Rota');
     const { claims } = await request(world.alice, roomId);
