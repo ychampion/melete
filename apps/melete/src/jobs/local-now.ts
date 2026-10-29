@@ -7,6 +7,11 @@
  * guess; once confirmed, the profile wins. A difference between the two is
  * told to the model once (per space and pair of zones), so it can say so in
  * one sentence instead of quietly giving another city's weather.
+ *
+ * A room keeps no profile of its own unless it chose a zone, and its members
+ * write from their own devices, so a room's work reads time in the zone its
+ * board does: the room's own choice, else that of the person whose request it
+ * is, else its maker's.
  */
 import { canonicalTimeZone } from '@melete/contracts';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -67,8 +72,39 @@ async function deviceZone(tx: Reader, jobIds: string[]): Promise<string | null> 
   return knownZone(row?.zone);
 }
 
+/**
+ * The zone a room reads time in, or null when the space is not a room. A room
+ * that set none takes the zone of the person whose request the first of these
+ * jobs is, from their own space, then its maker's; UTC only when nobody chose
+ * one. A profile still on its first UTC default counts as no choice. This is
+ * the rule the board connector's `roomZone` reads times on the board with, so
+ * the hour the work is told it is matches the hours the board shows.
+ */
+async function roomZone(tx: Reader, spaceId: string, jobIds: string[]): Promise<string | null> {
+  const [row] = await tx.execute<{ zone: string | null }>(sql`
+    with chosen as (
+      select p.space_id, p.time_zone from experience_profile p
+      where p.time_zone_confirmed_at is not null or p.time_zone <> 'UTC'),
+    personal as (
+      select coalesce(s.owner_principal_id, (select id from owner limit 1)) as principal_id,
+             c.time_zone
+      from space s join chosen c on c.space_id = s.id where s.kind = 'personal')
+    select coalesce(
+      (select time_zone from chosen where space_id = r.id),
+      (select p.time_zone from personal p join job j on j.requested_by_principal_id = p.principal_id
+        where j.id = ${jobIds[0] ?? ''} limit 1),
+      (select p.time_zone from personal p
+        where p.principal_id = coalesce(r.owner_principal_id, (select id from owner limit 1))
+        limit 1)) as zone
+    from space r where r.id = ${spaceId} and r.kind = 'shared'`);
+  if (!row) return null;
+  return knownZone(row.zone) ?? 'UTC';
+}
+
 /** The profile's zone, the device's, and which one time is read in. */
 async function zoneChoice(tx: Reader, spaceId: string, jobIds: string[]) {
+  const room = await roomZone(tx, spaceId, jobIds);
+  if (room) return { saved: room, device: null, used: 'profile' as const, zone: room };
   const [profile] = await tx
     .select({
       timeZone: experienceProfile.timeZone,
