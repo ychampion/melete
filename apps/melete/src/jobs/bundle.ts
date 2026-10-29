@@ -15,6 +15,7 @@ import {
   GATEWAY_MAX_REQUEST_BYTES,
   inputTokenCeiling,
   isRunKind,
+  type JsonObject,
   jobBudget,
   jobConstraints,
   jsonObject,
@@ -550,6 +551,60 @@ const resultContent = (payload: unknown): { tool_call_id: string; content: strin
     content: JSON.stringify({ ok: result.ok, result: result.result }),
   };
 };
+
+/** The words a step's summary starts with, for the tools people are asked about most. */
+const STEP_WORDS: Record<string, string> = {
+  'calendar.create': 'add to the calendar',
+  'calendar.update': 'change on the calendar',
+  'calendar.delete': 'remove from the calendar',
+  'email.send': 'send the email',
+  'sms.send': 'send the text',
+  'files.write': 'save the file',
+  'files.delete': 'delete the file',
+  'room.post': 'post in the room',
+};
+
+/**
+ * A step in a few words, for the person who decided on it: what it does, the
+ * item's own title and when. Made only from the payload the attempt is
+ * handed beside it, so it says nothing the attempt does not already read.
+ */
+export function stepSummary(
+  kind: string,
+  payload: JsonObject,
+  people: ReadonlyMap<string, string> = new Map(),
+): string {
+  const item =
+    payload.event && typeof payload.event === 'object' && !Array.isArray(payload.event)
+      ? (payload.event as JsonObject)
+      : payload;
+  const text = (...fields: string[]) => {
+    for (const field of fields) {
+      const value = item[field];
+      if (typeof value === 'string' && value.trim()) return value.trim().replace(/\s+/g, ' ');
+    }
+    return '';
+  };
+  const title = text('summary', 'title', 'subject', 'name', 'path').slice(0, 120);
+  const when = text('start', 'starts_at', 'due_at').slice(0, 40);
+  const quoted = title ? ` "${title}"` : '';
+  const at = when ? ` at ${when}` : '';
+  if (kind === 'room.add_to_member_calendar') {
+    const member =
+      typeof payload.member_name === 'string' && payload.member_name.trim()
+        ? payload.member_name.trim()
+        : typeof payload.member === 'string'
+          ? people.get(payload.member)
+          : undefined;
+    return `add${quoted || ' an event'} to ${member ? `${member}'s` : 'their'} calendar${at}`.slice(
+      0,
+      300,
+    );
+  }
+  // Nothing to say beyond the tool's name, which the attempt already has.
+  if (!STEP_WORDS[kind] && !quoted && !at) return '';
+  return `${STEP_WORDS[kind] ?? `the ${kind} step`}${quoted}${at}`.slice(0, 300);
+}
 
 /** `assembleHistory` up to the bound: the whole conversation, in order. */
 export function collectHistory(
@@ -1545,15 +1600,46 @@ export async function buildAttemptSkeleton(
         .from(action)
         .where(and(eq(action.jobId, row.id), inArray(action.id, decided)))
     : [];
+  // Who answered, when a person did, named as the conversation names people.
+  const deciders = decided.length
+    ? await tx
+        .select({
+          actionId: approval.actionId,
+          decision: approval.decision,
+          by: approval.decidedBy,
+        })
+        .from(approval)
+        .innerJoin(principal, eq(principal.id, approval.decidedBy))
+        .where(inArray(approval.actionId, decided))
+        .orderBy(desc(approval.decidedAt))
+    : [];
+  const members = decidedActions.flatMap((stored) => {
+    const member = (stored.payload as { member?: unknown } | null)?.member;
+    return stored.kind === 'room.add_to_member_calendar' && typeof member === 'string'
+      ? [member]
+      : [];
+  });
+  const people = await namesOf(tx, row.spaceId, [
+    ...deciders.map((entry) => String(entry.by)),
+    ...members,
+  ]);
   history.inputs.approval_results = history.inputs.approval_results.map((entry) => {
     const stored = decidedActions.find((candidate) => candidate.id === entry.action_id);
     const payload = jsonObject.safeParse(stored?.payload);
+    const by = deciders.find(
+      (candidate) =>
+        candidate.actionId === entry.action_id && candidate.decision === entry.decision,
+    );
+    const name = by ? people.get(String(by.by)) : undefined;
+    const summary = stored && payload.success ? stepSummary(stored.kind, payload.data, people) : '';
     return stored
       ? {
           ...entry,
           kind: stored.kind,
           status: stored.status,
           ...(payload.success ? { payload: payload.data } : {}),
+          ...(name ? { decided_by_name: name.slice(0, 200) } : {}),
+          ...(summary ? { summary } : {}),
         }
       : entry;
   });

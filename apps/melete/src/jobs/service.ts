@@ -171,6 +171,17 @@ export type JobFaults = {
   afterTransitionBeforeEnqueue?: (tx: Transaction, row: JobRow) => Promise<void>;
 };
 
+/**
+ * The most attempts people's answers to permissions may add to a job past its
+ * attempt budget: room for two or three people answering in one flow. Past
+ * them, a turn that would park on a permission ends on the budget instead.
+ */
+export const ANSWER_ATTEMPTS = 3;
+
+/** What a turn says when it ends there, rather than waiting on an answer it cannot act on. */
+export const ANSWER_CEILING_NOTE =
+  'This request has had all the tries it is allowed, so it stopped here instead of waiting on another permission. Ask again to carry on.';
+
 export class JobService {
   onCancelled?: (id: string) => void;
   /** Called inside the transaction that cancelled a job, with its cancelled row. */
@@ -402,6 +413,22 @@ export class JobService {
   async attemptsLeft(tx: Transaction, row: JobRow): Promise<boolean> {
     // A run counts failed shifts in a row instead, when each shift ends.
     if (isRunKind(row.kind)) return true;
+    return (await this.attemptsUsed(tx, row)) < jobBudget.parse(row.budget).max_attempts;
+  }
+
+  /**
+   * Whether a person's answer to a permission may still wake the job past its
+   * attempt budget: fewer than `ANSWER_ATTEMPTS` attempts made beyond it, in
+   * the current turn for a conversation or routine, in the job otherwise.
+   */
+  async answerAttemptsLeft(tx: Transaction, row: JobRow): Promise<boolean> {
+    if (isRunKind(row.kind)) return true;
+    const past = (await this.attemptsUsed(tx, row)) - jobBudget.parse(row.budget).max_attempts;
+    return past < ANSWER_ATTEMPTS;
+  }
+
+  /** The attempts the budget counts: the current turn's, or the job's. */
+  private async attemptsUsed(tx: Transaction, row: JobRow): Promise<number> {
     const [used] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(attempt)
@@ -415,7 +442,7 @@ export class JobService {
             : undefined,
         ),
       );
-    return Number(used?.count ?? 0) < jobBudget.parse(row.budget).max_attempts;
+    return Number(used?.count ?? 0);
   }
 
   /** The only production write to job.state, including cancellation and recovery. */
@@ -427,7 +454,15 @@ export class JobService {
   ): Promise<JobRow> {
     const result = transition(row.state as JobState, input);
     if (!result.ok) throw new ServiceError(result.error.code, result.error.message);
-    if (result.value === 'queued' && row.state !== 'running' && !(await this.attemptsLeft(tx, row)))
+    // A person's answer to a permission gets its attempt past the budget
+    // too, up to `ANSWER_ATTEMPTS` of them: the work owes them the step they
+    // allowed or a word on the one they declined.
+    if (
+      result.value === 'queued' &&
+      row.state !== 'running' &&
+      !(await this.attemptsLeft(tx, row)) &&
+      !(input.kind === 'approval_decided' && (await this.answerAttemptsLeft(tx, row)))
+    )
       throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     let wait = options.wait ?? { kind: 'none' };
     // A conversation's reminder cancelled from another conversation comes back
