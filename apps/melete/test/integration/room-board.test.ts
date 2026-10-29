@@ -1053,6 +1053,25 @@ withDb('room board', () => {
           and payload->>'kind' = 'person_question_requested'`,
       ).toHaveLength(0);
     }
+    // A runtime that raises the question itself, past ask_person, gets no
+    // further: the answer is refused and nothing is kept for the room.
+    await database().runner.commitOutcome(owns, {
+      outcome: { kind: 'waiting_for_input', question: 'What is your weather API key?' },
+      questions: [
+        {
+          text: 'What is your weather API key?',
+          because: [`job:${owns.job_id}`],
+          if_ignored: 'The weather alerts are not set up.',
+          secret: { name: 'WEATHER_API_KEY', purpose: 'the weather alerts' },
+        },
+      ],
+    });
+    const [raised] = await sql`select id from question where job_id = ${owns.job_id}`;
+    const given = await send(world.bob.cookie, `/questions/${raised?.id}/secret`, 'POST', {
+      value: 'wx-4f8a1c2e9b7d',
+    });
+    expect(given.status).toBe(409);
+    expect(await sql`select 1 from space_secret where space_id = ${roomId}`).toHaveLength(0);
   }, 60_000);
   test('an event moved to another day keeps its time of day across a change of clocks', async () => {
     const { sql } = database();

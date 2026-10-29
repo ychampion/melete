@@ -34,6 +34,7 @@ import {
   job,
   owner,
   question,
+  space,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -965,6 +966,18 @@ export class QuestionService {
       throw new ServiceError(
         'turn_in_progress',
         'This is being worked on now. Answer once this step is over.',
+        409,
+      );
+    // However the question was raised, a secret is kept only where one person
+    // owns the space: in a shared one, all its jobs and members would hold it.
+    const [where] = await this.jobs.db
+      .select({ kind: space.kind })
+      .from(space)
+      .where(eq(space.id, holder.spaceId));
+    if (where?.kind !== 'personal')
+      throw new ServiceError(
+        'not_a_secret',
+        'A secret can be given only in your own space, never in a room or a shared space.',
         409,
       );
     try {

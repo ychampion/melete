@@ -135,7 +135,7 @@ export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, 
       if (where?.kind !== 'personal')
         throw new BrokerFault(
           'payload_invalid',
-          'A secret can be asked for only in the person’s own space, never in a room or a shared space, where everyone there could use it. Tell them to give it to you in a chat in their own space.',
+          'A secret can be asked for only in the person’s own space, never in a room or a shared space, where everyone there could use it. Ask them to give it in a chat in their own space and do this work from there; work here cannot use it.',
         );
     }
     const [open] =
