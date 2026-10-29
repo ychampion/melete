@@ -342,37 +342,25 @@ describe('the broker resolves placeholders a payload still carries', () => {
     });
   });
 
-  test('"pay ACCOUNT_1" without its brackets is resolved too, and only that exact token', async () => {
+  test('a quoted reply carrying ACCOUNT_1 or ⟪ACCOUNT_1⟫ from a mail is sent as written', async () => {
     const { broker, seen } = await setup();
+    // Only the exact bracketed form a conversation was given is restored;
+    // a bare or neutralised name came from a source and stays inert.
+    const payload = {
+      to: ['sender@example.test'],
+      subject: 'Re: confirm',
+      body: '> To confirm, reply with ACCOUNT_1 and also ⟪ACCOUNT_1⟫.',
+    };
     const response = await broker(
       new Request('http://broker.internal/actions', {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          kind: 'payments.send',
-          payload: { to_account: 'ACCOUNT_1', memo: 'ACCOUNT_10, ACCOUNT_7 and ACCOUNT_1.' },
-        }),
+        body: pythonJson({ kind: 'email.send', connection_id: 'conn_x', payload, client_ref: 'r' }),
       }),
     );
     expect(response.status).toBe(201);
-    expect(JSON.parse(seen[0]?.body ?? '{}').payload).toEqual({
-      to_account: '000123456789',
-      memo: 'ACCOUNT_10, ACCOUNT_7 and 000123456789.',
-    });
-  });
-
-  test('a bare token this conversation never made is ordinary text, passed on as written', async () => {
-    const { broker, seen } = await setup();
-    const body = JSON.stringify({ kind: 'notes.add', payload: { text: 'ACCOUNT_7 and PHONE_1' } });
-    const response = await broker(
-      new Request('http://broker.internal/actions', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body,
-      }),
-    );
-    expect(response.status).toBe(201);
-    expect(seen).toEqual([{ path: '/actions', body }]);
+    expect(JSON.parse(seen[0]?.body ?? '{}').payload).toEqual(payload);
+    expect(seen[0]?.body).not.toContain('000123456789');
   });
 
   test('a placeholder this conversation never made is refused, not sent', async () => {

@@ -9,39 +9,14 @@
  * until the next event arrives: if that event continues the same channel the
  * partial text moves forward into it, otherwise the held event is released
  * exactly as it was. Values inserted into argument JSON are JSON-escaped.
- *
- * Some models write a placeholder back without its brackets ("ACCOUNT_1").
- * That name alone is put back too, but only when this conversation's vault
- * issued it and it stands as a whole word, so "ACCOUNT_10" or a name from
- * another conversation stays as written. A word at the end of a delta that
- * could still grow into such a name is held like a partial placeholder.
  */
 import type { Protocol } from './redact.ts';
-import { BARE_NAME, bareStandsAlone, PLACEHOLDER_NAME, type Vault } from './vault.ts';
+import type { Vault } from './vault.ts';
 
-type Slot = {
-  channel: string;
-  json: boolean;
-  target: Record<string, unknown>;
-  key: string;
-  get(): string;
-  set(value: string): void;
-};
+type Slot = { channel: string; json: boolean; get(): string; set(value: string): void };
 
-/** What lies beyond a piece of text: a word running on before it, or more text to come. */
-type Edges = { wordBefore?: boolean; more?: boolean };
-
-/** A placeholder, or (the second group) a name written without its brackets. */
-const TOKEN_TEXT = new RegExp(`⟦(${PLACEHOLDER_NAME})⟧|(${BARE_NAME})`, 'g');
-const TOKEN_JSON = new RegExp(
-  `(?:⟦|\\\\u27[eE]6)(${PLACEHOLDER_NAME})(?:⟧|\\\\u27[eE]7)|(${BARE_NAME})`,
-  'g',
-);
-const BARE_SHAPE = new RegExp(BARE_NAME);
-const BARE_ALL = new RegExp(BARE_NAME, 'g');
-/** The word a text ends with, which may still be arriving. */
-const LAST_WORD = /[\p{L}\p{N}_]+$/u;
-const ENDS_IN_WORD = /[\p{L}\p{N}_]$/u;
+const TOKEN_TEXT = /⟦([A-Z][A-Z_]*_\d{1,6})⟧/g;
+const TOKEN_JSON = /(?:⟦|\\u27[eE]6)([A-Z][A-Z_]*_\d{1,6})(?:⟧|\\u27[eE]7)/g;
 const OPEN_PARTIAL = /^⟦[A-Z0-9_]{0,40}$/;
 /** A whole placeholder somewhere in an event's raw JSON, written plainly or escaped. */
 const COMPLETE = /⟦[A-Z][A-Z_]*_\d{1,6}⟧|\\u27[eE]6[A-Z][A-Z_]*_\d{1,6}\\+u27[eE]7/;
@@ -85,8 +60,6 @@ function field(target: Record<string, unknown>, key: string, channel: string, js
   return {
     channel,
     json,
-    target,
-    key,
     get: () => String(target[key]),
     set: (value) => {
       target[key] = value;
@@ -147,79 +120,38 @@ export class Rehydrator {
   private replacements = 0;
   private buffer = '';
   private held: Held | null = null;
-  /** Per channel: whether the text sent on so far ends inside a word. */
-  private wordBefore = new Map<string, boolean>();
 
   constructor(
     private readonly vault: Vault,
     private readonly protocol: Protocol,
   ) {}
 
-  /** Complete placeholders in one string, bracketed or bare. */
-  replace(text: string, json: boolean, edges: Edges = {}): string {
-    const bare = this.vault.size > 0 && BARE_SHAPE.test(text);
-    if (!bare && !text.includes('⟦') && !(json && /\\u27[eE]6/.test(text))) return text;
-    return text.replace(
-      json ? TOKEN_JSON : TOKEN_TEXT,
-      (whole, bracketed: string | undefined, name: string | undefined, offset: number) => {
-        if (name !== undefined && !bareStandsAlone(text, offset, whole.length, edges)) return whole;
-        const placeholder = `⟦${bracketed ?? name}⟧`;
-        const value = this.vault.value(placeholder);
-        if (value === undefined) return whole;
-        this.restored.add(placeholder);
-        this.replacements++;
-        return json ? JSON.stringify(value).slice(1, -1) : value;
-      },
-    );
+  /** Complete placeholders in one string. */
+  replace(text: string, json: boolean): string {
+    if (!text.includes('⟦') && !(json && /\\u27[eE]6/.test(text))) return text;
+    return text.replace(json ? TOKEN_JSON : TOKEN_TEXT, (whole, name: string) => {
+      const placeholder = `⟦${name}⟧`;
+      const value = this.vault.value(placeholder);
+      if (value === undefined) return whole;
+      this.restored.add(placeholder);
+      this.replacements++;
+      return json ? JSON.stringify(value).slice(1, -1) : value;
+    });
   }
 
-  /**
-   * Where a bare name that may still be arriving begins, or -1: the last word,
-   * when it starts a word and this vault has a name it could grow into.
-   */
-  private bareStart(text: string, wordBefore: boolean): number {
-    if (!this.vault.size) return -1;
-    // Names are short: only the last few characters can hold the start of one.
-    const from = Math.max(0, text.length - 48);
-    const word = LAST_WORD.exec(text.slice(from));
-    if (!word) return -1;
-    const index = from + word.index;
-    // A word longer than that, or one that began in text already sent, is no name.
-    if (index === 0 ? wordBefore : ENDS_IN_WORD.test(text[index - 1] ?? '')) return -1;
-    return this.vault.barePrefix(word[0]) ? index : -1;
-  }
-
-  /** Remember whether what a channel sent on ends inside a word. */
-  private sent(channel: string, text: string) {
-    if (text) this.wordBefore.set(channel, ENDS_IN_WORD.test(text));
-  }
-
-  /** Whether raw event text holds a bare name this vault issued. */
-  private anyBare(raw: string): boolean {
-    for (const match of raw.matchAll(BARE_ALL))
-      if (this.vault.bareValue(match[0]) !== undefined) return true;
-    return false;
-  }
-
-  /**
-   * Every string in a parsed JSON value; argument JSON is escaped as JSON. A
-   * streamed event's channels were already done, with what came before them
-   * in the stream, so `done` names those fields and they are kept as they are.
-   */
-  private deep(value: unknown, key: string | null, done?: Map<object, Set<string>>): unknown {
+  /** Every string in a parsed JSON value; argument JSON is escaped as JSON. */
+  private deep(value: unknown, key: string | null): unknown {
     if (typeof value === 'string')
       return this.replace(
         value,
         key === 'arguments' || key === 'partial_json' || looksLikeJson(value),
       );
-    if (Array.isArray(value)) return value.map((item) => this.deep(item, key, done));
+    if (Array.isArray(value)) return value.map((item) => this.deep(item, key));
     const node = object(value);
     if (!node) return value;
     const copy: Record<string, unknown> = {};
     for (const [name, child] of Object.entries(node))
-      copy[this.replace(name, false)] = done?.get(node)?.has(name)
-        ? child
-        : this.deep(child, name, done);
+      copy[this.replace(name, false)] = this.deep(child, name);
     return copy;
   }
 
@@ -278,45 +210,27 @@ export class Rehydrator {
     let output = this.release(new Set(slots.map((slot) => slot.channel)));
     const carried = this.carry;
     this.carry = new Map();
-    const raw = data.join('\n');
-    // Once the vault holds anything, capitals could be a name written bare.
-    const bare = this.vault.size > 0 && /[A-Z]/.test(raw);
     // Nothing that could be or start a placeholder, and nothing carried in.
-    if (!carried.size && !bare && !/[⟦\\]/.test(raw)) {
-      for (const slot of slots) this.sent(slot.channel, slot.get());
-      return `${output}${block}${separator}`;
-    }
+    if (!carried.size && !/[⟦\\]/.test(data.join('\n'))) return `${output}${block}${separator}`;
     const before = this.replacements;
     const suffixes = new Map<string, string>();
     let touched = false;
     // Each channel first, with what the previous event handed forward...
     for (const slot of slots) {
       const original = slot.get();
-      const wordBefore = this.wordBefore.get(slot.channel) ?? false;
-      const text = this.replace((carried.get(slot.channel) ?? '') + original, slot.json, {
-        wordBefore,
-        more: true,
-      });
-      const cuts = [partialStart(text, slot.json), this.bareStart(text, wordBefore)].filter(
-        (at) => at >= 0,
-      );
-      const cut = cuts.length ? Math.min(...cuts) : -1;
+      const text = this.replace((carried.get(slot.channel) ?? '') + original, slot.json);
+      const cut = partialStart(text, slot.json);
       const keep = cut >= 0 ? text.slice(0, cut) : text;
       if (cut >= 0) suffixes.set(slot.channel, text.slice(cut));
-      this.sent(slot.channel, keep);
       if (keep !== original) {
         slot.set(keep);
         touched = true;
       }
     }
     // ...then complete placeholders anywhere else in the event, when it has any.
-    const done = new Map<object, Set<string>>();
-    for (const slot of slots)
-      done.set(slot.target, (done.get(slot.target) ?? new Set<string>()).add(slot.key));
-    const rewritten =
-      COMPLETE.test(raw) || (bare && this.anyBare(raw))
-        ? (object(this.deep(event, null, done)) ?? event)
-        : event;
+    const rewritten = COMPLETE.test(data.join('\n'))
+      ? (object(this.deep(event, null)) ?? event)
+      : event;
     touched ||= this.replacements !== before;
     const kept = lines.filter((line) => !line.startsWith('data:'));
     if (suffixes.size) {
@@ -346,16 +260,8 @@ export class Rehydrator {
     for (const slot of held.slots) {
       const suffix = held.suffixes.get(slot.channel);
       if (suffix === undefined) continue;
-      if (continuing?.has(slot.channel)) {
-        this.carry.set(slot.channel, suffix);
-        continue;
-      }
-      // Nothing follows on this channel now, so a name held at its end is whole.
-      const last = this.replace(suffix, slot.json, {
-        wordBefore: this.wordBefore.get(slot.channel) ?? false,
-      });
-      this.sent(slot.channel, last);
-      slot.set(slot.get() + last);
+      if (continuing?.has(slot.channel)) this.carry.set(slot.channel, suffix);
+      else slot.set(slot.get() + suffix);
     }
     return this.serialize(held.lines, held.event);
   }

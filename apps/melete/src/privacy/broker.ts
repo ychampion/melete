@@ -12,7 +12,6 @@
  */
 import { verifyCapability } from '../broker/capability.ts';
 import type { PrivacyRouter } from './router.ts';
-import { mayHoldPlaceholder } from './vault.ts';
 
 type Fetcher = (request: Request) => Response | Promise<Response>;
 
@@ -40,8 +39,7 @@ export function withPlaceholderResolution(
       return fetcher(rebuild(request, text));
     }
     const router = options.router();
-    if (!router || !mayHoldPlaceholder(JSON.stringify(parsed)))
-      return fetcher(rebuild(request, text));
+    if (!router || !JSON.stringify(parsed).includes('⟦')) return fetcher(rebuild(request, text));
     const header = request.headers.get('authorization') ?? '';
     let claims: { job_id: string; attempt_id: string };
     try {
@@ -61,8 +59,6 @@ export function withPlaceholderResolution(
         },
         { status: 400 },
       );
-    // Text that only looked like a placeholder goes on exactly as it came.
-    if (result.resolved === 0) return fetcher(rebuild(request, text));
     return fetcher(rebuild(request, JSON.stringify(result.value)));
   };
 }

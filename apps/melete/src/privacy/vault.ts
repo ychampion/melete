@@ -72,40 +72,6 @@ export function startsCleanly(text: string, index: number, matched: string): boo
   return !WORDISH.test(text.slice(Math.max(0, index - 2), index).at(-1) ?? '');
 }
 
-/** A placeholder's name, inside its brackets. */
-export const PLACEHOLDER_NAME = '[A-Z][A-Z_]*_\\d{1,6}';
-
-/**
- * A placeholder's name as a model sometimes writes one back, without its
- * brackets ("account ACCOUNT_1"). With no bracket to anchor it, the label is
- * bounded, so a long run of capitals is still read in linear time.
- */
-export const BARE_NAME = '[A-Z][A-Z_]{0,31}_\\d{1,6}';
-
-/** Whether text may hold a placeholder, bracketed or bare. */
-export function mayHoldPlaceholder(text: string): boolean {
-  return text.includes('⟦') || new RegExp(BARE_NAME).test(text);
-}
-
-/**
- * Whether a bare name found at `offset` stands as a whole word: no letter,
- * digit or underscore (or bracket) touches it, so "XACCOUNT_1", "ACCOUNT_10"
- * and "ACCOUNT_1x" are other words. `edges` says what lies beyond the text:
- * a word that runs on before it, or text still to come after it.
- */
-export function bareStandsAlone(
-  text: string,
-  offset: number,
-  length: number,
-  edges: { wordBefore?: boolean; more?: boolean } = {},
-): boolean {
-  const before = offset === 0 ? (edges.wordBefore ? 'a' : '') : (text[offset - 1] ?? '');
-  const end = offset + length;
-  const after = end >= text.length ? (edges.more ? 'a' : '') : (text[end] ?? '');
-  const touches = (char: string) => char !== '' && /[\p{L}\p{N}_⟦⟧]/u.test(char);
-  return !touches(before) && !touches(after);
-}
-
 export class Vault {
   private readonly byKey = new Map<string, VaultEntry>();
   private readonly byPlaceholder = new Map<string, VaultEntry>();
@@ -174,19 +140,6 @@ export class Vault {
 
   entries(): VaultEntry[] {
     return [...this.byPlaceholder.values()];
-  }
-
-  /** The real value behind a placeholder's name written without brackets, or undefined. */
-  bareValue(name: string): string | undefined {
-    return this.byPlaceholder.get(`⟦${name}⟧`)?.value;
-  }
-
-  /** Whether a word still arriving could grow into one of this vault's names. */
-  barePrefix(word: string): boolean {
-    if (!/^[A-Z][A-Z0-9_]*$/.test(word)) return false;
-    for (const placeholder of this.byPlaceholder.keys())
-      if (placeholder.startsWith(`⟦${word}`)) return true;
-    return false;
   }
 
   /**

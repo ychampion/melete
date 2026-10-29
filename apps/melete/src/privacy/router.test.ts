@@ -232,43 +232,6 @@ const SAM = {
 };
 
 describe('cloud requests: redact out, rehydrate back', () => {
-  test('a model that drops the brackets still has its placeholders put back, and nothing else', async () => {
-    const store = new MemoryPrivacyStore();
-    store.scopes.set('job_chat', {
-      spaceId: 'spc_1',
-      conversationId: 'job_chat',
-      agentId: null,
-      turnId: 'trn_1',
-    });
-    const { post } = await start({
-      store,
-      reply: ({ body }) => {
-        const account = (/⟦(ACCOUNT_\d+)⟧/.exec(body)?.[1] ?? 'missing') as string;
-        return new Response(
-          trickle(
-            sse([
-              { choices: [{ index: 0, delta: { content: `Paid from account ${account}` } }] },
-              {
-                choices: [
-                  { index: 0, delta: { content: `; ${account}0 and PHONE_7 are not ours.` } },
-                ],
-              },
-              { choices: [], usage: { prompt_tokens: 10, completion_tokens: 10 } },
-            ]),
-          ),
-          { headers: { 'content-type': 'text/event-stream' } },
-        );
-      },
-    });
-    const response = await post('/providers/fireworks/v1/chat/completions', {
-      stream: true,
-      messages: [{ role: 'user', content: `Pay the bill from account ${SAM.account}.` }],
-    });
-    expect(response.status).toBe(200);
-    const { text } = await readChat(response);
-    expect(text).toBe(`Paid from account ${SAM.account}; ACCOUNT_10 and PHONE_7 are not ours.`);
-  });
-
   test('the provider sees placeholders only and the engine gets real values, split one byte at a time', async () => {
     const { captured, post, settlements } = await start({
       store: (() => {

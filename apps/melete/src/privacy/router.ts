@@ -56,15 +56,7 @@ import {
   sameAddress,
 } from './store.ts';
 import { Rehydrator } from './stream.ts';
-import {
-  BARE_NAME,
-  bareStandsAlone,
-  type KnownValue,
-  mayHoldPlaceholder,
-  PLACEHOLDER_NAME,
-  placeholderCategory,
-  Vault,
-} from './vault.ts';
+import { type KnownValue, placeholderCategory, Vault } from './vault.ts';
 
 /**
  * What a private conversation's screenshot becomes when the request leaves
@@ -149,8 +141,6 @@ const TOPIC_WORDS: Record<SensitiveTopic, string> = {
 };
 
 const MAX_CONVERSATIONS = 500;
-/** A placeholder in a proposed payload, or (the second group) its name written bare. */
-const PAYLOAD_TOKEN = new RegExp(`⟦(${PLACEHOLDER_NAME})⟧|(${BARE_NAME})`, 'g');
 
 export class PrivacyRouter {
   private readonly settingsCache = new Map<string, { value: ResolvedSettings; at: number }>();
@@ -862,7 +852,7 @@ export class PrivacyRouter {
     attemptId: string,
     value: unknown,
   ): Promise<{ value: unknown; unknown: string[]; resolved: number }> {
-    if (!mayHoldPlaceholder(JSON.stringify(value))) return { value, unknown: [], resolved: 0 };
+    if (!JSON.stringify(value).includes('⟦')) return { value, unknown: [], resolved: 0 };
     const scope = await this.store.scope(jobId, attemptId);
     const vault = scope.conversationId
       ? (await this.state(scope, await this.settingsFor(scope.spaceId))).vault
@@ -871,28 +861,15 @@ export class PrivacyRouter {
     let resolved = 0;
     const walk = (node: unknown): unknown => {
       if (typeof node === 'string')
-        return node.replace(
-          PAYLOAD_TOKEN,
-          (whole, bracketed: string | undefined, name: string | undefined, offset: number) => {
-            // A name without brackets is put back only when this vault issued it
-            // and it stands as a word; anything else is ordinary text.
-            if (name !== undefined) {
-              const real = bareStandsAlone(node, offset, whole.length)
-                ? vault.bareValue(name)
-                : undefined;
-              if (real === undefined) return whole;
-              resolved++;
-              return real;
-            }
-            const real = vault.value(`⟦${bracketed}⟧`);
-            if (real === undefined) {
-              unknown.add(whole);
-              return whole;
-            }
-            resolved++;
-            return real;
-          },
-        );
+        return node.replace(/⟦([A-Z][A-Z_]*_\d{1,6})⟧/g, (whole) => {
+          const real = vault.value(whole);
+          if (real === undefined) {
+            unknown.add(whole);
+            return whole;
+          }
+          resolved++;
+          return real;
+        });
       if (Array.isArray(node)) return node.map(walk);
       if (node && typeof node === 'object')
         return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, walk(child)]));
