@@ -1071,6 +1071,9 @@ withDb('room board', () => {
       value: 'wx-4f8a1c2e9b7d',
     });
     expect(given.status).toBe(409);
+    expect(((await given.json()) as { error?: { code?: string } }).error?.code).toBe(
+      'secret_not_kept_here',
+    );
     expect(await sql`select 1 from space_secret where space_id = ${roomId}`).toHaveLength(0);
   }, 60_000);
   test('an event moved to another day keeps its time of day across a change of clocks', async () => {

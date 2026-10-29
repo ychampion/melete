@@ -949,12 +949,6 @@ export class QuestionService {
       return { question: first.view, job: null, receipt: null, status: 200 };
     if (first.row.state !== 'open' || !first.row.jobId)
       throw new ServiceError('question_closed', 'This question is no longer open.', 409);
-    if (!this.secrets)
-      throw new ServiceError(
-        'service_unavailable',
-        'Secrets cannot be kept on this installation.',
-        503,
-      );
     const holder = await this.jobs.get(first.row.jobId);
     if (isTerminal(holder.state as JobState))
       throw new ServiceError(
@@ -976,9 +970,15 @@ export class QuestionService {
       .where(eq(space.id, holder.spaceId));
     if (where?.kind !== 'personal')
       throw new ServiceError(
-        'not_a_secret',
+        'secret_not_kept_here',
         'A secret can be given only in your own space, never in a room or a shared space.',
         409,
+      );
+    if (!this.secrets)
+      throw new ServiceError(
+        'service_unavailable',
+        'Secrets cannot be kept on this installation.',
+        503,
       );
     try {
       await this.secrets.save(
