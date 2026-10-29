@@ -42,6 +42,18 @@ function buildSource(source: string) {
           if (id === '\0browser-entry.ts') return source;
         },
       },
+      // Rolldown hands Vite's externalization warning to plugins without waiting for it, so
+      // the warning can arrive after the build has ended. Holding it back from every other
+      // plugin makes each build here the case where it arrived too late.
+      {
+        name: 'late-externalization-warning',
+        onLog: {
+          order: 'pre',
+          handler(_level, log) {
+            if (log.message.includes('externalized for browser compatibility')) return false;
+          },
+        },
+      },
     ],
     build: {
       ...config.build,
@@ -116,5 +128,50 @@ test.each([...nodeEnvs])(
         buildSource(`import { value } from '${basename(browserFalse)}'; console.log(value);`),
       ),
     ).resolves.toBeDefined();
+  },
+);
+
+// A key that names a path maps the package's own file, so the Node module it shares a name
+// with is still externalized when the package imports it.
+const ownFileKeys = ['./fs.js', './fs', 'fs/index.js'] as const;
+const ownFile = Object.fromEntries(
+  ownFileKeys.map((key) => {
+    const dir = mkdtempSync(
+      join(fileURLToPath(new URL('../node_modules', import.meta.url)), 'browser-own-file-'),
+    );
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: basename(dir),
+        version: '1.0.0',
+        type: 'module',
+        main: 'index.js',
+        browser: { [key]: false },
+      }),
+    );
+    writeFileSync(
+      join(dir, 'index.js'),
+      "import { readFileSync } from 'fs';\nexport const value = readFileSync;\n",
+    );
+    writeFileSync(join(dir, 'fs.js'), 'export default 1;\n');
+    return [key, basename(dir)];
+  }),
+);
+afterAll(() => {
+  for (const name of Object.values(ownFile))
+    rmSync(join(fileURLToPath(new URL('../node_modules', import.meta.url)), name), {
+      recursive: true,
+      force: true,
+    });
+});
+
+test.each(nodeEnvs.flatMap((nodeEnv) => ownFileKeys.map((key) => [nodeEnv, key] as const)))(
+  'with NODE_ENV %s, a browser field key %s does not let a package import the Node module',
+  async (nodeEnv, key) => {
+    const built = withNodeEnv(nodeEnv, () =>
+      buildSource(`import { value } from '${ownFile[key]}'; console.log(value);`),
+    );
+    await expect(built).rejects.toThrow('externalized for browser compatibility');
+    await expect(built).rejects.toThrow('"fs"');
   },
 );
