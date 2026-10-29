@@ -35,6 +35,7 @@ import { agent, principal, space, spaceMembership } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { guardFor, type Originals, scrub } from '../spaces/summary-guard.ts';
 import { roomBoardItem } from './board-schema.ts';
 import { roomMessage } from './schema.ts';
 import type { RoomService } from './service.ts';
@@ -215,11 +216,20 @@ async function views(reader: Reader, viewer: string, rows: ReadRow[]): Promise<B
       ),
     );
   const roomPrincipals = new Set(rooms.map((row) => row.id));
+  // In a room that shows only what needs its people, what the agent put on the
+  // board is checked for the details of the room's originals before anyone but
+  // the room's maker reads it (spaces/summary-guard.ts).
+  const guards = new Map<string, Originals | null>();
+  for (const spaceId of bySpace.keys())
+    guards.set(spaceId, await guardFor(reader, spaceId, viewer));
+  const checked = (guard: Originals | null, value: string, max: number) =>
+    guard ? scrub(value, guard).text.slice(0, max) : value;
   return rows.map((row) => {
     const names = labels.get(row.item.spaceId) ?? new Map<string, string>();
     const person = (id: string | null) =>
       id ? { principal_id: id, display_name: names.get(id) ?? 'Someone' } : null;
     const item = row.item;
+    const guard = roomPrincipals.has(item.createdBy) ? (guards.get(item.spaceId) ?? null) : null;
     const assignee = row.assigneeHere;
     const claimer = item.state === 'claimed' ? row.claimerHere : null;
     // A claim by someone no longer here is no claim.
@@ -231,8 +241,8 @@ async function views(reader: Reader, viewer: string, rows: ReadRow[]): Promise<B
       room_id: item.spaceId,
       room_name: row.roomName,
       kind: item.kind,
-      title: item.title,
-      detail: item.detail,
+      title: checked(guard, item.title, BOARD_TITLE_MAX),
+      detail: item.detail === null ? null : checked(guard, item.detail, BOARD_DETAIL_MAX),
       starts_at: item.startsAt?.toISOString() ?? null,
       ends_at: item.endsAt?.toISOString() ?? null,
       due_at: item.dueAt?.toISOString() ?? null,
@@ -240,7 +250,7 @@ async function views(reader: Reader, viewer: string, rows: ReadRow[]): Promise<B
       visibility: item.visibility,
       state,
       claimed_by: person(claimer),
-      choices: item.choices ?? null,
+      choices: item.choices?.map((choice) => checked(guard, choice, BOARD_CHOICE_MAX)) ?? null,
       answer: item.answer,
       answered_at: item.answeredAt?.toISOString() ?? null,
       thread_id: item.sourceThreadId,
@@ -720,10 +730,13 @@ export async function pushToAssignee(
   if (!row.assigneePrincipalId || (row.kind !== 'question' && row.kind !== 'note')) return;
   const title =
     row.kind === 'question' ? `A question for you in ${roomName}` : `A note for you in ${roomName}`;
+  // The agent's words, checked as the board shows them to this person.
+  const guard = await guardFor(tx, row.spaceId, row.assigneePrincipalId);
+  const body = guard ? scrub(row.title, guard).text.slice(0, BOARD_TITLE_MAX) : row.title;
   await tx.execute(sql`
     insert into push_intent (id, principal_id, kind, title, body, because, url, dedup_key)
     select ${newId('pint')}, ${row.assigneePrincipalId}, 'decision', ${title.slice(0, 120)},
-           ${row.title}, ${'Because it was put on the board for you.'},
+           ${body}, ${'Because it was put on the board for you.'},
            ${`/#/rooms/${row.spaceId}/board`}, ${`board:${row.id}:${row.assigneePrincipalId}`}
     where exists (select 1 from push_subscription s where s.principal_id = ${row.assigneePrincipalId})
       -- An item for the owners alone is never pushed to someone who is not one.

@@ -20,7 +20,7 @@ import {
   roomStreamFrame,
   unavailable,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { GUESTS_MAY_NOT_ATTACH, readsFilesAsTheyAre } from '../attachments/rooms.ts';
 import { holdForRoomMessage, roomMessageAttachments } from '../attachments/store.ts';
@@ -31,6 +31,7 @@ import {
   approval,
   connection,
   event,
+  experienceTurn,
   job,
   principal,
   space,
@@ -47,6 +48,7 @@ import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
 import { summariesOnlyIn } from '../spaces/summaries.ts';
+import { type Originals, originalsIn, scrub, settled } from '../spaces/summary-guard.ts';
 import { answerAskedInThread, isBoardAnswer } from './board.ts';
 import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
@@ -54,7 +56,14 @@ import { nameTaken } from './name-taken.ts';
 import { ROOM_READS_NO_PICTURES } from './pictures.ts';
 import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
-import { actionIdsOf, keptBackItem, messageView, requestView, threadView } from './projection.ts';
+import {
+  actionIdsOf,
+  keptBackItem,
+  messageView,
+  requestView,
+  STILL_WRITING,
+  threadView,
+} from './projection.ts';
 import {
   type RoomWork,
   releaseThread,
@@ -381,6 +390,7 @@ export class RoomService {
   async thread(spaceId: string, threadId: string, actor: string) {
     const access = await this.access(this.deps.db, spaceId, actor);
     const keptBack = await this.keepsBack(spaceId, actor, access);
+    const guard = keptBack ? await originalsIn(this.deps.db, spaceId) : null;
     const row = await this.requireThread(this.deps.db, spaceId, threadId);
     // A waiting ask whose turn has come starts here too, should a hook have missed it.
     await serviceTransaction(this.deps.db, (tx) => releaseThread(tx, this.deps, threadId));
@@ -414,7 +424,7 @@ export class RoomService {
       ? (approvalId: string) => permissions.roomCard(spaceId, approvalId)
       : undefined;
     for (const request of requests)
-      views.push(await requestView(this.deps.db, request, names, card, keptBack));
+      views.push(await requestView(this.deps.db, request, names, card, keptBack, guard));
     return {
       thread: threadView(row, names),
       messages: messages.map((message) => messageView(message, names, files.get(message.id))),
@@ -692,13 +702,15 @@ export class RoomService {
       row.requestedByPrincipalId ? [row.requestedByPrincipalId] : [],
     );
     const permissions = this.deps.permissions;
+    const keptBack = await this.keepsBack(spaceId, actor, access);
     return {
       request: await requestView(
         this.deps.db,
         after ?? row,
         names,
         permissions ? (approvalId) => permissions.roomCard(spaceId, approvalId) : undefined,
-        await this.keepsBack(spaceId, actor, access),
+        keptBack,
+        keptBack ? await originalsIn(this.deps.db, spaceId) : null,
       ),
     };
   }
@@ -1015,6 +1027,11 @@ export class RoomService {
           .where(and(inArray(action.id, named), eq(job.spaceId, spaceId))))
           steps.set(step.id, step);
     }
+    // An answer streams in pieces, and a name can be cut across two of them,
+    // so a reader kept to summaries gets each turn's answer so far, checked
+    // whole, in place of the turn's last piece in this page.
+    const guard = keptBack ? await originalsIn(this.deps.db, spaceId) : null;
+    const answers = guard ? await this.answersSoFar(projected, guard) : new Map<number, string>();
     // Each viewer's stream is read for that viewer, so a file is shown as
     // this person may see it, never as the poster or the maker does.
     const files = await roomMessageAttachments(
@@ -1045,7 +1062,14 @@ export class RoomService {
           },
         });
         if (!keptBack || frame.kind !== 'request') return [frame];
-        const item = keptBackItem(frame.event.item, steps);
+        if (frame.event.item.type === 'text_delta') {
+          // The answer goes whole, checked, once per turn in this page.
+          const whole = answers.get(row.seq);
+          if (whole === undefined) return [];
+          const item = { type: 'text_delta' as const, text: whole, restart: true as const };
+          return [{ ...frame, event: { ...frame.event, item } }];
+        }
+        const item = keptBackItem(frame.event.item, steps, guard);
         return item ? [{ ...frame, event: { ...frame.event, item } }] : [];
       }),
     ].sort((a, b) => a.seq - b.seq);
@@ -1059,6 +1083,56 @@ export class RoomService {
         : Number.MAX_SAFE_INTEGER,
     );
     return frames.filter((frame) => frame.seq <= cut);
+  }
+
+  /**
+   * For each turn whose answer grew in this page of events: its answer up to
+   * the turn's last piece here, checked for the room's originals, keyed by
+   * that piece's event. A word still being written waits for the rest of it.
+   */
+  private async answersSoFar(
+    rows: readonly (typeof event.$inferSelect)[],
+    guard: Originals,
+  ): Promise<Map<number, string>> {
+    const last = new Map<string, typeof event.$inferSelect>();
+    for (const row of rows) {
+      const payload = row.payload as { turn_id?: string | null; item?: { type?: string } };
+      if (payload.item?.type === 'text_delta')
+        last.set(`${row.jobId}\u0000${payload.turn_id ?? ''}`, row);
+    }
+    const answers = new Map<number, string>();
+    for (const row of last.values()) {
+      const turnId = (row.payload as { turn_id?: string | null }).turn_id ?? null;
+      const pieces = await this.deps.db
+        .select({ payload: event.payload })
+        .from(event)
+        .where(
+          and(
+            eq(event.jobId, row.jobId ?? ''),
+            lte(event.seq, row.seq),
+            sql`${event.payload}->>'kind' = 'experience'`,
+            sql`${event.payload}->'item'->>'type' = 'text_delta'`,
+            turnId
+              ? sql`${event.payload}->>'turn_id' = ${turnId}`
+              : sql`${event.payload}->>'turn_id' is null`,
+          ),
+        )
+        .orderBy(asc(event.seq));
+      let text = '';
+      for (const piece of pieces) {
+        const item = (piece.payload as { item: { text?: string; restart?: boolean } }).item;
+        text = item.restart ? (item.text ?? '') : text + (item.text ?? '');
+      }
+      const [turn] = turnId
+        ? await this.deps.db
+            .select({ status: experienceTurn.status })
+            .from(experienceTurn)
+            .where(eq(experienceTurn.id, turnId))
+        : [];
+      const writing = !turn || STILL_WRITING.has(turn.status);
+      answers.set(row.seq, scrub(writing ? settled(text, guard) : text, guard).text);
+    }
+    return answers;
   }
 
   /** Whether the person may still read the room, for a stream's per-frame check. */

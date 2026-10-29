@@ -117,6 +117,17 @@ export interface GatewayOptions {
    * transport.
    */
   privacy: PrivacyRouter | false;
+  /**
+   * For an engine attempt whose answer goes to someone who may see only
+   * summaries of a room's originals (spaces/summary-guard.ts): what to swap
+   * out of the whole request body before the router sees it, or null. A
+   * failure refuses the request rather than sending it unminimised.
+   */
+  minimise?: (
+    principal: GatewayPrincipal,
+  ) => Promise<
+    ((body: Record<string, unknown>, protocol: GatewayProtocol) => Record<string, unknown>) | null
+  >;
   /** The installation's spending caps. Left out, calls are limited by the job budget alone. */
   spending?: GatewaySpending;
   /**
@@ -518,6 +529,10 @@ export function createModelGateway(options: GatewayOptions): Server {
         // Added last: only this request carries it, so it follows every note
         // that is added again on later requests.
         body = withLongTurnNote(body, protocol);
+        // A room's originals, for someone who may see only summaries of them:
+        // their details go as placeholders that are never put back.
+        const minimise = options.minimise ? await options.minimise(principal) : null;
+        if (minimise) body = minimise(body, protocol);
       }
       const router = options.privacy === false ? null : options.privacy;
       let firstFailure: unknown;

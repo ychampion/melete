@@ -425,7 +425,46 @@ The person who made a room can set it to show only what needs its people
 (`PUT /spaces/{id}/summaries-only`). Then the cards, receipts and live stream of
 its requests name what each step touched by its kind ("An email", "An event"),
 never an original's subject, address or words, for everyone but that person.
-The agent's own answers, and what it made itself, read as before.
+
+This holds in code, not only in the agent's instructions, so it holds whatever
+the model writes:
+
+- **What the model reads.** For a request that anyone but the room's maker
+  asked (and for work nobody asked, such as a wake on new mail), the details
+  of the room's mail, events and files reach the model as placeholders by
+  role: `[doctor 1]`, `[pharmacy 1]`, `[phone number 2]`, `[medicine 1]`. That
+  covers who wrote or was invited, their addresses, the people a message names,
+  account, member and prescription numbers, street addresses and medicine. The
+  same detail is the same placeholder on every turn, and placeholders are never
+  put back. Dates, amounts, what kind of thing each item is and what it says
+  stay, so the agent can still summarise ("a doctor's appointment next Tuesday",
+  "a bill of $72.10 due November 12"). The request's own instructions and tool
+  definitions go as written.
+- **What the agent does.** A step that carries one of these details out of the
+  room, as its placeholder or written out, such as an event, an email or a file,
+  is refused before it runs and nothing is written. The model is told the step needs the room's maker, so it says
+  so. Steps that stay in the room (its board, asking someone in it) go ahead,
+  and each person reads them checked as below.
+- **What people read.** Before anyone but the maker reads the agent's answers,
+  its cards and receipts, the board items it made (and the push that announces
+  one), or the room's live stream, any of those details still in them is put in
+  words: "the doctor", "a phone number", "an account number". So is a street
+  given without its town, part of a number, a subject repeated three or more
+  meaningful words at a time, and a quote of eight or more words of a message.
+  Names and addresses match in any case, and numbers with any separators. A
+  streamed answer is checked whole, so a name cut across two pieces is caught,
+  and words still being written that could begin a name or a number wait for
+  the rest.
+  The request's receipts then say how many details were kept out ("Kept 2
+  private details out of this answer").
+
+The details come from the receipts of the room's own reads of its mail,
+calendars and files over the last 30 days (the 200 most recent), each read
+taken in once it has finished, in whatever order reads finish. A sender's
+display name counts only whole ("Google Calendar" is not "calendar"), and mail
+from an automated address such as `notifications@` names a service, not a
+person. The names and addresses of the room's people are never among them. The maker, whose accounts they are, reads
+everything as before, and so does the model for the maker's own requests.
 
 When the people in a room change, work under way in it starts again with the
 new roster, and permissions its requests were waiting on are withdrawn. The

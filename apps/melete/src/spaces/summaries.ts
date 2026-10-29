@@ -20,6 +20,11 @@
  *   (`rooms/projection.ts`);
  * - the agent's instructions say to answer with summaries and action cards and
  *   not to quote (`jobs/bundle.ts`);
+ * - in a room, for everyone but its maker, that is also held in code
+ *   (`spaces/summary-guard.ts`): the model reads the originals' names,
+ *   addresses and numbers as placeholders that are never put back, and what the
+ *   agent wrote (its answers, cards, receipts, board items and live stream) is
+ *   checked for those details again before they read it;
  * - turning it on or off is noted too, so the person being helped can see in
  *   the space's activity what was opened, by whom and when.
  *
@@ -83,6 +88,7 @@ export const SUMMARIES_ONLY_INSTRUCTION = [
   'This space is set to “Show me only what needs me”. The person is helping someone else with their accounts, and the messages, events and files here belong to that other person.',
   'Read everything you need and do the work as usual. In what you write to the person, give short summaries and action cards: what each thing is, what is due and when, what you did, and what needs their yes.',
   'Do not quote, copy or paste the text of a message, an event or a file, and do not reproduce account numbers or other details beyond what a decision needs. Describe instead.',
+  'Names, addresses, numbers and other details in them may reach you as placeholders such as “[doctor 1]” or “[phone number 2]”. They stand for details the person may not see: refer to them by what they are (“her doctor”, “the pharmacy”), and do not ask for them. A step that would send or save one of them, such as an email or an event, cannot be taken: say that it needs the person who made the room.',
   'If the person asks to see the original, tell them they can open it with “Open the original” in Files, and that each open is noted in this space’s activity.',
 ].join(' ');
 
