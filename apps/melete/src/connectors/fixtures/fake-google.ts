@@ -51,6 +51,8 @@ export type FakeGoogle = {
   /** Every token an app asked to have revoked (RFC 7009), in order. */
   revoked: string[];
   sent: Stored[];
+  /** Every inbox search's `q`, in order. */
+  mailSearches: string[];
   events: Map<string, Event>;
   /** The `sendUpdates` each event create asked for (null: guests not told). */
   notified: (string | null)[];
@@ -82,6 +84,41 @@ const headerOf = (raw: Buffer, name: string): string | undefined => {
 /** Gmail history ids start here, so an id below it is one Gmail no longer keeps. */
 const HISTORY_BASE = 1000;
 
+/**
+ * Gmail's search box, as far as these tests use it: words and "quoted
+ * phrases" that must all appear as whole words, OR (in capitals) between
+ * alternatives, and parentheses. Anything else is read as a word.
+ */
+function gmailMatches(q: string, raw: string): boolean {
+  const list = q.match(/"[^"]*"|\(|\)|[^\s()]+/g) ?? [];
+  let at = 0;
+  const has = (term: string) => {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'iu').test(raw);
+  };
+  const factor = (): boolean => {
+    const token = list[at++] ?? '';
+    if (token !== '(') return has(token.replace(/^"|"$/g, ''));
+    const inner = expression();
+    if (list[at] === ')') at++;
+    return inner;
+  };
+  const conjunction = (): boolean => {
+    let all = true;
+    while (at < list.length && list[at] !== 'OR' && list[at] !== ')') all = factor() && all;
+    return all;
+  };
+  const expression = (): boolean => {
+    let any = conjunction();
+    while (list[at] === 'OR') {
+      at++;
+      any = conjunction() || any;
+    }
+    return any;
+  };
+  return expression();
+}
+
 export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<FakeGoogle> {
   const email = options.email ?? 'person@example.test';
   const client = { clientId: 'fake-client.apps.example', clientSecret: 'fake-client-secret' };
@@ -99,6 +136,7 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
     issued: [] as string[],
     revoked: [] as string[],
     sent: [] as Stored[],
+    mailSearches: [] as string[],
     events: new Map<string, Event>(),
     notified: [] as (string | null)[],
     files: new Map<string, FakeDriveFile>(),
@@ -273,9 +311,8 @@ export async function startFakeGoogle(options: FakeGoogleOptions = {}): Promise<
             ? state.sent.filter((m) => headerOf(m.raw, 'Message-ID') === `<${byId[1]}>`)
             : url.searchParams.get('labelIds') === 'SENT'
               ? state.sent
-              : inbox.filter(
-                  (m) => !q || m.raw.toString('utf8').toLowerCase().includes(q.toLowerCase()),
-                );
+              : inbox.filter((m) => !q || gmailMatches(q, m.raw.toString('utf8')));
+          if (!byId && url.searchParams.get('labelIds') !== 'SENT') state.mailSearches.push(q);
           const limit = Number(url.searchParams.get('maxResults') ?? 100);
           const newest = [...pool].reverse().slice(0, limit);
           return Response.json(

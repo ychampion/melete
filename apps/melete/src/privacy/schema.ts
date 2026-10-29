@@ -10,7 +10,9 @@
  * route and what was swapped, by category and placeholder name, never a value.
  * `privacy_seen` is what a cloud model was sent from the person and from tools
  * in each turn, as it left: redacted, so it holds placeholders, never the
- * values behind them. Each piece is kept once per conversation.
+ * values behind them. Each piece is kept once per conversation; past the
+ * conversation's history limit its text is blanked and the row kept, so the
+ * piece re-sent later is still known (`seen.ts` has the limits).
  * Every row goes with its space.
  */
 import {
@@ -110,7 +112,7 @@ export const privacySeen = pgTable(
     tool: text('tool'),
     /** Of the whole piece as sent, so a piece re-sent in a later request is kept once. */
     digest: text('digest').notNull(),
-    /** The redacted text, cut at a limit when it was longer. */
+    /** The redacted text, cut at a limit when it was longer. Empty once blanked. */
     text: text('text').notNull(),
     truncated: boolean('truncated').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

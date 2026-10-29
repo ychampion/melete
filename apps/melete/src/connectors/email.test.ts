@@ -104,7 +104,7 @@ describe('email connector', () => {
     if (result.outcome === 'succeeded')
       expect(result.receipt.detail.messages).toEqual(
         [{ ...message(1, 'Dinner on Friday'), html: undefined }].map(
-          ({ html: _html, ...value }) => value,
+          ({ html: _html, attachments: _attachments, ...value }) => value,
         ),
       );
     for (const uid of [2, 3, 4, 5]) {
@@ -116,6 +116,29 @@ describe('email connector', () => {
     expect(
       (await connector.execute(mailAction('email.read', { uid: 1 }), mailContext())).outcome,
     ).toBe('succeeded');
+  });
+
+  test('a search with more OR alternatives than it runs says which it left out', async () => {
+    const connector = new EmailConnector(config, secret, () => new MailDouble());
+    const nine = await connector.execute(
+      mailAction('email.search', {
+        query: '(invoice OR receipt OR bill) (march OR april OR may)',
+      }),
+      mailContext(),
+    );
+    expect(nine.outcome).toBe('succeeded');
+    if (nine.outcome === 'succeeded')
+      expect(nine.receipt.detail.not_searched).toEqual({
+        alternatives: ['bill may'],
+        more: false,
+        note: 'One search covers at most 8 OR alternatives. These were not searched; search for them next.',
+      });
+    const plain = await connector.execute(
+      mailAction('email.search', { query: 'invoice OR receipt' }),
+      mailContext(),
+    );
+    if (plain.outcome === 'succeeded')
+      expect(plain.receipt.detail).not.toHaveProperty('not_searched');
   });
 
   test('search reads the Sent folder when asked, and the inbox otherwise', async () => {

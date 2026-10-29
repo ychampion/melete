@@ -47,6 +47,7 @@ export * from './mcp-server.ts';
 export * from './memory.ts';
 export * from './mention.ts';
 export * from './model-budget.ts';
+export * from './model-guidance.ts';
 export * from './model-presets.ts';
 export * from './model-search.ts';
 export * from './model-settings.ts';

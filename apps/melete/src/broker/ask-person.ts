@@ -127,6 +127,11 @@ export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, 
   return sql.begin(async (tx) => {
     const job = await lockJob(tx, claims.job_id);
     await checkAttempt(tx, job, claims);
+    if (spec.secret && job.audience === 'room')
+      throw new BrokerFault(
+        'payload_invalid',
+        'A secret can be asked for only in the person’s own chat, never in a room. Ask them to open a chat with you.',
+      );
     const [open] =
       await tx`SELECT text FROM question WHERE job_id=${job.id} AND state='open' LIMIT 1`;
     if (open)
@@ -165,7 +170,9 @@ export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, 
       ...(spec.options ? { choices: spec.options.map((option) => option.label) } : {}),
       instruction: spec.secret
         ? `The question is on the person’s screen with a sealed field. End this turn now. You will hear when ${spec.secret.name} is saved; you never see its value.`
-        : 'The question is on the person’s screen. End this turn now and do not answer it yourself; their answer comes back as their next message.',
+        : job.audience === 'room'
+          ? 'The question is on the room’s board for the person who asked, where only they and the owners read it. Say in one short line that you asked them there, without repeating it, then end this turn; their answer comes back as their next message.'
+          : 'The question is on the person’s screen. End this turn now and do not answer it yourself; their answer comes back as their next message.',
     };
   });
 }

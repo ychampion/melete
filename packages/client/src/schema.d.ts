@@ -8252,9 +8252,11 @@ export interface paths {
                             tasks: components["schemas"]["__schema461"][];
                             time_zone: components["schemas"]["__schema372"];
                             upcoming: {
+                                all_day?: boolean;
                                 connection_id: components["schemas"]["__schema371"];
                                 ends_at: components["schemas"]["__schema375"];
                                 id: components["schemas"]["__schema371"];
+                                recurrence_summary?: components["schemas"]["__schema372"];
                                 starts_at: components["schemas"]["__schema375"];
                                 title: components["schemas"]["__schema372"];
                                 url?: components["schemas"]["__schema383"];
@@ -18792,6 +18794,7 @@ export interface paths {
                         model_on_device?: boolean;
                         private_agent_ids?: components["schemas"]["__schema53"][];
                         private_space?: boolean;
+                        record_seen?: boolean;
                         remove_known_values?: components["schemas"]["__schema55"][];
                         screenshots_own_computer?: boolean;
                         screenshots_paired_devices?: boolean;
@@ -29788,6 +29791,7 @@ export interface components {
             model_on_device: boolean;
             private_agent_ids: components["schemas"]["__schema474"][];
             private_space: boolean;
+            record_seen: boolean;
             screenshots_own_computer: boolean;
             screenshots_paired_devices: boolean;
             sealed_vault: boolean;

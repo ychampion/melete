@@ -1,6 +1,6 @@
 {
   "id": "f06d8ab2-a0e5-41ed-9556-3188408ea013",
-  "prevId": "4508c3ae-d8fc-4dc7-a446-0e8b09ad55e6",
+  "prevId": "4d4191fb-27e1-41d8-970b-8328598b0b13",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3385,6 +3385,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "experience_turn_search_idx": {
+          "name": "experience_turn_search_idx",
+          "columns": [
+            {
+              "expression": "to_tsvector('simple', \"text\" || ' ' || \"answer\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -3868,6 +3883,22 @@
           "where": "\"job\".\"kind\" = 'chat'",
           "concurrently": false,
           "method": "btree",
+          "with": {}
+        },
+        "job_chat_title_search_idx": {
+          "name": "job_chat_title_search_idx",
+          "columns": [
+            {
+              "expression": "to_tsvector('simple', \"title\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"job\".\"kind\" = 'chat'",
+          "concurrently": false,
+          "method": "gin",
           "with": {}
         }
       },
@@ -5883,18 +5914,18 @@
           "primaryKey": false,
           "notNull": false
         },
-        "secret": {
-          "name": "secret",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "secret": {
+          "name": "secret",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -7348,96 +7379,6 @@
         "membership_generation": {
           "name": "membership_generation",
           "value": "\"space_membership\".\"generation\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.space_secret": {
-      "name": "space_secret",
-      "schema": "",
-      "columns": {
-        "space_id": {
-          "name": "space_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "purpose": {
-          "name": "purpose",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "host": {
-          "name": "host",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "secret_ref": {
-          "name": "secret_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "principal_id": {
-          "name": "principal_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "space_secret_space_id_space_id_fk": {
-          "name": "space_secret_space_id_space_id_fk",
-          "tableFrom": "space_secret",
-          "tableTo": "space",
-          "columnsFrom": [
-            "space_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "space_secret_space_id_name_pk": {
-          "name": "space_secret_space_id_name_pk",
-          "columns": [
-            "space_id",
-            "name"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "space_secret_name": {
-          "name": "space_secret_name",
-          "value": "\"space_secret\".\"name\" ~ '^[A-Z][A-Z0-9_]{0,63}$'"
         }
       },
       "isRLSEnabled": false
@@ -24464,6 +24405,96 @@
         "sms_text_state": {
           "name": "sms_text_state",
           "value": "\"sms_text\".\"state\" in ('conversation', 'kept', 'refused', 'sending', 'sent', 'failed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.space_secret": {
+      "name": "space_secret",
+      "schema": "",
+      "columns": {
+        "space_id": {
+          "name": "space_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "host": {
+          "name": "host",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "secret_ref": {
+          "name": "secret_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "space_secret_space_id_space_id_fk": {
+          "name": "space_secret_space_id_space_id_fk",
+          "tableFrom": "space_secret",
+          "tableTo": "space",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "space_secret_space_id_name_pk": {
+          "name": "space_secret_space_id_name_pk",
+          "columns": [
+            "space_id",
+            "name"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "space_secret_name": {
+          "name": "space_secret_name",
+          "value": "\"space_secret\".\"name\" ~ '^[A-Z][A-Z0-9_]{0,63}$'"
         }
       },
       "isRLSEnabled": false

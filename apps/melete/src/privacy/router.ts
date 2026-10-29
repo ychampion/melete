@@ -501,7 +501,12 @@ export class PrivacyRouter {
     await this.log(scope, receipt);
     // What the person and their sources said, as this request carried it, for
     // the answer's "what the model saw". Only an engine attempt's own turn.
-    if (principal.privacy.kind === 'job' && scope.conversationId && scope.turnId)
+    if (
+      settings.recordSeen &&
+      principal.privacy.kind === 'job' &&
+      scope.conversationId &&
+      scope.turnId
+    )
       await this.keepSeen(scope, redacted, protocol);
     return {
       body: redacted,
@@ -667,6 +672,23 @@ export class PrivacyRouter {
     if (activeTopic(conversation, settings)) return false;
     // The person said this conversation is not sensitive: it is not read for a topic.
     return !text || Boolean(conversation?.cleared) || classify(text, settings.topics) === null;
+  }
+
+  /**
+   * Whether this job's conversation must stay private: its space or agent is
+   * marked private, or it is about a sensitive topic. A job no space holds is
+   * treated as private, so what cannot be placed is never shown elsewhere.
+   */
+  async keepsPrivate(jobId: string): Promise<boolean> {
+    const scope = await this.store.scope(jobId, '');
+    if (!scope.spaceId) return true;
+    const settings = await this.settingsFor(scope.spaceId);
+    if (settings.privateSpace) return true;
+    if (scope.agentId !== null && settings.privateAgents.has(scope.agentId)) return true;
+    const conversation = scope.conversationId
+      ? await this.store.conversation(scope.conversationId)
+      : null;
+    return activeTopic(conversation, settings) !== null;
   }
 
   /**

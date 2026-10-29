@@ -36,6 +36,8 @@ export type FakeMicrosoft = {
   tokenRequests: URLSearchParams[];
   issued: string[];
   sent: Stored[];
+  /** Every inbox `$search` value, in order. */
+  searches: string[];
   events: Map<string, GraphEvent>;
   deliver(raw: string): string;
   expireAccess(): void;
@@ -70,6 +72,7 @@ export async function startFakeMicrosoft(
     tokenRequests: [] as URLSearchParams[],
     issued: [] as string[],
     sent: [] as Stored[],
+    searches: [] as string[],
     events: new Map<string, GraphEvent>(),
   };
   let serial = 0;
@@ -190,14 +193,33 @@ export async function startFakeMicrosoft(
         if (refused) return refused;
         if (rest === '/mailFolders/inbox') return Response.json({ id: 'inbox' });
         if (rest === '/mailFolders/inbox/messages') {
-          const q = (url.searchParams.get('$search') ?? '').replaceAll('"', '').toLowerCase();
+          const search = url.searchParams.get('$search');
+          if (search !== null) state.searches.push(search);
+          // Graph's default search, as far as these tests use it: every word
+          // in the quoted value must appear in the message as a whole word.
+          const words = (search ?? '')
+            .replaceAll('"', '')
+            .toLowerCase()
+            .split(/\s+/)
+            .filter(Boolean);
           const top = Number(url.searchParams.get('$top') ?? 10);
-          const pool = inbox.filter((m) => !q || m.raw.toString('utf8').toLowerCase().includes(q));
+          const pool = inbox.filter((m) => {
+            const text = new Set(
+              m.raw
+                .toString('utf8')
+                .toLowerCase()
+                .split(/[^\p{L}\p{N}]+/u),
+            );
+            return words.every((word) => text.has(word));
+          });
+          // Each message arrived a minute after the one before it.
+          const received = (m: Stored) =>
+            new Date(Date.UTC(2026, 8, 24, 9) + inbox.indexOf(m) * 60_000).toISOString();
           return Response.json({
             value: [...pool]
               .reverse()
               .slice(0, top)
-              .map((m) => ({ id: m.id })),
+              .map((m) => ({ id: m.id, receivedDateTime: received(m) })),
           });
         }
         if (rest === '/mailFolders/sentitems/messages') {

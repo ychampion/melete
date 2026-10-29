@@ -1,25 +1,96 @@
 import { describe, expect, test } from 'bun:test';
 import { type AddressInfo, createServer, type Socket } from 'node:net';
 import { simpleParser } from 'mailparser';
+import { pdfWith, TINY_PNG } from '../attachments/fixtures.ts';
 import { EmailConnector } from './email.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
-import { type EmailConnection, ImapSmtpTransport, toMailMessage } from './mail-transport.ts';
+import {
+  composeMail,
+  type EmailConnection,
+  ImapSmtpTransport,
+  MAX_MIME_PARTS,
+  mimePartCount,
+  parseMailMessage,
+  toMailMessage,
+} from './mail-transport.ts';
 import { UNREACHABLE } from './public-fetch.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { ResolvedAddress } from './web.ts';
 
+/**
+ * The UIDs an IMAP SEARCH matches, for the keys these tests send: TEXT (a
+ * substring of the whole message, in any case), OR, ALL and parenthesised
+ * lists, with every key in a list required. Anything else is refused, as a
+ * server refuses a search it cannot read.
+ */
+function matching(criteria: string, messages: string[]): number[] {
+  const list = criteria.match(/"(?:\\.|[^"\\])*"|\(|\)|[^\s()]+/g) ?? [];
+  return messages.flatMap((source, index) => {
+    const text = source.toLowerCase();
+    let at = 0;
+    const value = () => {
+      const raw = list[at++] ?? '';
+      return raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : raw;
+    };
+    const key = (): boolean => {
+      const token = list[at++] ?? '';
+      if (token === '(') {
+        let all = true;
+        while (at < list.length && list[at] !== ')') all = key() && all;
+        at++;
+        return all;
+      }
+      switch (token.toUpperCase()) {
+        case 'ALL':
+          return true;
+        case 'OR': {
+          const left = key();
+          const right = key();
+          return left || right;
+        }
+        case 'TEXT':
+          return text.includes(value().toLowerCase());
+        case 'HEADER': {
+          const name = value().toLowerCase();
+          const wanted = value().toLowerCase();
+          const head = text.split('\r\n\r\n')[0] ?? '';
+          return head
+            .split('\r\n')
+            .some((line) => line.startsWith(`${name}:`) && line.includes(wanted));
+        }
+        default:
+          throw new Error(`unsupported search key ${token}`);
+      }
+    };
+    let all = true;
+    while (at < list.length) all = key() && all;
+    return all ? [index + 1] : [];
+  });
+}
+
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
-async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: string } = {}) {
+async function mailServers(
+  options: {
+    smtpRefusesLogin?: boolean;
+    sentName?: string;
+    inbox?: string[];
+    reportedSize?: number;
+    more?: string[];
+  } = {},
+) {
   const sentName = options.sentName ?? 'Sent';
   const sockets = new Set<Socket>();
   const sent: string[] = [];
   const auth: string[] = [];
+  const commands: string[] = [];
+  const searches: string[] = [];
   let dropAck = false;
   let connections = 0;
-  const inbox = [
+  const inbox = options.inbox ?? [
     'From: friend@example.test\r\nTo: owner@example.test\r\nMessage-ID: <normal@example.test>\r\nSubject: Dinner\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSee you Friday.',
     'From: account@example.test\r\nTo: owner@example.test\r\nMessage-ID: <sensitive@example.test>\r\nSubject: Account information\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
       Buffer.from('Your one-time passcode is 123456.').toString('base64'),
+    ...(options.more ?? []),
   ];
   const imap = createServer((socket) => {
     connections += 1;
@@ -29,15 +100,38 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
     socket.write('* OK Local IMAP test double\r\n');
     let buffer = '';
     let mailbox = 'INBOX';
+    // A command can carry a string as a literal: its size, then the bytes once the server says go on.
+    let pending = '';
+    let asked = false;
     socket.on('data', (data) => {
       buffer += data.toString();
-      while (buffer.includes('\r\n')) {
+      for (;;) {
         const at = buffer.indexOf('\r\n');
-        const line = buffer.slice(0, at);
+        if (at < 0) break;
+        const head = buffer.slice(0, at);
+        const literal = /\{(\d+)(\+?)\}$/.exec(head);
+        if (literal) {
+          const size = Number(literal[1]);
+          if (buffer.length < at + 2 + size) {
+            if (!literal[2] && !asked) socket.write('+ go on\r\n');
+            asked = true;
+            break;
+          }
+          asked = false;
+          const value = buffer
+            .slice(at + 2, at + 2 + size)
+            .replace(/["\\]/g, (char) => `\\${char}`);
+          pending += `${head.slice(0, literal.index)}"${value}"`;
+          buffer = buffer.slice(at + 2 + size);
+          continue;
+        }
+        const line = pending + head;
+        pending = '';
         buffer = buffer.slice(at + 2);
         const tag = line.split(' ')[0] ?? '';
         const command = line.slice(tag.length + 1);
         const upper = command.toUpperCase();
+        commands.push(command);
         if (upper === 'CAPABILITY') socket.write('* CAPABILITY IMAP4rev1 AUTH=PLAIN SASL-IR\r\n');
         else if (upper.startsWith('AUTHENTICATE PLAIN '))
           auth.push(Buffer.from(command.split(' ')[2] ?? '', 'base64').toString());
@@ -59,9 +153,15 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
           );
         } else if (upper.startsWith('UID SEARCH')) {
           const messages = mailbox === 'Sent' ? sent : inbox;
-          socket.write(
-            `* SEARCH${messages.length ? ` ${messages.map((_, index) => index + 1).join(' ')}` : ''}\r\n`,
-          );
+          searches.push(command);
+          let found: number[];
+          try {
+            found = matching(command.slice('UID SEARCH'.length), messages);
+          } catch {
+            socket.write(`${tag} BAD search not understood\r\n`);
+            continue;
+          }
+          socket.write(`* SEARCH${found.length ? ` ${found.join(' ')}` : ''}\r\n`);
         } else if (upper.startsWith('UID FETCH')) {
           const uid = Number(command.split(' ')[2]);
           const source = (mailbox === 'Sent' ? sent : inbox)[uid - 1];
@@ -77,7 +177,7 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
               );
             else
               socket.write(
-                `* ${uid} FETCH (UID ${uid} RFC822.SIZE ${Buffer.byteLength(source)})\r\n`,
+                `* ${uid} FETCH (UID ${uid} RFC822.SIZE ${options.reportedSize ?? Buffer.byteLength(source)})\r\n`,
               );
           }
         } else if (upper === 'LOGOUT') {
@@ -152,7 +252,9 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
     config,
     connections: () => connections,
     auth,
+    commands,
     sent,
+    searches,
     dropAck: () => {
       dropAck = true;
     },
@@ -166,7 +268,110 @@ async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: str
   };
 }
 
+/** A multipart message with `count` tiny text parts and no attachments. */
+function manyParts(count: number, boundary = 'b1'): Buffer {
+  const parts = Array.from(
+    { length: count },
+    (_, index) => `--${boundary}\r\nContent-Type: text/plain\r\n\r\npart ${index}\r\n`,
+  );
+  return Buffer.from(
+    `From: sender@example.test\r\nTo: owner@example.test\r\nSubject: Parts\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed;\r\n boundary="${boundary}"\r\n\r\n${parts.join('')}--${boundary}--\r\n`,
+  );
+}
+
+describe('MIME part bound', () => {
+  test('a message with too many tiny parts is refused from its raw bytes before parsing', async () => {
+    const flood = manyParts(MAX_MIME_PARTS + 50);
+    expect(mimePartCount(flood)).toBeGreaterThan(MAX_MIME_PARTS);
+    // The parser alone would accept it: these parts are body text, not attachments.
+    const parsed = await simpleParser(flood, { skipImageLinks: true });
+    expect(parsed.attachments).toHaveLength(0);
+    expect(await parseMailMessage(1, flood)).toBeNull();
+    const fine = manyParts(20);
+    expect(mimePartCount(fine)).toBe(21);
+    expect((await parseMailMessage(1, fine))?.subject).toBe('Parts');
+  });
+
+  test('the part count stops early, ignores lines naming no declared boundary, and covers RFC 2231 boundaries', () => {
+    expect(mimePartCount(manyParts(5_000), 10)).toBe(11);
+    const dashes = Buffer.from(
+      `Subject: Report\r\nContent-Type: multipart/mixed; boundary="b1"\r\n\r\n--b1\r\nContent-Type: text/plain\r\n\r\n${'----------\r\n'.repeat(300)}--b1--\r\n`,
+    );
+    expect(mimePartCount(dashes)).toBe(2);
+    const pieces = Buffer.from(
+      `Subject: Parts\r\nContent-Type: multipart/mixed; boundary*0="b"; boundary*1="1"\r\n\r\n${'--b1\r\n\r\nx\r\n'.repeat(MAX_MIME_PARTS + 5)}--b1--\r\n`,
+    );
+    expect(mimePartCount(pieces)).toBeGreaterThan(MAX_MIME_PARTS);
+    expect(mimePartCount(Buffer.from('Subject: Plain\r\n\r\n--not a part\r\n'))).toBe(1);
+  });
+});
+
 describe('IMAP and SMTP wire adapters', () => {
+  test('an incomplete IMAP message is withheld even when its prefix parses as harmless mail', async () => {
+    const prefix = 'From: sender@example.test\r\nSubject: Account\r\n\r\nA harmless prefix.';
+    const destination = await mailServers({
+      inbox: [prefix],
+      reportedSize: Buffer.byteLength(prefix) + 100,
+    });
+    try {
+      expect(
+        await new ImapSmtpTransport(destination.config, 'test-app-password').read(1),
+      ).toBeNull();
+    } finally {
+      await destination.close();
+    }
+  });
+
+  test('IMAP search skips a message above the body cap without fetching it; read opens it whole', async () => {
+    const pdf = Buffer.concat([
+      Buffer.from(pdfWith(['Statement total 42.'])),
+      Buffer.alloc(300_000, 32),
+    ]);
+    const raw = await composeMail('sender@example.test', {
+      to: ['owner@example.test'],
+      cc: [],
+      bcc: [],
+      subject: 'Statement',
+      body: 'The statement is attached.',
+      messageId: '<statement@example.test>',
+      attachments: [
+        { filename: 'picture.pdf', content: Buffer.from(TINY_PNG), contentType: 'application/pdf' },
+        { filename: 'statement.png', content: pdf, contentType: 'image/png' },
+      ],
+    });
+    const destination = await mailServers({ inbox: [raw.toString()] });
+    try {
+      const connector = new EmailConnector(destination.config, {
+        withSecret: async (_id, _space, use) => use('test-app-password'),
+      });
+      const search = await connector.execute(mailAction('email.search', {}), mailContext());
+      expect(search.outcome).toBe('succeeded');
+      if (search.outcome !== 'succeeded') return;
+      expect(search.receipt.detail.messages).toEqual([]);
+      // Only its size was asked for; the body was never fetched.
+      expect(destination.commands.some((command) => /BODY\.PEEK/i.test(command))).toBe(false);
+      const result = await connector.execute(mailAction('email.read', { uid: 1 }), mailContext());
+      expect(result.outcome).toBe('succeeded');
+      if (result.outcome !== 'succeeded') return;
+      expect(result.receipt.detail.message).toMatchObject({
+        attachments: [
+          { id: '1', media_type: 'image/png', size: TINY_PNG.length },
+          { id: '2', media_type: 'application/pdf', size: pdf.length },
+        ],
+      });
+      expect(JSON.stringify(result)).not.toContain('"content"');
+      const read = await connector.execute(
+        mailAction('email.read_attachment', { uid: 1, attachment_id: '2' }),
+        mailContext(),
+      );
+      expect(read.outcome).toBe('succeeded');
+      if (read.outcome === 'succeeded')
+        expect(read.receipt.detail.text).toContain('Statement total 42.');
+    } finally {
+      await destination.close();
+    }
+  });
+
   test('real libraries authenticate, decode MIME for hygiene, send with stable Message-ID and verify Sent', async () => {
     const destination = await mailServers();
     try {
@@ -211,6 +416,41 @@ describe('IMAP and SMTP wire adapters', () => {
       await destination.close();
     }
   }, 20_000);
+
+  test('a search with OR and quoted phrases finds each alternative, in one IMAP OR', async () => {
+    const letter = (subject: string, body: string) =>
+      `From: school@example.test\r\nTo: owner@example.test\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`;
+    const servers = await mailServers({
+      more: [
+        letter('Field trip on Friday', 'The class field trip leaves at nine.'),
+        letter('Forms', 'Please sign the permission slip by Wednesday.'),
+        letter('Piano', 'Lessons move to Thursday.'),
+      ],
+    });
+    try {
+      const transport = new ImapSmtpTransport(servers.config, 'test-app-password');
+      const subjects = async (query: string) =>
+        (await transport.search(query, 10)).map((message) => message.subject);
+      // Newest first, as every search is.
+      expect(await subjects('"field trip" OR "permission slip"')).toEqual([
+        'Forms',
+        'Field trip on Friday',
+      ]);
+      expect(servers.searches.at(-1)).toBe(
+        'UID SEARCH OR TEXT "field trip" TEXT "permission slip"',
+      );
+      // Words need not sit together; each must appear.
+      expect(await subjects('class Friday')).toEqual(['Field trip on Friday']);
+      expect(await subjects('(trip OR slip) Wednesday')).toEqual(['Forms']);
+      expect(await subjects('field trip or piano')).toEqual(['Piano', 'Field trip on Friday']);
+      // Operators IMAP has no words for fall back to the plain terms around them.
+      expect(await subjects('subject:"field trip" OR is:unread')).toEqual(['Field trip on Friday']);
+      expect(await subjects('NOT piano')).toEqual(await subjects(''));
+      expect(await subjects('"school picnic" OR "bake sale"')).toEqual([]);
+    } finally {
+      await servers.close();
+    }
+  });
 
   test('a test reaches both halves: sending must work as well as reading', async () => {
     const working = await mailServers();

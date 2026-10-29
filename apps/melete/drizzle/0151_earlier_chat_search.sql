@@ -1,0 +1,2 @@
+CREATE INDEX "experience_turn_search_idx" ON "experience_turn" USING gin (to_tsvector('simple', "text" || ' ' || "answer"));--> statement-breakpoint
+CREATE INDEX "job_chat_title_search_idx" ON "job" USING gin (to_tsvector('simple', "title")) WHERE "job"."kind" = 'chat';

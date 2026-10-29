@@ -8771,6 +8771,12 @@
                                   "ends_at": {
                                     "$ref": "#/components/schemas/__schema375"
                                   },
+                                  "all_day": {
+                                    "type": "boolean"
+                                  },
+                                  "recurrence_summary": {
+                                    "$ref": "#/components/schemas/__schema372"
+                                  },
                                   "connection_id": {
                                     "$ref": "#/components/schemas/__schema371"
                                   },
@@ -11328,6 +11334,9 @@
                     "type": "boolean"
                   },
                   "screenshots_paired_devices": {
+                    "type": "boolean"
+                  },
+                  "record_seen": {
                     "type": "boolean"
                   },
                   "model_on_device": {
@@ -47471,6 +47480,9 @@
           },
           "screenshots_paired_devices": {
             "type": "boolean"
+          },
+          "record_seen": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -47486,7 +47498,8 @@
           "model_on_device",
           "sealed_vault",
           "screenshots_own_computer",
-          "screenshots_paired_devices"
+          "screenshots_paired_devices",
+          "record_seen"
         ],
         "additionalProperties": false
       },

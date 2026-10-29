@@ -367,6 +367,38 @@ describe('Gmail through the email tools', () => {
     ).toBe('failed');
   });
 
+  test('a search with OR and quoted phrases goes to Gmail in its own syntax', async () => {
+    const { google, connector } = await gmailConnector();
+    google.deliver(RAW('Field trip on Friday', 'The class field trip leaves at nine.', 'trip'));
+    google.deliver(RAW('Forms', 'Please sign the permission slip by Wednesday.', 'slip'));
+    google.deliver(RAW('Piano', 'Lessons move to Thursday.', 'piano'));
+    const subjects = async (query: string) => {
+      const found = await connector.execute(
+        mailAction('email.search', { query, limit: 10 }),
+        mailContext(),
+      );
+      if (found.outcome !== 'succeeded') throw new Error(found.outcome);
+      return (found.receipt.detail.messages as { subject: string }[]).map((m) => m.subject);
+    };
+    expect(await subjects('"field trip" OR "permission slip"')).toEqual([
+      'Forms',
+      'Field trip on Friday',
+    ]);
+    expect(google.mailSearches.at(-1)).toBe('"field trip" OR "permission slip"');
+    // A lower-case "or" means the same, though Gmail itself would read it as a word.
+    expect(await subjects('"field trip" or "permission slip"')).toEqual([
+      'Forms',
+      'Field trip on Friday',
+    ]);
+    expect(await subjects('(trip OR slip) Wednesday')).toEqual(['Forms']);
+    expect(google.mailSearches.at(-1)).toBe('(trip Wednesday) OR (slip Wednesday)');
+    expect(await subjects('class friday OR piano')).toEqual(['Piano', 'Field trip on Friday']);
+    expect(google.mailSearches.at(-1)).toBe('(class friday) OR piano');
+    // Operators not every mailbox has fall back to the plain terms around them.
+    expect(await subjects('-piano subject:"field trip"')).toEqual(['Field trip on Friday']);
+    expect(google.mailSearches.at(-1)).toBe('"field trip"');
+  });
+
   test('a send is found in Sent afterwards, even when Gmail gives it a Message-ID of its own', async () => {
     for (const rewriteMessageId of [false, true]) {
       const { google, connector } = await gmailConnector({ rewriteMessageId });

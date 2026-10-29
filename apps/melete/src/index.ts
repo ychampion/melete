@@ -11,7 +11,13 @@
  * model traffic on its own internal port.
  */
 
-import type { AttemptBundle, QuestioningRuntimeAdapter, RuntimeAdapter } from '@melete/contracts';
+import {
+  type AttemptBundle,
+  type CapabilityClaims,
+  CONVERSATIONS_READ_TOOL_NAME,
+  type QuestioningRuntimeAdapter,
+  type RuntimeAdapter,
+} from '@melete/contracts';
 import { brokerCatalogState } from '@melete/runtime-hermes';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -126,6 +132,7 @@ import { EventStream } from './events/stream.ts';
 import { type AccountMailer, accountMailerFromEnv } from './experience/account-mail.ts';
 import { configuredAckWriter } from './experience/ack.ts';
 import { ExperienceBeliefs } from './experience/beliefs.ts';
+import { readConversation, searchConversations } from './experience/earlier.ts';
 import { ExperienceEffects } from './experience/effects.ts';
 import { ExperienceMemory } from './experience/memory.ts';
 import { removeDeletedRoutineThreads, removeJobs } from './experience/removal.ts';
@@ -834,6 +841,7 @@ export function createApp(deps: AppDeps) {
       },
       ...(connections ? { liveness: connectorLiveness(connections) } : {}),
       starters: startersFromSetting(deps.env.MELETE_STARTERS),
+      multiplayer,
     });
   callExperience = experience || null;
   if (calls) callServices.set(app, calls);
@@ -1595,6 +1603,31 @@ export async function bootstrap(
             input,
           )
       : undefined;
+    // `conversations.search` and `.read`: a new chat that points back is
+    // answered from the earlier conversation itself. A private conversation's
+    // words reach only a private attempt that stays on the person's own model,
+    // judged by the model the attempt runs on.
+    const earlierEngine = attemptEngine(env, modelSettings);
+    const conversations = handle
+      ? (claims: CapabilityClaims, name: string, input: unknown) => {
+          const earlier = {
+            sql: handle.sql,
+            keepsPrivate: (jobId: string) => privacy.keepsPrivate(jobId),
+            readsPrivate: async (jobId: string, attemptId: string) => {
+              const [model] = await handle.sql<{ provider: string; model: string }[]>`
+                select provider, model from attempt where id = ${attemptId} and job_id = ${jobId}`;
+              return (
+                model !== undefined &&
+                (await privacy.keepsPrivate(jobId)) &&
+                (await privacy.recallsPrivateMemory(jobId, attemptId, await earlierEngine(model)))
+              );
+            },
+          };
+          return name === CONVERSATIONS_READ_TOOL_NAME
+            ? readConversation(earlier, claims, input)
+            : searchConversations(earlier, claims, input);
+        }
+      : undefined;
     // Voice mode's companion: a short model call through the gateway, so the
     // privacy router reads it like any other. Only where voice mode exists.
     if (handle && features.voice && voiceProvidersFromEnv(env).live)
@@ -1720,6 +1753,7 @@ export async function bootstrap(
           runs,
           intents,
           memorySearch,
+          conversations,
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
@@ -2031,6 +2065,7 @@ export async function bootstrap(
           runs,
           intents,
           memorySearch,
+          conversations,
           spending,
           blobs: blobs?.store,
         });

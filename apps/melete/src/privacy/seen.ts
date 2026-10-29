@@ -30,6 +30,22 @@ export const SEEN_PART_LIMIT = 12_000;
  * record of earlier pieces from landing on the current turn all at once.
  */
 export const SEEN_PARTS_PER_REQUEST = 24;
+/**
+ * Bounded history, per conversation. The newest 240 pieces keep their text, at
+ * most 2.88 million characters. Older pieces are blanked, whole answers at a
+ * time and oldest first: the text goes and the row stays, so the same piece
+ * re-sent in a later request is still recognised and never shown as that later
+ * answer's. The answer being recorded is never blanked whole, only its oldest
+ * pieces past the limit.
+ */
+export const SEEN_PARTS_PER_CONVERSATION = 240;
+/**
+ * A blanked row holds only its digest and ids. Past 2,400 rows in one
+ * conversation, ten times the pieces that keep their text, the oldest blanked
+ * rows are deleted. A request carries only its newest 24 pieces, so a piece
+ * that old is rarely re-sent.
+ */
+export const SEEN_ROWS_PER_CONVERSATION = 2_400;
 
 const PLACEHOLDER = /⟦[A-Z][A-Z_]*_\d{1,6}⟧/g;
 

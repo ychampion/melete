@@ -7,7 +7,7 @@
  * the person's own message to the agent.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +23,10 @@ import {
   roomMessageResponse,
   roomThreadView,
 } from '@melete/contracts';
+import { requestPersonQuestion } from '../../src/broker/ask-person.ts';
 import { BrokerService } from '../../src/broker/service.ts';
+import { boardManifest } from '../../src/connectors/board.ts';
+import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
@@ -31,6 +34,8 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { PushService } from '../../src/push/service.ts';
+import { boardAnswersFor } from '../../src/rooms/board.ts';
+import { RoomCalendarShareService } from '../../src/rooms/calendar-shares.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -150,6 +155,31 @@ async function claimJob(jobId: string) {
   });
   if (!claimed) throw new Error(`Request ${jobId} could not be claimed`);
   return claimed.claims as CapabilityClaims;
+}
+/** Claim a request's attempt as the runner does: its capability, and what its agent is handed. */
+async function claimWithBundle(jobId: string) {
+  const { sql, runner } = database();
+  const [row] = await sql`select lease_epoch, state_version from job where id = ${jobId}`;
+  const claimed = await runner.claim({
+    job_id: jobId,
+    expected_epoch: Number(row?.lease_epoch),
+    expected_version: Number(row?.state_version),
+    reason: 'input',
+  });
+  if (!claimed) throw new Error(`Request ${jobId} could not be claimed`);
+  return { claims: claimed.claims as CapabilityClaims, bundle: claimed.bundle };
+}
+/** A calendar in the person's own space that takes new events, as a CalDAV calendar does. */
+async function personalCalendar(person: Person) {
+  const { sql } = database();
+  const [own] = await sql`select id from space
+    where kind = 'personal' and owner_principal_id = ${person.id}`;
+  const id = `con_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+  await sql`insert into connection (id, space_id, provider, label, scopes, configuration)
+    values (${id}, ${own?.id}, 'caldav', 'Personal calendar',
+      ${JSON.stringify(calendarManifest.tools.map((entry) => entry.name))}::jsonb,
+      '{"kind":"caldav"}'::jsonb)`;
+  return id;
 }
 /** A request of the room's agent, asked by `person`, holding a live capability. */
 async function request(person: Person, roomId: string, text = '@Melete keep the board') {
@@ -800,4 +830,504 @@ withDb('room board', () => {
       where principal_id = ${world.carol.id} and body = 'Owners question'`;
     expect(hidden?.n).toBe(0);
   }, 90_000);
+  test('board.ask keeps a question with its person unless the agent says otherwise', async () => {
+    const ask = boardManifest.tools.find((entry) => entry.name === 'board.ask');
+    const properties = ask?.input_schema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.visibility?.default).toBe('assignee');
+    expect(String(properties.visibility?.description)).toContain('Leave this out');
+    // The agent is told to keep one person's calendar out of what others can read.
+    expect(ask?.description).toContain("never put anyone's calendar, free time or busy time");
+    const roomId = await makeRoom('Default');
+    const { claims } = await request(world.alice, roomId);
+    const asked = await tool(claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Can you take Thursday?',
+    });
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).not.toContain(asked.item);
+    // Once the request has read someone's shared calendar, a question it asks
+    // stays with its person even when the agent asks for everyone.
+    const { sql } = database();
+    const read = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, status, idempotency_key, resolved_at)
+      values (${read}, ${claims.job_id}, ${claims.attempt_id}, ${await boardConnection(roomId)},
+        'room.member_freebusy', 'read', '{}'::jsonb, ${'0'.repeat(64)}, 'succeeded', ${read}, now())`;
+    const open = await tool(claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Can you take Friday at 3?',
+      visibility: 'everyone',
+    });
+    expect(open.status).toBe('succeeded');
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).not.toContain(open.item);
+    expect((await listOf(world.bob, roomId)).map((item) => item.id)).toContain(open.item ?? '');
+  }, 60_000);
+
+  test('an answer never repeats its question in the thread, even one everyone can read', async () => {
+    const roomId = await makeRoom('Open question');
+    const asking = await request(world.alice, roomId);
+    const asked = await tool(asking.claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Who brings the snacks on Friday?',
+      visibility: 'everyone',
+    });
+    await database().runner.commitOutcome(asking.claims, {
+      kind: 'completed',
+      summary: 'Asked.',
+      evidence: [],
+    });
+    const answered = boardAnswerResponse.parse(
+      await ok(
+        send(world.bob.cookie, `/rooms/${roomId}/board/${asked.item}/answer`, 'POST', {
+          answer: 'I will',
+        }),
+      ),
+    );
+    const thread = roomThreadView.parse(
+      await ok(send(world.carol.cookie, `/rooms/${roomId}/threads/${answered.thread_id}`)),
+    );
+    const said = JSON.stringify(thread.messages);
+    expect(said).toContain('I will');
+    expect(said).not.toContain('snacks');
+  }, 60_000);
+
+  test("a room's request that ends on a question in words reads as answered, and takes the reply", async () => {
+    const roomId = await makeRoom('Plans');
+    const asked = await request(world.alice, roomId, '@Melete plan the weekend');
+    await database().runner.commitOutcome(asked.claims, {
+      kind: 'waiting_for_input',
+      question: 'Saturday or Sunday?',
+    });
+    const thread = roomThreadView.parse(
+      await ok(send(world.carol.cookie, `/rooms/${roomId}/threads/${asked.threadId}`)),
+    );
+    // Nothing in the room is waiting for a decision: the asker replies in the thread.
+    expect(thread.requests.map((entry) => entry.status)).toEqual(['done']);
+    const reply = roomMessageResponse.parse(
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/threads/${asked.threadId}/messages`, 'POST', {
+          text: '@Melete Saturday',
+          submission_id: submission(),
+        }),
+      ),
+    );
+    expect(reply.request_job_id).toBe(asked.jobId);
+  }, 60_000);
+
+  test("the room's agent is told how to ask someone else, the calendars it can read, and the board answers it gets", async () => {
+    const roomId = await makeRoom('Pickups');
+    const shares = new RoomCalendarShareService({ db: database().db });
+    // Bob shares a calendar that takes new events; Carol shares free/busy only.
+    await shares.put(roomId, world.bob.id, await personalCalendar(world.bob), 'freebusy_add');
+    await shares.put(roomId, world.carol.id, await personalCalendar(world.carol), 'freebusy');
+    const bob = `Bob <${roomHandle(roomId, world.bob.id)}>`;
+    const carol = `Carol <${roomHandle(roomId, world.carol.id)}>`;
+    const opened = roomMessageResponse.parse(
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/threads`, 'POST', {
+          text: '@Melete who can do pickup on Thursday?',
+          submission_id: submission(),
+        }),
+        201,
+      ),
+    );
+    const asking = await claimWithBundle(opened.request_job_id ?? '');
+    const objective = asking.bundle.job.objective;
+    expect(objective).toContain('To ask anyone else, ask them with board.ask in this turn');
+    expect(objective).toContain('reading their shared calendar with room.member_freebusy');
+    expect(objective).toContain(
+      `- ${bob}: free/busy, and events can be added with room.add_to_member_calendar`,
+    );
+    expect(objective).toContain(`- ${carol}: free/busy only`);
+    const asked = await tool(asking.claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Can you do pickup on Thursday at 4?',
+    });
+    await database().runner.commitOutcome(asking.claims, {
+      kind: 'completed',
+      summary: 'I asked Bob on the board.',
+      evidence: [],
+    });
+    const answered = boardAnswerResponse.parse(
+      await ok(
+        send(world.bob.cookie, `/rooms/${roomId}/board/${asked.item}/answer`, 'POST', {
+          answer: 'Yes, I will do it',
+        }),
+      ),
+    );
+    // The answer's own request reads which question it answers, and that Bob's calendar takes events.
+    const answering = await claimWithBundle(answered.request_job_id ?? '');
+    expect(answering.bundle.job.objective).toContain(
+      `- ${bob} answered your question "Can you do pickup on Thursday at 4?". Their shared calendar takes new events`,
+    );
+    expect(answering.bundle.job.objective).toContain(
+      'offer to add it with room.add_to_member_calendar',
+    );
+    await database().runner.commitOutcome(answering.claims, {
+      kind: 'completed',
+      summary: 'Noted.',
+      evidence: [],
+    });
+    // A share that ends is no longer listed, and another request reads no board answer.
+    await shares.revoke(roomId, world.carol.id);
+    const later = roomMessageResponse.parse(
+      await ok(
+        send(world.alice.cookie, `/rooms/${roomId}/threads`, 'POST', {
+          text: '@Melete anything else?',
+          submission_id: submission(),
+        }),
+        201,
+      ),
+    );
+    const after = await claimWithBundle(later.request_job_id ?? '');
+    expect(after.bundle.job.objective).toContain(bob);
+    expect(after.bundle.job.objective).not.toContain(carol);
+    expect(after.bundle.job.objective).not.toContain('answered your question');
+  }, 90_000);
+  test("a question the room's agent asks with ask_person goes on the board for the person who asked", async () => {
+    const roomId = await makeRoom('Picnic');
+    const asked = await request(world.bob, roomId, '@Melete plan the picnic');
+    const put = await requestPersonQuestion(database().sql, asked.claims, {
+      question: 'Saturday or Sunday for the picnic?',
+      choices: ['Saturday', 'Sunday'],
+    });
+    expect(put.instruction).toContain('board');
+    await database().runner.commitOutcome(asked.claims, {
+      kind: 'completed',
+      summary: 'I asked you on the board.',
+      evidence: [],
+    });
+    // Bob, who asked, and the room's owner see it; nobody else in the room does.
+    const question = (await listOf(world.bob, roomId)).find((item) => item.kind === 'question');
+    expect(question).toMatchObject({
+      title: 'Saturday or Sunday for the picnic?',
+      state: 'open',
+      visibility: 'assignee',
+      choices: ['Saturday', 'Sunday'],
+    });
+    expect(question?.assignee?.principal_id).toBe(world.bob.id);
+    expect((await listOf(world.alice, roomId)).map((item) => item.id)).toContain(
+      question?.id ?? '',
+    );
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).not.toContain(
+      question?.id ?? '',
+    );
+    // The request waits on nothing in the room, and the thread never shows the question.
+    const thread = roomThreadView.parse(
+      await ok(send(world.carol.cookie, `/rooms/${roomId}/threads/${asked.threadId}`)),
+    );
+    expect(thread.requests.map((entry) => entry.status)).toEqual(['done']);
+    expect(JSON.stringify(thread)).not.toContain('Saturday or Sunday');
+    // Bob's answer reaches his own request, in its thread.
+    const answered = boardAnswerResponse.parse(
+      await ok(
+        send(world.bob.cookie, `/rooms/${roomId}/board/${question?.id}/answer`, 'POST', {
+          answer: 'Sunday',
+        }),
+      ),
+    );
+    expect(answered.thread_id).toBe(asked.threadId);
+    expect(answered.request_job_id).toBe(asked.jobId);
+  }, 60_000);
+  test("the room's agent cannot ask for a secret on the board", async () => {
+    const roomId = await makeRoom('Keys');
+    const asked = await request(world.bob, roomId, '@Melete set up the weather alerts');
+    await expect(
+      requestPersonQuestion(database().sql, asked.claims, {
+        question: 'What is your weather API key?',
+        secret: { name: 'WEATHER_API_KEY', purpose: 'the weather alerts' },
+      }),
+    ).rejects.toThrow('only in the person’s own chat');
+    expect((await listOf(world.bob, roomId)).some((item) => item.kind === 'question')).toBe(false);
+  }, 60_000);
+  test('an event moved to another day keeps its time of day across a change of clocks', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Field trips');
+    await sql`insert into experience_profile (space_id, time_zone)
+      values (${roomId}, 'America/Los_Angeles')
+      on conflict (space_id) do update set time_zone = excluded.time_zone`;
+    const { claims } = await request(world.alice, roomId);
+    // 9:00 on November 6, after the clocks went back (PST, UTC-8).
+    const made = await tool(claims, roomId, 'board.add', {
+      kind: 'event',
+      title: 'Field trip',
+      starts_at: '2026-11-06T09:00',
+    });
+    expect(made.status).toBe('succeeded');
+    const [item] = await listOf(world.alice, roomId);
+    expect(item?.starts_at).toBe('2026-11-06T17:00:00.000Z');
+    // The agent reads the board, and moves the trip by giving the time it read on another day.
+    const listed = (await tool(claims, roomId, 'board.list', {})).detail ?? {};
+    const read = (listed.items as { id: string; starts_at: string }[]).find(
+      (entry) => entry.id === made.item,
+    );
+    expect(listed.time_zone).toBe('America/Los_Angeles');
+    expect(read?.starts_at).toBe('2026-11-06T09:00');
+    const moved = await tool(claims, roomId, 'board.update', {
+      item_id: made.item,
+      starts_at: String(read?.starts_at).replace('2026-11-06', '2026-10-30'),
+    });
+    expect(moved.status).toBe('succeeded');
+    // Still 9:00, now in daylight time (PDT, UTC-7).
+    const [after] = await listOf(world.alice, roomId);
+    expect(after?.starts_at).toBe('2026-10-30T16:00:00.000Z');
+    // A time given with its own offset is taken as given.
+    await tool(claims, roomId, 'board.update', {
+      item_id: made.item,
+      starts_at: '2026-10-30T09:30:00-07:00',
+    });
+    expect((await listOf(world.alice, roomId))[0]?.starts_at).toBe('2026-10-30T16:30:00.000Z');
+  }, 60_000);
+
+  test("a room with no zone of its own reads times in its asker's zone, then its maker's", async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('No zone');
+    await sql`delete from experience_profile where space_id = ${roomId}`;
+    const zone = (person: Person, timeZone: string) =>
+      sql`insert into experience_profile (space_id, time_zone)
+        select id, ${timeZone} from space where kind = 'personal' and owner_principal_id = ${person.id}
+        on conflict (space_id) do update set time_zone = excluded.time_zone`;
+    const startsAt = async (itemId: string | null) =>
+      (await listOf(world.alice, roomId)).find((item) => item.id === itemId)?.starts_at;
+    await zone(world.bob, 'America/Los_Angeles');
+    await zone(world.alice, 'America/New_York');
+    try {
+      // Bob asks: his own zone, 9:00 PST.
+      const bobs = await request(world.bob, roomId);
+      const made = await tool(bobs.claims, roomId, 'board.add', {
+        kind: 'event',
+        title: 'Dentist',
+        starts_at: '2026-11-06T09:00',
+      });
+      expect(made.status).toBe('succeeded');
+      expect(await startsAt(made.item)).toBe('2026-11-06T17:00:00.000Z');
+      const listed = (await tool(bobs.claims, roomId, 'board.list', {})).detail ?? {};
+      expect(listed.time_zone).toBe('America/Los_Angeles');
+      // A date alone is that whole day, from its midnight in the same zone.
+      const day = await tool(bobs.claims, roomId, 'board.add', {
+        kind: 'event',
+        title: 'School fair',
+        starts_at: '2026-11-06',
+      });
+      expect(await startsAt(day.item)).toBe('2026-11-06T08:00:00.000Z');
+      // Any other form is refused, never read in the server's own zone.
+      for (const given of ['2026-11-06 09:00', 'next Friday', '11/06/2026 9am']) {
+        const refused = await tool(bobs.claims, roomId, 'board.add', {
+          kind: 'event',
+          title: 'Unclear',
+          starts_at: given,
+        });
+        expect(refused.refused ?? '').toContain("date and time in the room's time zone");
+      }
+      // A day or hour that does not exist is refused, never rolled into the next.
+      for (const given of ['2026-11-31T09:00', '2026-11-06T25:00', '2026-02-30T09:00Z']) {
+        const refused = await tool(bobs.claims, roomId, 'board.add', {
+          kind: 'event',
+          title: 'No such day',
+          starts_at: given,
+        });
+        expect([given, refused.refused ?? '']).toEqual([
+          given,
+          expect.stringContaining('must be a real date and time'),
+        ]);
+      }
+      const leap = await tool(bobs.claims, roomId, 'board.add', {
+        kind: 'event',
+        title: 'Leap day',
+        starts_at: '2028-02-29T09:00',
+      });
+      expect(await startsAt(leap.item)).toBe('2028-02-29T17:00:00.000Z');
+      await database().runner.commitOutcome(bobs.claims, {
+        kind: 'completed',
+        summary: 'Added.',
+        evidence: [],
+      });
+      // Carol chose no zone: the room's maker's is used, 9:00 EST.
+      const carols = await request(world.carol, roomId);
+      const hers = await tool(carols.claims, roomId, 'board.add', {
+        kind: 'event',
+        title: 'Recital',
+        starts_at: '2026-11-06T09:00',
+      });
+      expect(await startsAt(hers.item)).toBe('2026-11-06T14:00:00.000Z');
+      await database().runner.commitOutcome(carols.claims, {
+        kind: 'completed',
+        summary: 'Added.',
+        evidence: [],
+      });
+    } finally {
+      await zone(world.bob, 'UTC');
+      await zone(world.alice, 'UTC');
+    }
+  }, 60_000);
+
+  test('a question asked with ask_person is answered by a reply in its thread, and closed when its request ends', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Errands');
+    const questions = async () =>
+      (await listOf(world.bob, roomId)).filter((item) => item.kind === 'question');
+    // Bob replies in the thread instead of on the board: that is his answer.
+    const first = await request(world.bob, roomId, '@Melete plan the errands');
+    await requestPersonQuestion(sql, first.claims, { question: 'Morning or afternoon?' });
+    await database().runner.commitOutcome(first.claims, {
+      kind: 'completed',
+      summary: 'I asked you on the board.',
+      evidence: [],
+    });
+    const reply = roomMessageResponse.parse(
+      await ok(
+        send(world.bob.cookie, `/rooms/${roomId}/threads/${first.threadId}/messages`, 'POST', {
+          text: '@Melete Morning',
+          submission_id: submission(),
+        }),
+      ),
+    );
+    expect(reply.request_job_id).toBe(first.jobId);
+    const [replied] = await questions();
+    expect(replied).toMatchObject({ state: 'answered', answer: '@Melete Morning' });
+    // A request that ends while its question is open lets the question go.
+    const second = await request(world.bob, roomId, '@Melete and the shops?');
+    await requestPersonQuestion(sql, second.claims, { question: 'Which shop first?' });
+    await database().runner.commitOutcome(second.claims, {
+      kind: 'completed',
+      summary: 'I asked you on the board.',
+      evidence: [],
+    });
+    expect((await questions()).find((item) => item.title === 'Which shop first?')?.state).toBe(
+      'open',
+    );
+    await database().jobs.cancel(second.jobId);
+    const closed = (await questions()).find((item) => item.title === 'Which shop first?');
+    expect(closed?.state).toBe('done');
+    // Answering it now posts nothing and starts nothing.
+    const count = async () =>
+      (
+        await sql`select (select count(*) from room_message where space_id = ${roomId})::int as messages,
+          (select count(*) from job where space_id = ${roomId})::int as jobs`
+      )[0];
+    const before = await count();
+    const refused = await send(
+      world.bob.cookie,
+      `/rooms/${roomId}/board/${closed?.id}/answer`,
+      'POST',
+      { answer: 'The bakery' },
+    );
+    expect(refused.status).toBe(409);
+    expect(await count()).toEqual(before);
+  }, 60_000);
+
+  test('a message is an answer only from the person the question asks', async () => {
+    const { db, sql } = database();
+    const roomId = await makeRoom('Rides');
+    const asking = await request(world.alice, roomId);
+    const asked = await tool(asking.claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Can you drive on Sunday?',
+    });
+    await database().runner.commitOutcome(asking.claims, {
+      kind: 'completed',
+      summary: 'Asked.',
+      evidence: [],
+    });
+    // Carol's message carries the submission the board gives Bob's answer.
+    const posed = roomMessageResponse.parse(
+      await ok(
+        send(world.carol.cookie, `/rooms/${roomId}/threads/${asking.threadId}/messages`, 'POST', {
+          text: '@Melete Yes',
+          submission_id: submission(),
+        }),
+      ),
+    );
+    const forged = createHash('sha256')
+      .update(`${roomId}:${world.carol.id}:board-answer-${asked.item}`)
+      .digest('hex');
+    await sql`update room_message set submission_id = ${forged} where id = ${posed.message.id}`;
+    expect(await boardAnswersFor(db, roomId, posed.request_job_id ?? '')).toEqual([]);
+  }, 60_000);
+
+  test('after a shared calendar is read, what the agent puts up for one person stays with them, and it is told', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Carpool');
+    const { claims } = await request(world.alice, roomId);
+    const read = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, status, idempotency_key, resolved_at)
+      values (${read}, ${claims.job_id}, ${claims.attempt_id}, ${await boardConnection(roomId)},
+        'room.member_freebusy', 'read', '{}'::jsonb, ${'0'.repeat(64)}, 'succeeded', ${read}, now())`;
+    const seenBy = async (person: Person) => (await listOf(person, roomId)).map((item) => item.id);
+    const added = await tool(claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Drive on Thursday',
+      assignee: world.bob.id,
+      visibility: 'everyone',
+    });
+    expect(added.status).toBe('succeeded');
+    expect(String(added.detail?.note)).toContain('because this request read a shared calendar');
+    expect(await seenBy(world.carol)).not.toContain(added.item);
+    expect(await seenBy(world.bob)).toContain(added.item ?? '');
+    // Something for nobody in particular stays for everyone.
+    const shared = await tool(claims, roomId, 'board.add', { kind: 'task', title: 'Bring water' });
+    expect([shared.status, shared.refused]).toEqual(['succeeded', null]);
+    expect(await seenBy(world.carol)).toContain(shared.item ?? '');
+    // An update that would show one person's item to everyone keeps it with them too.
+    const kept = await tool(claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Pack the snacks',
+      assignee: world.bob.id,
+      visibility: 'assignee',
+    });
+    const opened = await tool(claims, roomId, 'board.update', {
+      item_id: kept.item,
+      visibility: 'everyone',
+    });
+    expect(opened.status).toBe('succeeded');
+    expect(String(opened.detail?.note)).toContain('because this request read a shared calendar');
+    expect(await seenBy(world.carol)).not.toContain(kept.item);
+  }, 60_000);
+
+  test('after a shared calendar is read, a retitle or a new assignee keeps an item with its person', async () => {
+    const { sql } = database();
+    const roomId = await makeRoom('Rota');
+    const seenBy = async (person: Person) => (await listOf(person, roomId)).map((item) => item.id);
+    // Put up for everyone before the request read anyone's calendar.
+    const before = await request(world.alice, roomId);
+    const assigned = await tool(before.claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Drive on Monday',
+      assignee: world.bob.id,
+      visibility: 'everyone',
+    });
+    const open = await tool(before.claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Drive on Tuesday',
+    });
+    expect(await seenBy(world.carol)).toEqual(expect.arrayContaining([assigned.item, open.item]));
+    await database().runner.commitOutcome(before.claims, {
+      kind: 'completed',
+      summary: 'Added.',
+      evidence: [],
+    });
+    const { claims } = await request(world.alice, roomId);
+    const read = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, status, idempotency_key, resolved_at)
+      values (${read}, ${claims.job_id}, ${claims.attempt_id}, ${await boardConnection(roomId)},
+        'room.member_freebusy', 'read', '{}'::jsonb, ${'0'.repeat(64)}, 'succeeded', ${read}, now())`;
+    // A retitle of one person's item, sending no visibility.
+    const retitled = await tool(claims, roomId, 'board.update', {
+      item_id: assigned.item,
+      title: 'Drive on Monday at 3',
+    });
+    expect(retitled.status).toBe('succeeded');
+    expect(String(retitled.detail?.note)).toContain('because this request read a shared calendar');
+    // Assigning an item everyone sees.
+    const given = await tool(claims, roomId, 'board.update', {
+      item_id: open.item,
+      assignee: world.bob.id,
+    });
+    expect(given.status).toBe('succeeded');
+    const carols = await seenBy(world.carol);
+    expect(carols).not.toContain(assigned.item);
+    expect(carols).not.toContain(open.item);
+    expect(await seenBy(world.bob)).toEqual(expect.arrayContaining([assigned.item, open.item]));
+  }, 60_000);
 });

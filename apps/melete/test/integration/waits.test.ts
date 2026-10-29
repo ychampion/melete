@@ -434,6 +434,36 @@ withDb('durable waits, triggers and approval inputs', () => {
       expect((await jobs.get(row.id)).state).toBe('queued');
     });
 
+    test('standing work resting on its trigger between shifts is not run again by a correction', async () => {
+      const { jobs, handle } = fixture();
+      const made = await create();
+      const schedule = await triggers.create(made.id, {
+        kind: 'schedule',
+        cron: '0 22 * * *',
+        timezone: 'UTC',
+      });
+      const done = await completed(await claim(await jobs.get(made.id)));
+      // Between shifts, as `restOn` leaves it: on the trigger it stands on.
+      const wait = { kind: 'event' as const, trigger_id: schedule.id, deadline_at: null };
+      await handle.db
+        .update(job)
+        .set({ kind: 'run', state: 'waiting_for_event_or_time', wait, nextWakeAt: null })
+        .where(eq(job.id, done.id));
+      const rested = await jobs.get(done.id);
+      const after = await correct(rested);
+      expect(after.state).toBe('waiting_for_event_or_time');
+      expect(after.nextWakeAt).toBeNull();
+      expect(after.stateVersion).toBe(rested.stateVersion);
+      // A wait it set mid-shift is still replanned, as any job's is.
+      await handle.db
+        .update(job)
+        .set({
+          wait: { kind: 'timer', wake_at: new Date(Date.now() + 120_000).toISOString() },
+        })
+        .where(eq(job.id, done.id));
+      expect((await correct(await jobs.get(done.id))).state).toBe('queued');
+    });
+
     test('a finished turn is never run again by a correction, nor a question or an approval', async () => {
       const { jobs, handle } = fixture();
       const chat = await jobs.transaction((tx) =>
