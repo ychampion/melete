@@ -22,7 +22,9 @@ import {
   roomThreadView,
 } from '@melete/contracts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { serviceTransaction } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
+import { appendEvent } from '../../src/events/store.ts';
 import { EventStream } from '../../src/events/stream.ts';
 import { createApp } from '../../src/index.ts';
 import { buildBundle } from '../../src/jobs/bundle.ts';
@@ -1043,5 +1045,114 @@ withDb('room memory', () => {
     expect(JSON.stringify(await roomMemory(bob, roomId))).toContain('300 euros');
     expect((await send(bob.cookie, `/artifacts/${artifactId}/content`)).status).toBe(200);
     void opened;
+  }, 120_000);
+  test('a room that shows only what needs its people names an email by its kind on every card, receipt and live step, except to its maker', async () => {
+    const { sql, db } = database();
+    const roomId = await makeRoom('Mail help', [bob]);
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: true }));
+    const asked = await ask(bob, roomId, 'what came in today?');
+    const attempt = await attemptOf(asked.jobId);
+    const [ran] = await sql`select id from attempt where job_id = ${asked.jobId} limit 1`;
+    const connection = `con_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${connection}, ${roomId}, 'test', 'Shared mail', '[]'::jsonb)`;
+    const subject = 'Your order has shipped';
+    const sender = 'orders@shop.example';
+    const words = 'Tracking 212, arriving Friday';
+    /** A step of the request, recorded as the broker records one that succeeded. */
+    const step = async (
+      kind: string,
+      effectClass: string,
+      payload: Record<string, unknown>,
+      detail: Record<string, unknown>,
+    ) => {
+      const id = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+      const receipt = {
+        action_id: id,
+        connection_id: connection,
+        external_ref: null,
+        detail,
+        received_at: new Date().toISOString(),
+        late: false,
+      };
+      await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, status, idempotency_key, receipt, resolved_at)
+        values (${id}, ${asked.jobId}, ${ran?.id}, ${connection}, ${kind}, ${effectClass},
+          ${JSON.stringify(payload)}::jsonb, ${'0'.repeat(64)}, 'succeeded', ${id},
+          ${JSON.stringify(receipt)}::jsonb, now())`;
+      await serviceTransaction(db, async (tx) => {
+        await appendEvent(tx, {
+          jobId: asked.jobId,
+          attemptId: ran?.id,
+          type: 'action_requested',
+          payload: { action_id: id, kind },
+          dedupKey: `${id}:requested`,
+        });
+        await appendEvent(tx, {
+          jobId: asked.jobId,
+          attemptId: ran?.id,
+          type: 'action_status_changed',
+          payload: { action_id: id, from: 'admitted', to: 'succeeded' },
+          dedupKey: `${id}:succeeded`,
+        });
+      });
+      return id;
+    };
+    await step(
+      'email.search',
+      'read',
+      { query: 'today' },
+      { messages: [{ subject, from: sender }] },
+    );
+    await step(
+      'email.read',
+      'read',
+      { message_id: 'm1' },
+      { message: { subject, from: sender, text: words } },
+    );
+    // A reply through a mail app's own tool: its receipt would name what it acted on.
+    const replied = await step(
+      'mcp_mail.reply_to_message',
+      'write_external',
+      { subject: `Re: ${subject}`, to: sender, body: 'Thank you' },
+      { sent: true },
+    );
+    // The reviewer passed it, in words that name the mail.
+    await sql`insert into action_review (id, action_id, job_id, space_id, tier, decided_by,
+        outcome, risk, reason)
+      values (${`arv_${randomBytes(8).toString('hex')}`}, ${replied}, ${asked.jobId}, ${roomId},
+        'reviewable', 'reviewer', 'approved', 'low',
+        ${`A short thank-you to ${sender} about "${subject}".`})`;
+    await attempt.finish();
+    const reads = async (person: Person) => {
+      const thread = await ok(send(person.cookie, `/rooms/${roomId}/threads/${asked.threadId}`));
+      const live = await ok(
+        send(person.cookie, `/rooms/${roomId}/threads/${asked.threadId}/events`),
+      );
+      return { thread: JSON.stringify(thread), live: JSON.stringify(live) };
+    };
+    // Bob asked, but the mail is not his to read: every surface names the email by its kind.
+    const member = await reads(bob);
+    for (const surface of [member.thread, member.live]) {
+      expect(surface).not.toContain(subject);
+      expect(surface).not.toContain(sender);
+      expect(surface).not.toContain(words);
+      expect(surface).toContain('An email');
+    }
+    expect(member.thread).toContain('Ran reply to message');
+    expect(member.live).toContain('The reviewer checked this step before it ran.');
+    // The room's maker reads each step as it is, the reviewer's words too.
+    const maker = await reads(alice);
+    expect(maker.thread).toContain(subject);
+    expect(maker.live).toContain(subject);
+    expect(maker.live).toContain('A short thank-you to');
+    // A room from before makers were recorded on it is still its maker's.
+    await sql`update space set owner_principal_id = null where id = ${roomId}`;
+    const unrecorded = await reads(alice);
+    expect(unrecorded.thread).toContain(subject);
+    expect(unrecorded.live).toContain(subject);
+    await sql`update space set owner_principal_id = ${alice.id} where id = ${roomId}`;
+    await ok(send(alice.cookie, `/spaces/${roomId}/summaries-only`, 'PUT', { on: false }));
+    expect((await reads(bob)).thread).toContain(subject);
   }, 120_000);
 });

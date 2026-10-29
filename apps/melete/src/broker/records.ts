@@ -13,6 +13,8 @@ import { BrokerFault } from './errors.ts';
 export type Query = Sql | TransactionSql;
 export type LockedJob = {
   principal_id?: string | null;
+  /** 'room' for a request someone made of a room's agent. */
+  audience?: string | null;
   id: string;
   space_id: string;
   /** Present on every stored row; optional so a hand-built fixture stays valid. */
