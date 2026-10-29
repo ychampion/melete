@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, spyOn, test } from 'bun:test';
+import type { Db as IDatabase, PgBoss } from 'pg-boss';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { QUIET_QUEUES, startQueue } from './queue.ts';
-import { DUE_SCAN_MS, workQuiet } from './quiet.ts';
+import { DUE_SCAN_MS, startDueWaker, workQuiet } from './quiet.ts';
 
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
@@ -164,4 +165,213 @@ withDb('queues woken by notices', () => {
       await quiet.stop();
     }
   }, 25_000);
+});
+
+/** Drive timer callbacks and database barriers explicitly, without stopwatch assertions. */
+async function wakerHarness(
+  run: (h: {
+    hint: () => void;
+    reconnect: () => void;
+    fire: () => Promise<void>;
+    flush: () => Promise<void>;
+    pending: () => number[];
+    scans: () => number;
+    closes: () => number;
+    rows: (value: { name: string; wait_ms: number }[]) => void;
+    block: () => () => void;
+    subscribe: () => void;
+    stop: () => Promise<void>;
+  }) => Promise<void>,
+  listening: 'yes' | 'absent' | 'failed' | 'starting' = 'yes',
+) {
+  const timers = new Map<object, { callback: () => void; ms: number }>();
+  const timerSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((
+    callback: () => void,
+    ms = 0,
+  ) => {
+    const timer = { unref() {} };
+    timers.set(timer, { callback, ms });
+    return timer;
+  }) as unknown as typeof setTimeout);
+  const clearSpy = spyOn(globalThis, 'clearTimeout').mockImplementation(((timer: object) => {
+    timers.delete(timer);
+  }) as unknown as typeof clearTimeout);
+  let onHint = () => {};
+  let onReconnect = () => {};
+  let subscribe = () => {};
+  let scans = 0;
+  let closes = 0;
+  let rows: { name: string; wait_ms: number }[] = [];
+  let barrier: Promise<void> | undefined;
+  const db: IDatabase = {
+    async executeSql(text) {
+      if (!text.includes('extract(epoch from min(start_after)')) return { rows: [] };
+      scans++;
+      const snapshot = rows;
+      await barrier;
+      barrier = undefined;
+      return { rows: snapshot };
+    },
+    ...(listening === 'absent'
+      ? {}
+      : {
+          async listen(_channel: string, hint: (payload: string) => void, reconnect: () => void) {
+            onHint = () => hint('');
+            onReconnect = reconnect;
+            if (listening === 'failed') throw new Error('LISTEN unavailable');
+            if (listening === 'starting')
+              await new Promise<void>((resolve) => {
+                subscribe = resolve;
+              });
+            reconnect();
+            return {
+              async close() {
+                closes++;
+              },
+            };
+          },
+        }),
+  };
+  const waker = startDueWaker({ getDb: () => db } as PgBoss, { say: () => {} });
+  const flush = async () => {
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+  };
+  try {
+    await flush();
+    await run({
+      hint: () => onHint(),
+      reconnect: () => onReconnect(),
+      subscribe: () => subscribe(),
+      flush,
+      pending: () => [...timers.values()].map((t) => t.ms),
+      scans: () => scans,
+      closes: () => closes,
+      rows: (value) => {
+        rows = value;
+      },
+      block: () => {
+        let release = () => {};
+        barrier = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return release;
+      },
+      async fire() {
+        const first = timers.entries().next().value;
+        if (!first) throw new Error('No scheduled scan');
+        timers.delete(first[0]);
+        first[1].callback();
+        await flush();
+      },
+      stop: () => waker.stop(),
+    });
+  } finally {
+    subscribe();
+    await waker.stop();
+    timerSpy.mockRestore();
+    clearSpy.mockRestore();
+  }
+}
+
+describe('due waker interleavings', () => {
+  test('idle scans keep the five-second bound; repeated hints coalesce and find the deadline', async () => {
+    await wakerHarness(async (h) => {
+      expect(h.scans()).toBe(1);
+      expect(h.pending()).toEqual([DUE_SCAN_MS]);
+      for (let i = 0; i < 20; i++) h.hint();
+      expect(h.pending()).toEqual([0]);
+      h.rows([{ name: 'scheduled', wait_ms: 250 }]);
+      await h.fire();
+      expect(h.scans()).toBe(2);
+      expect(h.pending()).toEqual([250]);
+      await h.stop();
+      expect(h.pending()).toEqual([]);
+      expect(h.closes()).toBe(1);
+      h.hint();
+      h.reconnect();
+      await h.flush();
+      expect(h.scans()).toBe(2);
+    });
+  });
+
+  test('a hint during a scan survives its older empty snapshot', async () => {
+    await wakerHarness(async (h) => {
+      const release = h.block();
+      h.hint();
+      await h.fire();
+      h.rows([{ name: 'scheduled', wait_ms: 200 }]);
+      h.hint();
+      h.hint();
+      release();
+      await h.flush();
+      expect(h.pending()).toEqual([0]);
+      await h.fire();
+      expect(h.pending()).toEqual([200]);
+      expect(h.scans()).toBe(3);
+    });
+  });
+
+  test('reconnect scans for missed work', async () => {
+    await wakerHarness(async (h) => {
+      h.rows([{ name: 'missed', wait_ms: 100 }]);
+      h.reconnect();
+      await h.fire();
+      expect(h.pending()).toEqual([100]);
+    });
+  });
+
+  test.each(['absent', 'failed'] as const)(
+    '%s listener retains the normal fallback',
+    async (mode) => {
+      await wakerHarness(async (h) => {
+        expect(h.pending()).toEqual([DUE_SCAN_MS]);
+        h.rows([{ name: 'missed', wait_ms: -100 }]);
+        await h.fire();
+        expect(h.scans()).toBe(2);
+        expect(h.pending()).toEqual([1000]);
+      }, mode);
+    },
+  );
+
+  test('startup subscribes before scanning and stop closes a late subscription', async () => {
+    await wakerHarness(async (h) => {
+      expect(h.scans()).toBe(0);
+      expect(h.pending()).toEqual([]);
+      const stopped = h.stop();
+      h.subscribe();
+      await stopped;
+      expect(h.closes()).toBe(1);
+      expect(h.scans()).toBe(0);
+      expect(h.pending()).toEqual([]);
+    }, 'starting');
+  });
+
+  test('the first subscribed scan recovers an already queued deadline', async () => {
+    await wakerHarness(async (h) => {
+      h.rows([{ name: 'already_queued', wait_ms: 150 }]);
+      h.hint();
+      expect(h.scans()).toBe(0);
+      h.subscribe();
+      await h.flush();
+      expect(h.scans()).toBe(1);
+      expect(h.pending()).toEqual([150]);
+    }, 'starting');
+  });
+
+  test('stop awaits a scan already in progress', async () => {
+    await wakerHarness(async (h) => {
+      const release = h.block();
+      h.hint();
+      await h.fire();
+      let stopped = false;
+      const stopping = h.stop().then(() => {
+        stopped = true;
+      });
+      await h.flush();
+      expect(stopped).toBe(false);
+      release();
+      await stopping;
+      expect(h.pending()).toEqual([]);
+    });
+  });
 });

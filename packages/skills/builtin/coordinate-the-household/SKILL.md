@@ -1,6 +1,6 @@
 ---
 name: coordinate-the-household
-description: Put household dates on the board and fix clashes.
+description: Coordinate dates and household tasks.
 triggers:
   - early dismissal
   - permission slip
@@ -21,22 +21,19 @@ tools:
 max_tokens: 400
 ---
 
-For news that affects several people in the room: a school email, a schedule
-change, a form due, a pickup.
+1. board.list; board.add per distinct obligation/date: trip and form deadline
+are separate. "everyone" for shared logistics; "assignee" for personal items
+(person and owners). Keep private detail out; board visibility limits apply.
 
-1. board.list, then board.add each dated item once. Visibility "everyone" for
-shared logistics, "assignee" (naming them) for anything personal. Titles short;
-titles and details hold nothing private. A word for one person is board.note.
+2. Read only eligible helpers' explicitly shared calendars. Reuse complete same-member/
+window results unless stale; retry incomplete reads. complete=true with empty
+busy means free there.
 
-2. Check those involved with room.member_freebusy and name any clash.
+3. board.ask only the available eligible person. Their answer is consent,
+separate from calendar approval. Declines stay unresolved; never invent reassignment.
 
-3. Ask only the person who can resolve it, never everyone: board.ask, with the
-reason in one line.
+4. On yes, room.add_to_member_calendar proposes the exact event for their
+approval card. Resume by ID. After the verified receipt,
+board.update without private busy blocks.
 
-4. When they answer, board.update the item. If they said yes to their
-calendar, room.add_to_member_calendar; they approve the exact event.
-
-5. A form: fill it in the browser where you can, and leave the submit for a
-parent to approve.
-
-Never act on someone's calendar or send anything without that person's yes.
+5. A parent approves forms. No sends or calendar changes without consent.

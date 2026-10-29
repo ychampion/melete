@@ -8,9 +8,10 @@
 import { type SchedulingClass, schedulingClass } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import { fromDrizzle, PgBoss } from 'pg-boss';
+import { databaseNow } from '../db/clock.ts';
 import { type VerifyingTls, verifyingTls } from '../db/tls.ts';
 import type { Transaction } from '../db/transaction.ts';
-import { quietQueue, startDueWaker } from './quiet.ts';
+import { DUE_WAKE_CHANNEL, quietQueue, startDueWaker } from './quiet.ts';
 
 /** The only queues v0.1 uses. Naming them here keeps the set closed. */
 export const QUEUES = {
@@ -188,8 +189,11 @@ export async function startQueue(
   return {
     boss,
     stop: async () => {
-      await waker?.stop();
-      await boss.stop({ graceful: true, timeout: 1000 });
+      try {
+        await waker?.stop();
+      } finally {
+        await boss.stop({ graceful: true, timeout: 1000 });
+      }
     },
   };
 }
@@ -202,10 +206,16 @@ export async function enqueueWake(
   at: Date,
   scheduling: SchedulingClass = 'interactive',
 ): Promise<string | null> {
-  return boss.send(attemptQueue(scheduling), wake, {
+  const id = await boss.send(attemptQueue(scheduling), wake, {
     db: fromDrizzle(tx, sql),
     startAfter: at,
     retryLimit: 0,
     expireInSeconds: 1800,
   });
+  if (id && at.getTime() > (await databaseNow(tx)).getTime()) {
+    // Same transaction and connection as send: rollback publishes neither the
+    // wake nor its hint. Immediate wakes already use pg-boss's queue notice.
+    await tx.execute(sql`select pg_notify(${DUE_WAKE_CHANNEL}, '')`);
+  }
+  return id;
 }
