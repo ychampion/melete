@@ -240,6 +240,12 @@ const variables = z.object({
    * the same token cap (packages/skills, loadIdentity).
    */
   MELETE_IDENTITY_FILE: unsetWhenBlank(z.string().max(4096).optional()),
+  /**
+   * Notes added to the agent's instructions for a known model family
+   * (packages/contracts, model-guidance.ts): on unless this is `off`. Read once
+   * at start, so a change takes effect when the service restarts.
+   */
+  MELETE_MODEL_GUIDANCE: featureSwitch,
   MELETE_PUBLIC_URL: unsetWhenBlank(
     z
       .url()
