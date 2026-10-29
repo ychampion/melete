@@ -462,7 +462,11 @@ export async function holdForRoomMessage(
     .select()
     .from(attachment)
     .where(
-      and(inArray(attachment.id, ids), isNull(attachment.jobId), isNull(attachment.roomMessageId)),
+      and(
+        inArray(attachment.id, ids),
+        eq(attachment.spaceId, input.spaceId),
+        eq(attachment.principalId, input.principalId),
+      ),
     )
     .for('update');
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -471,6 +475,12 @@ export async function holdForRoomMessage(
     const row = byId.get(id);
     if (!row || row.spaceId !== input.spaceId || row.principalId !== input.principalId)
       throw unavailable();
+    if (row.jobId !== null || row.roomMessageId !== null)
+      throw new ServiceError(
+        'attachment_sent',
+        'This file is already posted. Remove it from this message or attach a new copy.',
+        409,
+      );
     const [updated] = await tx
       .update(attachment)
       .set({ roomMessageId: input.messageId, sentAt: new Date(), position })

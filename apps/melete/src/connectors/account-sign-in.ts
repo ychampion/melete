@@ -91,7 +91,13 @@ export type AccountSignInHooks<Installed> = {
 const PENDING_TTL_MS = 15 * 60_000;
 const FINISHED_TTL_MS = 10 * 60_000;
 
-export const MAIL_READ_GRANTS = ['email.search', 'email.read', 'email.draft', 'email.discard'];
+export const MAIL_READ_GRANTS = [
+  'email.search',
+  'email.read',
+  'email.read_attachment',
+  'email.draft',
+  'email.discard',
+];
 /** A Drive's one tool: a file's metadata as it is now. */
 export const DOCUMENT_GRANTS = ['documents.status'];
 export const CALENDAR_GRANTS = [

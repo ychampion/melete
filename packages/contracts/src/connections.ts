@@ -329,7 +329,14 @@ export type SmsCredentials = z.infer<typeof smsCredentials>;
 
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
-  mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
+  mail: [
+    'email.search',
+    'email.read',
+    'email.read_attachment',
+    'email.draft',
+    'email.discard',
+    'email.send',
+  ],
   caldav: [
     'calendar.list',
     'calendar.freebusy',
@@ -1186,6 +1193,13 @@ const MAIL_SCOPES: KindScopes = [
   {
     scope: 'email.read',
     label: 'Read a message',
+    effect_class: 'read',
+    asks_first: false,
+    default: true,
+  },
+  {
+    scope: 'email.read_attachment',
+    label: 'Read an attachment',
     effect_class: 'read',
     asks_first: false,
     default: true,
