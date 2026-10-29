@@ -656,6 +656,53 @@ withDb('room board', () => {
     const [kept] = (await listOf(world.alice, roomId)).filter((item) => item.id === hidden.item);
     expect(kept?.title).toBe('Owners only plan');
   }, 60_000);
+  test('a board call its tool refuses says what to call instead', async () => {
+    const roomId = await makeRoom('Mix-ups');
+    const asked = await request(world.alice, roomId);
+    const refusal = async (kind: string, payload: Record<string, unknown>) => {
+      const made = await tool(asked.claims, roomId, kind, payload);
+      expect(made.status).toBe('refused');
+      return made.refused ?? '';
+    };
+    // A note asked of the tool for events and tasks names board.note.
+    expect(
+      await refusal('board.add', { kind: 'note', title: 'Bring the form', assignee: world.bob.id }),
+    ).toBe(
+      'board.add takes kind event or task, so leave a note for one person with board.note and its assignee and title instead.',
+    );
+    expect(
+      await refusal('board.add', {
+        kind: 'question',
+        title: 'Which Friday?',
+        assignee: world.bob.id,
+      }),
+    ).toContain('board.ask');
+    expect(
+      await refusal('board.note', {
+        assignee: world.bob.id,
+        title: 'Dentist',
+        starts_at: '2026-11-06T09:00',
+      }),
+    ).toContain('board.add');
+    expect(
+      await refusal('board.note', { assignee: world.bob.id, title: 'Pick one', choices: ['A'] }),
+    ).toContain('board.ask');
+    expect(await refusal('board.update', { item_id: 'rbi_x', state: 'answered' })).toContain(
+      'open or done',
+    );
+    // Any other refusal names the field and what it needs, never what was sent.
+    const other = await refusal('board.add', { kind: 'event' });
+    expect(other).toBe('The arguments were not accepted. title: missing');
+    const extra = await refusal('board.add', { kind: 'task', title: 'Rake', colour: 'red' });
+    expect(extra).toBe('The arguments were not accepted. colour: not a field this tool takes');
+    expect(extra).not.toContain('red');
+    // The note it should have been goes up as one.
+    const note = await tool(asked.claims, roomId, 'board.note', {
+      assignee: world.bob.id,
+      title: 'Bring the form',
+    });
+    expect(note.status).toBe('succeeded');
+  }, 60_000);
   test('a stream already following the board sends each reader only what they may see', async () => {
     const roomId = await makeRoom('Following');
     const guest = await guestIn(roomId, 'ida@guest.example');

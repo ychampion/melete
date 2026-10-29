@@ -36,6 +36,15 @@ describe('model guidance', () => {
     }
   });
 
+  test('no family names a fixed UTC offset or a placeholder of its own', () => {
+    for (const entry of MODEL_GUIDANCE) {
+      // An offset changes with daylight saving, so one written here is wrong half the year.
+      expect(entry.text).not.toMatch(/[+-]\d{2}:\d{2}/);
+      // The privacy redactor rewrites these brackets on every cloud call.
+      expect(entry.text).not.toMatch(/[⟦⟧]/);
+    }
+  });
+
   test('no family switches reasoning by default', () => {
     for (const entry of MODEL_GUIDANCE) expect(entry.chat_template_kwargs).toBeUndefined();
   });

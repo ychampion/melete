@@ -55,6 +55,7 @@ import { redactSecrets } from '../connectors/faults.ts';
 import { databaseNow } from '../db/clock.ts';
 import {
   action,
+  approval,
   attempt,
   budgetLedger,
   connection,
@@ -1544,6 +1545,34 @@ export class AttemptRunner {
     return registration ? wait : null;
   }
 
+  /**
+   * The actions of this job a person allowed after this attempt read its
+   * inputs, at the job's revision, that are still only allowed: nothing has
+   * carried them out. The decision came after the attempt started, so the
+   * attempt was never told of it; the next one is, from the same events.
+   * Only an action whose one approval is for its own bytes, as an approval
+   * wait requires (`ApprovalService.registerWait`).
+   */
+  private async allowedWhileRunning(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+  ): Promise<string[]> {
+    const rows = await tx.execute<{ id: string }>(sql`select distinct a.id from ${action} a
+      join ${approval} p on p.action_id = a.id
+      join ${attempt} t on t.id = ${attemptId} and t.job_id = a.job_id
+      where a.job_id = ${row.id} and a.status = 'approved'
+        and p.decision = 'approved' and p.job_revision = ${row.revision}
+        and p.payload_hash = a.payload_hash
+        and not exists (select 1 from ${approval} other
+          where other.action_id = a.id and other.id <> p.id)
+        and exists (select 1 from ${event} e where e.job_id = a.job_id
+          and e.type = 'approval_decided' and e.payload->>'approval_id' = p.id
+          and e.seq > t.input_cursor)
+      order by a.id`);
+    return rows.map((entry) => String(entry.id));
+  }
+
   /** The question this attempt put to the person, if it asked one. Prose cannot create one. */
   private async askedOfPerson(tx: Transaction, attemptId: string): Promise<QuestionSpec | null> {
     const [row] = await tx
@@ -1624,18 +1653,32 @@ export class AttemptRunner {
     const capped = endsOnLimit(given)
       ? (limits[await usageClassOf(tx, attemptId)]?.message ?? null)
       : null;
+    // A permission the person gave while this attempt ran, for an action
+    // nothing has carried out yet. The runtime looks for waiting actions as
+    // the turn ends, and one allowed before that look no longer waits, so the
+    // turn would end as if nothing were asked, and the broker wakes only work
+    // parked on an approval. The turn parks on it here instead, already
+    // answered, so the work goes on at once and its next attempt is told.
+    const allowed =
+      !capped &&
+      row.state === 'running' &&
+      (given.kind === 'completed' || given.kind === 'waiting_for_input')
+        ? await this.allowedWhileRunning(tx, row, attemptId)
+        : [];
     // The saved answer reads as the person saw it stream: the same plain-text
     // pass, last, after the answer's links and notes are settled.
     const original: AttemptOutcome = capped
       ? { kind: 'budget_exhausted', summary: capped }
-      : humanOutcome(
-          await this.citedOnlyWhatWasRead(
-            tx,
-            row,
-            attemptId,
-            await namedFailure(tx, attemptId, given),
-          ),
-        );
+      : allowed.length
+        ? { kind: 'waiting_for_approval', action_ids: allowed as [string, ...string[]] }
+        : humanOutcome(
+            await this.citedOnlyWhatWasRead(
+              tx,
+              row,
+              attemptId,
+              await namedFailure(tx, attemptId, given),
+            ),
+          );
     let carried = raised;
     const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
     const [counts] = await tx
@@ -2000,7 +2043,13 @@ export class AttemptRunner {
     const stopped = await this.jobs.transaction(async (tx) => {
       const row = await this.jobs.lock(tx, jobId);
       if (row?.kind !== 'chat') throw new ServiceError('not_found', 'Conversation not found.', 404);
-      return this.stopTurn(tx, row);
+      if (await this.stopTurn(tx, row)) return true;
+      // A turn that ended before what it was allowed was carried out leaves
+      // that for the next message, and one that asked leaves the ask open:
+      // a stopped conversation keeps neither, turn in flight or not.
+      await this.endUnsentActions(tx, row);
+      await withdrawPendingPermissions(tx, jobId, STOPPED_NOTE);
+      return false;
     });
     this.interrupt(jobId);
     if (!stopped) return;
@@ -2026,54 +2075,7 @@ export class AttemptRunner {
       .from(experienceTurn)
       .where(eq(experienceTurn.id, row.currentTurnId));
     if (!turn || ['done', 'stopped', 'failed'].includes(turn.status)) return false;
-    // An action parked until its destination is back (a computer that was off,
-    // a rate limit) would otherwise go later by itself. Stopping ends it here,
-    // recorded as the broker records a dispatch it refuses.
-    const parked = await tx
-      .select()
-      .from(action)
-      .where(
-        and(
-          eq(action.jobId, row.id),
-          eq(action.status, 'admitted'),
-          isNotNull(action.retryAfterAt),
-        ),
-      )
-      .for('update');
-    for (const effect of parked) {
-      const reason = 'the conversation was stopped';
-      await tx
-        .update(action)
-        .set({
-          status: 'failed',
-          resolvedAt: new Date(),
-          reconciliation: { reason, retryable: false },
-        })
-        .where(eq(action.id, effect.id));
-      await tx
-        .update(budgetLedger)
-        .set({ settled: 0 })
-        .where(and(eq(budgetLedger.actionId, effect.id), isNull(budgetLedger.settled)));
-      await appendEvent(tx, {
-        jobId: row.id,
-        attemptId: effect.attemptId,
-        type: 'action_status_changed',
-        payload: { action_id: effect.id, from: 'admitted', to: 'failed' },
-        dedupKey: `${effect.id}:stopped:status`,
-      });
-      await appendEvent(tx, {
-        jobId: row.id,
-        attemptId: effect.attemptId,
-        type: 'notice',
-        payload: {
-          action_id: effect.id,
-          phase: 'dispatch_rejected',
-          outcome: 'fenced',
-          reason,
-        },
-        dedupKey: `${effect.id}:stopped`,
-      });
-    }
+    await this.endUnsentActions(tx, row);
     await tx
       .update(job)
       .set({
@@ -2111,6 +2113,63 @@ export class AttemptRunner {
       dedupKey: `${turn.id}:stopped`,
     });
     return true;
+  }
+
+  /**
+   * End what a stopped conversation would otherwise still send by itself: an
+   * action the person allowed that nothing has carried out yet, which the
+   * next attempt would carry out, and one parked until its destination is
+   * back (a computer that was off, a rate limit). Each is recorded as the
+   * broker records a dispatch it refuses.
+   */
+  private async endUnsentActions(tx: Transaction, row: JobRow): Promise<void> {
+    const parked = await tx
+      .select()
+      .from(action)
+      .where(
+        and(
+          eq(action.jobId, row.id),
+          or(
+            eq(action.status, 'approved'),
+            and(eq(action.status, 'admitted'), isNotNull(action.retryAfterAt)),
+          ),
+        ),
+      )
+      .for('update');
+    for (const effect of parked) {
+      const reason = 'the conversation was stopped';
+      await tx
+        .update(action)
+        .set({
+          status: 'failed',
+          resolvedAt: new Date(),
+          reconciliation: { reason, retryable: false },
+        })
+        .where(eq(action.id, effect.id));
+      await tx
+        .update(budgetLedger)
+        .set({ settled: 0 })
+        .where(and(eq(budgetLedger.actionId, effect.id), isNull(budgetLedger.settled)));
+      await appendEvent(tx, {
+        jobId: row.id,
+        attemptId: effect.attemptId,
+        type: 'action_status_changed',
+        payload: { action_id: effect.id, from: effect.status, to: 'failed' },
+        dedupKey: `${effect.id}:stopped:status`,
+      });
+      await appendEvent(tx, {
+        jobId: row.id,
+        attemptId: effect.attemptId,
+        type: 'notice',
+        payload: {
+          action_id: effect.id,
+          phase: 'dispatch_rejected',
+          outcome: 'fenced',
+          reason,
+        },
+        dedupKey: `${effect.id}:stopped`,
+      });
+    }
   }
 
   async pauseConversation(jobId: string, resume: boolean) {

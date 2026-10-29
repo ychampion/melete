@@ -99,6 +99,13 @@ export interface Connector {
     proposal: Pick<Action, 'kind' | 'canonical_payload'>,
     ctx: ConnectorContext,
   ): void | Promise<void>;
+  /**
+   * One plain sentence for a call the tool's input schema refused, naming
+   * the tool or the arguments to use instead, when the connector knows of a
+   * likely mix-up (a note asked of the tool that adds events and tasks).
+   * Null leaves the broker's own field-by-field reason.
+   */
+  explainInvalid?(kind: string, payload: JsonObject): string | null;
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
   /**
