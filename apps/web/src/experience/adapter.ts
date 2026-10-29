@@ -553,7 +553,8 @@ export const adapter = {
     ),
   /**
    * `attachments` names files uploaded for this message, in the order they show;
-   * `pasted` says which stretches of `text` the person pasted rather than typed.
+   * `pasted` says which stretches of `text` the person pasted rather than typed;
+   * `repliesTo` names the earlier message the words answer.
    */
   send: (
     id: string,
@@ -561,6 +562,8 @@ export const adapter = {
     key: string,
     attachments: readonly string[] = [],
     pasted: readonly { start: number; end: number }[] = [],
+    /** The earlier message in this chat these words reply to, by its message id. */
+    repliesTo?: string,
   ) =>
     guard<MessageAcceptance>(() =>
       api.POST('/conversations/{id}/messages', {
@@ -568,6 +571,7 @@ export const adapter = {
         headers: { 'Idempotency-Key': key },
         body: {
           text,
+          ...(repliesTo ? { replies_to: repliesTo } : {}),
           ...(attachments.length ? { attachments: [...attachments] } : {}),
           ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
           // The service reads time in it until the person confirms their profile's zone.

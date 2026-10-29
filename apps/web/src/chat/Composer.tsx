@@ -14,6 +14,9 @@
  * When the installation transcribes speech, a microphone sits beside the
  * state button: tap to record, tap again to stop, and the words land in the
  * box for the person to read and send. Nothing is sent by voice alone.
+ *
+ * A message chosen with Reply shows above the words as a short quote until it
+ * is sent or let go of, with the x or Escape.
  */
 import { ATTACHMENT_ACCEPT, attachmentSize } from '@melete/contracts/attachments';
 import {
@@ -37,6 +40,7 @@ import {
   fileNote,
   type PendingFile,
 } from './attachments.ts';
+import { cancelsReply } from './reply.ts';
 import { elapsed, useNowTick, useRecorder, type VoicePlace } from './voice.ts';
 import './composer.css';
 import './message-files.css';
@@ -81,6 +85,8 @@ export function Composer({
   voice,
   attachments,
   onPasteText,
+  reply,
+  onCancelReply,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -105,6 +111,9 @@ export function Composer({
   attachments?: AttachmentsControl;
   /** Told the text of each paste, so the message can say which words were pasted. */
   onPasteText?: (text: string) => void;
+  /** The earlier message the next one replies to: whose it is and a short quote. */
+  reply?: ReplyChipView | null;
+  onCancelReply?: () => void;
 }) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const pickRef = useRef<HTMLInputElement>(null);
@@ -124,6 +133,12 @@ export function Composer({
   useEffect(() => {
     if (autoFocus) textRef.current?.focus();
   }, [autoFocus]);
+
+  // Choosing Reply on a message puts the person straight into the words.
+  const replyKey = reply ? JSON.stringify([reply.who, reply.text]) : null;
+  useEffect(() => {
+    if (replyKey) textRef.current?.focus();
+  }, [replyKey]);
 
   // Read on each mount, so a model connected in Settings counts at once on return.
   const model = useLoad(() => models.settings(), []);
@@ -178,6 +193,11 @@ export function Composer({
   // step. Files wait for the turn to end; they start a turn of their own.
   const steering = working && (state === 'stop' || state === 'pause') && !files.length;
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (cancelsReply(event.key, Boolean(reply && onCancelReply))) {
+      event.preventDefault();
+      onCancelReply?.();
+      return;
+    }
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       if ((state === 'send' || steering) && canSend) send();
@@ -262,6 +282,15 @@ export function Composer({
         onDrop={onDrop}
       >
         {working ? <div className="rim" aria-hidden="true" /> : null}
+        {reply && onCancelReply ? (
+          <ReplyChip
+            reply={reply}
+            onCancel={() => {
+              onCancelReply();
+              textRef.current?.focus();
+            }}
+          />
+        ) : null}
         {files.length ? (
           <ul className="composer-tiles" aria-label="Files to send">
             {files.map((file) => (
@@ -366,6 +395,38 @@ export function Composer({
               : (recorder.problem ?? '')}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export type ReplyChipView = { who: string; text: string };
+
+/** Above the words: the message the next one replies to, and a way to let go of it. */
+export function ReplyChip({ reply, onCancel }: { reply: ReplyChipView; onCancel: () => void }) {
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: Escape here matches Escape in the box; the x is the control
+    <div
+      className="composer-reply"
+      onKeyDown={(event) => {
+        if (cancelsReply(event.key, true)) {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
+    >
+      <Icon name="reply" size={14} className="composer-reply-icon" />
+      <span className="composer-reply-words">
+        <span className="composer-reply-who">Replying to {reply.who}</span>
+        <span className="composer-reply-quote">{reply.text}</span>
+      </span>
+      <IconButton
+        name="x"
+        label="Cancel reply"
+        size={28}
+        iconSize={14}
+        className="composer-reply-x"
+        onClick={onCancel}
+      />
     </div>
   );
 }

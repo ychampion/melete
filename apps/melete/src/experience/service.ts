@@ -786,6 +786,7 @@ export class ExperienceService {
         : newId('steer'),
       text: value.text,
       clientTimeZone: value.time_zone,
+      repliesTo: value.replies_to,
     };
     const steeredReceipt = async (
       steered: { row: JobRow; steer: { id: string; seq: number; at: Date } },
@@ -833,8 +834,12 @@ export class ExperienceService {
       if (steered) return steeredReceipt(steered, true);
       result = await this.submissions.input(id, value);
     }
-    // A file the message named that it may not carry is said as itself.
-    if (result.receipt.state !== 'accepted' && result.error?.code.startsWith('attachment'))
+    // A file the message named that it may not carry, or a reply to no earlier
+    // message here, is said as itself.
+    if (
+      result.receipt.state !== 'accepted' &&
+      (result.error?.code.startsWith('attachment') || result.error?.code === 'reply_target_invalid')
+    )
       throw new ServiceError(result.error.code, result.error.message, result.status);
     if (result.receipt.state !== 'accepted')
       throw new ServiceError(

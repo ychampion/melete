@@ -44,6 +44,7 @@ import { personSetSchedule } from './attention.ts';
 import { knownZone } from './local-now.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
 import { releaseReminder, reminderHeld } from './reminder-hold.ts';
+import { replyTarget } from './reply-to.ts';
 import type { StandingWorkSettings } from './resting.ts';
 import { opensWithMention, recordSteer } from './steer.ts';
 import { ENDED_STATES, withdrawEndedJobPermissions, withdrawOpenQuestion } from './withdraw.ts';
@@ -525,6 +526,8 @@ export class JobService {
     pasted: readonly MessageSpan[] = [],
     /** The zone the sender's device reported; time is read in it until the profile's is confirmed. */
     clientTimeZone?: string,
+    /** The earlier message of this job the person is replying to, by its message id. */
+    repliesTo?: string,
   ): Promise<JobRow> {
     const deviceZone = knownZone(clientTimeZone);
     const row = await this.lock(tx, id);
@@ -582,6 +585,8 @@ export class JobService {
       : [];
     if (!text && !files.length)
       throw new ServiceError('invalid_request', 'A message needs words or a file.', 400);
+    // Checked before anything moves, like the files: a reply to no earlier message here is refused.
+    const quote = repliesTo ? await replyTarget(tx, id, repliesTo) : undefined;
     // A conversation resting until a reminder is due answers the message now and
     // keeps the reminder: the queued row carries the wait, so the reply is told
     // it was set aside and the runner puts it back when the reply is done.
@@ -603,6 +608,7 @@ export class JobService {
         text,
         principal_id: speaker ?? row.principalId ?? null,
         ...(corrects ? { corrects } : {}),
+        ...(quote ? { replies_to: quote.message_id, reply_quote: quote } : {}),
         ...(files.length ? { attachments: files } : {}),
         ...(pasted.length ? { pasted: pasted.map(({ start, end }) => ({ start, end })) } : {}),
         ...(deviceZone ? { client_time_zone: deviceZone } : {}),
@@ -620,7 +626,12 @@ export class JobService {
    */
   async steer(
     id: string,
-    input: { id: string; text: string; clientTimeZone?: string | undefined },
+    input: {
+      id: string;
+      text: string;
+      clientTimeZone?: string | undefined;
+      repliesTo?: string | undefined;
+    },
   ): Promise<{ row: JobRow; steer: { id: string; seq: number; at: Date } } | null> {
     return this.transaction(async (tx) => {
       const row = await this.lock(tx, id);
@@ -633,7 +644,12 @@ export class JobService {
   async steerWithin(
     tx: Transaction,
     row: JobRow,
-    input: { id: string; text: string; clientTimeZone?: string | undefined },
+    input: {
+      id: string;
+      text: string;
+      clientTimeZone?: string | undefined;
+      repliesTo?: string | undefined;
+    },
   ): Promise<{ row: JobRow; steer: { id: string; seq: number; at: Date } } | null> {
     if (row.kind !== 'chat' || row.audience === 'room' || row.paused || !input.text.trim())
       return null;
@@ -643,11 +659,13 @@ export class JobService {
     // Only a turn that is running or about to: a conversation the broker
     // parked refuses new words until it is settled.
     if (row.state !== 'running' && row.state !== 'queued') return null;
+    const quote = input.repliesTo ? await replyTarget(tx, row.id, input.repliesTo) : undefined;
     const steer = await recordSteer(tx, row, {
       id: input.id,
       text: input.text,
       principalId: speaker ?? row.principalId ?? null,
       clientTimeZone: knownZone(input.clientTimeZone),
+      ...(quote ? { quote } : {}),
     });
     return { row, steer };
   }

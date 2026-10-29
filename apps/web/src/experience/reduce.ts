@@ -6,6 +6,7 @@
  * is gone, and the interface says so rather than stitching halves.
  */
 import type { MeleteEvent } from '@melete/client';
+import type { ReplyQuote } from '@melete/contracts';
 import type { ToolEntry } from './trace.ts';
 import type {
   AutonomyAsk,
@@ -100,6 +101,8 @@ export type TranscriptTurn = {
   compacted?: true;
   /** When the stream said the turn ended, so a stopped turn reports the time it really took. */
   ended_at?: string;
+  /** The earlier message this turn's message replies to, as it was drawn when sent here. */
+  reply?: ReplyQuote;
 };
 
 export type ReactionMessage = {
@@ -108,6 +111,10 @@ export type ReactionMessage = {
   author: 'person' | 'assistant';
   text: string;
   createdAt: string;
+  /** For the person's message that replied to an earlier one: the quote the service kept. */
+  replyQuote?: ReplyQuote;
+  /** The earlier message it replied to, by id, for when no quote came with it. */
+  repliesTo?: string;
 };
 
 export type Transcript = {
@@ -922,6 +929,15 @@ function rememberMessage(
   return { ...transcript, messages: { ...transcript.messages, [seq]: message } };
 }
 
+/** The quote a reply's event carries, when it is one; anything else is not a quote. */
+export function replyQuoteOf(value: unknown): ReplyQuote | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { message_id, by, text } = value as Record<string, unknown>;
+  if (typeof message_id !== 'string' || !message_id || typeof text !== 'string') return null;
+  if (by !== 'person' && by !== 'assistant') return null;
+  return { message_id, by, text };
+}
+
 /** Keep only message identity from the job stream; internal events never become visible text. */
 export function applyMessageEvent(transcript: Transcript, event: MeleteEvent): Transcript {
   if (!event.job_id) return transcript;
@@ -931,12 +947,15 @@ export function applyMessageEvent(transcript: Transcript, event: MeleteEvent): T
     typeof payload.text === 'string' &&
     payload.text.trim()
   ) {
+    const quote = replyQuoteOf(payload.reply_quote);
     return rememberMessage(transcript, event.seq, {
       conversationId: event.job_id,
       turnId: typeof payload.turn_id === 'string' ? payload.turn_id : null,
       author: 'person',
       text: payload.text,
       createdAt: event.created_at,
+      ...(quote ? { replyQuote: quote } : {}),
+      ...(typeof payload.replies_to === 'string' ? { repliesTo: payload.replies_to } : {}),
     });
   }
   const item = payload.item;

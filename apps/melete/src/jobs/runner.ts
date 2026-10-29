@@ -1473,7 +1473,11 @@ export class AttemptRunner {
     const waiting = await pendingSteers(this.jobs.db, jobId);
     for (const message of waiting)
       if (message.seq > current.cursor)
-        await this.runtime.steer(running.attemptId, { id: message.id, text: message.text });
+        await this.runtime.steer(running.attemptId, {
+          id: message.id,
+          text: message.text,
+          ...(message.quote ? { quote: message.quote } : {}),
+        });
   }
 
   /**
