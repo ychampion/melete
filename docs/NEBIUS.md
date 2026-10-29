@@ -62,8 +62,8 @@ as pictures** off for the three text-only recommendations.
 ## Notes for Nemotron
 
 When the chosen model's ID contains `nemotron`, from any provider, Melete adds a
-short set of notes to the end of the agent's instructions: give times as local
-wall time without a UTC marker, search with a keyword or two at a time, read an
+short set of notes to the end of the agent's instructions: give times in tool
+arguments with the person's own UTC offset, search with a keyword or two at a time, read an
 item before judging it, copy privacy placeholders exactly, follow through on an
 approval in the same turn, say an action is done only when its result says so,
 ask for a person's answer with the ask tool and keep a question for one person

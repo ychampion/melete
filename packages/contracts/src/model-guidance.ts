@@ -31,10 +31,10 @@ export const MODEL_GUIDANCE: readonly ModelGuidance[] = [
     family: 'nemotron',
     match: /nemotron/i,
     text: [
-      "- Give a time as the person's local wall time, with no Z and no offset, unless the tool asks for UTC.",
+      "- In tool arguments, give a time with the person's own UTC offset (such as -07:00); use Z only for a time that really is UTC. In replies, say times in the person's local time.",
       '- Search with one or two plain keywords at a time. Try another keyword before you conclude nothing is there.',
       '- Open and read the specific item you were asked about before you judge it.',
-      '- Copy placeholders such as ⟦ACCOUNT_1⟧ exactly, brackets included, and never invent one.',
+      '- Copy any privacy placeholder exactly as it appears, brackets included, and never invent one.',
       '- When an approval arrives, carry out the approved step in that same turn.',
       '- Say an action is done only when its tool result says it succeeded.',
       "- When you need the person's answer, ask with ask_person (board.ask in a room) and end your turn instead of ending on a question. A question for one person in a room goes to them alone.",

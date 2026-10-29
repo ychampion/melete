@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Server } from 'node:http';
+import { type ModelGuidance, modelGuidance } from '@melete/contracts';
 import { loadEnv } from '../env.ts';
 import { proposalModelSource } from '../learning/start.ts';
 import {
@@ -120,7 +121,7 @@ async function start(
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('expected a TCP listener');
   // `after` follows the person's message: the tool loop so far, when a test needs one.
-  const post = (content: unknown, after: unknown[] = []) =>
+  const post = (content: unknown, after: unknown[] = [], model: string = STRONG.model) =>
     fetch(`http://127.0.0.1:${address.port}/providers/fireworks/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -129,7 +130,7 @@ async function start(
         'x-melete-capability': 'fixture',
       },
       body: JSON.stringify({
-        model: STRONG.model,
+        model,
         max_tokens: 64,
         messages: [{ role: 'user', content }, ...after],
       }),
@@ -494,6 +495,38 @@ describe('reasoning effort per role', () => {
       'failed',
       'succeeded',
     ]);
+  });
+
+  test("a model that refuses its family's template arguments is asked once more without them", async () => {
+    const nemotron = 'nvidia/nemotron-3-super-120b-a12b';
+    const entry = modelGuidance(nemotron) as ModelGuidance;
+    entry.chat_template_kwargs = { enable_thinking: false };
+    try {
+      const gateway = await start(
+        undefined,
+        (model, body) =>
+          body.chat_template_kwargs === undefined
+            ? ok(model)
+            : Response.json({ error: 'unknown field' }, { status: 400 }),
+        {
+          authenticate: async () => ({
+            ...principal(),
+            allowedModels: [{ provider: 'fireworks', model: nemotron }],
+          }),
+        },
+      );
+      expect((await gateway.post('hello', [], nemotron)).status).toBe(200);
+      expect(gateway.sent.map((request) => request.body.chat_template_kwargs ?? null)).toEqual([
+        { enable_thinking: false },
+        null,
+      ]);
+      expect(gateway.settlements.map((settlement) => settlement.status)).toEqual([
+        'failed',
+        'succeeded',
+      ]);
+    } finally {
+      delete entry.chat_template_kwargs;
+    }
   });
 
   test('the defaults are medium for agent turns and low for side calls', () => {
