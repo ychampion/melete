@@ -1,37 +1,82 @@
+import { readFileSync } from 'node:fs';
+import { builtinModules } from 'node:module';
+import { dirname, join, posix } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
-// Outside production, Vite swaps a Node module in a browser build for a stub named after it,
-// and logs nothing. In production it logs a warning that names the module. A bare stub with no
-// name is a package's `browser` field mapping a file to false, which is an empty module by design.
-const browserExternal = '__vite-browser-external:';
+// Vite swaps a Node module in a browser build for a stub. Outside production the stub is named
+// after the module; in production every stub has the bare id, the same one a package gets when
+// its `browser` field maps a module to false, which is an empty module by design. Vite also logs
+// a warning that names the module, but Rolldown hands that warning to plugins without waiting,
+// so it can arrive after the build has ended. The guard decides from the resolution instead.
+const browserExternal = '__vite-browser-external';
+const rejected = '\0rejected-browser-external:';
+
+const isNodeBuiltin = (id: string) =>
+  id.startsWith('node:') || id.startsWith('bun:') || builtinModules.includes(id);
+
+// Whether the package holding the importer maps this module to false in its `browser` field,
+// with the field's keys matched the way Vite matches them.
+function packageMapsToFalse(id: string, importer: string | undefined) {
+  if (!importer || importer.startsWith('\0')) return false;
+  let dir = dirname(importer.replace(/[?#].*$/, ''));
+  for (;;) {
+    let manifest: string | undefined;
+    try {
+      manifest = readFileSync(join(dir, 'package.json'), 'utf8');
+    } catch {}
+    if (manifest !== undefined) {
+      let browser: unknown;
+      try {
+        browser = (JSON.parse(manifest) as { browser?: unknown }).browser;
+      } catch {
+        return false;
+      }
+      if (typeof browser !== 'object' || browser === null) return false;
+      const wanted = posix.normalize(id);
+      return Object.entries(browser).some(([key, value]) => {
+        const normalized = posix.normalize(key);
+        return (
+          value === false &&
+          (normalized === wanted ||
+            normalized === `${wanted}.js` ||
+            normalized === `${wanted}/index.js`)
+        );
+      });
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
 
 function rejectBrowserExternalization(): Plugin {
-  const externalized = new Set<string>();
   return {
     name: 'reject-browser-externalization',
     apply: 'build',
-    buildStart() {
-      externalized.clear();
+    enforce: 'pre',
+    async resolveId(source, importer, options) {
+      if (!isNodeBuiltin(source)) return;
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      if (!resolved?.id.startsWith(browserExternal)) return resolved;
+      if (resolved.id === browserExternal && packageMapsToFalse(source, importer)) return resolved;
+      return `${rejected}${source}`;
     },
-    onLog(_level, log) {
-      if (log.message.includes('externalized for browser compatibility'))
-        externalized.add(log.message);
+    load(id) {
+      if (id.startsWith(rejected)) return 'export default {};';
     },
     buildEnd() {
-      if (externalized.size === 0)
-        for (const id of this.getModuleIds()) {
-          if (!id.startsWith(browserExternal)) continue;
-          const info = this.getModuleInfo(id);
-          const importers = [...(info?.importers ?? []), ...(info?.dynamicImporters ?? [])];
-          const name = id.slice(browserExternal.length);
-          externalized.add(
-            `Module "${name}" has been externalized for browser compatibility, imported by ${importers.map((path) => `"${path}"`).join(', ')}.`,
-          );
-        }
-      // Errors thrown from the resolver's log callback do not stop the build.
-      // Fail here before Vite can emit a bundle containing browser stubs.
-      if (externalized.size > 0) this.error([...externalized].join('\n'));
+      const externalized: string[] = [];
+      for (const id of this.getModuleIds()) {
+        if (!id.startsWith(rejected)) continue;
+        const info = this.getModuleInfo(id);
+        const importers = [...(info?.importers ?? []), ...(info?.dynamicImporters ?? [])];
+        externalized.push(
+          `Module "${id.slice(rejected.length)}" has been externalized for browser compatibility, imported by ${importers.map((path) => `"${path}"`).join(', ')}.`,
+        );
+      }
+      // Fail here, before Vite can emit a bundle containing browser stubs.
+      if (externalized.length > 0) this.error(externalized.join('\n'));
     },
   };
 }

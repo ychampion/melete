@@ -42,6 +42,18 @@ function buildSource(source: string) {
           if (id === '\0browser-entry.ts') return source;
         },
       },
+      // Rolldown hands Vite's externalization warning to plugins without waiting for it, so
+      // the warning can arrive after the build has ended. Holding it back from every other
+      // plugin makes each build here the case where it arrived too late.
+      {
+        name: 'late-externalization-warning',
+        onLog: {
+          order: 'pre',
+          handler(_level, log) {
+            if (log.message.includes('externalized for browser compatibility')) return false;
+          },
+        },
+      },
     ],
     build: {
       ...config.build,
