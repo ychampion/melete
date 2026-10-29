@@ -7,6 +7,7 @@
 import { createHash } from 'node:crypto';
 import {
   displayNameText,
+  experienceEvent,
   isTerminal,
   type JobState,
   type RoomMemberRole,
@@ -25,6 +26,7 @@ import { GUESTS_MAY_NOT_ATTACH, readsFilesAsTheyAre } from '../attachments/rooms
 import { holdForRoomMessage, roomMessageAttachments } from '../attachments/store.ts';
 import type { Database } from '../db/client.ts';
 import {
+  action,
   agent,
   approval,
   connection,
@@ -37,19 +39,22 @@ import {
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { ExperienceEvents } from '../experience/events.ts';
 import type { ExperiencePermissions } from '../experience/permissions.ts';
+import type { ActionRow } from '../experience/projectors.ts';
 import { newId } from '../ids.ts';
 import { PolicyService } from '../jobs/policy.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
+import { summariesOnlyIn } from '../spaces/summaries.ts';
+import { answerAskedInThread, isBoardAnswer } from './board.ts';
 import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
 import { nameTaken } from './name-taken.ts';
 import { ROOM_READS_NO_PICTURES } from './pictures.ts';
 import { askLimitReached, readRoomPolicy, writeRoomPolicy } from './policy.ts';
 import { presentIn } from './presence.ts';
-import { messageView, requestView, threadView } from './projection.ts';
+import { actionIdsOf, keptBackItem, messageView, requestView, threadView } from './projection.ts';
 import {
   type RoomWork,
   releaseThread,
@@ -106,7 +111,13 @@ export class RoomService {
     });
     if (granted.space.kind !== 'shared' || granted.role === 'agent') throw missing();
     const room = await roomPrincipalOf(reader, spaceId);
-    return { role: granted.role as RoomRole, roomPrincipal: room.id, space: granted.space };
+    return {
+      role: granted.role as RoomRole,
+      roomPrincipal: room.id,
+      space: granted.space,
+      // The room's maker, read as every summaries-only check reads it.
+      ownerId: granted.ownerId,
+    };
   }
 
   private async kindOf(actor: string) {
@@ -357,9 +368,19 @@ export class RoomService {
     return row;
   }
 
+  /**
+   * Whether this person reads the room's steps kept back: the room is set to
+   * show only what needs its people, and they are not the person who made it.
+   */
+  private async keepsBack(spaceId: string, actor: string, access: { ownerId: string | null }) {
+    const maker = access.ownerId !== null && access.ownerId === actor;
+    return !maker && (await summariesOnlyIn(this.deps.db, spaceId));
+  }
+
   /** A thread with every message and author, and each request's answer, cards and receipts. */
   async thread(spaceId: string, threadId: string, actor: string) {
-    await this.access(this.deps.db, spaceId, actor);
+    const access = await this.access(this.deps.db, spaceId, actor);
+    const keptBack = await this.keepsBack(spaceId, actor, access);
     const row = await this.requireThread(this.deps.db, spaceId, threadId);
     // A waiting ask whose turn has come starts here too, should a hook have missed it.
     await serviceTransaction(this.deps.db, (tx) => releaseThread(tx, this.deps, threadId));
@@ -393,7 +414,7 @@ export class RoomService {
       ? (approvalId: string) => permissions.roomCard(spaceId, approvalId)
       : undefined;
     for (const request of requests)
-      views.push(await requestView(this.deps.db, request, names, card));
+      views.push(await requestView(this.deps.db, request, names, card, keptBack));
     return {
       thread: threadView(row, names),
       messages: messages.map((message) => messageView(message, names, files.get(message.id))),
@@ -434,7 +455,7 @@ export class RoomService {
         ? await this.deps.readsPictures(spaceId)
         : true;
     const result = await this.deps.jobs.transaction(async (tx) => {
-      const { role } = await this.access(tx, spaceId, actor, true);
+      const { role, roomPrincipal } = await this.access(tx, spaceId, actor, true);
       const [replayed] = await tx
         .select()
         .from(roomMessage)
@@ -514,6 +535,17 @@ export class RoomService {
         .set({ lastActivityAt: new Date() })
         .where(eq(roomThread.id, thread.id));
       let message = await touchMessage(tx, inserted);
+      // A reply in the thread by the person its agent asked answers the
+      // question, as an answer from the board does (that one is marked there).
+      if (origin || !isBoardAnswer(input.submission_id))
+        await answerAskedInThread(tx, {
+          spaceId,
+          threadId: thread.id,
+          author: actor,
+          roomPrincipal,
+          text: input.text,
+          messageId: inserted.id,
+        });
       // Files posted with it: the poster's own uploads to this room. A photo
       // an ask carries is read by the model that does the request; where the
       // room's model reads none, the ask is refused and says so, rather than
@@ -666,6 +698,7 @@ export class RoomService {
         after ?? row,
         names,
         permissions ? (approvalId) => permissions.roomCard(spaceId, approvalId) : undefined,
+        await this.keepsBack(spaceId, actor, access),
       ),
     };
   }
@@ -960,6 +993,28 @@ export class RoomService {
       spaceId,
       messages.map((message) => message.authorPrincipalId),
     );
+    // In a room that shows only what needs its people, each step is read as
+    // what it touched, and only its maker reads it as it is.
+    const keptBack = await this.keepsBack(spaceId, actor, access);
+    const items = projected.map((row) => (row.payload as Record<string, unknown>).item);
+    const steps = new Map<string, ActionRow>();
+    if (keptBack) {
+      const named = [
+        ...new Set(
+          items.flatMap((item) => {
+            const parsed = experienceEvent.shape.item.safeParse(item);
+            return parsed.success ? actionIdsOf(parsed.data) : [];
+          }),
+        ),
+      ].filter(Boolean);
+      if (named.length)
+        for (const { step } of await this.deps.db
+          .select({ step: action })
+          .from(action)
+          .innerJoin(job, eq(job.id, action.jobId))
+          .where(and(inArray(action.id, named), eq(job.spaceId, spaceId))))
+          steps.set(step.id, step);
+    }
     // Each viewer's stream is read for that viewer, so a file is shown as
     // this person may see it, never as the poster or the maker does.
     const files = await roomMessageAttachments(
@@ -975,9 +1030,9 @@ export class RoomService {
           message: messageView(message, names, files.get(message.id)),
         }),
       ),
-      ...projected.map((row) => {
+      ...projected.flatMap((row) => {
         const payload = row.payload as Record<string, unknown>;
-        return roomStreamFrame.parse({
+        const frame = roomStreamFrame.parse({
           seq: row.seq,
           kind: 'request',
           request_job_id: row.jobId,
@@ -989,6 +1044,9 @@ export class RoomService {
             item: payload.item,
           },
         });
+        if (!keptBack || frame.kind !== 'request') return [frame];
+        const item = keptBackItem(frame.event.item, steps);
+        return item ? [{ ...frame, event: { ...frame.event, item } }] : [];
       }),
     ].sort((a, b) => a.seq - b.seq);
     // Two sources each cut at `limit`: only the frames below both cuts are complete.

@@ -10,6 +10,8 @@
 import { z } from 'zod';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 
+export { originalKind } from './attachments.ts';
+
 /**
  * The phases, in the order they run. Each one finishes and is committed before
  * the next begins, so an interrupted removal resumes at a phase boundary and
@@ -257,7 +259,7 @@ export const summariesOnlySetting = z
         z.object({
           note: z.enum(['original_opened', 'summaries_on', 'summaries_off']),
           by: z.string().max(200),
-          /** The file's name, for an open. */
+          /** The kind of file opened, never its name. */
           what: z.string().max(500).nullable(),
           at: timestamp,
         }),
@@ -271,20 +273,6 @@ export const summariesOnlyChange = z
   .strictObject({ on: z.boolean() })
   .meta({ id: 'SummariesOnlyChange' });
 export type SummariesOnlyChange = z.infer<typeof summariesOnlyChange>;
-
-/**
- * What an opened original is noted as in a summaries-only space: its kind,
- * never its name, since a name can say what the file holds.
- */
-export function originalKind(mime: string): string {
-  const type = mime.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (type === 'application/pdf') return 'A PDF document';
-  if (type.startsWith('image/')) return 'A picture';
-  if (type.startsWith('audio/')) return 'A recording';
-  if (type === 'text/csv') return 'A spreadsheet';
-  if (type.startsWith('text/') || type === 'application/json') return 'A text document';
-  return 'A file';
-}
 
 /** The error code a file's content route answers with in a summaries-only space. */
 export const SUMMARIES_ONLY_CODE = 'summaries_only';
