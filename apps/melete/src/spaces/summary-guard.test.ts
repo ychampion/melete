@@ -4,9 +4,12 @@ import {
   keptLine,
   minimise,
   minimiseBody,
+  placeholdersIn,
   readOriginals,
   scrub,
   scrubDeep,
+  settled,
+  stepRefusal,
 } from './summary-guard.ts';
 
 /** What the room's reads of one mailbox brought back, as the email connector's receipts carry it. */
@@ -230,6 +233,122 @@ describe('what the model reads for a summaries-only reader', () => {
   test('details of the room’s own people are not details of the originals', () => {
     expect(minimise('Odile Varga, odile@home.example', originals)).toBe(
       'Odile Varga, odile@home.example',
+    );
+  });
+});
+
+describe('what is a detail, and what is not', () => {
+  /** Mail from services, whose display names are made of ordinary words. */
+  const SERVICES = {
+    messages: [
+      {
+        uid: 51,
+        from: 'Google Calendar <calendar-notification@google.com>',
+        to: 'odile@home.example',
+        subject: 'Invitation: Eye exam @ Thu Nov 20, 2026 9am',
+        text: 'You have been invited to an event.',
+      },
+      {
+        uid: 52,
+        from: 'Delta Air Lines <deltaairlines@t.delta.example>',
+        to: 'odile@home.example',
+        subject: 'Your trip confirmation',
+        text: 'Your flight leaves on Friday.',
+      },
+      {
+        uid: 53,
+        from: 'Kaiser Permanente <member@kp.example>',
+        to: 'odile@home.example',
+        subject: 'A new test result',
+        text: 'Sign in to read it.',
+      },
+    ],
+  };
+  const services = readOriginals([SERVICES], ROOM);
+
+  test('a sender’s display name counts only whole, never word by word', () => {
+    for (const said of [
+      'I added the appointment to her calendar.',
+      'Her flight lines up with the air fare.',
+      'The kaiser roll was fine.',
+    ])
+      expect(scrub(said, services)).toEqual({ text: said, kept: 0 });
+    expect(scrub('Delta Air Lines moved the flight.', services).kept).toBe(1);
+    expect(scrub('Kaiser Permanente has a result.', services).kept).toBe(1);
+  });
+
+  test('a street counts on its own, in either spelling, as does part of a number', () => {
+    for (const [said, expected] of [
+      ['Billed to 1200 Larch Street.', 'Billed to an address.'],
+      ['Billed to 1200 Larch St. today.', 'Billed to an address today.'],
+      ['Your account is 4410 2231.', 'Your account is an account number.'],
+      ['Your account is 44102231 for now.', 'Your account is an account number for now.'],
+      ['The visit is at 2:15 PM on Tuesday.', 'The visit is at 2:15 PM on Tuesday.'],
+    ] as const)
+      expect([said, scrub(said, originals).text]).toEqual([said, expected]);
+  });
+
+  test('while an answer is written, words that could begin a detail wait for the rest', () => {
+    for (const [sofar, shown] of [
+      ['Your account is 4410 2231 ', 'Your account is '],
+      ['Your account is 4410 22', 'Your account is '],
+      ['Your account is 4410', 'Your account is '],
+      ['She sees Wendell ', 'She sees '],
+      ['Her bill is $72.10 and is due ', 'Her bill is $72.10 and is due '],
+      ['Her bill is due Nov', 'Her bill is due '],
+    ] as const)
+      expect([sofar, settled(sofar, originals)]).toEqual([sofar, shown]);
+  });
+});
+
+describe('what the agent may do for a summaries-only reader', () => {
+  test('the request’s own instructions and tool definitions go as written', () => {
+    const tools = [
+      {
+        type: 'function',
+        function: {
+          name: 'calendar_create',
+          description:
+            'Add an event to the calendar. Use it for anything Dr. Okafor’s office books.',
+          parameters: {
+            type: 'object',
+            properties: { calendar: { type: 'string', enum: ['primary', 'Okafor'] } },
+          },
+        },
+      },
+    ];
+    const body = {
+      model: 'x',
+      tools,
+      messages: [
+        { role: 'system', content: 'Use the calendar tool. Okafor is a name you may see.' },
+        { role: 'user', content: 'Add the visit to my calendar.' },
+        { role: 'tool', tool_call_id: 'c1', content: JSON.stringify(SEARCH) },
+      ],
+    };
+    const sent = minimiseBody(body, 'chat/completions', originals) as typeof body;
+    expect(sent.tools).toEqual(tools);
+    expect(sent.messages[0]).toEqual(body.messages[0]);
+    expect(sent.messages[1]).toEqual(body.messages[1]);
+    expect(leaks(sent.messages[2]?.content ?? '', UNSEEN)).toEqual([]);
+    // Responses and messages protocols keep their instructions too.
+    expect(
+      minimiseBody({ instructions: 'Okafor', input: 'Okafor' }, 'responses', originals),
+    ).toEqual({ instructions: 'Okafor', input: '[doctor 1]' });
+    expect(minimiseBody({ system: 'Okafor', messages: [] }, 'messages', originals)).toEqual({
+      system: 'Okafor',
+      messages: [],
+    });
+  });
+
+  test('a step’s placeholders are found, and the refusal says who the step needs', () => {
+    expect(placeholdersIn({ title: 'Visit with [doctor 1]', location: '[address 1]' })).toEqual([
+      '[doctor 1]',
+      '[address 1]',
+    ]);
+    expect(placeholdersIn({ title: 'Visit with the doctor', note: '[draft]' })).toEqual([]);
+    expect(stepRefusal(['[doctor 1]'], 'Odile')).toBe(
+      "Nothing was done. [doctor 1] stands for a detail of the room's mail and files that stays with Odile, who made this room, so it cannot go into this step. Say that this step needs Odile, and ask Odile to do it or to share what it needs.",
     );
   });
 });

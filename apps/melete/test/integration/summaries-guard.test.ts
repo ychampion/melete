@@ -22,6 +22,7 @@ import {
   roomMessageResponse,
   roomThreadView,
 } from '@melete/contracts';
+import { signCapability } from '../../src/broker/capability.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -38,17 +39,27 @@ import { JobService } from '../../src/jobs/service.ts';
 import { KEPT_WHERE } from '../../src/rooms/projection.ts';
 import { roomHandle } from '../../src/rooms/transcript.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { minimiserFor, summariesMinimiser } from '../../src/spaces/summary-guard.ts';
+import {
+  EMPTY_ORIGINALS,
+  guardFor,
+  minimise,
+  minimiserFor,
+  scrub,
+  stepRefusal,
+  summariesMinimiser,
+  withSummaryStepCheck,
+} from '../../src/spaces/summary-guard.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
 const directory = await mkdtemp(join(tmpdir(), 'melete-summaries-guard-'));
 const registry = new ConnectorRegistry();
+const SIGNING_KEY = 'summaries-guard-signing-key-32-bytes!';
 const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
 const runner = jobs
   ? new AttemptRunner(jobs, new StubRuntimeAdapter(), {
-      key: 'summaries-guard-signing-key-32-bytes!',
+      key: SIGNING_KEY,
       liveConnectionScopes: true,
     })
   : null;
@@ -509,5 +520,115 @@ withDb('summaries only, held in code', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  test('a read that finishes after a later one is still taken in', async () => {
+    const { claims } = await request(helper, '@Melete Anything new from the cardiologist?');
+    const later: JsonObject = {
+      messages: [
+        {
+          uid: 61,
+          from: 'Dr. Imani Castellanos <office@castellanos-heart.example>',
+          to: 'odile@example.test',
+          subject: 'Your echo results are in',
+          text: 'Dr. Imani Castellanos reviewed the echo.',
+        },
+      ],
+    };
+    const sooner: JsonObject = {
+      messages: [
+        {
+          uid: 62,
+          from: 'Dr. Petra Lindqvist <desk@lindqvist-eyes.example>',
+          to: 'odile@example.test',
+          subject: 'Your eye exam',
+          text: 'Dr. Petra Lindqvist will see you on Thursday.',
+        },
+      ],
+    };
+    // The first read starts, and is still out when a second one finishes.
+    const first = `act_0${suffix()}`;
+    const body = JSON.stringify({ query: 'cardiology' });
+    await database()
+      .sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, status, idempotency_key, created_at)
+      values (${first}, ${claims.job_id}, ${claims.attempt_id}, ${mailId}, 'email.search', 'read',
+        ${body}::jsonb, ${hash(body)}, 'dispatched', ${first}, now() - interval '1 minute')`;
+    await step(claims, 'email.search', { query: 'eyes' }, sooner);
+    const before = await guardFor(database().db, roomId, helper.id);
+    expect(scrub('Dr. Petra Lindqvist wrote.', before ?? EMPTY_ORIGINALS).text).toBe(
+      'The doctor wrote.',
+    );
+    expect(scrub('Dr. Imani Castellanos wrote.', before ?? EMPTY_ORIGINALS).kept).toBe(0);
+    // It finishes later than the second, yet older: it is taken in all the same.
+    await database().sql`update action set status = 'succeeded', resolved_at = now(),
+      receipt = ${JSON.stringify({ action_id: first, detail: later })}::jsonb where id = ${first}`;
+    const after = await guardFor(database().db, roomId, helper.id);
+    expect(scrub('Dr. Imani Castellanos reviewed the echo.', after ?? EMPTY_ORIGINALS).text).toBe(
+      'The doctor reviewed the echo.',
+    );
+    expect(await minimiserFor(database().db, claims.job_id)).not.toBeNull();
+    expect(
+      minimise(
+        'Castellanos',
+        (await minimiserFor(database().db, claims.job_id)) ?? EMPTY_ORIGINALS,
+      ),
+    ).toMatch(/^\[doctor \d+\]$/);
+  });
+
+  test('a step that would carry a placeholder out of the room is refused, and nothing is written', async () => {
+    const reached: string[] = [];
+    const check = withSummaryStepCheck(
+      async (forwarded) => {
+        reached.push(`${new URL(forwarded.url).pathname} ${await forwarded.text()}`);
+        return Response.json({ ok: true });
+      },
+      { capabilityKey: SIGNING_KEY, reader: database().db },
+    );
+    const call = (claims: CapabilityClaims, path: string, body: JsonObject) =>
+      check(
+        new Request(`http://broker${path}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${signCapability(claims, SIGNING_KEY)}`,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+    const { claims } = await request(helper, '@Melete Put the visit on Mom’s calendar.');
+    const event = {
+      connection_id: mailId,
+      kind: 'calendar.create',
+      payload: { title: 'Visit with [doctor 1]', location: '[address 1]' },
+    };
+    const refused = await call(claims, '/actions', event);
+    expect(refused.status).toBe(400);
+    const told = ((await refused.json()) as { error: { code: string; message: string } }).error;
+    expect(told.code).toBe('payload_invalid');
+    expect(told.message).toBe(stepRefusal(['[doctor 1]', '[address 1]'], 'Odile'));
+    const mailed = await call(claims, '/tools/call', {
+      name: 'mail.send',
+      arguments: {
+        to: 'help@pharmacy.example',
+        body: 'Hi [pharmacist 1], about the [medicine 1].',
+      },
+    });
+    expect(mailed.status).toBe(400);
+    expect(reached).toEqual([]);
+
+    // The board stays in the room, where each person reads it checked; a step without
+    // placeholders goes as usual; and the maker's own requests read the real details.
+    const board = {
+      connection_id: await boardConnection(),
+      kind: 'board.add',
+      payload: { kind: 'task', title: 'Call [doctor 1]', visibility: 'everyone' },
+    };
+    expect((await call(claims, '/actions', board)).status).toBe(200);
+    const plain = { ...event, payload: { title: 'Visit with the doctor' } };
+    expect((await call(claims, '/actions', plain)).status).toBe(200);
+    const own = await request(maker, '@Melete Put my visit on the calendar.');
+    expect((await call(own.claims, '/actions', event)).status).toBe(200);
+    expect(reached.map((line) => line.split(' ')[0])).toEqual(['/actions', '/actions', '/actions']);
   });
 });

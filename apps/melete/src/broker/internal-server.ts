@@ -18,7 +18,7 @@ import { EngineSkillService } from '../learning/engine-skills.ts';
 import { learningRuntimeFetch } from '../learning/runtime-route.ts';
 import { withPlaceholderResolution } from '../privacy/broker.ts';
 import type { PrivacyRouter } from '../privacy/index.ts';
-import { summariesMinimiser } from '../spaces/summary-guard.ts';
+import { summariesMinimiser, withSummaryStepCheck } from '../spaces/summary-guard.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
 import { createBrokerApp } from './http.ts';
@@ -173,25 +173,29 @@ export function createInternalServer(options: {
     attachments: options.attachments,
     ...(options.vision ? { vision: options.vision } : {}),
     // A placeholder still in a runtime payload is resolved before the broker reads it.
-    brokerFetch: withPlaceholderResolution(
-      learningRuntimeFetch({
-        sql: options.sql,
-        capabilityKey: options.capabilityKey,
-        broker,
-        skills,
-        onError: (error) =>
-          process.stderr.write(
-            `learning route: ${error instanceof Error ? error.message : 'unknown error'}\n`,
-          ),
-        fallback: (request) =>
-          request.method === 'GET' && new URL(request.url).pathname === '/actions'
-            ? reads.fetch(request)
-            : app.fetch(request),
-      }),
-      {
-        capabilityKey: options.capabilityKey,
-        router: () => options.privacy,
-      },
+    // A step that would carry a summary placeholder out of the room is refused first.
+    brokerFetch: withSummaryStepCheck(
+      withPlaceholderResolution(
+        learningRuntimeFetch({
+          sql: options.sql,
+          capabilityKey: options.capabilityKey,
+          broker,
+          skills,
+          onError: (error) =>
+            process.stderr.write(
+              `learning route: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+            ),
+          fallback: (request) =>
+            request.method === 'GET' && new URL(request.url).pathname === '/actions'
+              ? reads.fetch(request)
+              : app.fetch(request),
+        }),
+        {
+          capabilityKey: options.capabilityKey,
+          router: () => options.privacy,
+        },
+      ),
+      { capabilityKey: options.capabilityKey, reader: db },
     ),
     onError: gatewayLog('model'),
   });

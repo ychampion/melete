@@ -48,7 +48,7 @@ import { principalContext, spaceAuthority } from '../principals/authority.ts';
 import type { PrincipalService } from '../principals/service.ts';
 import { ComputerFault, type SandboxComputerService } from '../sandbox/computer.ts';
 import { summariesOnlyIn } from '../spaces/summaries.ts';
-import { type Originals, originalsIn, scrub } from '../spaces/summary-guard.ts';
+import { type Originals, originalsIn, scrub, settled } from '../spaces/summary-guard.ts';
 import { answerAskedInThread, isBoardAnswer } from './board.ts';
 import { postToThread } from './handoffs.ts';
 import { mentionsOf } from './mentions.ts';
@@ -60,7 +60,6 @@ import {
   actionIdsOf,
   keptBackItem,
   messageView,
-  PARTIAL_WORD,
   requestView,
   STILL_WRITING,
   threadView,
@@ -1131,7 +1130,7 @@ export class RoomService {
             .where(eq(experienceTurn.id, turnId))
         : [];
       const writing = !turn || STILL_WRITING.has(turn.status);
-      answers.set(row.seq, scrub(writing ? text.replace(PARTIAL_WORD, '') : text, guard).text);
+      answers.set(row.seq, scrub(writing ? settled(text, guard) : text, guard).text);
     }
     return answers;
   }

@@ -88,7 +88,7 @@ export const SUMMARIES_ONLY_INSTRUCTION = [
   'This space is set to “Show me only what needs me”. The person is helping someone else with their accounts, and the messages, events and files here belong to that other person.',
   'Read everything you need and do the work as usual. In what you write to the person, give short summaries and action cards: what each thing is, what is due and when, what you did, and what needs their yes.',
   'Do not quote, copy or paste the text of a message, an event or a file, and do not reproduce account numbers or other details beyond what a decision needs. Describe instead.',
-  'Names, addresses, numbers and other details in them may reach you as placeholders such as “[doctor 1]” or “[phone number 2]”. They stand for details the person may not see: refer to them by what they are (“her doctor”, “the pharmacy”), and do not ask for them.',
+  'Names, addresses, numbers and other details in them may reach you as placeholders such as “[doctor 1]” or “[phone number 2]”. They stand for details the person may not see: refer to them by what they are (“her doctor”, “the pharmacy”), and do not ask for them. A step that would send or save one of them, such as an email or an event, cannot be taken: say that it needs the person who made the room.',
   'If the person asks to see the original, tell them they can open it with “Open the original” in Files, and that each open is noted in this space’s activity.',
 ].join(' ');
 

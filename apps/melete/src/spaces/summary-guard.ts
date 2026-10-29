@@ -22,7 +22,8 @@
  * accounts they are, reads everything as before.
  */
 import { PRIVACY_CATEGORIES, type PrivacyCategory } from '@melete/contracts';
-import { and, desc, eq, gt, gte, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { verifyCapability } from '../broker/capability.ts';
 import type { Database } from '../db/client.ts';
 import { action, connection, job, owner, principal, space, spaceMembership } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -126,7 +127,11 @@ const COMMON = new Set(
   summary support valley visit dose dosage tablet tablets capsule capsules daily twice total strength
   generic only each about
   april august bill bob cash chase dawn faith frank grace holly hunter iris ivy jack joy june lily mark
-  march may pat rich rose ruby summer will`.split(/\s+/),
+  march may pat rich rose ruby summer will
+  air airline airlines alert alerts app apps calendar cloud digital drive email events google line lines
+  meet mobile news newsletter noreply notification notifications online photos reply store updates`.split(
+    /\s+/,
+  ),
 );
 
 /** Words that say nothing on their own, for counting how much a run says. */
@@ -265,6 +270,50 @@ const IDENTIFIERS: [RegExp, DetailRole][] = [
 ];
 const DATE_LIKE = /^(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})$/;
 
+/** Street words and their short forms: "1200 Larch Street" is also "1200 Larch St.". */
+const STREET_WORDS: [string, string][] = [
+  ['Street', 'St'],
+  ['Avenue', 'Ave'],
+  ['Road', 'Rd'],
+  ['Drive', 'Dr'],
+  ['Lane', 'Ln'],
+  ['Court', 'Ct'],
+  ['Boulevard', 'Blvd'],
+  ['Place', 'Pl'],
+  ['Terrace', 'Ter'],
+  ['Circle', 'Cir'],
+  ['Parkway', 'Pkwy'],
+  ['Highway', 'Hwy'],
+  ['Square', 'Sq'],
+  ['Trail', 'Trl'],
+  ['Way', 'Way'],
+];
+// "Dr" counts as a street only written out ("Drive"): "2 PM Dr. Okafor" is a time and a doctor.
+const STREET_WORD = STREET_WORDS.flat()
+  .filter((word) => word !== 'Dr')
+  .sort((a, b) => b.length - a.length)
+  .join('|');
+/** A house number and its street, without the town: "77 Juniper Court". */
+const STREET = new RegExp(
+  `(?<![\\d:.,/$-])\\b\\d{1,6}[A-Za-z]?[ \\t]+(?![AP]\\.?M\\b)(?:[NSEW]\\.?[ \\t]+)?(?:[A-Z][\\p{L}'’-]*\\.?[ \\t]+){1,3}?(?:${STREET_WORD})\\b\\.?`,
+  'gu',
+);
+/** The same street with its street word written the other way. */
+function streetSpellings(street: string): string[] {
+  const trimmed = street.replace(/\.$/, '');
+  const last = /(\S+)$/.exec(trimmed)?.[1] ?? '';
+  const pair = STREET_WORDS.find(([long, short]) =>
+    [long.toLowerCase(), short.toLowerCase()].includes(last.toLowerCase()),
+  );
+  if (!pair) return [trimmed];
+  const head = trimmed.slice(0, trimmed.length - last.length);
+  return [...new Set([trimmed, `${head}${pair[0]}`, `${head}${pair[1]}`])];
+}
+
+/** Mail no one writes by hand: its sender's name is a service, not a person. */
+const AUTOMATED =
+  /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|calendar-notification|alerts?|updates?|news(?:letter)?|mailer-daemon)\b/i;
+
 const CATEGORY_ROLE: Partial<Record<PrivacyCategory, DetailRole>> = {
   account: 'account number',
   card: 'account number',
@@ -391,15 +440,22 @@ class Harvest {
     return n;
   }
 
-  /** A person by name: the whole name, and each part of it that is not an ordinary word. */
-  private person(name: string, role: DetailRole) {
+  /**
+   * A person by name. A name given with a title, a credential or a label
+   * ("Dr. Wendell Okafor") is that person, so their surname alone is them too.
+   * A display name with none of these ("Google Calendar") counts only whole.
+   */
+  private person(name: string, role: DetailRole, surname: boolean) {
     if (this.ours(name)) return;
     const parts = name.split(/\s+/).filter((part) => !/^[A-Z]\.$/.test(part));
     const whole = parts.join(' ');
     const own = parts.filter((part) => part.length >= 3 && !COMMON.has(part.toLowerCase()));
     // "Customer Service" after "Contact" is not anyone's name.
     if (!own.length) return;
-    this.add(role, [whole, ...(parts.length > 1 ? own : [])], true);
+    const last = parts.at(-1) ?? '';
+    const alone = surname && parts.length > 1 && own.includes(last) ? [last] : [];
+    if (parts.length === 1 && !surname) return;
+    this.add(role, [whole, ...alone], surname);
   }
 
   /** "Name <address>", a bare address, or a list of either. */
@@ -415,18 +471,20 @@ class Harvest {
         .replace(/\s+/g, ' ')
         .trim();
       if (address) this.add('email address', [address]);
-      if (name && !name.includes('@')) this.named(name, sending);
+      const automated = AUTOMATED.test(address?.split('@')[0] ?? '');
+      if (name && !name.includes('@')) this.named(name, sending, automated);
     }
   }
 
   /** A display name: a titled person, an organisation, or a person. */
-  private named(name: string, sending: boolean) {
+  private named(name: string, sending: boolean, automated = false) {
     if (this.ours(name)) return;
     const titled = new RegExp(`^(${TITLE})\\.?\\s+(.+)$`, 'u').exec(name);
     if (titled?.[1] && titled[2]) {
       this.person(
         titled[2],
         TITLES.find(([pattern]) => pattern.test(titled[1] ?? ''))?.[1] ?? 'person',
+        true,
       );
       return;
     }
@@ -437,10 +495,12 @@ class Harvest {
       this.organisation(name, kind);
       return;
     }
+    // "Google Calendar <calendar-notification@…>" is a service writing, not a person.
+    if (automated) return;
     const looksLikeAPerson =
       /^[A-Z][\p{Ll}'’-]+(?:\s+(?:[A-Z]\.\s+)?[A-Z][\p{Ll}'’-]+){1,2}$/u.test(name);
-    if (looksLikeAPerson) this.person(name, 'person');
-    else if (name.length >= 3 && !COMMON.has(name.toLowerCase()))
+    if (looksLikeAPerson) this.person(name, 'person', false);
+    else if (name.length >= 3 && (name.includes(' ') || !COMMON.has(name.toLowerCase())))
       this.add(sending ? 'sender' : 'person', [name]);
   }
 
@@ -473,17 +533,18 @@ class Harvest {
     }
     for (const match of text.matchAll(TITLED_NAME)) {
       const role = TITLES.find(([pattern]) => pattern.test(match[1] ?? ''))?.[1] ?? 'person';
-      if (match[2]) this.person(match[2], role);
+      if (match[2]) this.person(match[2], role, true);
     }
     for (const match of text.matchAll(CREDENTIAL_NAME)) {
       const role = CREDENTIALS.find(([pattern]) => pattern.test(match[2] ?? ''))?.[1] ?? 'doctor';
-      if (match[1]) this.person(match[1], role);
+      if (match[1]) this.person(match[1], role, true);
     }
     for (const match of text.matchAll(LABELLED_NAME)) {
       const label = (match[1] ?? '').toLowerCase().replace(/\s+/g, ' ');
       const role = LABELS.find(([word]) => word === label)?.[1] ?? 'person';
-      if (match[2]) this.person(match[2], role);
+      if (match[2]) this.person(match[2], role, true);
     }
+    for (const match of text.matchAll(STREET)) this.add('address', streetSpellings(match[0]));
     for (const match of text.matchAll(MEDICINE)) {
       const name = match[1] ?? '';
       if (name && !name.split(/[ -]/).some((word) => COMMON.has(word.toLowerCase())))
@@ -622,17 +683,64 @@ function detailIndex(originals: Originals): Map<string, Entry[]> {
 const LEADING_TITLE = new RegExp(`\\b${TITLE}\\.?\\s+$`, 'iu');
 const TRAILING_CREDENTIAL = /^,?\s+(?:MD|M\.D\.|DO|DDS|DMD|RN|NP|PA-C|PharmD)\b/;
 
+/** How many of a detail's words a text has in a row from `at`; the last may be cut short. */
+function shown(found: Token[], at: number, words: string[]): { count: number; whole: boolean } {
+  let count = 0;
+  while (count < words.length && found[at + count]?.word === words[count]) count++;
+  const next = found[at + count]?.word;
+  const cut = count < words.length && !!next && (words[count] ?? '').startsWith(next);
+  return { count: cut ? count + 1 : count, whole: count === words.length };
+}
+
+/** The numbers among the details, written without separators. */
+const compactNumbers = new WeakMap<Originals, { detail: Detail; compact: string }[]>();
+function compactsOf(originals: Originals) {
+  const cached = compactNumbers.get(originals);
+  if (cached) return cached;
+  const list = originals.details.flatMap((detail) =>
+    detail.numeric
+      ? detail.values.map((value) => ({
+          detail,
+          compact: value.replace(/[^0-9A-Za-z]/g, '').toLowerCase(),
+        }))
+      : [],
+  );
+  compactNumbers.set(originals, list);
+  return list;
+}
+
 function detailSpans(text: string, originals: Originals): Span[] {
   const index = detailIndex(originals);
   if (!index.size) return [];
   const found = tokens(text);
   const spans: Span[] = [];
   for (let at = 0; at < found.length; at++) {
-    const entries = index.get(found[at]?.word ?? '');
+    const word = found[at]?.word ?? '';
+    // Part of a number is still the number: "4410 2231" of "4410 2231 9087", or "44102231".
+    if (/\d/.test(word) && word.length >= 6) {
+      const part = compactsOf(originals).find(
+        ({ compact }) => compact.length > word.length && compact.startsWith(word),
+      );
+      if (part) {
+        spans.push({ start: found[at]?.start ?? 0, end: found[at]?.end ?? 0, detail: part.detail });
+        continue;
+      }
+    }
+    const entries = index.get(word);
     if (!entries) continue;
-    const entry = entries.find(({ words }) =>
+    let entry = entries.find(({ words }) =>
       words.every((word, offset) => found[at + offset]?.word === word),
     );
+    if (!entry)
+      for (const candidate of entries) {
+        if (!candidate.detail.numeric || candidate.words.length < 2) continue;
+        const run = shown(found, at, candidate.words);
+        const digits = found.slice(at, at + run.count).reduce((n, t) => n + t.word.length, 0);
+        if (run.count >= 2 && digits >= 6) {
+          entry = { detail: candidate.detail, words: candidate.words.slice(0, run.count) };
+          break;
+        }
+      }
     if (!entry) continue;
     const last = at + entry.words.length - 1;
     let start = found[at]?.start ?? 0;
@@ -643,6 +751,9 @@ function detailSpans(text: string, originals: Originals): Span[] {
       const credential = TRAILING_CREDENTIAL.exec(text.slice(end, end + 12));
       if (credential) end += credential[0].length;
     }
+    // The period of "St." is the street's, unless it also ends the sentence.
+    if (entry.detail.role === 'address' && /^\.(?=,|\s+[\p{Ll}\d])/u.test(text.slice(end, end + 3)))
+      end += 1;
     spans.push({ start, end, detail: entry.detail });
     at = last;
   }
@@ -767,6 +878,30 @@ function wordsFor(words: string, before: string): string {
   return out;
 }
 
+/** The word an answer still being written ends on, which may be half a name. */
+const PARTIAL_WORD = /[\p{L}\p{N}'’@.-]+$/u;
+
+/**
+ * An answer still being written, as far as it can be shown: the word it ends
+ * on, and any words at its end that begin a detail ("4410 2231 " of an
+ * account number, "Dr. Wendell " of a name), wait for what comes next.
+ */
+export function settled(text: string, originals: Originals): string {
+  const cut = text.replace(PARTIAL_WORD, '');
+  const index = detailIndex(originals);
+  if (!index.size) return cut;
+  const found = tokens(cut);
+  const from = Math.max(0, found.length - 12);
+  for (let at = from; at < found.length; at++) {
+    const rest = found.length - at;
+    const begins = (index.get(found[at]?.word ?? '') ?? []).some(
+      ({ words }) => words.length > rest && shown(found, at, words).count === rest,
+    );
+    if (begins) return cut.slice(0, found[at]?.start ?? cut.length);
+  }
+  return cut;
+}
+
 const PLACEHOLDER = new RegExp(
   `\\[(${Object.keys(ROLE_WORDS)
     .sort((a, b) => b.length - a.length)
@@ -776,6 +911,12 @@ const PLACEHOLDER = new RegExp(
 );
 
 export type Scrubbed = { text: string; kept: number };
+
+/** The summary placeholders in a value, such as a step's arguments. */
+export function placeholdersIn(value: unknown): string[] {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? null);
+  return [...new Set([...text.matchAll(PLACEHOLDER)].map((match) => match[0]))];
+}
 
 /**
  * Text as a summaries-only reader may read it. `kept` counts the details that
@@ -859,13 +1000,44 @@ class Minimiser extends Redactor {
   }
 }
 
+/** A request's own instructions, tools and schemas: Melete wrote them, and they go as written. */
+const INSTRUCTIONS = new Set([
+  'system',
+  'instructions',
+  'tools',
+  'functions',
+  'tool_choice',
+  'response_format',
+  'text',
+]);
+const INSTRUCTING_ROLES = new Set(['system', 'developer']);
+
 export function minimiseBody(
   body: Record<string, unknown>,
   protocol: Protocol,
   originals: Originals,
 ): Record<string, unknown> {
   if (!originals.details.length) return body;
-  return new Minimiser(originals).body(body, protocol);
+  const minimiser = new Minimiser(originals);
+  const out: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(body)) {
+    if (INSTRUCTIONS.has(field) && (field !== 'text' || protocol === 'responses')) {
+      out[field] = value;
+      continue;
+    }
+    if ((field === 'messages' || field === 'input') && Array.isArray(value)) {
+      out[field] = value.map((item) =>
+        item &&
+        typeof item === 'object' &&
+        INSTRUCTING_ROLES.has(String((item as { role?: unknown }).role))
+          ? item
+          : (minimiser.body({ item }, protocol).item as unknown),
+      );
+      continue;
+    }
+    out[field] = minimiser.body({ [field]: value }, protocol)[field];
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -881,8 +1053,8 @@ const CACHE_MS = 6 * 3_600_000;
 type Kept = {
   people: string;
   harvest: Harvest;
+  /** The reads already taken in, by id: a read that finishes late is still new. */
   seen: Set<string>;
-  latest: Date;
   begun: number;
   originals: Originals;
 };
@@ -936,30 +1108,35 @@ export async function originalsIn(reader: Reader, spaceId: string): Promise<Orig
   };
   const peopleKey = JSON.stringify(room);
   const hit = cache.get(spaceId);
-  // Reads since the last look are added to what is kept; anything else begins again.
+  // Reads not yet taken in are added to what is kept; anything else begins again.
   const kept = hit && hit.people === peopleKey && Date.now() - hit.begun < CACHE_MS ? hit : null;
-  const rows = await reader
-    .select({ id: action.id, at: action.createdAt, receipt: action.receipt })
+  const window = await reader
+    .select({ id: action.id })
     .from(action)
     .innerJoin(connection, eq(connection.id, action.connectionId))
-    .where(kept ? and(reads, gte(action.createdAt, kept.latest)) : reads)
+    .where(reads)
     .orderBy(desc(action.createdAt), desc(action.id))
     .limit(WINDOW_READS);
-  const fresh = kept ? rows.filter((row) => !kept.seen.has(row.id)) : rows;
+  const fresh = window.map((row) => row.id).filter((id) => !kept?.seen.has(id));
   if (kept && !fresh.length) return kept.originals;
+  const rows = fresh.length
+    ? await reader
+        .select({ id: action.id, receipt: action.receipt })
+        .from(action)
+        .where(inArray(action.id, fresh))
+        .orderBy(asc(action.createdAt), asc(action.id))
+    : [];
   const entry: Kept = kept ?? {
     people: peopleKey,
     harvest: new Harvest(room),
     seen: new Set(),
-    latest: since,
     begun: Date.now(),
     originals: EMPTY_ORIGINALS,
   };
   // Oldest first, so each placeholder keeps its number as more is read.
-  for (const row of fresh.reverse()) {
+  for (const row of rows) {
     entry.harvest.walk((row.receipt as { detail?: unknown } | null)?.detail ?? null, null);
     entry.seen.add(row.id);
-    if (row.at > entry.latest) entry.latest = row.at;
   }
   entry.originals = entry.harvest.result();
   cache.delete(spaceId);
@@ -1020,4 +1197,80 @@ export function keptLine(kept: number, where: 'answer' | 'request'): string {
   return where === 'answer'
     ? `Kept ${what} out of this answer`
     : `Kept ${what} out of this request`;
+}
+
+// ---------------------------------------------------------------------------
+// What the agent does for someone who reads only summaries
+// ---------------------------------------------------------------------------
+
+/** The runtime routes whose bodies are steps the agent takes. */
+const STEPS = /^\/(?:actions|tools\/call)$/;
+/** Steps that stay in the room, where each person reads them checked: its board, and asking someone in it. */
+const IN_ROOM = /^(?:board\.[a-z_]+|ask_person|intent\.capture)$/;
+
+type Fetcher = (request: Request) => Response | Promise<Response>;
+
+/** What the model is told when a step would carry a placeholder out of the room. */
+export function stepRefusal(carried: readonly string[], maker: string | null): string {
+  const one = carried.length === 1;
+  const who = maker ? `${maker}, who made this room` : 'the person who made this room';
+  const them = maker ?? 'them';
+  return `Nothing was done. ${carried.join(', ')} ${one ? 'stands for a detail' : 'stand for details'} of the room's mail and files that ${one ? 'stays' : 'stay'} with ${who}, so ${one ? 'it' : 'they'} cannot go into this step. Say that this step needs ${them}, and ask ${them} to do it or to share what it needs.`;
+}
+
+/**
+ * A step the model asks for while it reads a room's details as placeholders
+ * cannot carry one out of the room: "[doctor 1]" would be written into a real
+ * calendar or a real email. Such a step is refused before the broker sees it,
+ * and the model is told why, so it can say the step needs the room's maker.
+ */
+export function withSummaryStepCheck(
+  fetcher: Fetcher,
+  options: { capabilityKey: string; reader: Reader },
+): (request: Request) => Promise<Response> {
+  return async (request) => {
+    const path = new URL(request.url).pathname;
+    if (request.method !== 'POST' || !STEPS.test(path)) return fetcher(request);
+    const text = await request.text();
+    const again = () => {
+      const headers = new Headers(request.headers);
+      headers.delete('content-length');
+      return new Request(request.url, { method: request.method, headers, body: text });
+    };
+    let parsed: { kind?: unknown; name?: unknown; payload?: unknown; arguments?: unknown };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return fetcher(again());
+    }
+    const step = String(parsed?.kind ?? parsed?.name ?? '');
+    const carried = placeholdersIn(parsed?.payload ?? parsed?.arguments ?? null);
+    if (!carried.length || IN_ROOM.test(step)) return fetcher(again());
+    let jobId: string;
+    try {
+      jobId = verifyCapability(
+        (request.headers.get('authorization') ?? '').replace(/^Bearer /, ''),
+        options.capabilityKey,
+      ).job_id;
+    } catch {
+      // The broker refuses an unauthenticated call itself.
+      return fetcher(again());
+    }
+    const [row] = await options.reader
+      .select({ spaceId: job.spaceId })
+      .from(job)
+      .where(eq(job.id, jobId));
+    if (!row || !(await minimiserFor(options.reader, jobId))) return fetcher(again());
+    const maker = await makerOf(options.reader, row.spaceId);
+    const [named] = maker?.maker
+      ? await options.reader
+          .select({ name: principal.displayName })
+          .from(principal)
+          .where(eq(principal.id, maker.maker))
+      : [];
+    return Response.json(
+      { error: { code: 'payload_invalid', message: stepRefusal(carried, named?.name ?? null) } },
+      { status: 400 },
+    );
+  };
 }

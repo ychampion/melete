@@ -39,14 +39,12 @@ import {
 import { conversationView } from '../experience/service.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { ENDED_STATES } from '../jobs/withdraw.ts';
-import { keptLine, type Originals, scrub, scrubDeep } from '../spaces/summary-guard.ts';
+import { keptLine, type Originals, scrub, scrubDeep, settled } from '../spaces/summary-guard.ts';
 import type { roomMessage, roomThread } from './schema.ts';
 import { namesOf } from './transcript.ts';
 
 /** Turn statuses whose answer may still grow. */
 export const STILL_WRITING = new Set(['queued', 'working', 'streaming', 'stalled']);
-/** The word an answer still being written ends on, which may be half a name. */
-export const PARTIAL_WORD = /[\p{L}\p{N}'’@.-]+$/u;
 
 const author = (names: ReadonlyMap<string, string>, id: string) => ({
   principal_id: id,
@@ -185,9 +183,8 @@ export async function requestView(
     const writing = STILL_WRITING.has(turn.status);
     const text = (writing ? answerStream(turn.answer) : answerText(turn.answer)).trimStart();
     if (!guard) return text;
-    // A word still being written could be the start of a name: it waits for the rest.
-    const settled = writing ? text.replace(PARTIAL_WORD, '') : text;
-    const result = scrub(settled, guard);
+    // Words still being written could be the start of a name or a number: they wait for the rest.
+    const result = scrub(writing ? settled(text, guard) : text, guard);
     kept.answer += result.kept;
     return result.text;
   };
