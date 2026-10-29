@@ -192,6 +192,28 @@ const DATE_SHAPE = /^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}-\d{2,4})$/;
 const STREET_TYPES =
   '(?:Street|Avenue|Road|Boulevard|Lane|Drive|Court|Place|Terrace|Way|Circle|Parkway|Highway|Square|Close|Crescent|Mews|Gardens|Grove|Trail|Alley|Plaza)\\b|(?:St|Ave|Rd|Blvd|Ln|Dr|Ct|Pl|Ter|Cir|Pkwy|Hwy|Sq|Cres|Trl)\\b\\.?';
 
+/**
+ * Addresses whose street word comes first, as in Spanish street names, and
+ * names of several words. The pieces are kept apart so each rule below reads
+ * plainly: a house number, a name word (capitalised, accents allowed, no full
+ * stop, so a sentence's last word ends it), the small words that join a
+ * Spanish name, an apartment or suite, and a US town, state and ZIP.
+ */
+const HOUSE_NUMBER = '\\b\\d{1,6}[A-Z]?(?:-\\d{1,4})?\\s+';
+const NAME_WORD = "[A-ZÀ-ÖØ-Þ][a-zA-Zß-öø-ÿÀ-ÖØ-Þ]*(?:['-][a-zA-Zß-öø-ÿÀ-ÖØ-Þ]+)*";
+const JOINER = '(?:de|del|la|las|los|el|y|da|do|dos|das)';
+/** One to four name words, with joiners between or before them. */
+const NAME = `(?:\\s+${JOINER}){0,3}\\s+${NAME_WORD}(?:(?:\\s+${JOINER}){0,3}\\s+${NAME_WORD}){0,3}`;
+const UNIT = '(?:,?\\s*(?:Apt|Apartment|Suite|Ste|Unit|Flat|Fl|Floor|#)\\.?\\s*[A-Za-z0-9-]+)?';
+const STATES =
+  'A[KLRSZ]|C[AOT]|D[CE]|FL|G[AU]|HI|I[ADLN]|K[SY]|LA|M[ADEINOPST]|N[CDEHJMVY]|O[HKR]|P[AR]|RI|S[CD]|T[NX]|UT|V[AIT]|W[AIVY]';
+/** ", Town, ST 12345": a town, a real state or territory code, and a ZIP. */
+const US_TAIL = `,\\s*[A-Z][A-Za-z.' -]{1,30},\\s*(?:${STATES})\\s+\\d{5}(?:-\\d{4})?\\b`;
+/** Street words that come before the name and say "street" on their own. */
+const LEADING_STREET = '(?:Calle|Camino|Avenida|Paseo)';
+/** Street words that are also a place name or an ordinary word: they need a joiner or a town. */
+const LEADING_SHARED = '(?:Alameda|V[ií]a)';
+
 const MONTHS =
   'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?';
 
@@ -578,6 +600,30 @@ const RULES: Rule[] = [
     digits: true,
     pattern: new RegExp(
       `\\b\\d{1,6}[A-Z]?(?:-\\d{1,4})?\\s+(?:(?:N|S|E|W|North|South|East|West)\\.?\\s+)?(?:(?:\\d{1,3}(?:st|nd|rd|th)|[A-Z][A-Za-z'.-]*)\\s+){1,4}(?:${STREET_TYPES})(?:\\s+(?:NW|NE|SW|SE|N|S|E|W)\\b)?(?:,?\\s*(?:Apt|Apartment|Suite|Ste|Unit|Flat|Fl|Floor|#)\\.?\\s*[A-Za-z0-9-]+)?(?:,\\s*[A-Z][A-Za-z.' -]{1,30},\\s*[A-Z]{2}\\s+\\d{5}(?:-\\d{4})?|,\\s*[A-Z][A-Za-z.' -]{1,30}(?:,\\s*[A-Z]{1,2}\\d[A-Z\\d]?\\s*\\d[A-Z]{2}))?`,
+      'g',
+    ),
+  },
+  {
+    category: 'address',
+    digits: true,
+    // "45 Calle de la Luna", "300 Avenida Sol": the street word comes first.
+    pattern: new RegExp(`${HOUSE_NUMBER}${LEADING_STREET}${NAME}${UNIT}(?:${US_TAIL})?`, 'g'),
+  },
+  {
+    category: 'address',
+    digits: true,
+    // "381 Alameda de las Flores", or "9 Via Serena, Town, CA 90000"; never "600 Alameda County".
+    pattern: new RegExp(
+      `${HOUSE_NUMBER}${LEADING_SHARED}(?:(?:\\s+${JOINER}){1,3}\\s+${NAME_WORD}(?:(?:\\s+${JOINER}){0,3}\\s+${NAME_WORD}){0,3}${UNIT}(?:${US_TAIL})?|\\s+${NAME_WORD}(?:(?:\\s+${JOINER}){0,3}\\s+${NAME_WORD}){0,3}${UNIT}${US_TAIL})`,
+      'g',
+    ),
+  },
+  {
+    category: 'address',
+    digits: true,
+    // Any street name at all, with no street word, when a town, state and ZIP follow.
+    pattern: new RegExp(
+      `${HOUSE_NUMBER}${NAME_WORD}(?:(?:\\s+${JOINER}){0,3}\\s+${NAME_WORD}){0,4}${UNIT}${US_TAIL}`,
       'g',
     ),
   },
