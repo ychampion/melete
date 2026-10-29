@@ -427,7 +427,15 @@ export class JobService {
   ): Promise<JobRow> {
     const result = transition(row.state as JobState, input);
     if (!result.ok) throw new ServiceError(result.error.code, result.error.message);
-    if (result.value === 'queued' && row.state !== 'running' && !(await this.attemptsLeft(tx, row)))
+    // A person's answer to a permission always gets its attempt, past the
+    // budget too: each needs the person again, so it cannot run away, and the
+    // work owes them the step they allowed or a word on the one they declined.
+    if (
+      result.value === 'queued' &&
+      row.state !== 'running' &&
+      input.kind !== 'approval_decided' &&
+      !(await this.attemptsLeft(tx, row))
+    )
       throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     let wait = options.wait ?? { kind: 'none' };
     // A conversation's reminder cancelled from another conversation comes back

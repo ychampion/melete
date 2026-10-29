@@ -230,7 +230,10 @@ async function askForAdd(roomId: string, roomConnection: string) {
 type Asked = Awaited<ReturnType<typeof askForAdd>>;
 
 /** Bob allows the add from the card on the thread. */
-async function bobAllows(roomId: string, asked: Asked) {
+const bobAllows = (roomId: string, asked: Asked) => bobAnswers(roomId, asked, 'allow_once');
+/** Bob declines it from the same card. */
+const bobDeclines = (roomId: string, asked: Asked) => bobAnswers(roomId, asked, 'deny');
+async function bobAnswers(roomId: string, asked: Asked, option: 'allow_once' | 'deny') {
   const view = roomThreadView.parse(
     await ok(send(bob.cookie, `/rooms/${roomId}/threads/${asked.threadId}`)),
   );
@@ -240,11 +243,30 @@ async function bobAllows(roomId: string, asked: Asked) {
   if (!card) throw new Error('The permission is not on the thread');
   await ok(
     send(bob.cookie, `/rooms/${roomId}/approvals/${asked.approvalId}`, 'POST', {
-      option: 'allow_once',
+      option,
       version: card.version,
       payload_hash: asked.hash,
     }),
   );
+}
+
+/** The turn may run only once more: the attempt now running is its last. */
+async function lastAttempt(jobId: string) {
+  await database().sql`update job set budget = jsonb_set(budget, '{max_attempts}', '1')
+    where id = ${jobId}`;
+}
+/** The next attempt is told Bob declined, and says so. */
+async function sayDeclined(asked: Asked) {
+  const { runner } = database();
+  const next = await claimed(asked.requestId);
+  expect(next.bundle.inputs.approval_results).toContainEqual(
+    expect.objectContaining({ action_id: asked.actionId, decision: 'denied' }),
+  );
+  await runner.commitOutcome(next.claims, {
+    kind: 'completed',
+    summary: 'Bob declined, so the planning session is not on his calendar.',
+    evidence: [],
+  });
 }
 
 async function state(jobId: string) {
@@ -375,6 +397,108 @@ withDb('a room approval given while the turn runs', () => {
     expect(await state(asked.requestId)).toBe('waiting_for_input');
     expect(await liveWakes(asked.requestId)).toBe(0);
     expect(added).not.toContain(asked.actionId);
+  }, 60_000);
+
+  test('a decline given before the turn ends wakes the work once, and its next attempt says so', async () => {
+    const { runner } = database();
+    const { roomId, roomConnection } = await calendarRoom('Mid-turn decline');
+    const asked = await askForAdd(roomId, roomConnection);
+    await bobDeclines(roomId, asked);
+    expect(await actionStatus(asked.actionId)).toBe('denied');
+    await runner.commitOutcome(asked.claims, {
+      kind: 'completed',
+      summary: 'I asked Bob to allow the planning session on his calendar.',
+      evidence: [],
+    });
+    expect(await state(asked.requestId)).toBe('queued');
+    expect(await liveWakes(asked.requestId)).toBe(1);
+    await sayDeclined(asked);
+    expect(await state(asked.requestId)).toBe('waiting_for_input');
+    expect(await liveWakes(asked.requestId)).toBe(0);
+    expect(await claim(asked.requestId)).toBeNull();
+    expect(added).not.toContain(asked.actionId);
+    const view = roomThreadView.parse(
+      await ok(send(alice.cookie, `/rooms/${roomId}/threads/${asked.threadId}`)),
+    );
+    expect(JSON.stringify(view)).toContain('Bob declined, so the planning session');
+  }, 60_000);
+
+  test('a decline after the turn parked wakes the work once, and its next attempt says so', async () => {
+    const { runner } = database();
+    const { roomId, roomConnection } = await calendarRoom('Declined after the park');
+    const asked = await askForAdd(roomId, roomConnection);
+    await runner.commitOutcome(asked.claims, {
+      kind: 'waiting_for_approval',
+      action_ids: [asked.actionId],
+    });
+    await bobDeclines(roomId, asked);
+    expect(await state(asked.requestId)).toBe('queued');
+    expect(await liveWakes(asked.requestId)).toBe(1);
+    await sayDeclined(asked);
+    expect(await liveWakes(asked.requestId)).toBe(0);
+    expect(await claim(asked.requestId)).toBeNull();
+  }, 60_000);
+
+  test('a permission Stop withdraws wakes nothing, mid-turn or parked', async () => {
+    const { runner } = database();
+    const { roomId, roomConnection } = await calendarRoom('Stop wakes nothing');
+    const running = await askForAdd(roomId, roomConnection);
+    await ok(send(alice.cookie, `/rooms/${roomId}/requests/${running.requestId}/stop`, 'POST'));
+    expect(await actionStatus(running.actionId)).toBe('denied');
+    // The stopped attempt's end comes too late to park on the withdrawal.
+    await runner
+      .commitOutcome(running.claims, {
+        kind: 'completed',
+        summary: 'I asked Bob to allow the planning session on his calendar.',
+        evidence: [],
+      })
+      .catch(() => null);
+    expect(await state(running.requestId)).toBe('waiting_for_input');
+    expect(await liveWakes(running.requestId)).toBe(0);
+    expect(await claim(running.requestId)).toBeNull();
+    const parked = await askForAdd(roomId, roomConnection);
+    await runner.commitOutcome(parked.claims, {
+      kind: 'waiting_for_approval',
+      action_ids: [parked.actionId],
+    });
+    await ok(send(alice.cookie, `/rooms/${roomId}/requests/${parked.requestId}/stop`, 'POST'));
+    expect(await state(parked.requestId)).toBe('waiting_for_input');
+    expect(await liveWakes(parked.requestId)).toBe(0);
+    expect(await claim(parked.requestId)).toBeNull();
+  }, 60_000);
+
+  test("a permission answered on the turn's last attempt still gets the attempt that acts on it", async () => {
+    const { runner } = database();
+    const { roomId, roomConnection } = await calendarRoom('Last attempt');
+    // Allowed while the last attempt runs: carried out once all the same.
+    const allowed = await askForAdd(roomId, roomConnection);
+    await lastAttempt(allowed.requestId);
+    await bobAllows(roomId, allowed);
+    await runner.commitOutcome(allowed.claims, {
+      kind: 'completed',
+      summary: 'I asked Bob to allow the planning session on his calendar.',
+      evidence: [],
+    });
+    expect(await state(allowed.requestId)).toBe('queued');
+    expect(await liveWakes(allowed.requestId)).toBe(1);
+    await carryOut(allowed);
+    expect(added.filter((id) => id === allowed.actionId)).toHaveLength(1);
+    expect(await state(allowed.requestId)).toBe('waiting_for_input');
+    expect(await claim(allowed.requestId)).toBeNull();
+    // Parked on the last attempt and declined later: told, once.
+    const declined = await askForAdd(roomId, roomConnection);
+    await lastAttempt(declined.requestId);
+    await runner.commitOutcome(declined.claims, {
+      kind: 'waiting_for_approval',
+      action_ids: [declined.actionId],
+    });
+    expect(await state(declined.requestId)).toBe('waiting_for_approval');
+    await bobDeclines(roomId, declined);
+    expect(await state(declined.requestId)).toBe('queued');
+    expect(await liveWakes(declined.requestId)).toBe(1);
+    await sayDeclined(declined);
+    expect(await state(declined.requestId)).toBe('waiting_for_input');
+    expect(await claim(declined.requestId)).toBeNull();
   }, 60_000);
 
   // The runtime reads the waiting actions just before the turn ends. Bob's
