@@ -1028,16 +1028,31 @@ withDb('room board', () => {
     expect(answered.thread_id).toBe(asked.threadId);
     expect(answered.request_job_id).toBe(asked.jobId);
   }, 60_000);
-  test("the room's agent cannot ask for a secret on the board", async () => {
+  test('a secret is never asked for in a room, by its agent or in a member’s own job there', async () => {
+    const { sql } = database();
     const roomId = await makeRoom('Keys');
-    const asked = await request(world.bob, roomId, '@Melete set up the weather alerts');
-    await expect(
-      requestPersonQuestion(database().sql, asked.claims, {
-        question: 'What is your weather API key?',
-        secret: { name: 'WEATHER_API_KEY', purpose: 'the weather alerts' },
+    const asking = await request(world.bob, roomId, '@Melete set up the weather alerts');
+    const own = await ok<{ job: { id: string } }>(
+      send(world.bob.cookie, '/jobs', 'POST', {
+        space_id: roomId,
+        title: 'Weather alerts for me',
+        objective: 'Set up weather alerts for me',
       }),
-    ).rejects.toThrow('only in the person’s own chat');
-    expect((await listOf(world.bob, roomId)).some((item) => item.kind === 'question')).toBe(false);
+      201,
+    );
+    const owns = await claimJob(own.job.id);
+    for (const claims of [asking.claims, owns]) {
+      await expect(
+        requestPersonQuestion(sql, claims, {
+          question: 'What is your weather API key?',
+          secret: { name: 'WEATHER_API_KEY', purpose: 'the weather alerts' },
+        }),
+      ).rejects.toThrow('only in the person’s own space');
+      expect(
+        await sql`select 1 from event where job_id = ${claims.job_id}
+          and payload->>'kind' = 'person_question_requested'`,
+      ).toHaveLength(0);
+    }
   }, 60_000);
   test('an event moved to another day keeps its time of day across a change of clocks', async () => {
     const { sql } = database();

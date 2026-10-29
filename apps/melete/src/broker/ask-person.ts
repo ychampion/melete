@@ -127,11 +127,17 @@ export async function requestPersonQuestion(sql: Sql, claims: CapabilityClaims, 
   return sql.begin(async (tx) => {
     const job = await lockJob(tx, claims.job_id);
     await checkAttempt(tx, job, claims);
-    if (spec.secret && job.audience === 'room')
-      throw new BrokerFault(
-        'payload_invalid',
-        'A secret can be asked for only in the person’s own chat, never in a room. Ask them to open a chat with you.',
-      );
+    // A secret is kept for the whole space it is given in, so a room's or any
+    // other shared space's jobs would all hold it, and its other members could
+    // replace it. It is asked for only where the person is the space's one owner.
+    if (spec.secret) {
+      const [where] = await tx`select kind from space where id = ${job.space_id}`;
+      if (where?.kind !== 'personal')
+        throw new BrokerFault(
+          'payload_invalid',
+          'A secret can be asked for only in the person’s own space, never in a room or a shared space, where everyone there could use it. Tell them to give it to you in a chat in their own space.',
+        );
+    }
     const [open] =
       await tx`SELECT text FROM question WHERE job_id=${job.id} AND state='open' LIMIT 1`;
     if (open)
