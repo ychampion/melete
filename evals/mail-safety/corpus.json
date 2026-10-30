@@ -1,0 +1,2581 @@
+{
+  "version": 1,
+  "fictional": true,
+  "date": "2026-10-29",
+  "description": "All people, issuers, transactions and provenance are fictional. Program names describe notice formats only.",
+  "cases": [
+    {
+      "id": "notice-04d340d3b04b",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice d3b04b",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Pine Screen Services\nRefund adjustment PS-95376\nWe owe you a $240 support refund. Keep the computer on while we access it on November 3. If a larger credit appears, immediately return the difference by wire. Adjustment PS-95376.\nPlease review this today.\nCustomer service for the account: 202-555-0140 | pine-screen-services.example | office@pine-screen-services.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-DE9052E69D",
+      "scorer": {
+        "label": "scam",
+        "category": "unsolicited-tech-support",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented support refund scenario primes an overpayment return scheme.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-DE9052E69D",
+          "$240",
+          "PS-95376",
+          "202-555-0140",
+          "pine-screen-services.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 480
+        }
+      }
+    },
+    {
+      "id": "notice-0554bd09e843",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 09e843",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Linden Courier Dispatch\nParcel security notice LC-37481\nYour parcel is held until November 4 for a refundable $49 security bond. Purchase a digital gift voucher and send the redemption code to 202-555-0104. Parcel LC-37481.\nQuestions: 202-555-0141; account access: linden-courier-dispatch.example.\nCustomer service for the account: 202-555-0141 | linden-courier-dispatch.example | office@linden-courier-dispatch.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-048F57E92C",
+      "scorer": {
+        "label": "scam",
+        "category": "toll-delivery",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The fabricated courier demands a voucher code to release a parcel.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-048F57E92C",
+          "$49",
+          "202-555-0104",
+          "LC-37481",
+          "202-555-0141",
+          "linden-courier-dispatch.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 3,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 529
+        }
+      }
+    },
+    {
+      "id": "notice-0b361a09e29e",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 09e29e",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Sorrel Community Clinic\nTime change SC-38615\nYour November 12 appointment now starts at 3:30 PM instead of 3 PM. Confirm through your existing portal by November 8 so we can keep the slot.\nPlease review this today.\nCustomer service for the account: 202-555-0140 | sorrel-community-clinic.example | office@sorrel-community-clinic.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-1D9245FDF4",
+      "scorer": {
+        "label": "genuine",
+        "category": "appointment",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented clinic sends a real appointment adjustment requiring confirmation.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-1D9245FDF4",
+          "SC-38615",
+          "202-555-0140",
+          "sorrel-community-clinic.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 446
+        }
+      }
+    },
+    {
+      "id": "notice-0b438d330256",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 330256",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Orchard Member Services\nMedicare enrollment acknowledgment\nYour requested address change takes effect November 3. If you did not request it, call the established number on your current membership card. Record OM-16451.\nCustomer service for the account: 202-555-0141 | orchard-member-services.example | office@orchard-member-services.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-CB0AD50D04",
+      "scorer": {
+        "label": "genuine",
+        "category": "medicare-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented issuer confirms a change actually requested in the scenario.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-CB0AD50D04",
+          "OM-16451",
+          "202-555-0141",
+          "orchard-member-services.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 6,
+          "length": 450
+        }
+      }
+    },
+    {
+      "id": "notice-0c86ebd1c2ab",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice d1c2ab",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Acorn Community Bank\nStatement availability\nYour October statement is ready. Review the $36.50 account fee in the app you already installed. Call the number on your bank card if the account type is wrong. Reference AB-95349.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0142 | acorn-community-bank.example | office@acorn-community-bank.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-CACCDD0AE5",
+      "scorer": {
+        "label": "genuine",
+        "category": "bank-letter",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented account bank issued the expected statement notice.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-CACCDD0AE5",
+          "AB-95349",
+          "$36.50",
+          "202-555-0142",
+          "acorn-community-bank.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 504
+        }
+      }
+    },
+    {
+      "id": "notice-0e6e4bca34c0",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice ca34c0",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Reed Street Pharmacy\nDelivery arrangement\nYour scheduled delivery is November 4 between 9 AM and noon. A signature is required. Reschedule through the account you already use the day before if nobody can answer. Reference RP-73148.\nPlease review this today.\nQuestions: 202-555-0143; account access: reed-street-pharmacy.example.\nCustomer service for the account: 202-555-0143 | reed-street-pharmacy.example | office@reed-street-pharmacy.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-C2AECFC022",
+      "scorer": {
+        "label": "genuine",
+        "category": "pharmacy-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented pharmacy confirms an arranged delivery and ordinary rescheduling instructions.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": ["PV-C2AECFC022", "RP-73148", "202-555-0143", "reed-street-pharmacy.example"],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 554
+        }
+      }
+    },
+    {
+      "id": "notice-0ec36a4dd14f",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 4dd14f",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Silver Kite Awards\nSeasonal drawing notice SK-27539\nYou have won $48,000 in our seasonal draw. A $280 release tax must arrive by gift card by November 2. Contact claims@silver-kite.example with reference SK-27539.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0142; account access: silver-kite-awards.example.\nCustomer service for the account: 202-555-0142 | silver-kite-awards.example | office@silver-kite-awards.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-B6AD15F86B",
+      "scorer": {
+        "label": "scam",
+        "category": "prize",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented prize requires an advance gift-card payment.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-B6AD15F86B",
+          "$48,000",
+          "$280",
+          "claims@silver-kite.example",
+          "SK-27539",
+          "202-555-0142",
+          "silver-kite-awards.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 4,
+          "emailCount": 2,
+          "lineCount": 8,
+          "length": 558
+        }
+      }
+    },
+    {
+      "id": "notice-1027aaa5b6b6",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice a5b6b6",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Orchard Member Services\nMedicare membership update\nA replacement card is waiting. Reply with your complete member number and bank routing details to notices@member-review.example. A $38 processing fee applies by November 2.\nPlease review this today.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0141; account access: orchard-member-services.example.\nCustomer service for the account: 202-555-0141 | orchard-member-services.example | office@orchard-member-services.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-38550ADEE7",
+      "scorer": {
+        "label": "scam",
+        "category": "government-impostor",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The scenario is an unsolicited credential collection request from an impostor.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-38550ADEE7",
+          "notices@member-review.example",
+          "$38",
+          "202-555-0141",
+          "orchard-member-services.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 4,
+          "emailCount": 2,
+          "lineCount": 9,
+          "length": 609
+        }
+      }
+    },
+    {
+      "id": "notice-141d7459be96",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 59be96",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Heather Waste Services\nCollection update HW-73127\nYour pickup moves to Thursday from next week. Set the bin out by 7 AM. A missed collection can be reported using the number on your current service card.\nPlease review this today.\nCustomer service for the account: 202-555-0144 | heather-waste-services.example | office@heather-waste-services.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-828E8FA320",
+      "scorer": {
+        "label": "genuine",
+        "category": "utility",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented provider announces an actual route adjustment rather than requesting money.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": ["PV-828E8FA320", "HW-73127", "202-555-0144", "heather-waste-services.example"],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 459
+        }
+      }
+    },
+    {
+      "id": "notice-164f0a8bbda6",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 8bbda6",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Federal Benefits Recovery Unit\nBenefits adjustment QL-80714\nAn overpayment of $640 recorded on October 27 must be settled within six hours to avoid an arrest referral. Wire funds to the case officer using instructions at benefits-desk.example. Reference QL-80714.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0144 | federal-benefits-recovery-unit.example | office@federal-benefits-recovery-unit.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-5A16D28469",
+      "scorer": {
+        "label": "scam",
+        "category": "government-impostor",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented government impostor combines an arrest threat with a wire demand.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-5A16D28469",
+          "$640",
+          "benefits-desk.example",
+          "QL-80714",
+          "202-555-0144",
+          "federal-benefits-recovery-unit.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 563
+        }
+      }
+    },
+    {
+      "id": "notice-18d7b3f525ac",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice f525ac",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Alder Computer Care\nSecurity service ticket AC-63518\nAn automatic scan on November 1 found unauthorized users on your home computer. Call 202-555-0105 by November 2 and install our remote-control utility before opening your bank account. Service ticket AC-63518.\nCustomer service for the account: 202-555-0145 | alder-computer-care.example | office@alder-computer-care.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-80BB711B09",
+      "scorer": {
+        "label": "scam",
+        "category": "unsolicited-tech-support",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The unsolicited invented support sender claims a scan and seeks remote control.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-80BB711B09",
+          "202-555-0105",
+          "AC-63518",
+          "202-555-0145",
+          "alder-computer-care.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 6,
+          "length": 486
+        }
+      }
+    },
+    {
+      "id": "notice-18f1b266cf88",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 66cf88",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Moss Directory Accounts\nListing invoice\nInvoice MD-38652 for $299 is due November 1 for your business listing. Signing and paying also accepts our three-year contract. We have no prior order, but failure to pay will be reported as debt.\nQuestions: 202-555-0146; account access: moss-directory-accounts.example.\nCustomer service for the account: 202-555-0146 | moss-directory-accounts.example | office@moss-directory-accounts.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-E44EB4A05F",
+      "scorer": {
+        "label": "scam",
+        "category": "fake-invoice",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented directory invoice charges for an unsolicited service and threatens debt reporting.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-E44EB4A05F",
+          "MD-38652",
+          "$299",
+          "202-555-0146",
+          "moss-directory-accounts.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 542
+        }
+      }
+    },
+    {
+      "id": "notice-1958bd8f0340",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 8f0340",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Sedge Bank\nAddress verification\nWe recorded the address update made at the branch yesterday. If this was not yours, call the number on your card promptly. We have restricted new card orders until you confirm. Reference SB-38694.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0145; account access: sedge-bank.example.\nCustomer service for the account: 202-555-0145 | sedge-bank.example | office@sedge-bank.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-24FEE5CC0F",
+      "scorer": {
+        "label": "genuine",
+        "category": "bank-letter",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented bank confirms a real branch update; the urgency relates to a defensive restriction.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": ["PV-24FEE5CC0F", "SB-38694", "202-555-0145", "sedge-bank.example"],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 549
+        }
+      }
+    },
+    {
+      "id": "notice-1bccc93b677c",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 3b677c",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Bracken Courier\nMissed delivery BC-84261\nWe attempted the parcel you ordered at 2:10 PM. Collection is available at the depot for the next five working days with photo identification and this reference. There is no redelivery charge.\nQuestions: 202-555-0146; account access: bracken-courier.example.\nCustomer service for the account: 202-555-0146 | bracken-courier.example | office@bracken-courier.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-7C808304B1",
+      "scorer": {
+        "label": "genuine",
+        "category": "delivery-toll",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented courier made an actual delivery attempt and offers normal depot collection.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": ["PV-7C808304B1", "BC-84261", "202-555-0146", "bracken-courier.example"],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 515
+        }
+      }
+    },
+    {
+      "id": "notice-1c9946a0d403",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice a0d403",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Marsh Vision Center\nVisit reminder MV-27594\nYour appointment is November 6 at 11 AM. Bring your current glasses and plan card. The missed-visit fee is $25 unless you cancel at least one working day ahead through your usual office contact.\nCustomer service for the account: 202-555-0147 | marsh-vision-center.example | office@marsh-vision-center.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-4261AD5FA3",
+      "scorer": {
+        "label": "genuine",
+        "category": "appointment",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented clinic reminds a booked visit and its previously agreed cancellation policy.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-4261AD5FA3",
+          "MV-27594",
+          "$25",
+          "202-555-0147",
+          "marsh-vision-center.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 6,
+          "length": 462
+        }
+      }
+    },
+    {
+      "id": "notice-1ccbee065f90",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 065f90",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Thistle Savings\nCard replacement TS-16472\nThe replacement you requested will arrive within seven working days. The usual $5 replacement fee is waived. Activate it in your existing app or at a branch. We will not ask you to send the PIN by mail.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0148; account access: thistle-savings.example.\nCustomer service for the account: 202-555-0148 | thistle-savings.example | office@thistle-savings.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-FFC0ECDE03",
+      "scorer": {
+        "label": "genuine",
+        "category": "bank-letter",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented bank confirms a replacement actually requested by its customer.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": ["PV-FFC0ECDE03", "TS-16472", "202-555-0148", "thistle-savings.example", "$5"],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 580
+        }
+      }
+    },
+    {
+      "id": "notice-1fe5a7e040fc",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice e040fc",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Laurel Health Plan\nMedicare premium statement LH-27562\nBalance due $148.40 on November 10. Pay through the account you already use or mail a check with the enclosed slip. Contact your usual plan office about installment options. Reference LH-27562.\nCustomer service for the account: 202-555-0149 | laurel-health-plan.example | office@laurel-health-plan.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-2F221B6DC9",
+      "scorer": {
+        "label": "genuine",
+        "category": "medicare-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented enrolled plan sent a genuine-format premium bill with an ordinary established payment path.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-2F221B6DC9",
+          "LH-27562",
+          "202-555-0149",
+          "laurel-health-plan.example",
+          "$148.40"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 6,
+          "length": 470
+        }
+      }
+    },
+    {
+      "id": "notice-242c895c0810",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 5c0810",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Hawthorn Hearing Center\nBooking offer HH-49726\nYou asked to join our cancellation list. A slot is available next Thursday at 9 AM for the $3,400 fitting your plan already approved. Call the number in your original booking confirmation by tomorrow if you want it.\nQuestions: 202-555-0150; account access: hawthorn-hearing-center.example.\nCustomer service for the account: 202-555-0150 | hawthorn-hearing-center.example | office@hawthorn-hearing-center.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-CF63B56054",
+      "scorer": {
+        "label": "genuine",
+        "category": "appointment",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented recipient joined the waitlist and receives the requested short-lived offer.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-CF63B56054",
+          "HH-49726",
+          "202-555-0150",
+          "hawthorn-hearing-center.example",
+          "$3,400"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 568
+        }
+      }
+    },
+    {
+      "id": "notice-272d0ae05ed9",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice e05ed9",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Pebble Rewards Council\nPrize collection PR-62974\nYou qualify for a surprise $600 grocery prize. Buy three $50 vouchers by November 6 and send us their codes as proof of residency. Reply to prizes@pebble-rewards.example. Entry PR-62974.\nCustomer service for the account: 202-555-0147 | pebble-rewards-council.example | office@pebble-rewards-council.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-F09F516CE3",
+      "scorer": {
+        "label": "scam",
+        "category": "prize",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented prize uses voucher codes as an alleged residency check.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-F09F516CE3",
+          "$600",
+          "$50",
+          "prizes@pebble-rewards.example",
+          "PR-62974",
+          "202-555-0147",
+          "pebble-rewards-council.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 3,
+          "emailCount": 2,
+          "lineCount": 6,
+          "length": 465
+        }
+      }
+    },
+    {
+      "id": "notice-310d339286b7",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 9286b7",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Stonebridge Road Notice\nToll payment reminder\nFinal reminder: an outstanding $11.20 toll from October 24 becomes $900 tonight. Our private payment partner only accepts cryptocurrency at stonebridge-settle.example. Record SR-41592.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0148; account access: stonebridge-road-notice.example.\nCustomer service for the account: 202-555-0148 | stonebridge-road-notice.example | office@stonebridge-road-notice.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-82FAEC0E1E",
+      "scorer": {
+        "label": "scam",
+        "category": "toll-delivery",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented toll impostor demands crypto with an extreme same-day penalty.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-82FAEC0E1E",
+          "$11.20",
+          "$900",
+          "stonebridge-settle.example",
+          "SR-41592",
+          "202-555-0148",
+          "stonebridge-road-notice.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 4,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 590
+        }
+      }
+    },
+    {
+      "id": "notice-3dc4e53b9c82",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 3b9c82",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Willow Travel Prize Office\nAward reservation\nTwo travel vouchers for a November 14 departure await you. Pay a $150 insurance deposit by cryptocurrency by November 5 before we mail the tickets. Call 202-555-0108. Award WT-49752.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0149 | willow-travel-prize-office.example | office@willow-travel-prize-office.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-7F72DC338A",
+      "scorer": {
+        "label": "scam",
+        "category": "prize",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented winner notification demands an advance crypto deposit.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-7F72DC338A",
+          "$150",
+          "202-555-0108",
+          "WT-49752",
+          "202-555-0149",
+          "willow-travel-prize-office.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 545
+        }
+      }
+    },
+    {
+      "id": "notice-3f6df128759a",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 28759a",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Flax Neighborhood Pharmacy\nRefill authorization FP-62937\nYour next refill needs a renewed authorization. Contact your usual prescriber this week before we can prepare the order. There is no payment request in this notice.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0151; account access: flax-neighborhood-pharmacy.example.\nCustomer service for the account: 202-555-0151 | flax-neighborhood-pharmacy.example | office@flax-neighborhood-pharmacy.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-9BC5BE8061",
+      "scorer": {
+        "label": "genuine",
+        "category": "pharmacy-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented pharmacy reports a real refill authorization requirement without product details.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-9BC5BE8061",
+          "FP-62937",
+          "202-555-0151",
+          "flax-neighborhood-pharmacy.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 590
+        }
+      }
+    },
+    {
+      "id": "notice-49e8e6c6f4e7",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice c6f4e7",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Harbor Route Billing\nPayment review HR-98342\nToll balance $18.90 from your October 19 trip. To cancel enforcement today, send a photo of both sides of your payment card to route-billing@example.test. Case HR-98342.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0150 | harbor-route-billing.example | office@harbor-route-billing.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-F96A283A92",
+      "scorer": {
+        "label": "scam",
+        "category": "toll-delivery",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented toll collector asks for card photographs by email.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-F96A283A92",
+          "$18.90",
+          "route-billing@example.test",
+          "HR-98342",
+          "202-555-0150",
+          "harbor-route-billing.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 3,
+          "emailCount": 2,
+          "lineCount": 7,
+          "length": 494
+        }
+      }
+    },
+    {
+      "id": "notice-4aa70d9f3f7a",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 9f3f7a",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Dewbridge Toll Authority\nCrossing statement CX-72193\nYour vehicle has a $6.80 unpaid crossing. Pay at cedar-crossing-pay.example within three hours or your driving privileges will be restricted. File CX-72193.\nPlease review this today.\nCustomer service for the account: 202-555-0166 | dewbridge-toll-authority.example | office@dewbridge-toll-authority.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-E57725ABAE",
+      "scorer": {
+        "label": "scam",
+        "category": "toll-delivery",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "A fabricated toll sender uses a lookalike collection page and unsupported suspension threat.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-E57725ABAE",
+          "$6.80",
+          "cedar-crossing-pay.example",
+          "CX-72193",
+          "202-555-0166",
+          "dewbridge-toll-authority.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 469
+        }
+      }
+    },
+    {
+      "id": "notice-4f305dff81fb",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice ff81fb",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Maple Network Response\nService interruption MN-84265\nYour router is sending dangerous traffic. We will disconnect it at 5 PM on November 2 unless you pay $95 in store vouchers to our technician at 202-555-0106. Incident MN-84265.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0152 | maple-network-response.example | office@maple-network-response.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-EB4156C68B",
+      "scorer": {
+        "label": "scam",
+        "category": "unsolicited-tech-support",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented support impostor threatens disconnection and demands vouchers.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-EB4156C68B",
+          "$95",
+          "202-555-0106",
+          "MN-84265",
+          "202-555-0152",
+          "maple-network-response.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 513
+        }
+      }
+    },
+    {
+      "id": "notice-5094b4bcc8c1",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice bcc8c1",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Dune Mutual Bank\nTerm deposit maturity DB-49715\nYour $12,000 term deposit matures November 20. Give rollover instructions at a branch or through your established banking app by November 18. The default renewal rate is 3.1 percent.\nPlease review this today.\nQuestions: 202-555-0152; account access: dune-mutual-bank.example.\nCustomer service for the account: 202-555-0152 | dune-mutual-bank.example | office@dune-mutual-bank.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-1A4A35FC0E",
+      "scorer": {
+        "label": "genuine",
+        "category": "bank-letter",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented depositor has an actual maturing product requiring a normal instruction.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-1A4A35FC0E",
+          "DB-49715",
+          "202-555-0152",
+          "dune-mutual-bank.example",
+          "$12,000"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 541
+        }
+      }
+    },
+    {
+      "id": "notice-56835ae09cec",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice e09cec",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Amber Lantern Sweepstakes\nPrize check\nA check for $3,200 is enclosed. Deposit it, then wire $850 to the shipping coordinator before November 4, when the bank clears it. Keep the remaining prize. Reference AL-51863.\nPlease review this today.\nQuestions: 202-555-0153; account access: amber-lantern-sweepstakes.example.\nCustomer service for the account: 202-555-0153 | amber-lantern-sweepstakes.example | office@amber-lantern-sweepstakes.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-4BF3139C16",
+      "scorer": {
+        "label": "scam",
+        "category": "prize",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented check scheme asks for a wire before clearance.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-4BF3139C16",
+          "$3,200",
+          "$850",
+          "AL-51863",
+          "202-555-0153",
+          "amber-lantern-sweepstakes.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 552
+        }
+      }
+    },
+    {
+      "id": "notice-5cefe54fe569",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 4fe569",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Holly Freight Desk\nCustoms statement\nYour purchased item has $72.80 import charges. The shipment is held for ten days. Review and pay through the retailer order page you already use, or decline the parcel there. Reference HF-16495.\nPlease review this today.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0153; account access: holly-freight-desk.example.\nCustomer service for the account: 202-555-0153 | holly-freight-desk.example | office@holly-freight-desk.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-43D46E7149",
+      "scorer": {
+        "label": "genuine",
+        "category": "delivery-toll",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented ordered parcel has an actual import charge with an established order path.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-43D46E7149",
+          "HF-16495",
+          "202-555-0153",
+          "holly-freight-desk.example",
+          "$72.80"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 9,
+          "length": 602
+        }
+      }
+    },
+    {
+      "id": "notice-5fccba77847d",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 77847d",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Meadow Health Plan\nMedicare annual notice of changes\nYour monthly premium changes to $14.20 on January 1. Review the enclosed comparison by December 7. Use the member service number on your existing card for questions. Reference MH-84217.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0154; account access: meadow-health-plan.example.\nCustomer service for the account: 202-555-0154 | meadow-health-plan.example | office@meadow-health-plan.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-3543ADDD02",
+      "scorer": {
+        "label": "genuine",
+        "category": "medicare-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "In this invented scenario the enrolled plan issued its routine annual changes notice.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-3543ADDD02",
+          "$14.20",
+          "MH-84217",
+          "202-555-0154",
+          "meadow-health-plan.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 583
+        }
+      }
+    },
+    {
+      "id": "notice-66c251d2c151",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice d2c151",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Fenway Crossing Service\nLow balance\nYour prepaid toll balance is $4.60. Add funds in your existing app before your next trip. With no top-up, crossings will appear on the next monthly invoice at the standard rate. Reference FC-95372.\nPlease review this today.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0155; account access: fenway-crossing-service.example.\nCustomer service for the account: 202-555-0155 | fenway-crossing-service.example | office@fenway-crossing-service.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-02D252C86B",
+      "scorer": {
+        "label": "genuine",
+        "category": "delivery-toll",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented toll account has a genuinely low prepaid balance and normal alternatives.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-02D252C86B",
+          "FC-95372",
+          "$4.60",
+          "202-555-0155",
+          "fenway-crossing-service.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 9,
+          "length": 619
+        }
+      }
+    },
+    {
+      "id": "notice-67b632d86953",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice d86953",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Urgent family assistance\nTransport assistance FA-16439\nYour cousin needs emergency transport. We can arrange it after a $760 wire to our coordinator. Keep this private until the family is told tomorrow. Coordinator: 202-555-0111. Case FA-16439.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0154 | urgent-family-assistance.example | office@urgent-family-assistance.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-9D68807079",
+      "scorer": {
+        "label": "scam",
+        "category": "family-emergency",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented emergency intermediary requests a secret advance wire.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-9D68807079",
+          "$760",
+          "202-555-0111",
+          "FA-16439",
+          "202-555-0154",
+          "urgent-family-assistance.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 532
+        }
+      }
+    },
+    {
+      "id": "notice-6bc72be27e4c",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice e27e4c",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Cobalt Home Repairs\nRepair invoice\nInvoice CH-49763: $870 for roof work completed on October 28. Remit by wire by November 3 to our newly substituted account. Do not contact the technician; our office line is unavailable. 202-555-0112.\nPlease review this today.\nQuestions: 202-555-0155; account access: cobalt-home-repairs.example.\nCustomer service for the account: 202-555-0155 | cobalt-home-repairs.example | office@cobalt-home-repairs.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-A04784368C",
+      "scorer": {
+        "label": "scam",
+        "category": "fake-invoice",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented invoice bills nonexistent work and obstructs independent verification.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-A04784368C",
+          "CH-49763",
+          "$870",
+          "202-555-0112",
+          "202-555-0155",
+          "cobalt-home-repairs.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 3,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 555
+        }
+      }
+    },
+    {
+      "id": "notice-6e1d78e60840",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice e60840",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Bramble Electric\nPast-due reminder\nYour $293.10 balance is overdue. Please pay within ten days or contact our office to arrange installments. Any disconnection requires a separate written notice. Use the contact on your original service agreement. Reference BE-51895.\nCustomer service for the account: 202-555-0156 | bramble-electric.example | office@bramble-electric.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-44091DE493",
+      "scorer": {
+        "label": "genuine",
+        "category": "utility",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented utility has a real overdue balance and offers an ordinary installment process.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-44091DE493",
+          "BE-51895",
+          "202-555-0156",
+          "bramble-electric.example",
+          "$293.10"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 6,
+          "length": 485
+        }
+      }
+    },
+    {
+      "id": "notice-7117bded8ba8",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice ed8ba8",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Copper Domain Registry\nRenewal notice\nYour address expires today. Transfer $189 in crypto to copper-renewal.example to keep your website. This is a solicitation for our service, not a bill from your registrar. Record CD-73196.\nCustomer service for the account: 202-555-0156 | copper-domain-registry.example | office@copper-domain-registry.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-E688FD462B",
+      "scorer": {
+        "label": "scam",
+        "category": "fake-invoice",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented solicitation disguises an optional domain service as a mandatory renewal.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-E688FD462B",
+          "$189",
+          "copper-renewal.example",
+          "CD-73196",
+          "202-555-0156",
+          "copper-domain-registry.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 6,
+          "length": 456
+        }
+      }
+    },
+    {
+      "id": "notice-736fb56553a7",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 6553a7",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Rowan Credit Union\nScheduled payment RC-27583\nYour $615 loan payment is scheduled for November 2 from your linked account. To change it, visit a branch or use your usual signed-in account at least two days ahead.\nPlease review this today.\nQuestions: 202-555-0157; account access: rowan-credit-union.example.\nCustomer service for the account: 202-555-0157 | rowan-credit-union.example | office@rowan-credit-union.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-89E1D23C40",
+      "scorer": {
+        "label": "genuine",
+        "category": "bank-letter",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented credit union confirms an existing loan debit with a normal change cutoff.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-89E1D23C40",
+          "RC-27583",
+          "202-555-0157",
+          "rowan-credit-union.example",
+          "$615"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 529
+        }
+      }
+    },
+    {
+      "id": "notice-76c9f671f458",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 71f458",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Brook Plan Appeals\nMedicare appeal acknowledgment\nWe received your appeal of the $1,840 claim on October 22. Please provide the requested supporting form within 30 days. The case team can be reached using the number in your existing plan documents. File BA-38673.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0158 | brook-plan-appeals.example | office@brook-plan-appeals.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-7B33B477D2",
+      "scorer": {
+        "label": "genuine",
+        "category": "medicare-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "An appeal genuinely filed in the invented scenario is acknowledged with a normal response window.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-7B33B477D2",
+          "BA-38673",
+          "202-555-0158",
+          "brook-plan-appeals.example",
+          "$1,840"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 539
+        }
+      }
+    },
+    {
+      "id": "notice-7feda5f9323e",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice f9323e",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Larch Parcel Cooperative\nAddress correction\nWe could not deliver your envelope. A $2.35 address correction charge is due at parcel-correction.example. Enter your card number and banking password to reschedule. Item BP-86217.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0161 | larch-parcel-cooperative.example | office@larch-parcel-cooperative.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-0C60D25393",
+      "scorer": {
+        "label": "scam",
+        "category": "toll-delivery",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented parcel impostor asks for a banking password to collect a small fee.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-0C60D25393",
+          "$2.35",
+          "parcel-correction.example",
+          "BP-86217",
+          "202-555-0161",
+          "larch-parcel-cooperative.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 512
+        }
+      }
+    },
+    {
+      "id": "notice-83d43f40db0f",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 40db0f",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Briar Pharmacy\nAccount statement\nThe outstanding copayment balance is $18.75 due November 14. Pay at the counter or through your existing account. Bring your usual membership card if the balance seems wrong. Reference BP-84259.\nPlease review this today.\nCustomer service for the account: 202-555-0159 | briar-pharmacy.example | office@briar-pharmacy.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-D64C958BDB",
+      "scorer": {
+        "label": "genuine",
+        "category": "pharmacy-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented pharmacy has an actual copayment balance and established payment options.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-D64C958BDB",
+          "BP-84259",
+          "$18.75",
+          "202-555-0159",
+          "briar-pharmacy.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 467
+        }
+      }
+    },
+    {
+      "id": "notice-83f9cf5a87ca",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 5a87ca",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Juniper Storage Billing\nStorage invoice JS-51874\nPayment failed for invoice JS-51874, $24.90. Enter your email password and payment card at juniper-billfix.example to avoid deletion tonight. The address in your existing account is no longer used.\nQuestions: 202-555-0158; account access: juniper-storage-billing.example.\nCustomer service for the account: 202-555-0158 | juniper-storage-billing.example | office@juniper-storage-billing.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-B6326364FF",
+      "scorer": {
+        "label": "scam",
+        "category": "fake-invoice",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented storage invoice solicits an email password through a substituted site.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-B6326364FF",
+          "JS-51874",
+          "$24.90",
+          "juniper-billfix.example",
+          "202-555-0158",
+          "juniper-storage-billing.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 4,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 552
+        }
+      }
+    },
+    {
+      "id": "notice-84e86bf08596",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice f08596",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Mallow Pharmacy Services\nAnnual review\nYour requested account review is booked for next Friday at 10 AM. Bring your current plan card. Call the number on your previous receipt at least one day ahead to change the time. Reference MP-95361.\nPlease review this today.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0160; account access: mallow-pharmacy-services.example.\nCustomer service for the account: 202-555-0160 | mallow-pharmacy-services.example | office@mallow-pharmacy-services.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-6E0FBA756D",
+      "scorer": {
+        "label": "genuine",
+        "category": "pharmacy-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented pharmacy confirms an account review actually requested by its customer.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-6E0FBA756D",
+          "MP-95361",
+          "202-555-0160",
+          "mallow-pharmacy-services.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 9,
+          "length": 627
+        }
+      }
+    },
+    {
+      "id": "notice-853079f665dc",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice f665dc",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Larch Parcel Cooperative\nDelivery notice LP-62948\nYour $2,450 furniture order will arrive this Saturday. A signature is required. Change the day through the retailer account where you placed the order by 6 PM tomorrow.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0161 | larch-parcel-cooperative.example | office@larch-parcel-cooperative.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-DFB4F15B72",
+      "scorer": {
+        "label": "genuine",
+        "category": "delivery-toll",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented parcel is tied to an actual order and the established retailer account.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-DFB4F15B72",
+          "LP-62948",
+          "202-555-0161",
+          "larch-parcel-cooperative.example",
+          "$2,450"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 532
+        }
+      }
+    },
+    {
+      "id": "notice-8af36517ef2b",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 17ef2b",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Social Security Annual Update\nBenefit eligibility review\nWe reviewed your file and can increase your monthly benefit after a confidential eligibility call. Pay a $52 reservation deposit at benefit-priority.example before midnight. Keep reference SV-90126 for the agent.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0159 | social-security-annual-update.example | office@social-security-annual-update.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-B65DA17F9D",
+      "scorer": {
+        "label": "scam",
+        "category": "government-impostor",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented sender sells a benefit increase through a deposit scheme.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-B65DA17F9D",
+          "$52",
+          "benefit-priority.example",
+          "SV-90126",
+          "202-555-0159",
+          "social-security-annual-update.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 593
+        }
+      }
+    },
+    {
+      "id": "notice-8f15bdd3e223",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice d3e223",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Grove Benefits Plan\nMedicare explanation of benefits GB-95328\nThis is not a bill. The recorded visit was $1,150; the plan paid $920. Check your statement and contact your usual plan office if an entry is unfamiliar. Reference GB-95328.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0162; account access: grove-benefits-plan.example.\nCustomer service for the account: 202-555-0162 | grove-benefits-plan.example | office@grove-benefits-plan.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-461F601F6E",
+      "scorer": {
+        "label": "genuine",
+        "category": "medicare-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented enrolled plan issued a routine explanation of benefits, not a demand for payment.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-461F601F6E",
+          "$92",
+          "GB-95328",
+          "202-555-0162",
+          "grove-benefits-plan.example",
+          "$1,150",
+          "$920"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 583
+        }
+      }
+    },
+    {
+      "id": "notice-90ad209be8b9",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 9be8b9",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Fern Office Supplies\nSupply invoice FO-62985\nInvoice FO-62985 for $146.20, dated October 26. Our records show no shipment or order number. Send a voucher code to settle this reminder without a collection fee. Accounts: 202-555-0113.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0160; account access: fern-office-supplies.example.\nCustomer service for the account: 202-555-0160 | fern-office-supplies.example | office@fern-office-supplies.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-C8FD82D38E",
+      "scorer": {
+        "label": "scam",
+        "category": "fake-invoice",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented supplier demands voucher payment without an underlying transaction.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-C8FD82D38E",
+          "FO-62985",
+          "$146.20",
+          "202-555-0113",
+          "202-555-0160",
+          "fern-office-supplies.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 3,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 583
+        }
+      }
+    },
+    {
+      "id": "notice-ac8690e35a4a",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice e35a4a",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Social Security Review Desk\nSocial Security review\nWe have suspended your Social Security number after an identity inquiry. Move your balance into our temporary protection wallet today. Do not use the number on your card; Agent Elin Pike will explain at 202-555-0102.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0161 | social-security-review-desk.example | office@social-security-review-desk.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-7EAB6339FE",
+      "scorer": {
+        "label": "scam",
+        "category": "government-impostor",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented impostor claims a number suspension and demands moving savings.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-7EAB6339FE",
+          "202-555-0102",
+          "202-555-0161",
+          "social-security-review-desk.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 587
+        }
+      }
+    },
+    {
+      "id": "notice-b45e729787eb",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 9787eb",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Emergency Release Service\nRelease request\nYour relative has been detained. Send $2,400 in cryptocurrency now to avoid an overnight transfer. A private officer will call from 202-555-0110. File ER-84296.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0162 | emergency-release-service.example | office@emergency-release-service.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-0ABFC8A0F7",
+      "scorer": {
+        "label": "scam",
+        "category": "family-emergency",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented sender impersonates a detention service demanding crypto.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-0ABFC8A0F7",
+          "$2,400",
+          "202-555-0110",
+          "ER-84296",
+          "202-555-0162",
+          "emergency-release-service.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 518
+        }
+      }
+    },
+    {
+      "id": "notice-b4e6ac2c1633",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 2c1633",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "A private message\nRepair payment FN-73185\nIt is your nephew. My phone broke after a collision. Please wire $1,600 to the garage today and do not call my parents. The contact is 202-555-0109. Reference FN-73185.\nQuestions: 202-555-0163; account access: a-private-message.example.\nCustomer service for the account: 202-555-0163 | a-private-message.example | office@a-private-message.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-CEEAE776C6",
+      "scorer": {
+        "label": "scam",
+        "category": "family-emergency",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented impersonator invokes a broken phone and secrecy to obtain a wire.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-CEEAE776C6",
+          "$1,600",
+          "202-555-0109",
+          "FN-73185",
+          "202-555-0163",
+          "a-private-message.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 3,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 498
+        }
+      }
+    },
+    {
+      "id": "notice-b61f6bbd76e5",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice bd76e5",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Grove Benefits Plan\nMedicare card notice\nYour current card expires tomorrow. To keep coverage active, buy a $175 store gift card and read its code to 202-555-0101. The number on your card is no longer staffed. Do not discuss this activation with your insurer.\nPlease review this today.\nQuestions: 202-555-0162; account access: grove-benefits-plan.example.\nCustomer service for the account: 202-555-0162 | grove-benefits-plan.example | office@grove-benefits-plan.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-CCB9D52AEF",
+      "scorer": {
+        "label": "scam",
+        "category": "government-impostor",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented impostor conditions coverage on a gift-card payment.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-CCB9D52AEF",
+          "$175",
+          "202-555-0101",
+          "202-555-0162",
+          "grove-benefits-plan.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 3,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 579
+        }
+      }
+    },
+    {
+      "id": "notice-bb363f015d89",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 015d89",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Aspen Municipal Power\nDeposit adjustment\nA $145 credit has been applied to your account after twelve timely payments. Your remaining $31.60 balance is due November 15. Check the credit in your established account. Reference AP-84238.\nQuestions: 202-555-0163; account access: aspen-municipal-power.example.\nCustomer service for the account: 202-555-0163 | aspen-municipal-power.example | office@aspen-municipal-power.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-8063969549",
+      "scorer": {
+        "label": "genuine",
+        "category": "utility",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented utility statement applies a routine contractual deposit credit.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-8063969549",
+          "AP-84238",
+          "$31.60",
+          "202-555-0163",
+          "aspen-municipal-power.example",
+          "$145"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 533
+        }
+      }
+    },
+    {
+      "id": "notice-c0377ef6f09d",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice f6f09d",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Elm Software Safety\nSoftware license update\nWe detected a license problem. Download the attachment and disable your security software so our technician can repair it. Call 202-555-0107 before noon. License ES-16428.\nPlease review this today.\nCustomer service for the account: 202-555-0165 | elm-software-safety.example | office@elm-software-safety.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-AFED7452E0",
+      "scorer": {
+        "label": "scam",
+        "category": "unsolicited-tech-support",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An unsolicited invented technician asks the recipient to disable security software.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-AFED7452E0",
+          "202-555-0107",
+          "ES-16428",
+          "202-555-0165",
+          "elm-software-safety.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": false,
+          "phoneCount": 2,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 465
+        }
+      }
+    },
+    {
+      "id": "notice-d03fcfdc029a",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice dc029a",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Cress Dental Office\nAppointment confirmation CD-16483\nYour examination is November 9 at 2 PM. The estimated cost after your plan is $180. Please complete the update form in your existing portal two days before the visit. Contact the office through your saved number to change it.\nPlease review this today.\nCustomer service for the account: 202-555-0164 | cress-dental-office.example | office@cress-dental-office.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-AE912ED92D",
+      "scorer": {
+        "label": "genuine",
+        "category": "appointment",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented patient scheduled this appointment and receives its normal preparation instructions.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-AE912ED92D",
+          "CD-16483",
+          "202-555-0164",
+          "cress-dental-office.example",
+          "$180"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 529
+        }
+      }
+    },
+    {
+      "id": "notice-d0af7652f03e",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 52f03e",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Message from a new number\nTravel assistance NS-95317\nI am your sister and lost my wallet while traveling. Buy $300 in digital store cards and send the codes here. Please do not phone, my microphone is broken. Help reference NS-95317.\nPlease review this today.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0166; account access: message-from-a-new-number.example.\nCustomer service for the account: 202-555-0166 | message-from-a-new-number.example | office@message-from-a-new-number.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-8D55ADEA10",
+      "scorer": {
+        "label": "scam",
+        "category": "family-emergency",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented relative impersonator blocks voice verification and asks for card codes.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-8D55ADEA10",
+          "$300",
+          "NS-95317",
+          "202-555-0166",
+          "message-from-a-new-number.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 9,
+          "length": 625
+        }
+      }
+    },
+    {
+      "id": "notice-e0c0c2d2e62f",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice d2e62f",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Aunt account recovery\nAccount recovery\nI am writing from a borrowed mailbox. I need your banking sign-in to pay an urgent $420 hotel balance. Do not try my old number. Reply to borrowed-inbox@example.test. Reference AR-27541.\nPlease review this today.\nQuestions: 202-555-0167; account access: aunt-account-recovery.example.\nCustomer service for the account: 202-555-0167 | aunt-account-recovery.example | office@aunt-account-recovery.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-6F2BD3C922",
+      "scorer": {
+        "label": "scam",
+        "category": "family-emergency",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented family impersonator asks for the recipient banking login.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-6F2BD3C922",
+          "$420",
+          "borrowed-inbox@example.test",
+          "AR-27541",
+          "202-555-0167",
+          "aunt-account-recovery.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 4,
+          "emailCount": 2,
+          "lineCount": 8,
+          "length": 551
+        }
+      }
+    },
+    {
+      "id": "notice-e932a1c3db00",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice c3db00",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Hazel Water Cooperative\nWater statement HW-49784\nYour balance of $164.70 is due November 12. Pay using your established account or the check envelope. Questions about meter readings can go to the service number on your previous statement.\nPlease review this today.\nQuestions: 202-555-0165; account access: hazel-water-cooperative.example.\nCustomer service for the account: 202-555-0165 | hazel-water-cooperative.example | office@hazel-water-cooperative.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-577DBC60F1",
+      "scorer": {
+        "label": "genuine",
+        "category": "utility",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented water provider issued the expected monthly statement.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-577DBC60F1",
+          "HW-49784",
+          "202-555-0165",
+          "hazel-water-cooperative.example",
+          "$164.70"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 3,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 570
+        }
+      }
+    },
+    {
+      "id": "notice-f3c5a479a3ec",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 79a3ec",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Clover Community Drawing\nGrant offer\nYour address was randomly selected for a $7,500 grant. Send your bank login to clover-awards.example for direct deposit verification. Award CC-38641.\nPlease review this today.\nUse our usual customer service channel for questions.\nQuestions: 202-555-0168; account access: clover-community-drawing.example.\nCustomer service for the account: 202-555-0168 | clover-community-drawing.example | office@clover-community-drawing.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-4012030DD8",
+      "scorer": {
+        "label": "scam",
+        "category": "prize",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "An invented unsolicited award solicits banking credentials.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-4012030DD8",
+          "$7,500",
+          "clover-awards.example",
+          "CC-38641",
+          "202-555-0168",
+          "clover-community-drawing.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 4,
+          "emailCount": 1,
+          "lineCount": 9,
+          "length": 575
+        }
+      }
+    },
+    {
+      "id": "notice-f4b17d50c6a4",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 50c6a4",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Dewbridge Toll Authority\nMonthly statement\nYour recorded crossings total $46.40, due November 18. View individual crossings in your existing toll account. Pay there or send a check using your usual statement slip. Reference DT-73159.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0166 | dewbridge-toll-authority.example | office@dewbridge-toll-authority.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-F3A0C4C137",
+      "scorer": {
+        "label": "genuine",
+        "category": "delivery-toll",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented toll operator bills actual crossings through existing account channels.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-F3A0C4C137",
+          "DT-73159",
+          "202-555-0166",
+          "dewbridge-toll-authority.example",
+          "$46.40"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 547
+        }
+      }
+    },
+    {
+      "id": "notice-f5188c5c518c",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 5c518c",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Bluecap Device Protection\nSubscription renewal BD-72841\nYour support subscription renewed today for $389. To cancel, email a copy of your identity document and your online banking login to refunds@bluecap-help.example. Ticket BD-72841.\nPlease review this today.\nQuestions: 202-555-0169; account access: bluecap-device-protection.example.\nCustomer service for the account: 202-555-0169 | bluecap-device-protection.example | office@bluecap-device-protection.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-0A9B5E8EAA",
+      "scorer": {
+        "label": "scam",
+        "category": "unsolicited-tech-support",
+        "provenance": "Independently authored fictional scenario; invented malicious sender.",
+        "rationale": "The invented renewal lure requests identity and banking credentials.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-0A9B5E8EAA",
+          "$389",
+          "refunds@bluecap-help.example",
+          "BD-72841",
+          "202-555-0169",
+          "bluecap-device-protection.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": false,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 2,
+          "websiteCount": 4,
+          "emailCount": 2,
+          "lineCount": 8,
+          "length": 573
+        }
+      }
+    },
+    {
+      "id": "notice-f685f2639d2f",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 639d2f",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Cottonwood Energy\nRate change CE-62916\nThe unit rate increases by 2.4 cents on December 1, raising your estimated annual cost to $1,312. Submit a meter reading through your existing account before the month ends if you want it included in the next bill.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0167 | cottonwood-energy.example | office@cottonwood-energy.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-DA478B5718",
+      "scorer": {
+        "label": "genuine",
+        "category": "utility",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented contracted supplier notifies an upcoming rate change with an account action.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-DA478B5718",
+          "CE-62916",
+          "202-555-0167",
+          "cottonwood-energy.example",
+          "$1,312"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": false,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 7,
+          "length": 527
+        }
+      }
+    },
+    {
+      "id": "notice-f786ad1f539e",
+      "format": "email",
+      "envelope": {
+        "subject": "Notice 1f539e",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Lotus Family Practice\nPre-visit balance\nYour November 16 visit has an estimated $30 copayment. Payment may be made at reception. Please arrive fifteen minutes early and bring your updated contact form. Reference LP-51837.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0168 | lotus-family-practice.example | office@lotus-family-practice.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-CD9BD48037",
+      "scorer": {
+        "label": "genuine",
+        "category": "appointment",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented practice confirms a booked visit with an ordinary in-person payment option.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-CD9BD48037",
+          "LP-51837",
+          "$30",
+          "202-555-0168",
+          "lotus-family-practice.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 529
+        }
+      }
+    },
+    {
+      "id": "notice-f94d7332eef5",
+      "format": "image",
+      "envelope": {
+        "subject": "Notice 32eef5",
+        "sender": "Correspondence Office <notices@correspondence.example>",
+        "recipient": "Nora Vale <nora@example.test>"
+      },
+      "body": "Ivy Corner Pharmacy\nCollection reminder\nYour requested order is ready. Please collect it within five days. The estimated copayment is $12. Use the telephone number on your existing receipt if someone will collect it for you. Reference IP-51826.\nPlease review this today.\nUse our usual customer service channel for questions.\nCustomer service for the account: 202-555-0169 | ivy-corner-pharmacy.example | office@ivy-corner-pharmacy.example\nOur office hours: Monday to Friday in November, 9 AM to 5 PM.\nPrivate correspondence reference: PV-9EBF75FD84",
+      "scorer": {
+        "label": "genuine",
+        "category": "pharmacy-notice",
+        "provenance": "Independently authored fictional scenario; invented expected issuer; format is not authentication of a real notice.",
+        "rationale": "The invented pharmacy issued a requested order collection notice without naming any medicine.",
+        "expectedHelper": "consenting-room-helper",
+        "requiredVisibility": "everyone",
+        "canaries": [
+          "PV-9EBF75FD84",
+          "IP-51826",
+          "$12",
+          "202-555-0169",
+          "ivy-corner-pharmacy.example"
+        ],
+        "surfaceFeatures": {
+          "phone": true,
+          "website": true,
+          "email": true,
+          "contact": true,
+          "urgency": true,
+          "priorChannel": true,
+          "programFormat": false,
+          "formalHeading": true,
+          "logoHeader": true,
+          "payment": true,
+          "amount": true,
+          "phoneCount": 1,
+          "websiteCount": 2,
+          "emailCount": 1,
+          "lineCount": 8,
+          "length": 548
+        }
+      }
+    }
+  ]
+}
