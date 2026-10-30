@@ -444,13 +444,17 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     /**
      * A request that read someone's shared calendar keeps what it puts up for
      * one person with them and the owners: what it says may rest on what that
-     * calendar shows. The receipt tells the agent it did.
+     * calendar shows. The receipt tells the agent it did. A person's own
+     * request that read only their own calendar may put up their own item for
+     * everyone: what it rests on is theirs to show.
      */
-    const keepWithPerson = async () => {
-      const [read] = await tx`select 1 from action
+    const keepWithPerson = async (assignee: unknown) => {
+      const reads = await tx`select canonical_payload->>'member' as member from action
         where job_id = ${ctx.job_id} and kind = 'room.member_freebusy'
-          and status = 'succeeded' limit 1`;
-      if (!read) return;
+          and status = 'succeeded'`;
+      if (reads.length === 0) return;
+      const own = job.requested_by_principal_id;
+      if (own && assignee === own && reads.every((read) => read.member === own)) return;
       next.visibility = 'assignee';
       next.kept_with_person = true;
     };
@@ -464,7 +468,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       // A note is always for its person alone; it carries no visibility of its own.
       if (kind === 'board.ask') {
         next.visibility = (payload.visibility as BoardVisibility | undefined) ?? 'assignee';
-        if (next.visibility === 'everyone') await keepWithPerson();
+        if (next.visibility === 'everyone') await keepWithPerson(next.assignee);
         // The person asked must be able to see the question to answer it.
         if (
           next.visibility === 'owners' &&
@@ -482,7 +486,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
     }
     if (kind === 'board.add') {
       next.visibility = (payload.visibility as BoardVisibility | undefined) ?? 'everyone';
-      if (next.visibility === 'everyone' && next.assignee) await keepWithPerson();
+      if (next.visibility === 'everyone' && next.assignee) await keepWithPerson(next.assignee);
       if (next.visibility === 'assignee' && !next.assignee)
         throw new BrokerFault(
           'payload_invalid',
@@ -500,7 +504,7 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
       // What the item will show once changed: a retitle or a new assignee
       // leaves an item for everyone, so it is kept with its person too.
       const visibleTo = 'visibility' in next ? next.visibility : row.visibility;
-      if (visibleTo === 'everyone' && assigneeNow) await keepWithPerson();
+      if (visibleTo === 'everyone' && assigneeNow) await keepWithPerson(assigneeNow);
     }
     return next;
   }
