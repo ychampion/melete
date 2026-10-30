@@ -943,6 +943,65 @@ withDb('room board', () => {
     expect((await listOf(world.bob, roomId)).map((item) => item.id)).toContain(open.item ?? '');
   }, 60_000);
 
+  test("a person's own request that read only their own calendar may put their item up for everyone", async () => {
+    const roomId = await makeRoom('Own calendar');
+    const { sql } = database();
+    const { claims } = await request(world.bob, roomId);
+    const readOf = async (member: string) => {
+      const id = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+      await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, status, idempotency_key, resolved_at)
+        values (${id}, ${claims.job_id}, ${claims.attempt_id}, ${await boardConnection(roomId)},
+          'room.member_freebusy', 'read', ${JSON.stringify({ member })}::jsonb, ${'0'.repeat(64)}, 'succeeded', ${id}, now())`;
+    };
+    await readOf(world.bob.id);
+    // Bob's own request read only Bob's calendar: his own item goes up for everyone.
+    const mine = await tool(claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Bob drives on Thursday at 10',
+      assignee: world.bob.id,
+    });
+    expect(mine.status).toBe('succeeded');
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).toContain(mine.item ?? '');
+    // An item for someone else still stays with them.
+    const theirs = await tool(claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Carol brings lunch on Thursday',
+      assignee: world.carol.id,
+    });
+    expect(theirs.status).toBe('succeeded');
+    expect((await listOf(world.bob, roomId)).map((item) => item.id)).not.toContain(
+      theirs.item ?? '',
+    );
+    // An add to someone else's calendar, even a refused one, says whether a time is taken there.
+    const refused = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, status, idempotency_key, resolved_at)
+      values (${refused}, ${claims.job_id}, ${claims.attempt_id}, ${await boardConnection(roomId)},
+        'room.add_to_member_calendar', 'write_reversible', ${JSON.stringify({ member: world.carol.id })}::jsonb,
+        ${'0'.repeat(64)}, 'failed', ${refused}, now())`;
+    const afterAdd = await tool(claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Bob drives on Saturday at 10',
+      assignee: world.bob.id,
+    });
+    expect(afterAdd.status).toBe('succeeded');
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).not.toContain(
+      afterAdd.item ?? '',
+    );
+    // Once it has read someone else's calendar too, even Bob's own item stays with him.
+    await readOf(world.alice.id);
+    const after = await tool(claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Bob drives on Friday at 10',
+      assignee: world.bob.id,
+    });
+    expect(after.status).toBe('succeeded');
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).not.toContain(
+      after.item ?? '',
+    );
+  }, 60_000);
+
   test('an answer never repeats its question in the thread, even one everyone can read', async () => {
     const roomId = await makeRoom('Open question');
     const asking = await request(world.alice, roomId);
