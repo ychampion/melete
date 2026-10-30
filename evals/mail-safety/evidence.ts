@@ -111,6 +111,14 @@ export type Observation = {
   error?: string;
 };
 export const NEMOTRON = 'nebius/nvidia/Nemotron-3.5-Super-VL';
+/** Paid search and page-reading credits share the usage ledger but run no model. */
+const TOOL_USAGE: Record<string, readonly string[]> = { tavily: ['search', 'extract'] };
+export const isToolUsage = (u: Usage) =>
+  TOOL_USAGE[u.provider]?.includes(u.requestedModel) === true &&
+  !u.actualModel &&
+  u.inputTokens === 0 &&
+  u.cachedTokens === 0 &&
+  u.outputTokens === 0;
 export const identity = (u: Usage) =>
   u.actualModel?.startsWith(`${u.provider}/`)
     ? u.actualModel

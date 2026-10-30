@@ -257,8 +257,12 @@ disagreement stops the run and leaves cost unknown. Guard charges are retained s
 in observations and `costs.guardTotalUsd`, including rejected settlements. Costs are
 **app-ledger estimates**, not provider invoices. Missing costs are
 unknown, not zero. All attempted items, including failed submissions, stay in cost-per-attempt
-denominators; cost per safe warning is separate. Nemotron designation requires actual identity
-`nebius/nvidia/Nemotron-3.5-Super-VL`; missing/wrong identities stop that validation.
+denominators; cost per safe warning is separate. Every model-call row needs an actual
+identity, and Nemotron designation requires `nebius/nvidia/Nemotron-3.5-Super-VL` on each of
+them; missing/wrong identities stop that validation. Paid search and page-reading rows
+(provider `tavily`, model `search` or `extract`, no actual model and no tokens) run no model,
+so they need no identity, but their cost counts toward item spend and the cap. A settled item
+still needs at least one model-call row.
 
 `journal.sqlite` checkpoints attempts, reservation references, submission/thread/job IDs,
 event cursor and evidence. `run.json` retains raw answers, privacy surfaces, action/receipt IDs,

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import corpus from './corpus.json' with { type: 'json' };
+import { type Ledger, validateLedger } from './evidence.ts';
 import { corpusHash, type Manifest, sha256 } from './generate.ts';
 import {
   type Config,
@@ -127,6 +128,91 @@ test('missing cost, settlement or actual Nemotron identity is refused', () => {
     { usage: [{ ...row, actualModel: 'another-model' }] },
   ])
     expect(() => requireSettlement({ settled: true, usage: [row], ...patch }, true)).toThrow();
+});
+
+test('web search rows settle without a model identity and still count toward spend', async () => {
+  const model = {
+    id: 'u1',
+    jobId: 'job-1',
+    provider: 'nebius',
+    requestedModel: 'nvidia/Nemotron-3.5-Super-VL',
+    actualModel: 'nvidia/Nemotron-3.5-Super-VL',
+    usageEstimated: true,
+    inputTokens: 10,
+    cachedTokens: 0,
+    outputTokens: 2,
+    costUsd: 0.01,
+    usageClass: 'interactive',
+  };
+  const search = {
+    ...model,
+    id: 'u2',
+    provider: 'tavily',
+    requestedModel: 'search',
+    actualModel: null,
+    usageEstimated: false,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: 0.008,
+    purpose: 'web_search',
+  };
+  const raw: Ledger = {
+    version: 1,
+    targetId: 'target',
+    roomId: 'room',
+    submissionId: 'mail-1',
+    jobIds: ['job-1'],
+    pending: 0,
+    settled: true,
+    usage: [model, search, { ...model, id: 'u3', costUsd: 0.02 }],
+  };
+  const ledger = validateLedger(raw, {
+    targetId: 'target',
+    roomId: 'room',
+    submissionId: 'mail-1',
+    jobId: 'job-1',
+  });
+  expect(() => requireSettlement({ settled: true, usage: ledger.usage }, true)).not.toThrow();
+  expect(ledger.usage.reduce((sum, u) => sum + u.costUsd!, 0)).toBeCloseTo(0.038, 10);
+  const dir = await mkdtemp(join(tmpdir(), 'mail-search-'));
+  const config = {
+    targetId: 'target',
+    campaignId: 'campaign',
+    campaignLedgerFile: join(dir, 'usage.json'),
+  } as Config;
+  try {
+    await Bun.write(
+      config.campaignLedgerFile,
+      JSON.stringify({
+        version: 1,
+        targetId: 'target',
+        campaignId: 'campaign',
+        updatedAt: new Date().toISOString(),
+        pending: 0,
+        settled: true,
+        submissionIds: ['mail-1'],
+        usage: ledger.usage,
+      }),
+    );
+    expect(await campaignSpend(config, 1)).toBeCloseTo(0.038, 10);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  const extract = { ...search, id: 'u4', requestedModel: 'extract' };
+  expect(() => requireSettlement({ settled: true, usage: [model, extract] }, true)).not.toThrow();
+  for (const usage of [
+    // A model provider row without an identity is still refused.
+    [model, { ...model, id: 'u5', actualModel: null }],
+    [model, { ...search, provider: 'nebius' }],
+    // A search row that reports tokens or a model is a model call.
+    [model, { ...search, outputTokens: 5 }],
+    [model, { ...search, actualModel: 'some-model' }],
+    [model, { ...search, requestedModel: 'nvidia/Nemotron-3.5-Super-VL' }],
+    // Searching alone is not a settled model answer, and its cost must be known.
+    [search],
+    [model, { ...search, costUsd: null }],
+  ])
+    expect(() => requireSettlement({ settled: true, usage }, true)).toThrow();
 });
 
 async function manifestAt(directory: string) {

@@ -8,6 +8,7 @@ import {
   type CampaignLedger,
   costsAgree,
   identity,
+  isToolUsage,
   type Ledger,
   NEMOTRON,
   type Observation,
@@ -63,15 +64,16 @@ export function requireSettlement(
   o: { settled: boolean; usage: Usage[] },
   nemotron: boolean,
 ): void {
+  // Search and page-reading rows still count toward spend; every model call needs an identity.
+  const models = o.usage.filter((u) => !isToolUsage(u));
   if (
     !o.settled ||
-    !o.usage.length ||
-    o.usage.some(
-      (u) => u.costUsd === null || !Number.isFinite(u.costUsd) || u.costUsd < 0 || !identity(u),
-    )
+    !models.length ||
+    o.usage.some((u) => u.costUsd === null || !Number.isFinite(u.costUsd) || u.costUsd < 0) ||
+    models.some((u) => !identity(u))
   )
     throw new Error('Missing cost, identity or usage settlement');
-  if (nemotron && o.usage.some((u) => identity(u) !== NEMOTRON))
+  if (nemotron && models.some((u) => identity(u) !== NEMOTRON))
     throw new Error('Wrong Nemotron identity');
 }
 
