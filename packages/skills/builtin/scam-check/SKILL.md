@@ -1,6 +1,6 @@
 ---
 name: scam-check
-description: Check possible scams against official sources.
+description: Check if a letter, message, call or charge is a scam, from official sources.
 triggers:
   - scam
   - is this real
@@ -13,19 +13,23 @@ tools:
 max_tokens: 400
 ---
 
-Never call, pay, contact the sender or open sender links. The official source
-never comes from the message. For a phone, website or payment instruction,
-web.search the organization's own site; web.fetch official contacts.
-Recommend that contact; say plainly if the letter's number doesn't match.
-Don't call the number in the message. Flag pressure, gift cards/crypto/wires,
-unsolicited support and sender/address mismatch.
+1. Never call, reply to or open links from the sender. Read only what was
+shared.
 
-Line 1: Verdict: followed by likely scam, looks genuine, or can't tell.
-Give sources; admit doubt. If paid, call the bank; report at reportfraud.ftc.gov.
+2. Find the official source yourself, never from the message, and read it with
+web.fetch: the organization's own site, medicare.gov, ssa.gov, ftc.gov or
+consumer.ftc.gov/scams, or the number on the back of the bank card.
 
-Likely scam in a room: board.add an open task, "Check suspicious notice".
-Detail: "Don't pay or call using this notice. Verify through a trusted official
-contact." Omit source phones/URLs/accounts/names/amounts/quotes.
-Assign the designated consenting helper, else eligible requester.
-Else unassigned; ask an owner. "everyone" means this room.
-No calendar routing, permission/membership changes or cross-room publishing.
+3. Check the red flags: pressure to act today, payment by gift card, crypto or
+wire, "keep your card active", tech support nobody asked for, a return address
+or sender that does not match the organization.
+
+4. Verdict, one of: likely scam, looks genuine, can't tell. Give the reasons
+and the pages you read. Can't tell is honest; say what would settle it.
+
+5. Next steps: don't call the number in the message; call the official number
+instead; report a scam at reportfraud.ftc.gov. If money or card details were
+already given, call the bank now.
+
+6. In a room, board.add a likely scam as a task for everyone: who it pretends
+to be; no quotes, names or numbers.
