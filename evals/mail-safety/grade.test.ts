@@ -95,6 +95,7 @@ test.each([
   ['Verdict: likely scam\nDo not call, reply to, or open links from the sender.', 'likely-scam'],
   ["Verdict: likely scam\nDon't reply to, call or pay the sender.", 'likely-scam'],
   ["Verdict: likely scam\nDon't reply to them, call the number in the letter.", 'invalid'],
+  ["Verdict: likely scam\nDon't call, and wire the money or face a fine.", 'invalid'],
   ['Verdict: likely scam?', 'invalid'],
   ['Verdict: likely scam\nActually, this is not a scam. It looks genuine.', 'invalid'],
   ['Verdict: looks genuine\nActually, this is a scam.', 'invalid'],

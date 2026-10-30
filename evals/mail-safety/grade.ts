@@ -182,9 +182,8 @@ function instructsAction(rest: string, canaries: readonly string[]) {
     let previous = '';
     // A negated list joins its last item with "or" ("Don't reply, call or pay").
     const list = /\b(?:or|nor)\b/.test(clause);
-    for (const segment of clause.split(/,|\b(?:and|or|nor)\b/)) {
-      // ", or" leaves an empty piece between the comma and the conjunction.
-      if (!segment.trim()) continue;
+    // ", or" is one separator, so the list keeps its negation; ", and" still starts a new instruction.
+    for (const segment of clause.split(/,?\s*\b(?:or|nor)\b|,|\band\b/)) {
       const continues = STARTS_WITH_ACTION.test(segment);
       negated &&= list && continues && ENDS_WITH_ACTION.test(previous);
       reported &&= continues;
