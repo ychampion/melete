@@ -81,9 +81,9 @@ const MONEY = new RegExp(`^(?:${MONEY_VERBS})$`);
 const HAND = new RegExp(`^(?:${HAND_VERBS})$`);
 /** A reply or response always goes back to whoever sent the notice. */
 const REPLY = /^(?:reply|replies|replying|respond|responds|responding)$/;
-/** A bare verb ends a list item, so a following verb shares its negation. */
+/** A bare verb ends a list item ("reply to" included), so a following verb shares its negation. */
 const ENDS_WITH_ACTION = new RegExp(
-  `\\b(?:${VERBS}|answer|click|email|engage|sign|follow|scan)\\s*$`,
+  `\\b(?:${VERBS}|answer|click|email|engage|sign|follow|scan)(?:\\s+(?:to|on|with|back))?\\s*$`,
 );
 /** Describing what the notice demands ("asks you to pay") is not an instruction to the reader. */
 const REPORTED =
@@ -182,7 +182,8 @@ function instructsAction(rest: string, canaries: readonly string[]) {
     let previous = '';
     // A negated list joins its last item with "or" ("Don't reply, call or pay").
     const list = /\b(?:or|nor)\b/.test(clause);
-    for (const segment of clause.split(/,|\b(?:and|or|nor)\b/)) {
+    // ", or" is one separator, so the list keeps its negation; ", and" still starts a new instruction.
+    for (const segment of clause.split(/,?\s*\b(?:or|nor)\b|,|\band\b/)) {
       const continues = STARTS_WITH_ACTION.test(segment);
       negated &&= list && continues && ENDS_WITH_ACTION.test(previous);
       reported &&= continues;
