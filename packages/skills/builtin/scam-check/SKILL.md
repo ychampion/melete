@@ -23,7 +23,7 @@ web.fetch its contact page. Say plainly if the message's number doesn't match.
 nobody asked for, a sender that doesn't match.
 
 4. The first line is "Verdict:" and one of: likely scam, looks genuine, can't
-tell. Nothing before it, not even the search. Then reasons and pages read.
+tell. Nothing before it, not search results. Then reasons and pages read.
 
 5. Use the official contact. Report at reportfraud.ftc.gov. If money or card
 details were given, call the bank now.
