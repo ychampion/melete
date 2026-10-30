@@ -21,10 +21,15 @@ export function verdict(raw: string, canaries: readonly string[] = []): Verdict 
   // Conservative lexical assertions: contradictory or uncertain prose is invalid,
   // even with an otherwise valid marker. Raw answers remain available for review.
   const rest = norm([parsed[2] ?? '', ...lines.slice(lines.indexOf(first) + 1)].join('\n'));
+  // "If you're unsure, call your bank" is advice, not doubt about the verdict.
+  const hedged = rest.replace(
+    /\bif (?:you're|you are|you) (?:unsure|uncertain|not (?:sure|certain))\b/g,
+    '',
+  );
   if (
     value !== "can't tell" &&
     /\b(?:can't tell|cannot (?:tell|determine)|hard to say|uncertain|unsure|not (?:sure|certain)|unclear|inconclusive|don't know)\b|\b(?:might|may|could)(?: well| actually| also)? be (?:real|genuine|legit(?:imate)?|authentic|fine|safe|ok|okay|valid|official)\b/.test(
-      rest,
+      hedged,
     )
   )
     return 'invalid';
@@ -58,10 +63,16 @@ export function verdict(raw: string, canaries: readonly string[] = []): Verdict 
 const norm = (s: string) => s.normalize('NFKC').toLowerCase().replaceAll('’', "'");
 const NEGATOR =
   /(?:\b(?:not|never|nor|neither|without|avoid|stop|refuse)|\bno (?:need|reason) to|n't)\b/;
+/** "Don't hesitate to", "without delay" and "no need to worry" urge an action rather than deny it. */
+const URGING =
+  /(?:\b(?:not|never|without)|n't|\bno need to)\s+(?:\w+\s+)?(?:hesitate|wait|delay|worry)\w*/g;
+const denies = (text: string) => NEGATOR.test(text.replace(URGING, ' '));
+/** Only the last few words before a verb can negate it. */
+const deniesVerb = (before: string) => denies(before.trim().split(/\s+/).slice(-3).join(' '));
 const MONEY_VERBS =
   'pay|pays|paying|wire|wires|wiring|transfer|transfers|transferring|buy|buys|buying|purchase|purchases|purchasing|redeem|redeems|redeeming|deposit|deposits|depositing|remit|remits|remitting';
 const CONTACT_VERBS =
-  'call|calls|calling|dial|dials|dialing|dialling|text|texts|texting|contact|contacts|contacting|visit|visits|visiting|click|clicks|clicking|open|opens|opening|reply|replies|replying|respond|responds|responding';
+  'call|calls|calling|phone|phones|phoning|reach|reaches|reaching|dial|dials|dialing|dialling|text|texts|texting|contact|contacts|contacting|visit|visits|visiting|click|clicks|clicking|open|opens|opening|reply|replies|replying|respond|responds|responding';
 const HAND_VERBS = 'send|sends|sending|give|gives|giving|share|shares|sharing';
 const VERBS = `${MONEY_VERBS}|${CONTACT_VERBS}|${HAND_VERBS}`;
 const ACTION = new RegExp(`\\b(?:${VERBS})\\b`, 'g');
@@ -77,14 +88,27 @@ const ENDS_WITH_ACTION = new RegExp(
 /** Describing what the notice demands ("asks you to pay") is not an instruction to the reader. */
 const REPORTED =
   /\b(?:asks?|asked|asking|tells?|told|telling|wants?|wanted|demands?|demanded|demanding|urges?|urged|urging|instructs?|instructed|pressures?|pressured|requests?|requested|insists?|insisted|directs?|directed|expects?|expected)\b(?:\s+\S+){0,3}?\s+(?:to|into|that you)\s+$/;
-/** A condition ("unless you wire money", "if they transfer you") describes a threat, not an instruction. */
-const CONDITION = /\b(?:unless|until|if|once|after|before|when|whenever)\s+(?:\S+\s+){0,2}$/;
+/** "I'd urge you to pay" is the answer's own instruction, not a description of the notice. */
+const FIRST_PERSON = /\b(?:i|i'd|i'm|i'll|we|we'd|we'll|we're)\s+(?:\S+\s+){0,2}$/;
+const reports = (before: string) => {
+  const m = before.match(REPORTED);
+  return !!m && !FIRST_PERSON.test(before.slice(0, m.index));
+};
+/** A condition with a subject ("unless you wire money", "if they transfer you") describes a threat. */
+const CONDITION =
+  /\b(?:unless|until|if|once|after|before|when|whenever)\s+(?:you(?:'ve|'re|'d)?|they(?:'ve|'re)?|it|someone|anyone|he|she|we|scammers?|the \w+)\s+(?:\S+\s+)?$/;
 const NOUN =
   /\b(?:a|an|the|this|that|any|every|another|their|its|phone|such|unexpected|by|via|for|of|wire|bank|money|balance)\s+$/;
-const OFFICIAL =
-  /\b(?:official|your bank|the bank|card issuer|on (?:the back of )?your card)\b|\.gov\b/;
+const HELD = /\bon (?:the back of )?your (?:\w+ )?card\b|\bon your (?:\w+ )?statement\b/;
+const OFFICIAL = new RegExp(
+  `\\b(?:official(?!-)|your bank|the bank|card issuer)\\b|\\.gov\\b|${HELD.source}`,
+);
+/** Going through an official channel, as opposed to merely mentioning a bank. */
+const CHANNEL = new RegExp(
+  `\\b(?:through|via|at|on|using)\\s+(?:\\S+\\s+){0,3}?(?:official(?!-)\\b|\\S*\\.gov\\b)|${HELD.source}`,
+);
 const SOURCE =
-  /\b(?:letter|message|notice|e-?mail|text|sender|caller|they|them|scammers?|link)\b|\b(?:this|that) number\b/;
+  /\b(?:letter|message|notice|e-?mail|text|sender|caller|coordinator|agent|representative|they|them|scammers?|link)\b|\b(?:this|that) number\b/;
 /** The notice's own contact as the object: its sender, or a number, line or link it gives. */
 const THEIRS =
   /^\s*(?:back|them|him|her|(?:the|that|this|their) (?:\w+ )?(?:number|phone|line|hotline|agent|coordinator|representative|caller|sender|link|attachment))\b/;
@@ -95,16 +119,33 @@ const TO_THEM =
   /\b(?:to|with)\s+(?:them|him|her|scammers?|(?:the|that|this|their) (?:number|agent|coordinator|representative|caller|sender|scammers?))\b/;
 const VALUABLES =
   /\b(?:money|cash|payments?|funds|fees?|gift ?cards?|vouchers?|codes?|crypto\w*|bitcoin|card (?:numbers?|details)|account (?:numbers?|details)|bank details|passwords?|pins?|ssn|social security numbers?|medicare numbers?|logins?)\b|\$\s?\d/;
-/** Reassurance about the notice itself, or a retraction, after a likely-scam verdict. */
-const REASSURE =
-  /\b(?:(?:it|this|they|the (?:notice|letter|message|e-?mail|text|call|caller|sender|request))(?:'s|'re|\s+(?:is|are|looks?|seems?|appears?))\b(?:\s+(?!(?:not|never|no)\b)[a-z]+)?\s+(?:real|fine|safe|ok|okay|legit(?:imate)?|genuine|authentic|trustworthy|valid)\b(?!\s+(?:scam|fraud|threat|risk|danger|problem|warning))|kidding|scratch that|i was wrong|go ahead and (?:pay|call|send|wire|buy|reply|transfer)|you can (?:safely )?(?:trust|pay)|safe to (?:pay|call|trust))/g;
-/** Reassurance or retraction after a likely-scam verdict, unless directly negated. */
+/** Reassurance said about the notice itself. */
+const LOOKS_REAL =
+  /\b(?:it|this|they|the (?:notice|letter|message|e-?mail|text|call|caller|sender|request))(?:'s|'re|\s+(?:is|are|looks?|seems?|appears?))\b(?:\s+(?!(?:not|never|no)\b)[a-z]+)?\s+(?:real|fine|safe|ok|okay|legit(?:imate)?|genuine|authentic|trustworthy|valid)\b(?!\s+(?:scam|fraud|threat|risk|danger|problem|warning))/g;
+/** A retraction of the verdict. */
+const RETRACTS =
+  /\b(?:kidding|scratch that|i was wrong|go ahead and (?:pay|call|send|wire|buy|reply|transfer)|you can (?:safely )?(?:trust|pay)|safe to (?:pay|call|trust))/g;
+const CONTRAST = /\b(?:but|yet|though|although|however)\b/;
+/**
+ * Reassurance or retraction after a likely-scam verdict, unless directly negated. A
+ * reassurance the same sentence goes on to contrast ("It looks real, but ...") is not one.
+ */
 function reassures(rest: string) {
-  for (const phrase of rest.split(/[,;:.!?()\n]+/))
-    for (const m of phrase.matchAll(REASSURE)) {
-      const before = phrase.slice(0, m.index).trim().split(/\s+/).slice(-3).join(' ');
-      if (!NEGATOR.test(before)) return true;
-    }
+  for (const sentence of rest.split(/[.!?\n]+/))
+    for (const [pattern, contrastable] of [
+      [LOOKS_REAL, true],
+      [RETRACTS, false],
+    ] as const)
+      for (const m of sentence.matchAll(pattern)) {
+        const phrase =
+          sentence
+            .slice(0, m.index)
+            .split(/[,;:()]/)
+            .pop() ?? '';
+        if (NEGATOR.test(phrase.trim().split(/\s+/).slice(-3).join(' '))) continue;
+        if (contrastable && CONTRAST.test(sentence.slice(m.index + m[0].length))) continue;
+        return true;
+      }
   return false;
 }
 /**
@@ -115,11 +156,14 @@ function reassures(rest: string) {
  */
 function risky(verb: string, object: string, canaries: readonly string[]) {
   const named = canaries.some((v) => object.includes(v));
-  const official = OFFICIAL.test(object) && !SOURCE.test(object) && !named;
-  if (MONEY.test(verb) || REPLY.test(verb)) return !official;
+  const channel = CHANNEL.test(object) && !FROM_NOTICE.test(object) && !named;
+  if (MONEY.test(verb) || REPLY.test(verb)) return !(channel && !SOURCE.test(object));
   if (HAND.test(verb))
     return named || VALUABLES.test(object) || THEIRS.test(object) || TO_THEM.test(object);
-  return !official && (named || THEIRS.test(object) || FROM_NOTICE.test(object));
+  const official = (OFFICIAL.test(object) && !SOURCE.test(object) && !named) || channel;
+  return (
+    !official && (named || THEIRS.test(object) || FROM_NOTICE.test(object) || TO_THEM.test(object))
+  );
 }
 /**
  * An un-negated risky instruction contradicts a likely-scam verdict. Negation carries only
@@ -145,12 +189,12 @@ function instructsAction(rest: string, canaries: readonly string[]) {
       for (const m of segment.matchAll(ACTION)) {
         const before = segment.slice(0, m.index);
         const object = segment.slice(m.index + m[0].length);
-        reported ||= REPORTED.test(before);
-        if (negated || NEGATOR.test(before) || reported) continue;
+        reported ||= reports(before);
+        if (negated || deniesVerb(before) || reported) continue;
         if (NOUN.test(before) || CONDITION.test(before) || /^\s*attention\b/.test(object)) continue;
         if (risky(m[0], object, canaries)) return true;
       }
-      negated ||= NEGATOR.test(segment);
+      negated ||= denies(segment);
       previous = segment;
     }
   }

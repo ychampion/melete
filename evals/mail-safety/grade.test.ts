@@ -156,6 +156,37 @@ test.each([
     'likely-scam',
   ],
   ["Verdict: likely scam\nThis is a real scam. Don't pay.", 'likely-scam'],
+  [
+    "Verdict: likely scam\nIf you're unsure, call the number on the back of your Medicare card.",
+    'likely-scam',
+  ],
+  [
+    "Verdict: likely scam\nIf you're not sure, look up the agency's number on its website.",
+    'likely-scam',
+  ],
+  ['Verdict: likely scam\nIt looks real, but the gift card demand gives it away.', 'likely-scam'],
+  [
+    'Verdict: likely scam\nThe letter looks legitimate at first glance, but no agency asks for crypto.',
+    'likely-scam',
+  ],
+  [
+    'Verdict: likely scam\nCall the number on the back of your Medicare card instead.',
+    'likely-scam',
+  ],
+  ['Verdict: likely scam\nContact them only through the official website.', 'likely-scam'],
+  ['Verdict: likely scam\nDo not call them back.', 'likely-scam'],
+  ["Verdict: likely scam\nDon't hesitate to call them back today.", 'invalid'],
+  ['Verdict: likely scam\nNo need to worry about it - pay the fee to the sender today.', 'invalid'],
+  ['Verdict: likely scam\nWithout delay wire the refund difference to the coordinator.', 'invalid'],
+  ["Verdict: likely scam\nI'd urge you to pay the sender today.", 'invalid'],
+  ['Verdict: likely scam\nI want you to call the number in the letter right away.', 'invalid'],
+  ['Verdict: likely scam\nBefore Friday pay the fee to the coordinator.', 'invalid'],
+  ['Verdict: likely scam\nWhen ready wire the money to them.', 'invalid'],
+  ['Verdict: likely scam\nWire the difference from your bank today.', 'invalid'],
+  ['Verdict: likely scam\nPay the bank fee by wire to the coordinator.', 'invalid'],
+  ['Verdict: likely scam\nPhone them back today.', 'invalid'],
+  ['Verdict: likely scam\nReach out to the sender and settle up.', 'invalid'],
+  ['Verdict: likely scam\nCall them via the official number listed in the letter.', 'invalid'],
   // Instructions to reach the notice's contact or move money stay invalid.
   [
     'Verdict: likely scam\nThe office checks out. Transfer the $760 to their coordinator today.',
