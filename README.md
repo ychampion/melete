@@ -2,12 +2,47 @@
 
 **Personal superintelligence that runs as you.**
 
-Melete lives on your own computers and works in every account you're signed
-into: work and personal mail, both calendars, your files, your browser, your
-servers. It keeps watch over all of it, day and night, notices what needs you,
-and takes care of it.
+Melete is an open-source personal agent you host yourself. Its engine is built
+on [Hermes Agent](https://github.com/NousResearch/hermes-agent) and customised
+for Melete. It works in every account you're signed into: work and personal
+mail, both calendars, your files, your browser, your servers. It keeps watch
+over all of it, notices what needs you, and takes care of it.
 
-> Melete is in early beta. You can run it yourself today.
+## One agent for the whole family
+
+- **One household room.** The family talks to one agent together, and every
+  message shows who wrote it.
+- **Everyone's own accounts.** Each person connects their own mail and calendar
+  in a private space of their own.
+- **Private free/busy.** A shared calendar reaches the room as busy times only,
+  without titles, places or guests.
+- **Each person approves their own.** An event goes on someone's calendar only
+  once that person approves it.
+- **A shared board.** Dated events, tasks, questions and notes, each assigned to
+  one person.
+- **Photos of letters and bills.** Take a picture with your phone, post it in
+  the room, and the model reads it.
+- **Summaries only, enforced in code.** A room can show helpers just what needs
+  them, "a bill of $72.10 due November 12", while names, account numbers and
+  addresses stay with the person whose accounts they are, whatever the model writes.
+
+## Run it on NVIDIA Nemotron
+
+Melete runs on NVIDIA Nemotron 3.5 Super VL through
+[Nebius Token Factory](https://tokenfactory.nebius.com): one open model reads the
+photos, calls the tools and writes the replies. With Docker and Bun installed:
+
+```bash
+git clone https://github.com/ychampion/melete.git && cd melete && bun install --frozen-lockfile
+read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY; bun run deploy/scripts/configure.ts --provider nebius --model nvidia/Nemotron-3.5-Super-VL; unset NEBIUS_API_KEY
+bun run deploy/scripts/set-env.ts MELETE_PREVIEW_MULTIPLAYER=true
+docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
+```
+
+Paste your Token Factory key at the second line; it stays hidden and goes into
+`deploy/.env`. The third line turns on [rooms](docs/ROOMS.md#turning-rooms-on).
+Then open the link `configure.ts` printed and create your account.
+[Connect Nemotron](docs/NEBIUS.md) covers the models and their settings.
 
 Learn more at [melete.si](https://melete.si). Hosted Melete: join the waitlist at
 [waitlist.melete.si](https://waitlist.melete.si).
@@ -90,9 +125,10 @@ you speak.
 ## Choose your model
 
 Run Melete with NVIDIA's open Nemotron models through Nebius Token Factory.
-Connect your key in **Settings → Models**, start with Super, and use Nano for
-quick side calls. [Connect Nemotron](docs/NEBIUS.md) covers the models, server
-configuration and running the same open weights on your own hardware.
+Connect your key in **Settings → Models**, start with Super VL, which reads
+photos as well as text, and use Nano for quick side calls.
+[Connect Nemotron](docs/NEBIUS.md) covers the models, server configuration and
+running the same open weights on your own hardware.
 
 ## Run it yourself
 
@@ -109,8 +145,11 @@ The key stays hidden, `configure.ts` writes it into `deploy/.env`, and the line
 then clears it from your shell. For another provider, export its key instead and
 name the provider and model, for example
 `bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
-with `ANTHROPIC_API_KEY`. Then open http://localhost:3101 and create your
-account.
+with `ANTHROPIC_API_KEY`. For NVIDIA Nemotron on Nebius Token Factory, use
+`NEBIUS_API_KEY` and
+`bun run deploy/scripts/configure.ts --provider nebius --model nvidia/Nemotron-3.5-Super-VL`,
+as in [Run it on NVIDIA Nemotron](#run-it-on-nvidia-nemotron). Then open
+http://localhost:3101 and create your account.
 
 Once your account exists, give the agent a browser of its own to read pages and
 fill in forms with:
@@ -123,14 +162,14 @@ It sets up the [browser worker](docs/browser-worker.md) for your space and
 starts it. From then on, add `-f deploy/docker-compose.browser.yml` after
 `-f deploy/docker-compose.yml` on a `docker compose` command.
 
-To try a demo with a practice model first, use
+To look around first with a practice model, use
 `bun run deploy/scripts/configure.ts --fake` as the second line. It needs no
 key, and you can switch to your own model later.
 
 On a server, you can skip the build and pull the published images instead:
 [Using prebuilt images](docs/DEPLOYMENT.md#using-prebuilt-images).
 
-`bun run melete check`, `bun run melete doctor` and `bun run melete status` judge
+`bun run melete check`, `bun run melete doctor` and `bun run melete status` check
 an installation and name what to do next:
 [The melete command](docs/DEPLOYMENT.md#the-melete-command).
 
@@ -161,6 +200,7 @@ the key it reads first:
 | Provider | Key it reads |
 | --- | --- |
 | `fireworks` (the default) | `FIREWORKS_API_KEY` |
+| `nebius` | `NEBIUS_API_KEY`, for NVIDIA Nemotron on Nebius Token Factory ([models](docs/NEBIUS.md)) |
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
 | `google` | `GOOGLE_API_KEY` |
