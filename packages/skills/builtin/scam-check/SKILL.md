@@ -29,6 +29,6 @@ Give reasons and the pages you read.
 reportfraud.ftc.gov. If money or card details were given, call the bank now.
 
 6. In a room, board.add a likely scam as an open task visible to everyone,
-assigned to whoever the room says helps with mail, else whoever asked:
-"Don't pay or call using this notice; use the official contact." No quotes,
-names, numbers or links from it.
+assigned to whoever the room says helps with mail, else whoever asked. Title:
+"Check suspicious notice". Detail: "Don't pay or call using this notice. Verify
+through a trusted official contact." Nothing else from the message.
