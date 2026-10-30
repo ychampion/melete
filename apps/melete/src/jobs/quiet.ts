@@ -8,17 +8,21 @@
  * later sends no notice: one sent with a start time, and a retry after a
  * failure. `startDueWaker` looks for the next such job every few seconds and
  * sends the queue its notice when the job is due: on time when the job was
- * sent more than one look ahead, and at most one look late otherwise.
+ * sent more than one look ahead, and at most one look late otherwise. The
+ * application enqueue helper also sends a scheduling hint for future wakes,
+ * so the waker can find their deadline without waiting for its next look.
  *
  * Without notices (the connection refuses LISTEN), pg-boss polls these queues
  * at their own rate again.
  */
 
-import type { PgBoss, WorkHandler, WorkOptions } from 'pg-boss';
+import type { Db, PgBoss, WorkHandler, WorkOptions } from 'pg-boss';
 import { notifyChannelSql } from 'pg-boss/dist/plans.js';
 
 /** How long the waker waits, at most, before looking for due jobs again. */
 export const DUE_SCAN_MS = 5_000;
+/** A committed future enqueue asks the waker to look again; it carries no job data. */
+export const DUE_WAKE_CHANNEL = 'melete_due_wake';
 /** After it wakes a queue whose job is still waiting, it looks again this soon, then less often. */
 const RECHECK_MS = 1_000;
 
@@ -75,6 +79,10 @@ export function startDueWaker(
   let stopped = false;
   let recheck = RECHECK_MS;
   let failing = false;
+  let hinted = false;
+  let ready = false;
+  let listener: Awaited<ReturnType<NonNullable<Db['listen']>>> | undefined;
+  let stopping: Promise<void> | undefined;
 
   const schedule = (ms: number) => {
     if (stopped) return;
@@ -114,29 +122,59 @@ export function startDueWaker(
 
   function scan() {
     if (stopped || running) return;
+    hinted = false;
     running = pass()
       .then((next) => {
         if (failing) say('queue: due jobs are being found again');
         failing = false;
-        schedule(next);
+        schedule(hinted ? 0 : next);
       })
       .catch((error: unknown) => {
         if (!failing)
           say(`queue: due jobs could not be looked for: ${(error as Error)?.message ?? error}`);
         failing = true;
-        schedule(scanMs);
+        schedule(hinted ? 0 : scanMs);
       })
       .finally(() => {
         running = undefined;
+        if (hinted) schedule(0);
       });
   }
 
-  scan();
+  function hint() {
+    if (stopped || hinted) return;
+    hinted = true;
+    // An in-flight scan may have read before the enqueue committed. Its end
+    // schedules another pass, even if it found no work in that older snapshot.
+    if (ready && !running) schedule(0);
+  }
+
+  const starting = (async () => {
+    const db = boss.getDb();
+    try {
+      // Subscribe before the first scan. The adapter also calls hint after a
+      // reconnect, to recover deadlines whose notifications were missed.
+      listener = await db.listen?.(DUE_WAKE_CHANNEL, hint, hint);
+    } catch (error) {
+      say(`queue: due wake hints unavailable; using scans: ${(error as Error)?.message ?? error}`);
+    }
+    ready = true;
+    if (!stopped) scan();
+  })();
   return {
-    async stop() {
-      stopped = true;
-      clearTimeout(timer);
-      await running;
+    stop() {
+      stopping ??= (async () => {
+        stopped = true;
+        clearTimeout(timer);
+        // stop may race the initial LISTEN; close its eventual handle too.
+        await starting;
+        try {
+          await listener?.close();
+        } finally {
+          await running;
+        }
+      })();
+      return stopping;
     },
   };
 }

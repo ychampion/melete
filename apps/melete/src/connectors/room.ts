@@ -93,22 +93,27 @@ export const roomManifest: ConnectorManifest = {
     {
       name: 'room.member_freebusy',
       description:
-        "Read a current room member's explicitly shared calendar as free/busy only. Name the member by their room handle, full room label, unique display name or principal id, and give a start/end window of at most 62 days. Blocks give start_local and end_local in the room's time zone. Event titles, locations and attendees stay private. Compare members' busy blocks to find a time that works for everyone.",
+        "Read eligible helpers' explicitly shared free/busy. complete=true covers the requested window: empty busy means no busy blocks, not a reason to try formats. Reuse complete same-member/window results in this decision unless stale; retry incomplete/failed reads. Different candidates/windows and post-approval conflict checks need their own reads. Event titles, locations and attendees stay private.",
       input_schema: {
         type: 'object',
         additionalProperties: false,
         required: ['member', 'start', 'end'],
         properties: {
-          member: { type: 'string', minLength: 1 },
+          member: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'A current member by room handle, full room label, unique display name or principal id. Only an explicitly shared calendar may be read or changed.',
+          },
           start: {
             type: 'string',
             description:
-              "A local date and time in the room's time zone with no offset, such as 2026-11-06T09:00, a date alone from its midnight, or a time with its offset.",
+              "A local date and time in the room's time zone with no offset, such as 2026-11-06T09:00, a date alone from its midnight, or a time with its offset. Choose a window of at most 62 days.",
           },
           end: {
             type: 'string',
             description:
-              'Like start; a date alone runs to the end of that day, so 2026-11-06 for both reads that whole day.',
+              "Like start; a date alone runs to the end of that day, so 2026-11-06 for both reads that whole day. Blocks give start_local and end_local in the room's time zone.",
           },
           calendar_connection_id: { type: 'string', description: 'Filled in by Melete.' },
           share_created_at: { type: 'string', description: 'Filled in by Melete.' },
@@ -123,13 +128,18 @@ export const roomManifest: ConnectorManifest = {
     {
       name: 'room.add_to_member_calendar',
       description:
-        "Add an event to a room member's explicitly shared personal calendar. Name the member by their room handle, full room label, unique display name or principal id, and provide the calendar event. Available only when they shared free/busy with additions. Only that member can approve the exact event, regardless of the room's approval rule. Existing calendar conflicts still stop a write.",
+        "Propose an exact event on a member's explicitly shared calendar with additions: this produces their approval card; do not ask permission again first. Only that member approves, regardless of the room's rule. After approval use resume_action by action ID; do not resubmit the payload. Confirm success through the verified receipt. Existing calendar conflicts still stop a write.",
       input_schema: {
         type: 'object',
         additionalProperties: false,
         required: ['member', 'event'],
         properties: {
-          member: { type: 'string', minLength: 1 },
+          member: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'A current member by room handle, full room label, unique display name or principal id. Only an explicitly shared calendar may be read or changed.',
+          },
           member_name: { type: 'string', description: 'Filled in by Melete.' },
           event: eventSchema,
           calendar_connection_id: { type: 'string', description: 'Filled in by Melete.' },
