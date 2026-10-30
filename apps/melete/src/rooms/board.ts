@@ -750,7 +750,7 @@ export async function pushToAssignee(
 
 /**
  * The board's questions whose answers reached one of the room's requests: the
- * question, who answered it, and the answer. An answer posted to the thread
+ * question and its detail, who answered it, and the answer. An answer posted to the thread
  * does not repeat its question, so the request's agent reads it here. Each is
  * found by the message it was posted as: the key `RoomService.post` keeps for
  * the answer's own submission, made from the room, its author and the item,
@@ -760,13 +760,14 @@ export async function boardAnswersFor(
   reader: Pick<Transaction, 'select'>,
   spaceId: string,
   jobId: string,
-): Promise<{ title: string; answeredBy: string; answer: string | null }[]> {
+): Promise<{ title: string; detail: string | null; answeredBy: string; answer: string | null }[]> {
   const key = (suffix: string) =>
     sql`encode(sha256(convert_to(${roomMessage.spaceId} || ':' || ${roomMessage.authorPrincipalId}
       || ':' || ${ANSWER_SUBMISSION} || ${roomBoardItem.id} || ${suffix}, 'UTF8')), 'hex')`;
   const rows = await reader
     .select({
       title: roomBoardItem.title,
+      detail: roomBoardItem.detail,
       answer: roomBoardItem.answer,
       answeredBy: roomMessage.authorPrincipalId,
     })

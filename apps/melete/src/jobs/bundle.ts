@@ -1095,7 +1095,8 @@ async function roomWork(tx: Transaction, row: JobRow, requester: string | null):
             const offer = adds.has(entry.answeredBy)
               ? ' Their shared calendar takes new events: if they took on something with a time, offer to add it with room.add_to_member_calendar; only they approve the exact event.'
               : '';
-            return `- ${who} answered your question ${JSON.stringify(entry.title)}.${offer}`;
+            const asked = entry.detail ? ` It said: ${JSON.stringify(entry.detail)}.` : '';
+            return `- ${who} answered your question ${JSON.stringify(entry.title)}.${asked}${offer}`;
           }),
         ].join('\n'),
       );

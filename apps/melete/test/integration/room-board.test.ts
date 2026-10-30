@@ -1049,6 +1049,34 @@ withDb('room board', () => {
       evidence: [],
     });
     // A share that ends is no longer listed, and another request reads no board answer.
+    // A question's detail reaches the answer's request, so a time in it carries over.
+    const detailed = await request(world.alice, roomId, '@Melete and the dentist ride?');
+    const askedRide = await tool(detailed.claims, roomId, 'board.ask', {
+      assignee: world.bob.id,
+      title: 'Can you drive to the dentist on Nov 19?',
+      detail: 'The appointment is at 10:30 AM. Leaving around 10:00 gets there on time.',
+    });
+    await database().runner.commitOutcome(detailed.claims, {
+      kind: 'completed',
+      summary: 'I asked Bob on the board.',
+      evidence: [],
+    });
+    const rideAnswer = boardAnswerResponse.parse(
+      await ok(
+        send(world.bob.cookie, `/rooms/${roomId}/board/${askedRide.item}/answer`, 'POST', {
+          answer: 'Yes, I can drive',
+        }),
+      ),
+    );
+    const riding = await claimWithBundle(rideAnswer.request_job_id ?? '');
+    expect(riding.bundle.job.objective).toContain(
+      `- ${bob} answered your question "Can you drive to the dentist on Nov 19?". It said: "The appointment is at 10:30 AM. Leaving around 10:00 gets there on time.". Their shared calendar takes new events`,
+    );
+    await database().runner.commitOutcome(riding.claims, {
+      kind: 'completed',
+      summary: 'Noted.',
+      evidence: [],
+    });
     await shares.revoke(roomId, world.carol.id);
     const later = roomMessageResponse.parse(
       await ok(
