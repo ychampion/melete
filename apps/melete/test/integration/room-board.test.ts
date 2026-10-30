@@ -973,6 +973,22 @@ withDb('room board', () => {
     expect((await listOf(world.bob, roomId)).map((item) => item.id)).not.toContain(
       theirs.item ?? '',
     );
+    // An add to someone else's calendar, even a refused one, says whether a time is taken there.
+    const refused = `act_0${randomBytes(13).toString('hex').toUpperCase().slice(0, 25)}`;
+    await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, status, idempotency_key, resolved_at)
+      values (${refused}, ${claims.job_id}, ${claims.attempt_id}, ${await boardConnection(roomId)},
+        'room.add_to_member_calendar', 'write_reversible', ${JSON.stringify({ member: world.carol.id })}::jsonb,
+        ${'0'.repeat(64)}, 'failed', ${refused}, now())`;
+    const afterAdd = await tool(claims, roomId, 'board.add', {
+      kind: 'task',
+      title: 'Bob drives on Saturday at 10',
+      assignee: world.bob.id,
+    });
+    expect(afterAdd.status).toBe('succeeded');
+    expect((await listOf(world.carol, roomId)).map((item) => item.id)).not.toContain(
+      afterAdd.item ?? '',
+    );
     // Once it has read someone else's calendar too, even Bob's own item stays with him.
     await readOf(world.alice.id);
     const after = await tool(claims, roomId, 'board.add', {

@@ -445,16 +445,21 @@ export function createBoardConnector(options: { sql: Sql }): Connector {
      * A request that read someone's shared calendar keeps what it puts up for
      * one person with them and the owners: what it says may rest on what that
      * calendar shows. The receipt tells the agent it did. A person's own
-     * request that read only their own calendar may put up their own item for
-     * everyone: what it rests on is theirs to show.
+     * request that touched only their own calendar may put up their own item
+     * for everyone: what it rests on is theirs to show. A refused add says a
+     * time is taken, so adds count as touching a calendar too.
      */
     const keepWithPerson = async (assignee: unknown) => {
-      const reads = await tx`select canonical_payload->>'member' as member from action
-        where job_id = ${ctx.job_id} and kind = 'room.member_freebusy'
-          and status = 'succeeded'`;
-      if (reads.length === 0) return;
+      const touched = await tx`select kind, status, canonical_payload->>'member' as member
+        from action
+        where job_id = ${ctx.job_id}
+          and kind in ('room.member_freebusy', 'room.add_to_member_calendar')`;
+      const read = touched.some(
+        (row) => row.kind === 'room.member_freebusy' && row.status === 'succeeded',
+      );
+      if (!read) return;
       const own = job.requested_by_principal_id;
-      if (own && assignee === own && reads.every((read) => read.member === own)) return;
+      if (own && assignee === own && touched.every((row) => row.member === own)) return;
       next.visibility = 'assignee';
       next.kept_with_person = true;
     };
