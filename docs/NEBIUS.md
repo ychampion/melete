@@ -13,7 +13,7 @@ OpenAI-compatible chat completions API at
 2. Open **Settings → Models** and pick **Nebius Token Factory**.
 3. Paste your key and choose **Test connection**. Melete fetches the provider's
    model list using that key.
-4. Choose **NVIDIA Nemotron 3 Super** and select **Save and use**.
+4. Choose **NVIDIA Nemotron 3.5 Super VL** and select **Save and use**.
 
 The key is stored encrypted on your server. The server needs `MELETE_MASTER_KEY`
 to store keys entered in the app. If the operator already supplies a Nebius key,
@@ -29,10 +29,10 @@ for another model your account can use.
 
 | Model | Exact Token Factory model ID | Context tokens | Tools | Reads images | Use it for |
 | --- | --- | ---: | --- | --- | --- |
-| NVIDIA Nemotron 3 Super | `nvidia/nemotron-3-super-120b-a12b` | 262,144 | Yes | No | The main model for everyday work, coding and multi-step tasks |
+| NVIDIA Nemotron 3.5 Super VL | `nvidia/Nemotron-3.5-Super-VL` | 1,048,576 | Yes | Yes | The main model: everyday work, rooms, and the photos and scans people send |
+| NVIDIA Nemotron 3 Super | `nvidia/nemotron-3-super-120b-a12b` | 262,144 | Yes | No | Text-only everyday work, coding and multi-step tasks |
 | NVIDIA Nemotron 3 Nano | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | 262,144 | Yes | No | Quick side calls, such as reading chats into memory and quick voice replies |
 | NVIDIA Nemotron 3 Ultra | `nvidia/Nemotron-3-Ultra-550b-a55b` | 1,048,576 | Yes | No | Long research and demanding reasoning |
-| NVIDIA Nemotron 3.5 Super VL | `nvidia/Nemotron-3.5-Super-VL` | 1,048,576 | Yes | Yes | The main model when people send photos or scans |
 
 These are the public serverless recommendations. Exact IDs, tool support and
 token limits come from the
@@ -41,17 +41,19 @@ token limits come from the
 The [Nemotron models page](https://nebius.com/services/token-factory/models/nvidia-nemotron-models-inference)
 lists the same limits. Context includes both input and output.
 
-Keep Super as the primary model. In **Settings → Models → Secondary model**,
-use the same Nebius connection to choose Nano, and keep **Quick side tasks** on
-**Secondary** for short calls such as reading chats into memory. **Scheduled and
-repeating jobs** stay on the primary unless you move them. For a long research
-session, switch the primary to Ultra and return to Super afterwards.
-
-When people send photos or scans, such as receipts, letters or forms, pick
-Nemotron 3.5 Super VL as the primary model. It reads the pictures itself, as
-well as text and video, and it calls tools and reasons like Super. It is priced
+Make Nemotron 3.5 Super VL the primary model. Rooms read photos: someone takes
+a picture of a letter, a bill or a form with their phone and posts it, and the
+room's model reads it itself (see [Rooms](ROOMS.md#threads-and-asking-the-agent)).
+Super VL reads pictures as well as text and video, and it calls tools and
+reasons like Super, so one model covers the whole conversation. It is priced
 like Super, at $0.30 per million input tokens, $0.06 cached and $0.90 output,
 and its weights are released under OpenMDW-1.1.
+
+In **Settings → Models → Secondary model**, use the same Nebius connection to
+choose Nano, and keep **Quick side tasks** on **Secondary** for short calls such
+as reading chats into memory. **Scheduled and repeating jobs** stay on the
+primary unless you move them. For a long research session, switch the primary
+to Ultra and return to Super VL afterwards.
 
 Super, Nano and Ultra above read text only. Nemotron **Nano Omni needs a dedicated
 endpoint** and is not a serverless preset. To use it, deploy it with Nebius and
@@ -71,10 +73,32 @@ visible to that person alone, and keep the final answer short, with no
 reasoning in it. The notes are plain data in
 `packages/contracts/src/model-guidance.ts`, one entry per model family, so they
 can be edited there without touching any other code; a test keeps each entry
-under 250 tokens. The same entry can set `chat_template_kwargs`, such as
-`{ "enable_thinking": false }`, to switch Nemotron's reasoning; it is unset, so
-reasoning stays at the provider's default. To leave all of this out, set
-`MELETE_MODEL_GUIDANCE=off` in the service environment and restart the service.
+under 250 tokens.
+
+### The guidance switch
+
+`MELETE_MODEL_GUIDANCE` is on by default: leave it empty or set it to `on`, and
+the notes are added. `MELETE_MODEL_GUIDANCE=off` leaves out the notes
+and any chat template arguments below. The service reads it once, at start, so
+change it in `deploy/.env` and recreate the service:
+
+```bash
+bun run deploy/scripts/set-env.ts MELETE_MODEL_GUIDANCE=off
+docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete
+```
+
+### The thinking switch
+
+Nemotron's reasoning stays at the provider's default. To switch it, set
+`chat_template_kwargs` on the `nemotron` entry in
+`packages/contracts/src/model-guidance.ts`. Melete then sends it with every chat
+completions call to a Nemotron model:
+
+- `{ enable_thinking: false }` turns reasoning off, for the quickest replies;
+- `{ enable_thinking: true, low_effort: true }` keeps it on with shorter reasoning.
+
+A request that already names its own `chat_template_kwargs` keeps them, and
+`MELETE_MODEL_GUIDANCE=off` sends none.
 
 ## Configure from the environment
 
@@ -82,7 +106,7 @@ Give the Melete service these variables:
 
 ```dotenv
 MELETE_DEFAULT_PROVIDER=nebius
-MELETE_DEFAULT_MODEL=nvidia/nemotron-3-super-120b-a12b
+MELETE_DEFAULT_MODEL=nvidia/Nemotron-3.5-Super-VL
 NEBIUS_API_KEY=your-token-factory-key
 ```
 
@@ -96,8 +120,15 @@ shell after the helper writes `deploy/.env`:
 
 ```bash
 read -rs NEBIUS_API_KEY && export NEBIUS_API_KEY
-bun run deploy/scripts/configure.ts --provider nebius --model nvidia/nemotron-3-super-120b-a12b
+bun run deploy/scripts/configure.ts --provider nebius --model nvidia/Nemotron-3.5-Super-VL
 unset NEBIUS_API_KEY
+```
+
+To turn on [rooms](ROOMS.md#turning-rooms-on) as well, set the preview flag
+before you start the stack:
+
+```bash
+bun run deploy/scripts/set-env.ts MELETE_PREVIEW_MULTIPLAYER=true
 ```
 
 ### Pass the key to a Compose service

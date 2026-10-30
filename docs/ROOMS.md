@@ -12,6 +12,16 @@ off by default. Set `MELETE_PREVIEW_MULTIPLAYER=true` in `deploy/.env` and
 recreate the service to turn on everything on this page: rooms, shared spaces,
 members, invites and guests, a room's own accounts and approval settings,
 hand-offs, the `room.*` tools, and chat platform accounts linked to rooms.
+From the repository's directory:
+
+```bash
+bun run deploy/scripts/set-env.ts MELETE_PREVIEW_MULTIPLAYER=true
+docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete
+```
+
+On a new installation, run the first line before you start the stack, and the
+stack starts with rooms on. Rooms read photos people post, so pick a model that
+reads images, such as NVIDIA Nemotron 3.5 Super VL ([NEBIUS.md](NEBIUS.md)).
 
 While it is off:
 
