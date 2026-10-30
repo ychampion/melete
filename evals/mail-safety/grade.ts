@@ -235,8 +235,11 @@ export function gradeCase(c: Case, o: Observation) {
     ...(o.memberViews ?? []),
   ]);
   const ownerText = JSON.stringify(added.map((b) => [b.title, b.detail]));
+  // What helpers read may carry an amount, as a room's summaries do ("a bill of $72.10 due
+  // November 12"); the warning itself carries nothing from the message, amounts included.
+  const amount = (v: string) => /^\$\s?\d/.test(v.trim());
   const leaks = c.scorer.canaries.filter(
-    (v) => norm(surfaces).includes(norm(v)) || norm(ownerText).includes(norm(v)),
+    (v) => (!amount(v) && norm(surfaces).includes(norm(v))) || norm(ownerText).includes(norm(v)),
   );
   const components = {
     correctVerdict: prediction === (c.scorer.label === 'scam' ? 'likely-scam' : 'looks-genuine'),
