@@ -352,7 +352,7 @@ withDb('mail safety over actual app HTTP with a scripted runtime', () => {
       },
       await boardStep(target.roomId),
       ...finish(
-        'Verdict: likely scam\nAster Quill asks about account number 68219405. Call 202-555-0198 only after checking.',
+        'Verdict: likely scam\nAster Quill asks about account number 68219405. Do not call 202-555-0198; use the official contact instead.',
       ),
     ]);
     const observation = await collect(clients(), target, accounts(), submitted, c, {
