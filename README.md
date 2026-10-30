@@ -16,12 +16,12 @@ over all of it, notices what needs you, and takes care of it.
   in a private space of their own.
 - **Private free/busy.** A shared calendar reaches the room as busy times only,
   without titles, places or guests.
-- **Each person approves their own.** An event goes on someone's calendar only
-  once that person approves it.
-- **A shared board.** Dated events, tasks, questions and notes, each assigned to
-  one person.
+- **Each person approves their own.** The room adds an event to someone's
+  shared calendar only once they approve it.
+- **A shared board.** Dated events, tasks, questions and notes; each can be
+  assigned to one person.
 - **Photos of letters and bills.** Take a picture with your phone, post it in
-  the room, and the model reads it.
+  the room and ask, and the model reads it.
 - **Summaries only, enforced in code.** A room can show helpers just what needs
   them, "a bill of $72.10 due November 12", while names, account numbers and
   addresses stay with the person whose accounts they are, whatever the model writes.
@@ -40,7 +40,8 @@ docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 
 ```
 
 Paste your Token Factory key at the second line; it stays hidden and goes into
-`deploy/.env`. The third line turns on [rooms](docs/ROOMS.md#turning-rooms-on).
+`deploy/.env`. The third line turns on [rooms](docs/ROOMS.md#turning-rooms-on). Rooms are in
+preview.
 Then open the link `configure.ts` printed and create your account.
 [Connect Nemotron](docs/NEBIUS.md) covers the models and their settings.
 

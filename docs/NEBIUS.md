@@ -77,8 +77,8 @@ under 250 tokens.
 
 ### The guidance switch
 
-`MELETE_MODEL_GUIDANCE` is on by default: leave it empty, or set anything but
-`off`, and the notes are added. `MELETE_MODEL_GUIDANCE=off` leaves out the notes
+`MELETE_MODEL_GUIDANCE` is on by default: leave it empty or set it to `on`, and
+the notes are added. `MELETE_MODEL_GUIDANCE=off` leaves out the notes
 and any chat template arguments below. The service reads it once, at start, so
 change it in `deploy/.env` and recreate the service:
 
