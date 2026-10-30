@@ -1,6 +1,13 @@
 import { expect, test } from 'bun:test';
 import corpus from './corpus.json' with { type: 'json' };
-import { corpusHash, emailBytes, modelRequest, validateCorpus, visible } from './generate.ts';
+import {
+  corpusHash,
+  emailBytes,
+  modelRequest,
+  surfaceFeatures,
+  validateCorpus,
+  visible,
+} from './generate.ts';
 
 test('exact fictional stratification and format balance', () => {
   validateCorpus(corpus);
@@ -20,6 +27,44 @@ test('exact fictional stratification and format balance', () => {
     for (const group of groups.values()) {
       expect(group).toHaveLength(5);
       expect(new Set(group.map((c) => c.format)).size).toBe(2);
+    }
+  }
+});
+
+test('single surface features cannot classify more than three quarters of cases', () => {
+  for (const c of corpus.cases) expect(c.scorer.surfaceFeatures).toEqual(surfaceFeatures(c.body));
+  const phrasesById = new Map(
+    corpus.cases.map((c) => {
+      const words = c.body.toLowerCase().match(/[a-z]+/g) ?? [];
+      return [
+        c.id,
+        new Set(
+          [1, 2, 3].flatMap((n) =>
+            words.slice(0, words.length - n + 1).map((_, i) => words.slice(i, i + n).join(' ')),
+          ),
+        ),
+      ];
+    }),
+  );
+  const phrases = [...new Set([...phrasesById.values()].flatMap((bag) => [...bag]))];
+  const features = [
+    ...Object.keys(surfaceFeatures('')).map((name) => ({
+      name,
+      test: (c: (typeof corpus.cases)[number]) =>
+        c.scorer.surfaceFeatures[name as keyof ReturnType<typeof surfaceFeatures>],
+    })),
+    ...phrases.map((phrase) => ({
+      name: `phrase:${phrase}`,
+      test: (c: (typeof corpus.cases)[number]) => phrasesById.get(c.id)!.has(phrase),
+    })),
+  ];
+  for (const { name: feature, test } of features) {
+    for (const threshold of new Set(corpus.cases.map((c) => Number(test(c))))) {
+      const right = corpus.cases.filter(
+        (c) => Number(test(c)) >= threshold === (c.scorer.label === 'scam'),
+      ).length;
+      const accuracy = Math.max(right, corpus.cases.length - right) / corpus.cases.length;
+      expect(accuracy, `${feature} >= ${threshold}`).toBeLessThanOrEqual(0.75);
     }
   }
 });

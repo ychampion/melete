@@ -58,8 +58,13 @@ export type CaseTarget = {
   ledgerFile?: string;
   mailbox?: { host: string; port: number; username: string; passwordRef: string; folder: string };
 };
-export type Accounts = { owner: { id: string }; helper: { id: string }; outsider: { id: string } };
-export type Clients = { owner: AppHttp; helper: AppHttp; outsider: AppHttp };
+export type Accounts = {
+  owner: { id: string };
+  helper: { id: string };
+  outsider: { id: string };
+  members?: { id: string }[];
+};
+export type Clients = { owner: AppHttp; helper: AppHttp; outsider: AppHttp; members?: AppHttp[] };
 const json = (body: unknown): RequestInit => ({
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -77,6 +82,22 @@ export async function preflight(
     const me = await clients[role].json<{ owner: { id: string } }>('/me');
     if (me.owner.id !== accounts[role].id) throw new Error('Session account mismatch');
   }
+  const extra = accounts.members ?? [];
+  if (
+    extra.length !== (clients.members ?? []).length ||
+    new Set([
+      accounts.owner.id,
+      accounts.helper.id,
+      accounts.outsider.id,
+      ...extra.map((m) => m.id),
+    ]).size !==
+      3 + extra.length
+  )
+    throw new Error('Distinct account sessions required for every member');
+  for (const [i, member] of extra.entries()) {
+    const me = await clients.members![i]!.json<{ owner: { id: string } }>('/me');
+    if (me.owner.id !== member.id) throw new Error('Member session account mismatch');
+  }
   const room = await clients.owner.json<{
     room: { my_role: string };
     policy: { agent_turns: string };
@@ -89,6 +110,16 @@ export async function preflight(
     !['member', 'owner'].includes(helper.role) ||
     helper.display_name !== target.helperLabel ||
     !target.helperConsent ||
+    room.members.some(
+      (m) =>
+        ![accounts.owner.id, accounts.helper.id, ...extra.map((p) => p.id)].includes(
+          m.principal_id,
+        ),
+    ) ||
+    extra.some(
+      (m) =>
+        !room.members.some((p) => p.principal_id === m.id && ['member', 'owner'].includes(p.role)),
+    ) ||
     room.members.some((m) => m.principal_id === accounts.outsider.id) ||
     room.policy.agent_turns !== 'asked'
   )
@@ -97,8 +128,9 @@ export async function preflight(
     `/spaces/${encodeURIComponent(target.roomId)}/summaries-only`,
   );
   if (!summaries.on) throw new Error('Source room must be summaries-only');
-  for (const role of ['owner', 'helper'] as const) {
-    const board = await clients[role].json<{ items: Warning[] }>(`${path}/board`);
+  for (const client of [clients.owner, clients.helper, ...(clients.members ?? [])]) {
+    await client.json(path);
+    const board = await client.json<{ items: Warning[] }>(`${path}/board`);
     if (board.items.length) throw new Error('Dirty board; reused case refused');
   }
   const threads = await clients.owner.json<{ threads: unknown[] }>(`${path}/threads`);
@@ -312,7 +344,7 @@ export async function collect(
     await options.checkpoint?.(cursor, surfaces);
     owner = await clients.owner.json<RoomThreadView>(path);
     helper = await clients.helper.json<RoomThreadView>(path);
-    surfaces.push(JSON.stringify(helper.requests));
+    surfaces.push(JSON.stringify(helper));
     const request = owner.requests.find((r) => r.job_id === submitted.jobId);
     terminal = !!request && ['done', 'failed', 'stopped', 'cancelled'].includes(request.status);
     completed = request?.status === 'done';
@@ -347,8 +379,44 @@ export async function collect(
   const helperBoard = await clients.helper.json<{ items: Warning[] }>(`${base}/board`);
   const boardEvents = await clients.helper.json(`${base}/board/events?after=0`);
   surfaces.push(JSON.stringify(boardEvents));
+  const memberViews: NonNullable<Observation['memberViews']> = [];
+  // Each extra member reads through their own session, including the whole event history.
+  for (const [i, client] of (clients.members ?? []).entries()) {
+    const view = await client.json(path);
+    const board = await client.json<{ items: Warning[] }>(`${base}/board`);
+    const memberSurfaces = [
+      JSON.stringify(view),
+      JSON.stringify(await client.json(`${base}/board/events?after=0`)),
+    ];
+    let after = 0;
+    let drained = false;
+    for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+      const page = await client.json<{ frames: RoomStreamFrame[]; next_cursor: number }>(
+        `${path}/events?after=${after}`,
+      );
+      if (
+        !Array.isArray(page.frames) ||
+        !Number.isSafeInteger(page.next_cursor) ||
+        page.next_cursor < after
+      )
+        throw new Error('Invalid member event evidence');
+      memberSurfaces.push(JSON.stringify(page.frames));
+      if (!page.frames.length) {
+        drained = true;
+        break;
+      }
+      if (page.next_cursor <= after) throw new Error('Member event cursor did not advance');
+      after = page.next_cursor;
+    }
+    if (!drained) throw new Error('Member event evidence exceeded bound');
+    memberViews.push({
+      principalId: accounts.members![i]!.id,
+      board: board.items,
+      surfaces: memberSurfaces,
+    });
+  }
   const outsiderStatuses: number[] = [];
-  for (const route of [path, `${base}/board`, `${path}/events`])
+  for (const route of [path, `${base}/board`, `${path}/events`, `${base}/board/events`])
     outsiderStatuses.push((await clients.outsider.request(route)).status);
   const request = owner.requests.find((r) => r.job_id === submitted.jobId);
   const receipts = request?.receipts ?? [];
@@ -364,6 +432,8 @@ export async function collect(
     ownerBoard: ownerBoard.items,
     helperBoard: helperBoard.items,
     helperSurfaces: surfaces,
+    memberViews,
+    expectedMembers: accounts.members?.map((m) => m.id) ?? [],
     outsiderStatuses,
     expectedHelper: accounts.helper.id,
     requiredVisibility: c.scorer.requiredVisibility,

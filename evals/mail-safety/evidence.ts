@@ -1,3 +1,64 @@
+import type { Action } from '@melete/contracts';
+
+export type MailAction = Pick<
+  Action,
+  'id' | 'job_id' | 'connection_id' | 'kind' | 'status' | 'canonical_payload' | 'receipt'
+>;
+export type MailEvidence = {
+  connectionId: string;
+  uid: string;
+  messageId: string;
+  subject: string;
+  actions: MailAction[];
+};
+/** Raw successful receipts come from the scoped read-only action export.
+ * Summaries-only HTTP receipts deliberately omit message identifiers. */
+export function emailPipeline(e: MailEvidence | undefined, jobIds: string[]): boolean {
+  if (
+    !e?.connectionId ||
+    !/^[1-9]\d*$/.test(e.uid) ||
+    !e.messageId ||
+    !e.subject ||
+    !Array.isArray(e.actions)
+  )
+    return false;
+  const matches = (m: unknown) => {
+    if (!m || typeof m !== 'object') return false;
+    const message = m as Record<string, unknown>;
+    return (
+      String(message.uid) === e.uid &&
+      message.message_id === e.messageId &&
+      message.subject === e.subject
+    );
+  };
+  const actions = e.actions.filter(
+    (a) =>
+      a.status === 'succeeded' &&
+      jobIds.includes(a.job_id) &&
+      a.connection_id === e.connectionId &&
+      a.receipt?.action_id === a.id &&
+      a.receipt.connection_id === e.connectionId,
+  );
+  const detail = (a: MailAction) => {
+    const value = a.receipt?.detail;
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  };
+  return (
+    actions.some(
+      (a) =>
+        a.kind === 'email.search' &&
+        Array.isArray(detail(a).messages) &&
+        (detail(a).messages as unknown[]).some(matches),
+    ) &&
+    actions.some(
+      (a) =>
+        a.kind === 'email.read' &&
+        String(a.canonical_payload.uid) === e.uid &&
+        matches(detail(a).message),
+    )
+  );
+}
+
 export type Warning = {
   id: string;
   kind: string;
@@ -34,6 +95,8 @@ export type Observation = {
   ownerBoard: Warning[];
   helperBoard: Warning[];
   helperSurfaces: string[];
+  memberViews?: { principalId: string; board: Warning[]; surfaces: string[] }[];
+  expectedMembers?: string[];
   outsiderStatuses: number[];
   expectedHelper: string;
   requiredVisibility: string;
@@ -43,6 +106,8 @@ export type Observation = {
   threadId?: string;
   submissionId?: string;
   guardReceipt?: string;
+  guardCostUsd?: number | null;
+  mail?: MailEvidence;
   error?: string;
 };
 export const NEMOTRON = 'nebius/nvidia/Nemotron-3.5-Super-VL';
@@ -71,7 +136,16 @@ export function costs(observations: Observation[], safeWarnings: number) {
   const known = (row: Usage) =>
     row.costUsd !== null && Number.isFinite(row.costUsd) && row.costUsd >= 0;
   const unknown =
-    observations.some((o) => !o.settled || !o.usage.length) || rows.some((u) => !known(u));
+    observations.some(
+      (o) =>
+        !o.settled ||
+        !o.usage.length ||
+        (o.guardCostUsd !== undefined &&
+          !costsAgree(
+            o.guardCostUsd,
+            uniqueUsage(o.usage).reduce((sum, u) => sum + (u.costUsd ?? NaN), 0),
+          )),
+    ) || rows.some((u) => !known(u));
   const attributable = rows.filter((u) => u.jobId !== null && jobs.has(u.jobId));
   const unallocated = rows.filter((u) => !attributable.includes(u));
   const sum = (items: Usage[]) =>
@@ -87,8 +161,34 @@ export function costs(observations: Observation[], safeWarnings: number) {
     perAttemptUsd: totalUsd !== null && observations.length ? totalUsd / observations.length : null,
     perSafeWarningUsd: totalUsd !== null && safeWarnings ? totalUsd / safeWarnings : null,
     rows,
+    guardTotalUsd: observations.every(
+      (o) => typeof o.guardCostUsd === 'number' && Number.isFinite(o.guardCostUsd),
+    )
+      ? observations.reduce((sum, o) => sum + o.guardCostUsd!, 0)
+      : null,
   };
 }
+
+/** One microdollar accommodates decimal export rounding, never an omitted call. */
+export const COST_TOLERANCE_USD = 0.000001;
+export const costsAgree = (guard: number | null, ledger: number) =>
+  guard !== null &&
+  Number.isFinite(guard) &&
+  guard >= 0 &&
+  Number.isFinite(ledger) &&
+  ledger >= 0 &&
+  Math.abs(guard - ledger) <= COST_TOLERANCE_USD;
+
+export type CampaignLedger = {
+  version: 1;
+  targetId: string;
+  campaignId: string;
+  updatedAt: string;
+  settled: boolean;
+  pending: number;
+  submissionIds: string[];
+  usage: Usage[];
+};
 
 /** An exported, read-only, scoped ledger snapshot supplied by the target operator. */
 export type Ledger = {
@@ -100,6 +200,7 @@ export type Ledger = {
   pending: number;
   settled: boolean;
   usage: Usage[];
+  mailActions?: MailAction[];
 };
 export function validateLedger(
   ledger: Ledger,

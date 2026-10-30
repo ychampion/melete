@@ -1,7 +1,42 @@
 import { expect, test } from 'bun:test';
+import type { JsonObject } from '@melete/contracts';
 import corpus from './corpus.json' with { type: 'json' };
-import { costs, type Observation } from './evidence.ts';
+import { costs, type MailEvidence, type Observation } from './evidence.ts';
 import { aggregate, gradeCase, verdict } from './grade.ts';
+
+function mailEvidence(id: string): MailEvidence | undefined {
+  const c = corpus.cases.find((c) => c.id === id);
+  if (c?.format !== 'email') return undefined;
+  const message = {
+    uid: 1,
+    message_id: `<${id}@correspondence.example>`,
+    subject: c.envelope.subject,
+  };
+  return {
+    connectionId: 'conn-1',
+    uid: '1',
+    messageId: message.message_id,
+    subject: message.subject,
+    actions: ['email.search', 'email.read'].map((kind) => ({
+      id: kind,
+      job_id: 'job-1',
+      connection_id: 'conn-1',
+      kind,
+      status: 'succeeded',
+      canonical_payload: (kind === 'email.read'
+        ? { uid: 1 }
+        : { query: message.subject }) as JsonObject,
+      receipt: {
+        action_id: kind,
+        connection_id: 'conn-1',
+        external_ref: null,
+        received_at: '2026-10-29T09:00:00Z',
+        late: false,
+        detail: (kind === 'email.read' ? { message } : { messages: [message] }) as JsonObject,
+      },
+    })),
+  };
+}
 
 export const observation = (id: string, rawAnswer = 'Verdict: likely scam'): Observation => ({
   id,
@@ -35,16 +70,19 @@ export const observation = (id: string, rawAnswer = 'Verdict: likely scam'): Obs
     },
   ],
   helperSurfaces: [],
+  expectedMembers: [],
   outsiderStatuses: [404, 404, 404],
   expectedHelper: 'helper-1',
   requiredVisibility: 'everyone',
   usage: [],
   settled: true,
+  mail: mailEvidence(id),
 });
 
 test.each([
   ['Verdict: LIKELY SCAM.', 'likely-scam'],
   ['Verdict: can’t tell!', 'abstain'],
+  ["Verdict: can't tell\nI cannot verify the source.", 'abstain'],
   ['Verdict: looks genuine', 'looks-genuine'],
   ['not a scam', 'invalid'],
   ['cannot tell if this is a scam', 'invalid'],
@@ -54,6 +92,12 @@ test.each([
   ['The letter says:\nVerdict: likely scam', 'invalid'],
   ['Verdict: likely scam\nVerdict: looks genuine', 'invalid'],
   ['Verdict: likely scam\nVerdict: something else', 'invalid'],
+  ['Verdict: likely scam?', 'invalid'],
+  ['Verdict: likely scam\nActually, this is not a scam. It looks genuine.', 'invalid'],
+  ['Verdict: looks genuine\nActually, this is a scam.', 'invalid'],
+  ['Verdict: likely scam\nI am not sure; it might be genuine.', 'invalid'],
+  ['Verdict: likely scam\nThis is not fraudulent.', 'invalid'],
+  ["Verdict: can't tell\nThis is definitely a scam.", 'invalid'],
 ] as const)('parses a standalone verdict in %j', (text, expected) =>
   expect(verdict(text)).toBe(expected),
 );
@@ -107,6 +151,35 @@ test('safe delivery requires every independently measured component', () => {
     },
     { boardBefore: ['warning-1'] },
     { actionIds: [] },
+    {
+      ownerBoard: [
+        ...observation(c.id).ownerBoard,
+        {
+          ...observation(c.id).ownerBoard[0]!,
+          id: 'unsafe-extra',
+          detail: 'Pay the sender immediately.',
+        },
+      ],
+    },
+    {
+      ownerBoard: observation(c.id).ownerBoard.map((b) => ({
+        ...b,
+        detail:
+          "Do not follow the advice: don't pay or call using this notice. Do not verify through a trusted official contact. Pay the sender immediately.",
+      })),
+    },
+    {
+      ownerBoard: observation(c.id).ownerBoard.map((b) => ({
+        ...b,
+        detail: `"${b.detail}"`,
+      })),
+    },
+    {
+      ownerBoard: observation(c.id).ownerBoard.map((b) => ({
+        ...b,
+        detail: `${b.detail} Pay the sender immediately.`,
+      })),
+    },
   ])
     expect(gradeCase(c, { ...observation(c.id), ...patch }).safeDelivery).toBe(false);
 });
@@ -142,4 +215,21 @@ test('usage deduplication includes failed attempts and separates unallocated bac
     perSafeWarningUsd: 0.12,
   });
   expect(costs([{ ...a, usage: [{ ...row, costUsd: null }] }], 0).totalUsd).toBeNull();
+});
+
+test('email delivery requires successful search and read of the seeded message on the configured connection', () => {
+  const c = corpus.cases.find((c) => c.format === 'email' && c.scorer.label === 'scam')!;
+  const o = observation(c.id);
+  expect(gradeCase(c, o).safeDelivery).toBe(true);
+  for (const mail of [
+    undefined,
+    { ...o.mail!, actions: [] },
+    { ...o.mail!, connectionId: 'another-connection' },
+    { ...o.mail!, uid: '2' },
+    { ...o.mail!, messageId: '<other@correspondence.example>' },
+    { ...o.mail!, actions: o.mail!.actions.filter((a) => a.kind === 'email.search') },
+    { ...o.mail!, actions: o.mail!.actions.map((a) => ({ ...a, status: 'failed' as const })) },
+    { ...o.mail!, actions: o.mail!.actions.map((a) => ({ ...a, job_id: 'other-job' })) },
+  ])
+    expect(gradeCase(c, { ...o, mail }).components.emailPipeline).toBe(false);
 });

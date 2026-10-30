@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { JsonObject, RuntimeAdapter } from '@melete/contracts';
 import corpus from '../../../../evals/mail-safety/corpus.json' with { type: 'json' };
+import type { MailAction } from '../../../../evals/mail-safety/evidence.ts';
 import { type Case, emailBytes } from '../../../../evals/mail-safety/generate.ts';
 import { gradeCase } from '../../../../evals/mail-safety/grade.ts';
 import { AppHttp, collect, preflight, submitNotice } from '../../../../evals/mail-safety/http.ts';
@@ -137,6 +138,7 @@ type Person = { id: string; cookie: string };
 let owner: Person;
 let helper: Person;
 let outsider: Person;
+let member: Person;
 const password = 'mail-safety-fixture-password';
 const cookie = (response: Response) =>
   response.headers
@@ -154,8 +156,13 @@ const post = (body: unknown, method = 'POST') => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 });
-const clients = () => ({ owner: http(owner), helper: http(helper), outsider: http(outsider) });
-const accounts = () => ({ owner, helper, outsider });
+const clients = () => ({
+  owner: http(owner),
+  helper: http(helper),
+  outsider: http(outsider),
+  members: [http(member)],
+});
+const accounts = () => ({ owner, helper, outsider, members: [member] });
 async function room() {
   const made = await http(owner).json<{ room: { id: string } }>(
     '/rooms',
@@ -163,6 +170,7 @@ async function room() {
   );
   const roomId = made.room.id;
   await http(owner).json(`/rooms/${roomId}/members`, post({ principal_id: helper.id }));
+  await http(owner).json(`/rooms/${roomId}/members`, post({ principal_id: member.id }));
   await http(owner).json(`/spaces/${roomId}/summaries-only`, post({ on: true }, 'PUT'));
   const detail = await http(owner).json<{
     members: { principal_id: string; display_name: string }[];
@@ -219,7 +227,7 @@ withDb('mail safety over actual app HTTP with a scripted runtime', () => {
       id: ((await setup.json()) as { owner: { id: string } }).owner.id,
       cookie: cookie(setup),
     };
-    for (const name of ['owen', 'iris']) {
+    for (const name of ['owen', 'iris', 'ellis']) {
       const created = await http(owner).json<{ principal: { id: string } }>(
         '/principals',
         post({ email: `${name}@example.test`, password }),
@@ -227,7 +235,8 @@ withDb('mail safety over actual app HTTP with a scripted runtime', () => {
       const login = await app.request('/login', post({ email: `${name}@example.test`, password }));
       const person = { id: created.principal.id, cookie: cookie(login) };
       if (name === 'owen') helper = person;
-      else outsider = person;
+      else if (name === 'iris') outsider = person;
+      else member = person;
     }
     await http(helper).json('/me', post({ display_name: 'Owen Lake' }, 'PATCH'));
     if (!fixture) throw new Error('No fixture');
@@ -243,6 +252,13 @@ withDb('mail safety over actual app HTTP with a scripted runtime', () => {
 
   test('image bytes reach the existing gateway and a real broker action creates the assigned warning', async () => {
     const target = await room();
+    await expect(
+      preflight({ owner: http(owner), helper: http(helper), outsider: http(outsider) }, target, {
+        owner,
+        helper,
+        outsider,
+      }),
+    ).rejects.toThrow('membership');
     await preflight(clients(), target, accounts());
     const c = corpus.cases.find((c) => c.format === 'image' && c.scorer.label === 'scam')!;
     const submitted = await submitNotice(http(owner), target, c, TINY_PNG, `image-${c.id}`);
@@ -316,7 +332,7 @@ withDb('mail safety over actual app HTTP with a scripted runtime', () => {
         () => transport,
       ),
     );
-    const submitted = await submitNotice(http(helper), target, c, emailBytes(c), `email-${c.id}`);
+    const submitted = await submitNotice(http(owner), target, c, emailBytes(c), `email-${c.id}`);
     await play(submitted.jobId, [
       {
         type: 'tool',
@@ -342,11 +358,29 @@ withDb('mail safety over actual app HTTP with a scripted runtime', () => {
     const observation = await collect(clients(), target, accounts(), submitted, c, {
       timeoutMs: 2000,
     });
+    // This is the same scoped read-only raw action export required from an operator.
+    const actions =
+      await fixture.sql`select id, job_id, connection_id, kind, status, canonical_payload, receipt
+      from action where job_id = ${submitted.jobId} and connection_id = ${connectionId}`;
+    observation.mail = {
+      connectionId,
+      uid: '1',
+      messageId: `<${c.id}@correspondence.example>`,
+      subject: c.envelope.subject,
+      actions: [...actions] as MailAction[],
+    };
     expect(mailReads).toBe(2);
     expect(observation.rawAnswer).toContain('68219405');
     for (const canary of c.scorer.canaries)
       expect(JSON.stringify(observation.helperSurfaces)).not.toContain(canary);
     expect(gradeCase(c, observation).safeDelivery).toBe(true);
+    expect(observation.memberViews).toHaveLength(1);
+    for (const canary of c.scorer.canaries)
+      expect(JSON.stringify(observation.memberViews)).not.toContain(canary);
+    expect(
+      gradeCase(c, { ...observation, mail: { ...observation.mail, actions: [] } }).components
+        .emailPipeline,
+    ).toBe(false);
     const replay = await http(helper).json<{ frames: unknown[] }>(
       `/rooms/${target.roomId}/threads/${submitted.threadId}/events?after=${observation.transport!.cursor}`,
     );

@@ -5,11 +5,14 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import corpus from './corpus.json' with { type: 'json' };
 import {
+  type CampaignLedger,
+  costsAgree,
   identity,
   type Ledger,
   NEMOTRON,
   type Observation,
   type Usage,
+  uniqueUsage,
   validateLedger,
 } from './evidence.ts';
 import { corpusHash, generate, sha256, validateCorpus, verifyManifest } from './generate.ts';
@@ -41,11 +44,17 @@ export function nextAttempt<T extends { id: string; phase?: string }>(
   state: { attempts: T[] },
   id: string,
   limit: number,
+  maxItems = 2,
 ) {
   const old = state.attempts.find((a) => a.id === id);
   if (old) return { attempt: old, resume: true };
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 2 || state.attempts.length >= limit)
-    throw new Error('At most two attempted items across the campaign');
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > maxItems ||
+    state.attempts.length >= limit
+  )
+    throw new Error('Attempt limit exceeded (default: two items)');
   if (state.attempts.some((a) => a.phase !== 'settled'))
     throw new Error('Prior attempt remains unsettled');
   return { attempt: { id, submissionId: `mail-${id}`, phase: 'reserving' }, resume: false };
@@ -83,6 +92,8 @@ export interface HardGuard {
     maxItems: number;
     covers: string[];
     pending: number;
+    attempted: number;
+    maxItemUsd: number;
   }>;
   reserve(submissionId: string): Promise<{ receiptId: string }>;
   reconcile(submissionId: string): Promise<{
@@ -102,10 +113,56 @@ export type Config = {
   corpusHash: string;
   corpusDir: string;
   requireNemotron: boolean;
-  accounts: { owner: Account; helper: Account; outsider: Account };
+  accounts: { owner: Account; helper: Account; outsider: Account; members?: Account[] };
   cases: Record<string, CaseTarget>;
+  campaignLedgerFile: string;
   hardGuard?: { module: string; sha256: string; reference: string };
 };
+export type RunOptions = { lead?: boolean; guardFile?: string; guardStop?: number };
+
+/** The state file is a read-only timestamp/total snapshot, not a budget enforcer. */
+export async function checkGuardFile(options: RunOptions): Promise<void> {
+  if (options.guardFile === undefined && options.guardStop === undefined) return;
+  if (!options.guardFile || !Number.isFinite(options.guardStop) || options.guardStop! <= 0)
+    throw new Error('Guard file and positive stop total must be supplied together');
+  const text = (await readFile(options.guardFile, 'utf8')).trim();
+  const fields = text.split(/\s+/);
+  const total = Number(fields[1]);
+  if (
+    fields.length !== 2 ||
+    !Number.isFinite(Date.parse(fields[0]!)) ||
+    !Number.isFinite(total) ||
+    total < 0
+  )
+    throw new Error('Invalid guard state; item refused');
+  if (total >= options.guardStop!) throw new Error('Guard stop total reached; item refused');
+}
+
+export async function campaignSpend(config: Config, attempted: number): Promise<number> {
+  if (!config.campaignLedgerFile) throw new Error('Measured campaign usage export required');
+  const ledger = JSON.parse(await readFile(config.campaignLedgerFile, 'utf8')) as CampaignLedger;
+  const age = Date.now() - Date.parse(ledger.updatedAt);
+  if (
+    ledger.version !== 1 ||
+    ledger.targetId !== config.targetId ||
+    ledger.campaignId !== config.campaignId ||
+    !ledger.settled ||
+    ledger.pending !== 0 ||
+    !Number.isFinite(age) ||
+    age < -1000 ||
+    age > 30_000 ||
+    !Array.isArray(ledger.submissionIds) ||
+    new Set(ledger.submissionIds).size !== attempted ||
+    ledger.submissionIds.length !== attempted ||
+    !Array.isArray(ledger.usage) ||
+    (attempted > 0 && !ledger.usage.length)
+  )
+    throw new Error('Incomplete, stale or unsettled campaign usage');
+  const usage = uniqueUsage(ledger.usage);
+  if (usage.some((u) => u.costUsd === null || !Number.isFinite(u.costUsd) || u.costUsd < 0))
+    throw new Error('Unknown measured campaign spend');
+  return usage.reduce((sum, u) => sum + u.costUsd!, 0);
+}
 export async function loadGuard(config: Config): Promise<HardGuard> {
   const supplied = config.hardGuard;
   if (!supplied?.module || !supplied.reference || !/^[a-f0-9]{64}$/.test(supplied.sha256))
@@ -133,6 +190,7 @@ function emptyObservation(id: string, expectedHelper: string, phase: string): Ob
     ownerBoard: [],
     helperBoard: [],
     helperSurfaces: [],
+    expectedMembers: [],
     outsiderStatuses: [],
     usage: [],
     settled: false,
@@ -190,12 +248,17 @@ class Journal {
 }
 
 function clientsFor(config: Config) {
-  const account = (role: keyof Config['accounts']) => {
-    const session = process.env[config.accounts[role].sessionRef];
+  const account = (person: Account) => {
+    const session = process.env[person.sessionRef];
     if (!session) throw new Error('Session reference unavailable');
     return new AppHttp(config.baseUrl, session);
   };
-  return { owner: account('owner'), helper: account('helper'), outsider: account('outsider') };
+  return {
+    owner: account(config.accounts.owner),
+    helper: account(config.accounts.helper),
+    outsider: account(config.accounts.outsider),
+    members: config.accounts.members?.map(account),
+  };
 }
 async function writeArtifact(out: string, config: Config, journal: Journal) {
   const observations = journal
@@ -209,6 +272,7 @@ async function writeArtifact(out: string, config: Config, journal: Journal) {
         corpusHash: corpusHash(),
         targetId: config.targetId,
         campaignId: config.campaignId,
+        attempted: observations.length,
         observations,
         pending: journal
           .list()
@@ -228,6 +292,7 @@ export async function runCampaign(
   limit: number,
   budgetUsd: number,
   guard: HardGuard,
+  options: RunOptions = {},
 ): Promise<void> {
   validateCorpus(corpus);
   if (
@@ -240,40 +305,50 @@ export async function runCampaign(
     !config.corpusDir ||
     !Number.isSafeInteger(limit) ||
     limit < 1 ||
-    limit > 2 ||
+    limit > (options.lead ? 60 : 2) ||
     !Number.isFinite(budgetUsd) ||
     budgetUsd <= 0 ||
-    budgetUsd > 0.25
+    (!options.lead && budgetUsd > 0.25) ||
+    (options.lead && limit !== 60)
   )
-    throw new Error(
-      'Explicit isolated target, corpus hash, two-item limit and dollar cap required',
-    );
+    throw new Error('Explicit isolated target, corpus hash, item limit and dollar cap required');
   const selected = Object.keys(config.cases);
   if (
     !selected.length ||
+    (options.lead && selected.length !== 60) ||
     selected.some((id) => !corpus.cases.some((c) => c.id === id)) ||
     new Set(Object.values(config.cases).map((c) => c.roomId)).size !== selected.length
   )
     throw new Error('Dedicated unique case namespaces required');
-  const proof = await guard.verify({
-    targetId: config.targetId,
-    campaignId: config.campaignId,
-    budgetUsd,
-    maxItems: 2,
-  });
-  if (
-    !proof.proofId ||
-    proof.targetId !== config.targetId ||
-    proof.campaignId !== config.campaignId ||
-    proof.capUsd !== budgetUsd ||
-    proof.maxItems !== 2 ||
-    !Number.isSafeInteger(proof.pending) ||
-    proof.pending < 0 ||
-    !['foreground', 'background', 'retry', 'secondary'].every((scope) =>
-      proof.covers.includes(scope),
+  const verifyGuard = async () => {
+    const proof = await guard.verify({
+      targetId: config.targetId,
+      campaignId: config.campaignId,
+      budgetUsd,
+      maxItems: options.lead ? 60 : 2,
+    });
+    if (
+      !proof.proofId ||
+      proof.targetId !== config.targetId ||
+      proof.campaignId !== config.campaignId ||
+      proof.capUsd !== budgetUsd ||
+      proof.maxItems !== (options.lead ? 60 : 2) ||
+      !Number.isSafeInteger(proof.pending) ||
+      proof.pending < 0 ||
+      !Number.isSafeInteger(proof.attempted) ||
+      proof.attempted < 0 ||
+      proof.attempted > proof.maxItems ||
+      !Number.isFinite(proof.maxItemUsd) ||
+      proof.maxItemUsd <= 0 ||
+      proof.maxItemUsd > budgetUsd ||
+      !['foreground', 'background', 'retry', 'secondary'].every((scope) =>
+        proof.covers.includes(scope),
+      )
     )
-  )
-    throw new Error('Hard guard cannot prove complete pre-call coverage');
+      throw new Error('Hard guard cannot prove complete pre-call coverage');
+    return proof;
+  };
+  await verifyGuard();
   const manifest = await verifyManifest(config.corpusDir);
   const clients = clientsFor(config);
   await mkdir(out, { recursive: true, mode: 0o700 });
@@ -281,20 +356,28 @@ export async function runCampaign(
   const lock = await acquireLock(lockPath);
   const journal = new Journal(
     resolve(out, 'journal.sqlite'),
-    sha256(JSON.stringify({ config, limit, budgetUsd })),
+    sha256(JSON.stringify({ config, limit, budgetUsd, options })),
   );
   try {
     for (const id of selected.slice(0, limit)) {
       const c = corpus.cases.find((c) => c.id === id)!;
       const target = config.cases[id]!;
-      const next = nextAttempt({ attempts: journal.list() }, id, limit);
+      const next = nextAttempt({ attempts: journal.list() }, id, limit, options.lead ? 60 : 2);
       const attempt = next.attempt as Attempt;
       if (attempt.phase === 'privacy-failed')
         throw new Error('Prior privacy failure stops this campaign');
       if (attempt.phase === 'settled') continue;
       if (!next.resume) {
+        const proof = await verifyGuard();
         if (proof.pending) throw new Error('External campaign has unsettled reservations');
+        await checkGuardFile(options);
+        const spent = await campaignSpend(config, proof.attempted);
+        if (proof.attempted >= proof.maxItems || spent + proof.maxItemUsd > budgetUsd)
+          throw new Error('Next item could exceed the measured campaign cap');
         await preflight(clients, target, config.accounts);
+        await checkGuardFile(options);
+        if ((await campaignSpend(config, proof.attempted)) + proof.maxItemUsd > budgetUsd)
+          throw new Error('Next item could exceed the measured campaign cap');
         // This checkpoint also counts an attempt if the process dies during reservation.
         journal.put(attempt);
         await writeArtifact(out, config, journal);
@@ -311,7 +394,9 @@ export async function runCampaign(
         }
         attempt.phase = 'submitting';
         journal.put(attempt);
-        const posted = await submitNotice(clients.helper, target, c, bytes, attempt.submissionId);
+        // The reservation enforces the verified per-item bound for every call.
+        await checkGuardFile(options);
+        const posted = await submitNotice(clients.owner, target, c, bytes, attempt.submissionId);
         Object.assign(attempt, posted, { phase: 'submitted' });
         journal.put(attempt);
       } else {
@@ -355,6 +440,8 @@ export async function runCampaign(
         const raw = JSON.parse(await readFile(target.ledgerFile, 'utf8')) as Ledger;
         const receipt = await guard.reconcile(attempt.submissionId);
         if (receipt.settled && raw.settled && raw.pending === 0) {
+          observation.guardCostUsd = receipt.costUsd;
+          journal.put(attempt);
           const ledger = validateLedger(raw, {
             targetId: config.targetId,
             roomId: target.roomId,
@@ -363,17 +450,31 @@ export async function runCampaign(
           });
           observation.usage = ledger.usage;
           observation.jobIds = ledger.jobIds;
-          observation.settled = true;
-          requireSettlement(observation, config.requireNemotron);
+          observation.guardCostUsd = receipt.costUsd;
+          observation.settled = false;
+          if (c.format === 'email') {
+            if (!target.mailConnectionId || !attempt.mailboxUid)
+              throw new Error('Missing seeded email identity');
+            observation.mail = {
+              connectionId: target.mailConnectionId,
+              uid: attempt.mailboxUid,
+              messageId: `<${c.id}@correspondence.example>`,
+              subject: c.envelope.subject,
+              actions: ledger.mailActions ?? [],
+            };
+          }
+          journal.put(attempt);
+          requireSettlement({ ...observation, settled: true }, config.requireNemotron);
           const total = ledger.usage.reduce((sum, u) => sum + u.costUsd!, 0);
           if (
             receipt.receiptId !== attempt.reservation ||
-            receipt.costUsd === null ||
-            !Number.isFinite(receipt.costUsd) ||
-            receipt.costUsd < total ||
-            receipt.costUsd > budgetUsd
-          )
-            throw new Error('Hard guard cost evidence incomplete or over cap');
+            !costsAgree(receipt.costUsd, total) ||
+            receipt.costUsd! > budgetUsd
+          ) {
+            journal.put(attempt);
+            throw new Error('Hard guard and scoped ledger costs disagree or exceed cap');
+          }
+          observation.settled = true;
           settled = true;
           break;
         }
@@ -399,41 +500,44 @@ export async function runCampaign(
         throw new Error('Privacy check failed; remaining items stopped');
       }
     }
-    await writeFile(
-      resolve(out, 'report.json'),
-      JSON.stringify(
-        report(
-          corpus.cases,
-          journal
-            .list()
-            .map(
-              (a) => a.observation ?? emptyObservation(a.id, config.accounts.helper.id, a.phase),
-            ),
-        ),
-        null,
-        2,
-      ),
-      { mode: 0o600 },
-    );
-    await writeFile(
-      resolve(out, 'report.md'),
-      renderReport(
-        report(
-          corpus.cases,
-          journal
-            .list()
-            .map(
-              (a) => a.observation ?? emptyObservation(a.id, config.accounts.helper.id, a.phase),
-            ),
-        ),
-      ),
-      { mode: 0o600 },
-    );
   } finally {
     await writeArtifact(out, config, journal);
-    journal.close();
-    await lock.close();
-    await import('node:fs/promises').then((fs) => fs.unlink(lockPath));
+    try {
+      await writeFile(
+        resolve(out, 'report.json'),
+        JSON.stringify(
+          report(
+            corpus.cases,
+            journal
+              .list()
+              .map(
+                (a) => a.observation ?? emptyObservation(a.id, config.accounts.helper.id, a.phase),
+              ),
+          ),
+          null,
+          2,
+        ),
+        { mode: 0o600 },
+      );
+      await writeFile(
+        resolve(out, 'report.md'),
+        renderReport(
+          report(
+            corpus.cases,
+            journal
+              .list()
+              .map(
+                (a) => a.observation ?? emptyObservation(a.id, config.accounts.helper.id, a.phase),
+              ),
+          ),
+        ),
+        { mode: 0o600 },
+      );
+    } finally {
+      journal.close();
+      await lock.close();
+      await import('node:fs/promises').then((fs) => fs.unlink(lockPath));
+    }
   }
 }
 
@@ -444,10 +548,19 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     args: rest,
     strict: true,
     options: Object.fromEntries(
-      ['seed', 'out', 'corpus', 'config', 'limit', 'budget-usd', 'in'].map((name) => [
-        name,
-        { type: 'string' as const },
-      ]),
+      [
+        'seed',
+        'out',
+        'corpus',
+        'config',
+        'limit',
+        'budget-usd',
+        'in',
+        'items',
+        'max-usd',
+        'guard-file',
+        'guard-stop',
+      ].map((name) => [name, { type: 'string' as const }]),
     ),
   });
   const required = (name: string) => {
@@ -499,12 +612,25 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   if (command === 'run') {
     const config = JSON.parse(await readFile(required('config'), 'utf8')) as Config;
     const guard = await loadGuard(config);
+    if (values.items !== undefined && values.items !== 'all')
+      throw new Error('Use --items all for a full campaign');
+    const lead = values.items === 'all';
+    if (
+      (lead && (!values['max-usd'] || values.limit || values['budget-usd'])) ||
+      (!lead && values['max-usd'])
+    )
+      throw new Error('Full campaigns require --items all --max-usd');
     return await runCampaign(
       config,
       required('out'),
-      Number(required('limit')),
-      Number(required('budget-usd')),
+      lead ? 60 : Number(values.limit ?? 2),
+      lead ? Number(values['max-usd']) : Number(values['budget-usd'] ?? 0.25),
       guard,
+      {
+        lead,
+        guardFile: values['guard-file'],
+        guardStop: values['guard-stop'] === undefined ? undefined : Number(values['guard-stop']),
+      },
     );
   }
   throw new Error('Choose generate, dry-run, run or regrade');
