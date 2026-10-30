@@ -22,6 +22,9 @@ over all of it, notices what needs you, and takes care of it.
   assigned to one person.
 - **Photos of letters and bills.** Take a picture with your phone, post it in
   the room and ask, and the model reads it.
+- **Scam checks from official sources.** Ask whether a letter or email is real.
+  Melete finds the organization's own contact on the web, and when it's likely
+  a scam, puts a short warning on the board for whoever helps with the mail.
 - **Summaries only, enforced in code.** A room can show helpers just what needs
   them, "a bill of $72.10 due November 12", while names, account numbers and
   addresses stay with the person whose accounts they are, whatever the model writes.
